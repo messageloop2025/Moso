@@ -12,7 +12,7 @@ import logging
 
 import httpx
 
-from .base import ConfigField, SearchProvider, SearchResultItem
+from .base import ConfigField, SearchProvider, SearchResultItem, SEARCH_HTTP_USER_AGENT
 
 logger = logging.getLogger("edgeops.search.iqs")
 
@@ -122,7 +122,7 @@ class AliyunIQSProvider(SearchProvider):
         headers = {
             "Authorization": f"Bearer {api_key.strip()}",
             "Content-Type": "application/json",
-            "User-Agent": "毛竹-Search/1.0",
+            "User-Agent": SEARCH_HTTP_USER_AGENT,
         }
         timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
         transport_err: Exception | None = None

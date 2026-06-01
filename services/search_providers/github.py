@@ -10,7 +10,7 @@ import logging
 
 import httpx
 
-from .base import ConfigField, SearchProvider, SearchResultItem
+from .base import ConfigField, SearchProvider, SearchResultItem, SEARCH_HTTP_USER_AGENT
 
 logger = logging.getLogger("edgeops.search.github")
 
@@ -76,7 +76,7 @@ class GitHubProvider(SearchProvider):
         headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "毛竹-Search/1.0",
+            "User-Agent": SEARCH_HTTP_USER_AGENT,
         }
         if api_key and api_key.strip():
             headers["Authorization"] = f"Bearer {api_key.strip()}"

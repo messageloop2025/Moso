@@ -9,6 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+# HTTP 头必须为 ASCII/latin-1；不可使用中文等产品名（httpx 会 UnicodeEncodeError）。
+SEARCH_HTTP_USER_AGENT = "Moso-Search/1.0"
+
 
 @dataclass
 class ConfigField:

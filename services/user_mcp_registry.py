@@ -380,3 +380,17 @@ def _validate_transport_config(transport: str, cfg: dict[str, Any]) -> None:
     else:
         if not (cfg.get("url") or "").strip():
             raise ValueError(f"{transport} 传输须填写 url")
+        _validate_http_headers(cfg.get("headers") or {})
+
+
+def _validate_http_headers(headers: dict[str, Any]) -> None:
+    """HTTP 头 Key/Value 须为 ASCII，否则 httpx / MCP 客户端会 UnicodeEncodeError。"""
+    for k, v in headers.items():
+        ks = str(k)
+        vs = "" if v is None else str(v)
+        if any(ord(c) > 127 for c in ks):
+            raise ValueError(f"HTTP 请求头名称须为 ASCII，不可含中文：{ks}")
+        if any(ord(c) > 127 for c in vs):
+            raise ValueError(
+                f"HTTP 请求头「{ks}」的值须为 ASCII（如 Bearer Token），不可含中文等非 ASCII 字符"
+            )
