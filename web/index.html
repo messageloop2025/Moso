@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>毛竹</title>
+    <link rel="icon" type="image/png" href="/static/favicon.png">
+    <link rel="stylesheet" href="/static/css/style.css?v=17">
+    <link rel="stylesheet" href="/static/css/xterm.min.css">
+    <style>
+        .init-loading {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            gap: 16px;
+            color: var(--text-muted);
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div class="init-loading">
+            <div class="spinner"></div>
+            <span>…</span>
+        </div>
+    </div>
+
+    <script src="/static/js/xterm.min.js"></script>
+    <script src="/static/js/addon-fit.min.js"></script>
+    <script src="/static/js/d3.min.js"></script>
+    <script src="/static/js/markmap-lib.iife.js"></script>
+    <script src="/static/js/markmap-view.js"></script>
+    <script src="/static/js/mermaid.min.js"></script>
+    <script src="/static/js/echarts.min.js"></script>
+    <script src="/static/js/html-to-image.js"></script>
+    <script src="/static/js/i18n.js?v=2"></script>
+    <script src="/static/js/utils.js?v=11"></script>
+    <script src="/static/js/api.js?v=5"></script>
+    <script src="/static/js/router.js?v=2"></script>
+    <script>
+    (function() {
+        I18n.init().then(function() {
+            var span = document.querySelector("#app .init-loading span");
+            if (span) span.textContent = (typeof t === "function" && t("meta.initLoading")) || "…";
+            try { document.title = t("meta.htmlTitle"); } catch (e) {}
+            var s = document.createElement("script");
+            s.src = "/static/js/app.js?v=42";
+            document.body.appendChild(s);
+        }).catch(function() {
+            var span = document.querySelector("#app .init-loading span");
+            if (span) span.textContent = "i18n load failed; refresh";
+        });
+    })();
+    </script>
+</body>
+</html>

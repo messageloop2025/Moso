@@ -1,0 +1,25 @@
+{
+  "ai": {
+    "fsHostLabel": "主机：",
+    "fsHostTypeaheadPh": "输入名称、IP、别名或 ID，渐进筛选…",
+    "fsHostNoMatch": "无匹配主机",
+    "fsSelectHostOption": "-- 选择主机 --",
+    "fsPreviewNeedHost": "请在上方选择主机，文件系统将显示该主机目录",
+    "fsPreviewPickFile": "左侧选择文件预览",
+    "fsPickHostShort": "请在上方选择主机",
+    "globalSshTitle": "SSH 控制台",
+    "collapseInlineTerminal": "收起终端",
+    "promptButtonShort": "提示词",
+    "consoleEmptyPickHost": "选择主机并点击「连接」后，控制台将在此显示。",
+    "localConsoleOpenHint": "点击「+ 新建控制台」打开终端。",
+    "localEmptyLog": "暂无执行记录，发送消息后工具调用会在此显示。",
+    "local": {
+      "pageTitle": "本机管理",
+      "adminRequired": "需要管理员权限",
+      "terminalHeader": "本机终端与文件",
+      "logHint": "本机执行记录（不保存，新建会话时清空）",
+      "splitterTitle": "拖拽调整宽度",
+      "sessionNew": "本机会话"
+    }
+  }
+}

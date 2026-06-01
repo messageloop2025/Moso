@@ -1,0 +1,14 @@
+{
+  "layout": {
+    "enterMobileTitle": "Open mobile view",
+    "enterMobileMessage": "This device looks like a phone screen. Open the mobile AI layout? You can switch back to the desktop view later.",
+    "expandTerminal": "Show terminal",
+    "hideTerminal": "Hide terminal",
+    "collapseTerminal": "Collapse terminal",
+    "aiMobilePageTitle": "AI · Mobile",
+    "aiMobileSessionBtn": "Sessions",
+    "aiMobileTerminalToggle": "Toggle terminal",
+    "aiMobileDesktop": "Desktop",
+    "aiMobileSignOut": "Log out"
+  }
+}

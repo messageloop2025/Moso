@@ -1,0 +1,57 @@
+{
+  "name": "@edgeops/claw-ops",
+  "version": "1.1.0",
+  "description": "ClawOps: OpenClaw plugin for Moso — manifest 动态注册扩展工具，服务端管理提示词",
+  "type": "module",
+  "license": "MIT-0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/messageloop2025/edgeops-claw-ops.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "src",
+    "dist",
+    "openclaw.plugin.json",
+    "openclaw.claw-ops.example.json",
+    "package.json",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md",
+    "OPENCLAW_INSTALL.md",
+    "pack.bat",
+    "pack.sh"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "pack": "npm run build && npm pack",
+    "prepublishOnly": "npm run build"
+  },
+  "openclaw": {
+    "extensions": ["./src/index.ts"],
+    "compat": {
+      "pluginApi": ">=2026.3.24-beta.2",
+      "minGatewayVersion": "2026.3.24-beta.2"
+    },
+    "build": {
+      "openclawVersion": "2026.3.31",
+      "pluginSdkVersion": "2026.3.31"
+    }
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.24-beta.2"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.0"
+  },
+  "devDependencies": {
+    "openclaw": ">=2026.3.24-beta.2",
+    "typescript": "^5.7.0"
+  }
+}

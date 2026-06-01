@@ -1,0 +1,32 @@
+{
+  "nav": {
+    "subtitle": "AI资源运维",
+    "dashboard": "仪表盘",
+    "aiAssistant": "AI 助手",
+    "hosts": "主机管理",
+    "credentials": "凭证管理",
+    "hostGroups": "服务器树",
+    "maintenanceHistory": "维护历史",
+    "bestPractices": "最佳实践",
+    "filesystem": "文件系统",
+    "batch": "批量操作",
+    "triggeredTasks": "触发任务",
+    "scheduledTasks": "定时任务",
+    "localAdmin": "本机管理",
+    "userMgmt": "用户管理",
+    "feedback": "反馈",
+    "feedbackAdmin": "反馈管理",
+    "loginBoard": "留言审核",
+    "settings": "系统设置",
+    "mcpConfig": "MCP 配置",
+    "skills": "SKILLS配置",
+    "logs": "操作日志",
+    "productIntro": "产品介绍",
+    "productIntroTitle": "产品介绍（新窗口打开，无需登录）",
+    "sidebarToggle": "收起/展开菜单",
+    "changePassword": "修改密码",
+    "logout": "退出",
+    "menu": "菜单",
+    "aiMobile": "AI 手机版"
+  }
+}

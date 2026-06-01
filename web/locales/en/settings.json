@@ -1,0 +1,216 @@
+{
+  "settings": {
+    "pageTitle": "Settings",
+    "display": {
+      "title": "Display language",
+      "description": "Choose the UI language. “Follow browser” uses the language detected from your browser (it may change with the browser or OS). When signed in, the choice is stored in this browser only.",
+      "label": "UI language",
+      "browser": "Follow browser",
+      "useBrowser": "(Follow browser)",
+      "systemDetected": "Detected: "
+    },
+    "saveDisplay": "Save language",
+    "aiForm": {
+      "title": "My AI configuration",
+      "intro": "Per-user API key, URL, and model for the AI assistant and operations chat.",
+      "modelType": "Provider type",
+      "modelTypeAuto": "Auto-detect (by service URL)",
+      "apiKey": "API key",
+      "apiKeyPh": "LLM API key (empty for Ollama)",
+      "baseUrl": "Service URL",
+      "baseUrlPh": "e.g. https://api.openai.com/v1 or http://localhost:11434/v1",
+      "model": "Model",
+      "modelPh": "e.g. gpt-4o-mini, qwen3.5-plus",
+      "context": "Context length",
+      "contextManualPh": "or 0–8M",
+      "contextHelp": "Max characters; 0 = unlimited, up to 8 MB (8388608)",
+      "autoApprove": "Auto-approve tools",
+      "autoApproveLabel": "If enabled, the AI can call tools without confirmation",
+      "vision": "Vision / images",
+      "visionLabel": "Model supports vision (on by default)",
+      "visionHelp": "When checked, uploaded images are inlined as OpenAI <code>image_url</code> for the vision model. If off, images are not inlined; the model may use <code>read_chat_attachment</code> for base64 instead (use when the model or gateway has no multimodal support).",
+      "outputLocale": "Reply language (when input is ambiguous)",
+      "outputLocaleAuto": "Auto (site / UI language)",
+      "outputLocaleZh": "Simplified Chinese",
+      "outputLocaleEn": "English",
+      "outputLocaleHelp": "Used when a single message is too short or the language cannot be detected; empty uses site settings and UI locale. Explicit user language requests always win.",
+      "agentMax": "Max agent steps",
+      "agentPh": "0 = use global default",
+      "agentHint": "Max tool/think steps per turn; 0/empty uses global default (default {{def}}, cap {{cap}}).",
+      "assistantMax": "Max assistant rounds",
+      "assistantPh": "0 = use global default",
+      "assistantHint": "Consecutive assistant rounds (auto-continue); 0/empty uses global default (default {{def}}, cap {{cap}}).",
+      "save": "Save AI settings"
+    },
+    "mail": {
+      "title": "My outgoing mail",
+      "intro": "Use <strong>your own SMTP</strong> to send mail (e.g. AI reports, scheduled job notifications). This is separate from the system SMTP in “Global settings”. Verification codes and system notifications still use the admin SMTP. <strong>Off by default</strong>; fill in all fields before enabling.",
+      "enable": "Enable mail sending",
+      "enableLabel": "When enabled, “Send mail” and scheduled notifications use the SMTP below",
+      "smtpHost": "SMTP server",
+      "smtpHostPh": "e.g. smtp.example.com",
+      "port": "Port",
+      "portPh": "587",
+      "user": "Username",
+      "userPh": "Usually the mailbox address",
+      "password": "Password",
+      "passwordPh": "Leave empty to keep the saved password",
+      "from": "From",
+      "fromPh": "Sender email",
+      "tlsSsl": "TLS / SSL",
+      "tlsLabel": "STARTTLS (often port 587)",
+      "sslLabel": "SSL (often port 465)",
+      "tlsSslHelp": "Mutually exclusive: SSL (TLS from connect on 465) vs STARTTLS (upgrade on 587). If neither, plain text—test networks only.",
+      "save": "Save mail settings"
+    },
+    "search": {
+      "title": "Search (GitHub, Aliyun IQS, …)",
+      "intro": "Web and code search for the AI. Each service’s API key is stored per user; <code>search_web</code> / <code>search_github</code> use them automatically. <strong>No key means disabled</strong>. GitHub can work without a PAT; IQS needs a personal key.",
+      "noProviders": "No search services are registered yet.",
+      "loadFailed": "Failed to load: {{message}}",
+      "optionDefault": "(default)",
+      "docs": "Documentation",
+      "enableRow": "Enabled",
+      "enableLabel": "Enable this search provider (if unchecked, the AI will not use it even with a key).",
+      "save": "Save",
+      "test": "Test connection",
+      "clear": "Clear config",
+      "passwordLeaveBlank": "Saved (leave empty to keep)",
+      "badgeKey5000": "● Key set (5000/hour)",
+      "badgeNoKey60": "● No key OK (60/hour cap)",
+      "badgeKey": "● Key set",
+      "badgeNoKeyRequired": "● No key (unavailable)"
+    },
+    "apiAccess": {
+      "title": "API access tokens",
+      "intro": "For third parties (automation, OpenClaw, etc.) to call Moso over HTTP with <strong>your current role and data scope</strong>. Send <code>Authorization: Bearer &lt;token&gt;</code>. Each token’s plaintext is shown only once; revoke and recreate if lost.",
+      "namePh": "Label (optional)",
+      "newToken": "New token"
+    },
+    "mailStatus": {
+      "ok": "Status: ready to send mail.",
+      "incomplete": "Status: “send mail” is on but the configuration is incomplete. Fill server, port, username, password, and From, then save again.",
+      "disabled": "Status: mail sending is off. Complete the SMTP form, then enable “Enable mail sending”.",
+      "loadFailed": "Could not load mail settings. Try again or check you are signed in."
+    },
+    "context": {
+      "unlimited": "Unlimited",
+      "current": "Current: {{label}}",
+      "manualOr": "Or enter 0–{{m}}M"
+    },
+    "aiModelType": {
+      "aliyun": "Aliyun DashScope",
+      "ollama": "Ollama (local)",
+      "openai": "OpenAI / compatible API"
+    },
+    "searchProviderMeta": {
+      "github": {
+        "displayName": "GitHub search",
+        "description": "Search repositories, code, issues, and users via the GitHub REST API. Works without a token (60 req/h); with a personal access token (PAT), 5,000 req/h and private repo access.",
+        "fields": {
+          "api_key": {
+            "label": "Personal Access Token (PAT)",
+            "placeholder": "ghp_xxx or github_pat_xxx (optional)",
+            "help": "Optional. Create at https://github.com/settings/tokens. For public content, public_repo is enough; for private repos, use repo."
+          }
+        }
+      },
+      "iqs": {
+        "displayName": "Alibaba Cloud IQS search",
+        "description": "Alibaba Cloud Information Query Service (UnifiedSearch) for open-domain web search. Configure an API key in the Alibaba Cloud console (service must be enabled).",
+        "fields": {
+          "api_key": {
+            "label": "IQS API key",
+            "placeholder": "Create in Alibaba Cloud IQS console (~5 min to take effect)",
+            "help": "Enable the service and create a key: https://help.aliyun.com/zh/document_detail/2872258.html. Each user configures their own key; there is no shared key."
+          },
+          "default_engine_type": {
+            "label": "Default engine type",
+            "placeholder": "Generic",
+            "help": "Used when a call does not specify an engine. GenericAdvanced is billed by usage."
+          }
+        },
+        "engineTypes": {
+          "Generic": "Standard (~10 results)",
+          "GenericAdvanced": "Advanced (~50 results, paid)",
+          "LiteAdvanced": "Fast semantic (1–50 results)",
+          "Deep": "Deep search (complex queries, 1–50, higher latency)"
+        }
+      }
+    },
+    "trial": {
+      "ownKey": "✅ <b>Using your own key:</b> you configured your own API key. Moso does not count or limit your usage.",
+      "sharedExhausted": "❌ <b>Shared key quota used up</b> ({{used}} / {{limit}}). Enter your own Base URL, API key, and model below to <b>remove the limit</b>, or ask an admin to reset the quota or set system defaults.",
+      "sharedOk": "💡 <b>Shared key quota</b>: <b>{{used}}</b> / <b>{{limit}}</b> used, <b>{{remaining}}</b> left. Add your own key to <b>remove the limit</b> (Moso stops counting your usage)."
+    },
+    "prompts": {
+      "newApiToken": "Copy and store the full token now (it will not be shown again after you close this):",
+      "deleteAccountPassword": "Enter your current password to verify:",
+      "deleteAccountTypeDelete": "Final step: type the word DELETE in capitals to confirm"
+    },
+    "danger": {
+      "title": "⚠️ Danger zone — delete account",
+      "intro": "Deleting your account <strong style=\"color:#ff6b6b\">permanently</strong> removes all of the following:",
+      "li1": "All <strong>hosts, credentials, host groups, and host tags</strong> you created;",
+      "li2": "Hosts you shared with others will be <strong>revoked from their accounts</strong>, and their <strong>chats, host knowledge, prompts, tags, and channels</strong> tied to those hosts are removed too;",
+      "li3": "All of <strong>your AI chats and messages</strong> (global, local, host), personal AI config, shared-key usage, API tokens, personal mail settings, triggers, schedules, and batch jobs;",
+      "li4": "All files under your <code>web/fs</code> workspace;",
+      "li5": "Your account and email link.",
+      "adminOnly": "Admin accounts cannot be deleted here. Ask another admin to remove you in User management (so the last admin is never removed).",
+      "btn": "Delete my account…"
+    },
+    "admin": {
+      "userAiTitle": "Configure user AI (admin)",
+      "userAiIntro": "Set AI provider and model for any user, or copy system defaults to a user.",
+      "selectUser": "User",
+      "pleaseSelectUser": "Select a user",
+      "loadUserCfg": "Load this user’s config",
+      "saveToUser": "Save to this user",
+      "applySystem": "Apply system default to this user",
+      "modelType": "Provider type",
+      "modelTypeAuto": "Auto-detect",
+      "apiKey": "API key",
+      "apiKeyPh": "API key (empty for Ollama)",
+      "baseUrl": "Service URL",
+      "baseUrlPh": "e.g. https://api.openai.com/v1",
+      "model": "Model",
+      "modelPh": "e.g. gpt-4o-mini",
+      "context": "Context length",
+      "contextManualPh": "or 0–8M",
+      "autoApprove": "Auto-approve tools",
+      "autoEnable": "Enable",
+      "vision": "Vision / images",
+      "visionLabel": "Model supports vision (on by default)",
+      "visionHelp": "If off, images are not inlined as <code>image_url</code>; the model may use <code>read_chat_attachment</code> for base64 instead.",
+      "agentMax": "Max agent steps",
+      "agentPh": "0 = use global default",
+      "agentHint": "0/empty uses global default (default {{def}}, cap {{cap}}).",
+      "assistantMax": "Max assistant rounds",
+      "assistantPh": "0 = use global default",
+      "assistantHint": "0/empty uses global default (default {{def}}, cap {{cap}}).",
+      "notifyFeedbackTitle": "Feedback email (admin only)",
+      "notifyFeedbackIntro": "When on, <strong>each new user feedback</strong> emails <strong>all admin addresses</strong> via system SMTP (at most once per 30 seconds to reduce noise).",
+      "notifyFeedbackCode": "If <code>smtp_host</code> is not set in global settings below, this has no effect.",
+      "notifyFeedbackCheck": "Notify admins when new feedback arrives",
+      "save": "Save",
+      "emailTemplatesTitle": "Email templates (admin only)",
+      "emailTemplatesIntro": "For lock / unlock / suspend / restore. Subject is fixed as “Moso”. Body can use <code>{{username}}</code> for the account name.",
+      "emailSubject": "Email subject",
+      "emailSubjectPh": "Moso notification",
+      "bodyLock": "Lock body",
+      "bodyUnlock": "Unlock body",
+      "bodySuspend": "Suspend body",
+      "bodyRestore": "Restore body",
+      "lockBodyPh": "Hello {{username}}, your Moso account is locked...",
+      "globalTitle": "Global settings (admin only)",
+      "thKey": "Key",
+      "thValue": "Value",
+      "thAction": "Action",
+      "preview": "Preview",
+      "loginAnnouncementTitle": "Login announcement (Markdown)",
+      "loginAnnouncementIntro": "Shown at the top-right of the login page. Leave empty to hide it. Markdown is supported.",
+      "loginAnnouncementPh": "Example: ### Maintenance\nThe system may be briefly unavailable from 22:00 to 23:00 tonight.",
+      "loginAnnouncementAiHint": "Admin AI can also update key: login_announcement_md"
+    }
+  }
+}

@@ -1,0 +1,896 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>毛竹 — 以 SSH 为操作方式的远程 AI 运维系统</title>
+    <meta name="description" content="毛竹 是一套基于 SSH 的远程 AI 运维系统：主机树、AI 会话、终端协同、批量操作、定时/触发任务、主机级 AI 提示词，让 AI 真正像运维工程师那样工作。">
+    <link rel="icon" type="image/png" href="/static/favicon.png">
+    <link rel="stylesheet" href="/intro/style.css">
+</head>
+<body>
+    <!-- ─────────── 导航 ─────────── -->
+    <nav class="nav">
+        <div class="container nav-inner">
+            <a href="/intro/" class="logo">
+                <span class="logo-dot"></span>
+                <span>毛竹</span>
+            </a>
+            <div class="nav-links">
+                <a href="/intro/en/" style="color:#a8c8ff" title="English">English</a>
+                <a href="#start-here" style="color:#ffd9a8">开机必读</a>
+                <a href="#features">能力</a>
+                <a href="#ai">AI 能力</a>
+                <a href="#multihost" style="color:#a8f0ff">多机协同</a>
+                <a href="#architecture">架构</a>
+                <a href="#security">安全</a>
+                <a href="#tasks">定时/触发</a>
+                <a href="#faq">常见问题</a>
+            </div>
+            <a href="/login" class="nav-cta">登录 →</a>
+        </div>
+    </nav>
+
+    <!-- ─────────── Hero ─────────── -->
+    <section class="hero" id="hero">
+        <canvas id="heroCanvas"></canvas>
+        <div class="hero-glow g1"></div>
+        <div class="hero-glow g2"></div>
+        <div class="container hero-inner">
+            <span class="hero-badge">
+                <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#4ade80;box-shadow:0 0 8px #4ade80"></span>
+                SSH + AI Agent + 函数调用 · 开箱即用
+            </span>
+            <h1 class="hero-title">让 AI 像运维工程师那样<br>驻守在你的每一台服务器上</h1>
+            <p class="hero-sub">
+                毛竹 把服务器树、凭证管理、SSH 终端与 AI 助手、主机/会话级提示词、批量作业、定时与触发任务全部整合在一个轻量 Web 平台里。
+                <strong style="color:#ffd9a8">AI 聊天是一切运维操作的主入口</strong>——
+                配置好模型后，增删主机、跑批量、排障、审批、定任务都从对话开始。AI 借助 100+ 种工具（Function Calling）直接读写终端、主机、文件与任务，把"自然语言"变成可审计的运维操作。
+                更进一步，<strong style="color:#a8f0ff">同一个 AI 会话可以同时驾驭多台机器</strong>——开发机改代码 → 构建机出包 → 测试机跑集成 → 生产机部署 → 监控机收反馈，一条消息串起整条链，跨机编排就是日常。
+            </p>
+            <div class="hero-actions">
+                <a class="btn btn-primary" href="/login">
+                    开始使用
+                    <span style="font-size:1.2em">→</span>
+                </a>
+                <a class="btn btn-ghost" href="#start-here" style="border-color:rgba(255,217,168,0.55);color:#ffd9a8">⚡ 开机必读：先配 AI 模型</a>
+                <a class="btn btn-ghost" href="#ai">看看 AI 怎么工作</a>
+            </div>
+            <div class="hero-stats">
+                <div class="stat"><div class="stat-num">100+</div><div class="stat-label">AI 可调用工具</div></div>
+                <div class="stat"><div class="stat-num">N × 主机</div><div class="stat-label">一条消息跨机联动</div></div>
+                <div class="stat"><div class="stat-num">3 类</div><div class="stat-label">兼容模型接口</div></div>
+                <div class="stat"><div class="stat-num">SQLite</div><div class="stat-label">单文件即可部署</div></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ─────────── 开机必读（AI 是核心入口） ─────────── -->
+    <section class="block start-here" id="start-here">
+        <div class="container">
+            <div class="section-head reveal">
+                <span class="section-tag" style="background:linear-gradient(135deg,#ff9a3c,#ffd9a8);color:#2a1a05">开箱第一件事 · 必读</span>
+                <h2>先配置 AI 模型——<br>这是 毛竹 唯一且必须的第一步</h2>
+                <p style="max-width:780px;margin-left:auto;margin-right:auto">
+                    <strong style="color:#ffd9a8">没有 AI 模型，毛竹 不具备实质运维能力。</strong>
+                    配置好大模型后，<strong>所有操作</strong>——添加主机、管理凭证、跑批量、排障、建任务、写提示词、审计日志——
+                    都可以直接在 AI 聊天里用自然语言完成。<strong style="color:#ffd9a8">AI 辅助就是本系统的核心操作入口，从这里开始一切操作。</strong>
+                </p>
+            </div>
+
+            <div class="grid grid-3 reveal" style="margin-top:40px">
+                <div class="card start-step">
+                    <div class="step-badge must">步骤 1｜必须</div>
+                    <div class="icon">🤖</div>
+                    <h3>选择并配置一个大模型</h3>
+                    <p style="color:var(--text-muted);font-size:.93rem">
+                        三选一即可：<br>
+                        · <strong>阿里云 DashScope</strong>（qwen 系列，国内推荐）<br>
+                        · <strong>Ollama 本地</strong>（数据不出内网）<br>
+                        · <strong>OpenAI / 任意兼容接口</strong><br>
+                        管理员可在「全局设置」写默认；每个用户也能在「我的 AI 配置」里填 Base URL + API Key + Model。<strong>未填自有 Key 时暂用系统共享 Key（默认 2000 次配额，可配置）</strong>；配置了自己的 KEY 后 <strong>解除次数限制</strong>，不再计数。
+                    </p>
+                </div>
+                <div class="card start-step">
+                    <div class="step-badge ready">步骤 2｜从这里开始</div>
+                    <div class="icon">💬</div>
+                    <h3>打开 AI 助手，一切从对话开始</h3>
+                    <p style="color:var(--text-muted);font-size:.93rem">
+                        登录后顶部有"AI 助手"入口。你不需要先学界面——直接用中文说：<br>
+                        · "添加一台 10.0.0.12 的主机并保存 ssh 密钥"<br>
+                        · "在线上 tag 的机器上批量升级 nginx"<br>
+                        · "每天凌晨 3 点清一遍 /tmp 超过 7 天的文件"<br>
+                        AI 会自动调用 100+ 种内部工具完成上述动作，并把每一步都写入操作日志。
+                    </p>
+                </div>
+                <div class="card start-step">
+                    <div class="step-badge smart">步骤 3｜越用越聪明</div>
+                    <div class="icon">🧠</div>
+                    <h3>让 AI 沉淀"这台机器的规则"</h3>
+                    <p style="color:var(--text-muted);font-size:.93rem">
+                        运维时告诉 AI："这台机用 zsh + brew、数据在 /data、禁止在生产时段重启 nginx"——
+                        AI 会自动写进<strong>主机级提示词</strong>（按用户×主机独立保存），
+                        之后进入该主机的会话会自动加载这份规则，不再重复询问。
+                        再配合<strong>按钮式选择题</strong>，AI 可主动发起"确认 / 取消 / 危险按钮"让你一点即答。
+                    </p>
+                </div>
+            </div>
+
+            <div class="start-cta reveal">
+                <div class="start-cta-text">
+                    <strong style="color:#ffd9a8">⚠️ 没配模型 = 什么都做不了。</strong>
+                    配好模型、打开 AI 助手，所有日常运维操作都可以在聊天里完成。
+                </div>
+                <div class="hero-actions" style="margin:0">
+                    <a class="btn btn-primary" href="/login">去配置 AI 模型 →</a>
+                    <a class="btn btn-ghost" href="#ai">先看 AI 怎么工作</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ─────────── 一屏看清 毛竹 ─────────── -->
+    <section class="block highlight" id="positioning">
+        <div class="container">
+            <div class="section-head reveal">
+                <span class="section-tag">产品定位</span>
+                <h2>不止是 SSH 客户端，是一套"AI 原生"的运维协作工具</h2>
+                <p>把团队里每一次"帮我在那台机器上……"，交给 AI、终端、任务引擎协同完成；同时保留全量操作日志与可回溯的会话历史。</p>
+            </div>
+            <div class="grid grid-3">
+                <div class="card reveal">
+                    <div class="icon">🖥️</div>
+                    <h3>主机树 + 凭证分离</h3>
+                    <p>多级分组、标签、分享，凭证（密码/密钥）与主机解耦；支持 RSA/ECC 一键生成密钥对。</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">💬</div>
+                    <h3>AI 运维助手</h3>
+                    <p>右侧 AI 聊天、左侧 SSH 终端并排呈现；AI 可读取终端缓冲区并注入命令，支持多 Tab 并行会话。</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🧠</div>
+                    <h3>主机级 AI 提示词</h3>
+                    <p>按用户 × 主机独立保存的 Markdown 规则/能力/工具链说明，AI 进入主机自动读取；支持全局按能力检索主机。</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">⚡</div>
+                    <h3>批量与多机协同</h3>
+                    <p>批量执行命令/脚本/推送文件/重启；按分组、标签、选定主机发起；AI 可一键 <code>create_console</code> 开多控制台并行操控。</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">⏱️</div>
+                    <h3>定时 / 触发任务</h3>
+                    <p>Cron 定时任务、事件驱动触发任务；任务可调用其他触发任务做条件分支；执行结束可走用户 SMTP 发摘要邮件。</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🔒</div>
+                    <h3>按用户的细粒度隔离</h3>
+                    <p>每用户独立 AI 配置、SMTP、本地文件空间与操作日志；主机分享后提示词与知识不互通；管理员可审计全量。</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ─────────── AI 能力深度 ─────────── -->
+    <section class="block" id="ai">
+        <div class="container">
+            <div class="section-head reveal">
+                <span class="section-tag">AI 能力</span>
+                <h2>不是"生成一段脚本给你 copy 执行"，而是直接动手的 Agent</h2>
+                <p>毛竹 的 AI 助手通过 Function Calling 操作真实资源：SSH 命令、SFTP 推送、主机知识、会话提示词、批量任务、SMTP 发信、本机 shell 与进程管理……全部可审计。</p>
+            </div>
+            <div class="two-col">
+                <div class="reveal">
+                    <h2>"帮我找到一台装了 gh cli 的机器，拉一下 PR 列表"</h2>
+                    <p class="lead">
+                        AI 会先调用 <code>search_hosts_by_prompt</code> 按"主机级提示词"做关键字+正则搜索，
+                        再 <code>connect_terminal</code> 到命中主机，执行 <code>gh pr list</code>，并把结果呈现回聊天区。
+                    </p>
+                    <ul class="feature-list">
+                        <li><strong>主机级提示词</strong>：每台主机可写工具链、目录约定、规则与禁忌（Markdown）；按当前用户独立，不受主机分享影响。</li>
+                        <li><strong>会话级提示词</strong>：当前聊天单独生效，可让 AI 临时遵循某些流程或偏好。</li>
+                        <li><strong>主机知识库</strong>：保存账户/密码/Token 等敏感信息，与提示词隔离，仅 AI 在需要时按主机调用。</li>
+                        <li><strong>跨主机检索</strong>：<code>search_hosts_by_prompt(query, group_id?, tag_ids?, regex?)</code> 在用户可访问主机中按能力描述做关键字/正则检索。</li>
+                        <li><strong>多轮 Agent</strong>：工具结果回传后 AI 继续决策；支持自动批准、最大步数控制、上下文自动压缩保护。</li>
+                        <li><strong>个人 MCP</strong>（<code>/mcp-servers</code>）：配置第三方 MCP 服务器，工具自动并入网页/主机/集成通道 AI；支持 JSON 导入导出。</li>
+                        <li><strong>个人 Agent Skills</strong>（<code>/skills</code>，须管理员开启）：Cursor 格式 <code>SKILL.md</code>，默认渐进式披露（目录 + 按需加载）；对话中可创建/导入/导出。</li>
+                    </ul>
+                </div>
+                <div class="chat-mock reveal">
+                    <div class="chat-msg user">帮我找到装了 gh cli 的主机，把 毛竹 项目上个月合并的 PR 列给我</div>
+                    <div class="chat-msg ai">
+                        <span class="tag">🔧 search_hosts_by_prompt</span>
+                        query="gh cli" regex="gh\\s*cli|github-cli"
+                    </div>
+                    <div class="chat-msg tool">
+                        ✓ 命中 2 台：
+                        host_id=7 dev-ops-01 (group=研发)
+                        host_id=12 ci-runner (group=CI)
+                    </div>
+                    <div class="chat-msg ai">
+                        找到 2 台候选机，选 <code>dev-ops-01</code>（提示词里注明 gh 已登录）。
+                        <span class="tag">🔧 connect_terminal</span> host_id=7
+                    </div>
+                    <div class="chat-msg ai">
+                        <span class="tag">🔧 ssh_execute</span> gh pr list --search "merged:&gt;=2026-03-01"
+                    </div>
+                    <div class="chat-msg tool">
+                        #142 修复批量任务并发死锁  merged
+                        #139 支持主机级 AI 提示词       merged
+                        #137 增加触发任务运行历史查询   merged
+                    </div>
+                    <div class="chat-msg ai">
+                        ✅ 上月在 dev-ops-01 上合并 3 条 PR，含「主机级 AI 提示词」。需要我把列表写入维护历史或导出吗？
+                    </div>
+                </div>
+            </div>
+
+            <!-- 工具清单 -->
+            <div class="two-col reverse" style="margin-top:80px">
+                <div class="visual-mock reveal">
+                    <div class="visual-mock-head"><span></span><span></span><span></span></div>
+                    <pre><code><span class="cm"># AI 可直接调用 100+ 工具（按类分组）</span>
+<span class="k">主机与终端</span>  list_hosts / search_hosts / get_host_detail
+              ssh_execute / send_to_terminal / connect_terminal
+              create_console / close_console / list_terminals
+              detect_host_os / create_host / update_host / delete_host
+
+<span class="k">主机知识/提示词</span>  get_host_knowledge   update_host_knowledge
+              get_host_prompt      update_host_prompt
+              append_host_prompt   search_hosts_by_prompt
+
+<span class="k">分组 / 标签 / 凭证</span>  list_host_groups / get_host_groups_tree
+              list_host_tags / create_host_tag / set_host_tags
+              list_credentials / create_credential / generate_key
+
+<span class="k">文件 & SCP</span>       scp_push / fs_list / fs_write_file
+              transfer_file_between_hosts / relay_file_between_hosts
+
+<span class="k">批量操作</span>       batch_create / list_batch_operations
+              batch_cancel / batch_retry / clear_batches
+
+<span class="k">SSH Channel</span>    ssh_channel_create / ssh_channel_send
+              ssh_channel_read_lines / ssh_channel_has_new
+
+<span class="k">触发 / 定时任务</span>  triggered_task_* (8) / scheduled_task_* (9)
+
+<span class="k">本机管理(管理员)</span>  local_exec / local_run_script
+              local_fs_* / process_* / create_local_console
+
+<span class="k">维护历史 / 最佳实践</span>  list_maintenance_history / add_best_practice
+<span class="k">用户 / 会话 / 设置</span>  get_me / list_ai_sessions / update_session_prompt
+              get_session_operations / get_session_chat_detail
+              get_ai_config / update_ai_config / apply_system_ai_config_to_user
+
+<span class="k">邮件</span>            send_email / update_user_mail_settings / ...
+
+<span class="k">用户反馈</span>        submit_feedback / list_my_feedback
+              list_user_feedback_admin / get_user_feedback_detail
+              reply_user_feedback_admin / ignore_user_feedback_admin
+              mark_all_user_feedback_read
+
+</code></pre>
+                </div>
+                <div class="reveal">
+                    <h2>100+ 工具，一套即覆盖日常运维 90% 场景</h2>
+                    <p class="lead">AI 不再"建议你怎么做"，而是直接以最小权限调用底层工具完成任务；所有调用都写入操作日志。</p>
+                    <ul class="feature-list">
+                        <li><strong>终端协同</strong>：AI 读写当前用户 SSH 终端缓冲区，支持多控制台切换（主机详情 / AI 助手）。</li>
+                        <li><strong>SSH Channel</strong>：长连接 TTY 通道，按会话或任务隔离；按行号/字符数读取，适合交互式命令。</li>
+                        <li><strong>本机管理</strong>：管理员可让 AI 在 毛竹 宿主机上执行 shell、Python 脚本、管理子进程、读写文件。</li>
+                        <li><strong>多主机中继</strong>：跨主机文件直接中继，免去"先拉回本地再推过去"。</li>
+                        <li><strong>系统共享 Key 配额 + 自有 KEY</strong>：用户未配置自有 Key 时使用系统共享 Key（默认 <strong>2000 次</strong>配额），用尽后 AI 会提示；配置自有 KEY 即 <strong>解除次数限制</strong>；管理员可清零任意用户的共享 Key 计数或为其写入系统默认配置。</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ─────────── 多机协同：开发/发布/运维/反馈 ─────────── -->
+    <section class="block" id="multihost">
+        <div class="container">
+            <div class="section-head reveal">
+                <span class="section-tag" style="background:linear-gradient(135deg,#6fa8ff,#c084ff);color:#0b1020">多主机协同</span>
+                <h2>把"开发 → 发布 → 运维 → 反馈"<br>一条消息串起来，跨多台电脑自动联动</h2>
+                <p style="max-width:820px;margin-left:auto;margin-right:auto">
+                    毛竹 天然面向多机场景——<strong style="color:#a8f0ff">同一个 AI 会话可以同时驾驭 N 台主机</strong>。
+                    开发机、构建机、测试机、生产机、监控机各司其职，由 AI 用 <code>delegate_chain</code> 一次性声明执行链、按主机鉴权、按步骤推送实时进度，跑一次满意还能存成 <code>workflow_template</code> 反复跑。
+                    你不再需要"先 SSH 到 A 机做 X、再 SSH 到 B 机做 Y"——<strong style="color:#ffd9a8">一句话，一条链，全机房协同。</strong>
+                </p>
+            </div>
+
+            <!-- 四阶段流水线 -->
+            <div class="lifecycle reveal">
+                <div class="lifecycle-step ph-dev">
+                    <div class="phase-tag">① Dev · 开发</div>
+                    <h4>让代码 agent 在开发机上动手改代码</h4>
+                    <span class="host-chip">@dev-01</span><span class="host-chip">cursor-agent / aider</span>
+                    <ul class="tiny">
+                        <li>按主机画像确认已装 cursor-agent / aider</li>
+                        <li>子 AI 委派改代码，自动抓 git diff</li>
+                        <li>失败按 <code>{prev_stderr}</code> 自愈一次</li>
+                    </ul>
+                </div>
+                <div class="lifecycle-step ph-release">
+                    <div class="phase-tag">② Release · 发布</div>
+                    <h4>切到构建机出包，推到生产机部署</h4>
+                    <span class="host-chip">@build-02</span><span class="host-chip">@prod-03</span>
+                    <ul class="tiny">
+                        <li>构建机 <code>docker build</code> + 打 tag</li>
+                        <li>rsync / scp 跨机中继到生产机</li>
+                        <li>生产机 <code>systemctl restart</code> 热更新</li>
+                    </ul>
+                </div>
+                <div class="lifecycle-step ph-ops">
+                    <div class="phase-tag">③ Ops · 运维</div>
+                    <h4>监控机守着健康度，挂了就自愈</h4>
+                    <span class="host-chip">@monitor-04</span><span class="host-chip">@prod-03</span>
+                    <ul class="tiny">
+                        <li>监控机拉 P99 / 错误率</li>
+                        <li><code>when=on_failure</code> 自动回滚或扩容</li>
+                        <li>任务日志按主机各留一条，可审计</li>
+                    </ul>
+                </div>
+                <div class="lifecycle-step ph-feedback">
+                    <div class="phase-tag">④ Feedback · 反馈</div>
+                    <h4>内部子 AI 汇总日志，邮件推给 oncall</h4>
+                    <span class="host-chip">delegate_to_edgeops_ai</span><span class="host-chip">send_email</span>
+                    <ul class="tiny">
+                        <li>子 AI 独立上下文，写 Markdown 报告</li>
+                        <li>通过个人 SMTP 发摘要给 oncall</li>
+                        <li>顺便归档到维护历史 / 最佳实践</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="lifecycle-msg reveal">
+                用户只需要说：<br>
+                <code>"让 dev-01 的 cursor-agent 按 SPEC.md 实现 jwt-login；过了就在 build-02 打 tag v2.3.0，rsync 到 prod-03 热更新；monitor-04 5 分钟后拉 P99，异常就回滚并让子 AI 写一份中文周报发 oncall@company.com"</code><br>
+                AI 会画像 4 台主机 → 生成一条 8 步 `delegate_chain` → 弹按钮让你一次性确认整条链 → 流式进度边跑边推 → 跑完说"要不要把这条存成 <code>release-v2</code> 模板？"
+            </div>
+
+            <!-- 代码 + 时间线对照 -->
+            <div class="two-col" style="margin-top:60px">
+                <div class="visual-mock reveal">
+                    <div class="visual-mock-head"><span></span><span></span><span></span></div>
+                    <pre><code><span class="cm"># AI 生成的 delegate_chain（跨 4 台主机）</span>
+<span class="k">tool_call</span>: delegate_chain
+  <span class="k">confirmed</span>: true
+  <span class="k">steps</span>:
+    <span class="s">#1</span> delegate  @dev-01     agent=cursor-agent
+        task=Implement jwt-login per SPEC.md
+    <span class="s">#2</span> ssh       @dev-01
+        cmd=pytest -q                        <span class="cm"># 开发自测</span>
+    <span class="s">#3</span> ssh       @build-02   when=on_success
+        cmd=docker build -t app:v2.3.0 .
+    <span class="s">#4</span> ssh       @build-02   when=on_success
+        cmd=docker save app:v2.3.0 | \
+             ssh prod-03 'docker load'       <span class="cm"># 跨机中继</span>
+    <span class="s">#5</span> ssh       @prod-03    when=on_success
+        cmd=systemctl restart app
+    <span class="s">#6</span> sleep     5s                              <span class="cm"># 等服务起稳</span>
+    <span class="s">#7</span> ssh       @monitor-04
+        cmd=curl -s prom/api/query?p99
+    <span class="s">#8</span> delegate_to_edgeops_ai   when=always
+        system_prompt="你是运维周报撰写员..."
+        task="按 {prev_stdout} 写中文周报"
+    <span class="s">#9</span> tool      send_email  to=oncall@co.com</code></pre>
+                </div>
+                <div class="visual-mock reveal">
+                    <div class="visual-mock-head"><span></span><span></span><span></span></div>
+                    <pre><code><span class="cm"># 前端 SSE 实时时间线（边跑边滚）</span>
+<span class="n">▶ [1] code-edit</span>       delegate @<span class="k">dev-01</span>
+  <span class="s">[stdout]</span> Editing auth.py ...
+  <span class="s">[stdout]</span> +38 -12 lines
+<span class="s">✓ [1] code-edit</span>       18.2s
+<span class="n">▶ [2] self-test</span>       ssh      @<span class="k">dev-01</span>
+  <span class="s">[stdout]</span> 42 passed in 3.1s
+<span class="s">✓ [2] self-test</span>        3.4s
+<span class="n">▶ [3] build</span>           ssh      @<span class="k">build-02</span>
+  <span class="s">[stdout]</span> Step 12/20 : COPY . .
+  <span class="s">[stdout]</span> Successfully tagged app:v2.3.0
+<span class="s">✓ [3] build</span>          76.8s
+<span class="n">▶ [4] ship-to-prod</span>    ssh      @<span class="k">build-02</span>
+  <span class="s">[stdout]</span> Loaded image: app:v2.3.0
+<span class="s">✓ [4] ship-to-prod</span>    11.2s
+<span class="n">▶ [5] restart</span>         ssh      @<span class="k">prod-03</span>
+<span class="s">✓ [5] restart</span>         1.6s
+<span class="n">▶ [6] settle</span>          sleep    5s
+<span class="n">▶ [7] healthcheck</span>     ssh      @<span class="k">monitor-04</span>
+  <span class="s">[stdout]</span> p99=187ms  error_rate=0.03%
+<span class="s">✓ [7] healthcheck</span>     0.8s
+<span class="n">▶ [8] weekly-report</span>   delegate_to_edgeops_ai
+<span class="s">✓ [8] weekly-report</span>   9.1s
+<span class="n">▶ [9] mail-oncall</span>     send_email
+<span class="s">✓ [9] mail-oncall</span>     0.4s
+<span class="cm"># 整条链 136s，4 台主机各留一条审计日志</span></code></pre>
+                </div>
+            </div>
+
+            <div class="grid grid-4" style="margin-top:60px">
+                <div class="card reveal">
+                    <div class="icon">🧭</div>
+                    <h3>按主机画像选型</h3>
+                    <p>下单前 AI 自动跑 <code>probe_host_capabilities</code>，按每台主机真实的 OS / 硬件 / 已装 CLI 挑工具——Kali 上用 nmap，GPU 机上跑训练，有 kubectl 的跑 k8s。</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🧩</div>
+                    <h3>每步独立鉴权</h3>
+                    <p><code>delegate_chain</code> 的每一步可以独立 <code>host_id</code>；执行前对所有涉及主机做访问 / 凭证 / 能力预检；执行中按主机分别审计；权限越界直接拒绝整条链。</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">📡</div>
+                    <h3>流式进度同屏</h3>
+                    <p>跨 10 台机、每台跑几十秒的链也不再"黑盒等待"——每一步的 stdout / stderr / 子 AI 输出都通过 SSE 实时推到工具卡底下，随时看到卡在哪一环。</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🧱</div>
+                    <h3>跑一次，存下来再跑</h3>
+                    <p>满意的跨机链 → <code>save_workflow_template</code>，变量写成 <code>${var}</code>；以后 <code>run_workflow_template("release-v2", branch="v2.4")</code> 一句话复现；组织内可共享。</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🕰️</div>
+                    <h3>丢进定时任务裸跑</h3>
+                    <p>把整条 <code>delegate_chain</code> / 模板丢给定时或触发任务——task scope 下自动视为已授权；凌晨无人值守时按机房规模跑几十步的自愈流水线。</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🧠</div>
+                    <h3>子 AI 做汇总 / 审查</h3>
+                    <p><code>delegate_to_edgeops_ai</code> 起一个内部子 AI 写报告、review 脚本、聚合多路分析——独立上下文、独立 system_prompt、硬限制递归深度=2，不会"套娃失控"。</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">📮</div>
+                    <h3>跨机中继 & 反馈闭环</h3>
+                    <p>文件 <code>transfer_file_between_hosts</code> / <code>relay_file_between_hosts</code> 直接机对机，免去本地绕一圈；结果顺手 <code>send_email</code> 给 oncall，闭环到反馈阶段。</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🧾</div>
+                    <h3>全量操作日志</h3>
+                    <p>跨 N 台主机的每一步都会在对应主机的 <code>audit_log</code> / 任务日志 <code>.edgeops/task/</code> 下各留一条，谁、何时、在哪台、执行了啥、退出码多少，一目了然可回溯。</p>
+                </div>
+            </div>
+
+            <div class="section-head reveal" style="margin-top:60px">
+                <h3 style="font-size:1.1rem;color:#a8f0ff">典型多机联动场景</h3>
+            </div>
+            <div class="grid grid-3">
+                <div class="card reveal">
+                    <div class="icon">🚀</div>
+                    <h3>CI/CD 流水线</h3>
+                    <p>开发机 agent 改代码 → 构建机出 docker 镜像 → 测试机 pytest → 生产机热更新 → 监控机巡检 P99。一条链写完，失败自动回滚。</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🛡️</div>
+                    <h3>安全渗透 + 复盘</h3>
+                    <p>Kali 机跑 nmap / nikto → 目标机拉日志 → 毛竹 子 AI 把两边输出合成中文漏洞报告，邮件送安全团队。</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🗄️</div>
+                    <h3>数据库跨机备份</h3>
+                    <p>主库 <code>mysqldump</code> → rsync 到备份机 → 备份机算 SHA256 校验 → 监控机注册本次备份元数据 → SMTP 发报告。</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🧯</div>
+                    <h3>线上故障自愈</h3>
+                    <p>监控机检测到 5xx 激增 → 触发任务调 <code>run_workflow_template("hotfix")</code> → 构建机打 patch → 生产机灰度 → 子 AI 写事故报告。</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🏭</div>
+                    <h3>机房扩缩容</h3>
+                    <p>控制机 terraform 申请新节点 → ansible 机刷基线 → 新节点自己 probe 能力回传 → 负载均衡机加权。全程不用登录跳板机。</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🧪</div>
+                    <h3>AI + AI 接力</h3>
+                    <p>dev-01 的 cursor-agent 改代码 → test-02 的 aider 补单测 → review-03 的 opencode 做 PR review → 全部失败转给 毛竹 内部子 AI 人工跟进。</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ─────────── 全量功能矩阵 ─────────── -->
+    <section class="block highlight" id="features">
+        <div class="container">
+            <div class="section-head reveal">
+                <span class="section-tag">产品能力</span>
+                <h2>一张图看懂 毛竹 能做什么</h2>
+                <p>按模块拆分的能力清单 —— 所有功能均可被 AI 按需调用，并在 Web UI 与 REST API 上一一对应。</p>
+            </div>
+            <div class="grid grid-3">
+
+                <div class="card reveal"><div class="icon">🌳</div><h3>服务器树 & 分组</h3>
+                    <p>多级父子分组、拖拽归属、按分组筛选；分享主机可加入接收方自己的分组不影响原主树。</p></div>
+
+                <div class="card reveal"><div class="icon">🏷️</div><h3>主机标签</h3>
+                    <p>用户私有标签体系，可对主机按标签筛选、批量操作；AI 可维护标签并基于标签做检索。</p></div>
+
+                <div class="card reveal"><div class="icon">🔑</div><h3>凭证管理</h3>
+                    <p>密码/密钥/生成密钥三合一；脱敏显示；主机仅引用凭证 ID；支持临时新建凭证直接加入清单。</p></div>
+
+                <div class="card reveal"><div class="icon">🖲️</div><h3>AI 助手界面</h3>
+                    <p>多 Tab 聊天、会话历史、AI 自动取名；Markdown 与<strong>流式分块排版</strong>（代码块/表格闭合即渲染）；Mermaid/Markmap/ECharts；<strong>可点按钮式选择卡</strong>（持久化与刷新还原）。「我的 AI 配置」可开关<strong>支持图像识别</strong>（多模态内联）。</p></div>
+
+                <div class="card reveal"><div class="icon">📎</div><h3>聊天附件上传</h3>
+                    <p>输入框支持<strong>多文件</strong>粘贴/拖拽：文本与图片，以及 <strong>PDF / Office</strong>（docx/pptx/xlsx/pdf 等）。落盘 <code>web/fs/&lt;你&gt;/chats/YYYY/MM/DD/&lt;uuid&gt;.&lt;ext&gt;</code>；Office/PDF 由服务端 <strong>MarkItDown</strong> 转 Markdown，AI 经 <code>read_chat_attachment</code> 读取；图片可 <code>save_image_description</code> 写入摘要供多轮复用。</p></div>
+
+                <div class="card reveal"><div class="icon">📊</div><h3>AI 成果物（生成 + 下载）</h3>
+                    <p>AI 可把结果写入 <code>web/fs/&lt;你&gt;/chats/YYYY/MM/DD/&lt;短 id&gt;/</code>（与附件共用 <code>chats/</code>，附件是文件、artifact 是子目录），支持<strong>单文件</strong>（csv/md/txt/json/html/svg）或<strong>多文件 bundle</strong>（HTML + images/js/css，下载自动打 <code>.tgz</code>）。聊天里直接渲染下载卡片，一键取回。</p></div>
+
+                <div class="card reveal"><div class="icon">👁️</div><h3>站内模态预览</h3>
+                    <p>点成果物卡片的<strong>预览</strong>按钮，直接在当前页弹窗渲染：HTML 走 iframe 沙箱、Markdown 实时渲染、CSV 解析为表格（表头粘性置顶）、JSON 美化缩进、TXT/YAML 原样展示、图片/PDF 内嵌查看。bundle 内部相对资源会自动带 token 重写，不跳转新窗口、不弹下载。</p></div>
+
+                <div class="card reveal"><div class="icon">💻</div><h3>主机 AI 运维</h3>
+                    <p>主机详情页专用 AI Tab：会话与终端都限定当前主机；支持多控制台、文件系统浏览与远程编辑。</p></div>
+
+                <div class="card reveal"><div class="icon">📜</div><h3>会话 & 提示词</h3>
+                    <p>会话级提示词 / 主机级提示词 / 系统提示词三层叠加；支持 AI 自动归纳、替换或追加。</p></div>
+
+                <div class="card reveal"><div class="icon">📦</div><h3>批量操作</h3>
+                    <p>run_command / run_script / scp_push / restart；按 all/group/selected/tag 发起，失败可重试。</p></div>
+
+                <div class="card reveal"><div class="icon">📁</div><h3>文件系统</h3>
+                    <p>每用户 web/fs 私有空间；目录树右键菜单；远程 SFTP 文件系统浏览、上传下载、打包、tgz 解压。</p></div>
+
+                <div class="card reveal"><div class="icon">🕓</div><h3>维护历史</h3>
+                    <p>按主机 IP 聚合；AI 会话取名后自动写入一条；支持分类筛选与操作人显示。</p></div>
+
+                <div class="card reveal"><div class="icon">🧪</div><h3>最佳实践库</h3>
+                    <p>AI 或用户归纳的技巧、命令、脚本片段；可按分类/关键字检索，AI 可调用列表做参考。</p></div>
+
+                <div class="card reveal"><div class="icon">🔄</div><h3>SSH TTY 通道</h3>
+                    <p>持久 TTY 通道，按会话/任务边界创建；按行号或字符数读取，适合交互式操作。</p></div>
+
+                <div class="card reveal"><div class="icon">⏳</div><h3>触发 / 定时任务</h3>
+                    <p>Cron 定时任务、事件触发任务；任务可互相触发、支持会话式运行历史、任务完成可走 SMTP 发邮件。</p></div>
+
+                <div class="card reveal"><div class="icon">🛡️</div><h3>API Tokens</h3>
+                    <p>用户可签发 API Token 作为程序访问凭证，用于自动化场景调用 毛竹 REST 接口。</p></div>
+
+                <div class="card reveal"><div class="icon">📮</div><h3>个人 SMTP 发信</h3>
+                    <p>每用户独立 SMTP 配置；配置完整后 AI 可直接 <code>send_email</code>；定时任务可发送摘要邮件。</p></div>
+
+                <div class="card reveal"><div class="icon">🌐</div><h3>集成 / ClawOps</h3>
+                    <p>独立的集成操作聊天接口，防止长会话被压缩导致的能力下降，适合外部系统协同。</p></div>
+
+                <div class="card reveal"><div class="icon">🧰</div><h3>本机管理（管理员）</h3>
+                    <p>在 毛竹 宿主机执行命令、Python 脚本、管理子进程、读写文件，Windows/Linux 全支持。</p></div>
+
+                <div class="card reveal"><div class="icon">📊</div><h3>仪表盘</h3>
+                    <p>主机数、执行统计、最近活动一目了然；为团队提供运维总体视图。</p></div>
+
+                <div class="card reveal"><div class="icon">📝</div><h3>操作日志</h3>
+                    <p>所有关键操作（含 AI 调用）全量记录：谁、何时、何操作、参数与结果；可按 user_id/host_id 筛选。</p></div>
+
+                <div class="card reveal"><div class="icon">💬</div><h3>反馈 & 登录留言板</h3>
+                    <p>登录页右下浮窗：任何访客可匿名 Markdown 留言，管理员审核后可公开（含管理员回复）；登录后侧栏「反馈」用户向管理员双向沟通，AI 可代为提交、分批查阅、批量标读、回复或忽略；可选邮件通知管理员，30 秒去抖防刷屏。</p></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ─────────── 架构 ─────────── -->
+    <section class="block" id="architecture">
+        <div class="container">
+            <div class="section-head reveal">
+                <span class="section-tag">系统架构</span>
+                <h2>从 Web 到 AI 到 SSH 的四层清晰结构</h2>
+                <p>FastAPI + aiosqlite + Paramiko + OpenAI 兼容接口；前端纯静态 JS/CSS（不依赖打包器），内置 xterm、ECharts、Mermaid、Markmap。</p>
+            </div>
+            <div class="arch reveal">
+                <div class="arch-layer l-frontend">
+                    <h4>前端层 Web UI <small>HTML + 原生 JS + xterm.js</small></h4>
+                    <ul>
+                        <li>登录/注册/找回密码</li><li>仪表盘</li><li>主机树 / 分组 / 标签</li>
+                        <li>凭证</li><li>AI 助手（桌面+手机）</li><li>主机详情（SSH + AI + 文件）</li>
+                        <li>批量操作</li><li>定时/触发任务</li><li>维护历史</li><li>最佳实践</li>
+                        <li>文件系统</li><li>本机管理</li><li>操作日志</li><li>系统设置</li>
+                    </ul>
+                </div>
+                <div class="arch-arrow">↕ JSON / WebSocket</div>
+                <div class="arch-layer l-api">
+                    <h4>API 层 FastAPI Router <small>36 个路由模块</small></h4>
+                    <ul>
+                        <li>auth</li><li>users</li><li>api_tokens</li><li>credentials</li>
+                        <li>hosts</li><li>host_groups</li><li>host_tags</li>
+                        <li>maintenance_history</li><li>best_practices</li>
+                        <li>skills</li><li>terminal</li><li>ssh_channel</li>
+                        <li>batch</li><li>filesystem</li><li>remote_fs</li>
+                        <li>ai_agent</li><li>integration_ops</li>
+                        <li>triggered_tasks</li><li>scheduled_tasks</li>
+                        <li>dashboard</li><li>local_host</li><li>settings</li>
+                        <li>user_mail</li><li>login_board</li><li>feedback</li>
+                    </ul>
+                </div>
+                <div class="arch-arrow">↕ Function Call / Service</div>
+                <div class="arch-layer l-ai">
+                    <h4>AI / 运维服务层 services/<small>LLM 适配 + 100+ Skills</small></h4>
+                    <ul>
+                        <li>llm_adapter（阿里云/Ollama/OpenAI）</li>
+                        <li>ai_skills（工具定义与实现）</li>
+                        <li>ssh_client / ssh_shell / ssh_channel_manager</li>
+                        <li>scheduler（定时任务）</li>
+                        <li>task_runner（任务执行引擎）</li>
+                        <li>batch_executor</li>
+                        <li>chat_utils（消息/摘要/压缩）</li>
+                        <li>email_sender / user_mail</li>
+                        <li>keygen / credential_utils</li>
+                        <li>host_detection / terminal_input</li>
+                    </ul>
+                </div>
+                <div class="arch-arrow">↕ aiosqlite</div>
+                <div class="arch-layer l-data">
+                    <h4>数据层 SQLite（WAL 模式）<small>30+ 张表、版本化迁移</small></h4>
+                    <ul>
+                        <li>users / credentials / hosts</li>
+                        <li>host_groups / host_shares / host_tags</li>
+                        <li>ai_host_knowledge / ai_host_prompts</li>
+                        <li>ai_chat_sessions / ai_chat_messages</li>
+                        <li>server_maintenance_history</li>
+                        <li>best_practices / skills</li>
+                        <li>batch_operations / details</li>
+                        <li>ssh_channels</li>
+                        <li>triggered_tasks / runs / messages</li>
+                        <li>scheduled_tasks / runs / messages</li>
+                        <li>user_ai_config / user_mail_config</li>
+                        <li>api_tokens / password_reset / email_verification</li>
+                        <li>local_shell_sessions / logs</li>
+                        <li>operation_logs / user_login_events</li>
+                        <li>anonymous_messages</li>
+                        <li>user_feedback / user_feedback_replies</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ─────────── 安全 ─────────── -->
+    <section class="block highlight" id="security">
+        <div class="container">
+            <div class="section-head reveal">
+                <span class="section-tag">安全与边界</span>
+                <h2>明确的权限模型，人人都清楚自己看得见什么</h2>
+                <p>所有敏感操作都有边界：普通用户只看自己，管理员可审计全量；分享主机时提示词/知识不互通；SMTP/AI Key 各人独立。</p>
+            </div>
+            <div class="grid grid-3">
+                <div class="card reveal"><div class="icon">🔐</div><h3>JWT + 验证码</h3>
+                    <p>登录/注册使用 a+b 数学验证码；失败次数过多自动锁定，邮件解锁；JWT 默认 24 小时过期。</p></div>
+                <div class="card reveal"><div class="icon">👤</div><h3>用户数据隔离</h3>
+                    <p>操作日志、主机提示词、本地文件空间、AI 配置、SMTP 配置、会话与消息全部按 user_id 严格隔离。</p></div>
+                <div class="card reveal"><div class="icon">🪢</div><h3>主机分享不串味</h3>
+                    <p>主机可分享给他人，但主机级提示词、分组归属保留在接收方独立的命名空间里。</p></div>
+                <div class="card reveal"><div class="icon">⚖️</div><h3>sudo 策略</h3>
+                    <p>优先尝试免密 sudo；仅当终端实际提示密码时，从主机知识取密码或提示用户提供并记录。</p></div>
+                <div class="card reveal"><div class="icon">📋</div><h3>全量操作日志</h3>
+                    <p>UI、AI 工具调用、分享、任务触发全部入库；管理员可按用户/主机筛选，普通用户仅见自身。</p></div>
+                <div class="card reveal"><div class="icon">🪪</div><h3>API Token</h3>
+                    <p>用户可签发独立 API Token 用于程序访问；可在"个人设置"随时吊销，独立于登录会话。</p></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ─────────── 定时/触发任务 ─────────── -->
+    <section class="block" id="tasks">
+        <div class="container">
+            <div class="section-head reveal">
+                <span class="section-tag">自动化编排</span>
+                <h2>把 AI 的能力延续到没人值守的时刻</h2>
+                <p>触发任务是"由条件/他人触发的 AI 任务"；定时任务用 cron 驱动 AI 任务；两者可互相触发，形成事件驱动的运维编排。</p>
+            </div>
+            <div class="two-col">
+                <div class="reveal">
+                    <h2>触发任务</h2>
+                    <p class="lead">为一段 AI 指令命名 + 写"触发条件"描述，AI 或其他任务可按需触发。</p>
+                    <ul class="feature-list">
+                        <li><strong>可被其他任务调用</strong>：任务间可形成条件分支与调用链。</li>
+                        <li><strong>暴露接口</strong>：可配置为供定时任务发现（<code>triggered_task_list_exposed</code>）。</li>
+                        <li><strong>会话式历史</strong>：每次运行保留完整聊天式运行历史，方便复盘。</li>
+                        <li><strong>按用户</strong>：每用户独立的触发任务清单，管理员审计。</li>
+                    </ul>
+                </div>
+                <div class="reveal">
+                    <h2>定时任务</h2>
+                    <p class="lead">经典 5 段 cron，加 enabled 开关、notify_email_to 收件人、run-now 立即执行。</p>
+                    <ul class="feature-list">
+                        <li><strong>SMTP 邮件通知</strong>：执行完成后以任务所属用户个人 SMTP 发摘要。</li>
+                        <li><strong>立即执行</strong>：不等 cron 也可 <code>scheduled_task_run_now</code> 一键跑。</li>
+                        <li><strong>执行互斥</strong>：同一任务 cron 触发与立即执行互斥，避免并发冲突。</li>
+                        <li><strong>运行历史</strong>：按 run_id 保留每次运行的会话消息，失败可追查。</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ─────────── 技术栈 ─────────── -->
+    <section class="block highlight" id="tech-stack">
+        <div class="container">
+            <div class="section-head reveal">
+                <span class="section-tag">技术栈</span>
+                <h2>一切都选"稳、轻、可自持"的方案</h2>
+                <p>无需 Redis / MQ / 独立 DB，单文件 SQLite 即可运行；Windows/Linux 同源，支持 Docker 部署。</p>
+            </div>
+            <div class="grid grid-4">
+                <div class="card reveal"><div class="icon">🐍</div><h3>Python 3 + FastAPI</h3><p>异步路由 + lifespan；启动即跑迁移；异常统一返回 JSON。</p></div>
+                <div class="card reveal"><div class="icon">🗄️</div><h3>SQLite + WAL</h3><p>单文件部署；WAL 支持读写并发；版本化迁移脚本自动升级。</p></div>
+                <div class="card reveal"><div class="icon">🔑</div><h3>Paramiko SSH/SFTP</h3><p>支持密码/密钥认证、SCP/SFTP、交互式 TTY；Banner 兼容补丁内置。</p></div>
+                <div class="card reveal"><div class="icon">🤖</div><h3>OpenAI 兼容层</h3><p>阿里云 DashScope / Ollama / OpenAI 三类模型无缝切换。</p></div>
+                <div class="card reveal"><div class="icon">🖥️</div><h3>xterm.js</h3><p>浏览器内的真终端体验；FitAddon 自适应容器；自动连接 + 写回。</p></div>
+                <div class="card reveal"><div class="icon">📈</div><h3>ECharts / Mermaid / Markmap</h3><p>聊天里直接渲染图表与思维导图；Mermaid 语法错误自动修复。</p></div>
+                <div class="card reveal"><div class="icon">🐳</div><h3>Docker 部署</h3><p>提供 Dockerfile 与导出脚本；数据与配置可挂卷持久化。</p></div>
+                <div class="card reveal"><div class="icon">🪟</div><h3>Windows ConPTY</h3><p>本机管理 Windows 下优先 ConPTY，支持方向键历史、退格回显。</p></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ─────────── FAQ ─────────── -->
+    <section class="block" id="faq">
+        <div class="container">
+            <div class="section-head reveal">
+                <span class="section-tag">常见问题</span>
+                <h2>你可能想先问的几个</h2>
+            </div>
+            <div class="faq reveal">
+                <details class="faq-item" open>
+                    <summary>毛竹 与普通 SSH Web Shell 有什么不同？</summary>
+                    <p>
+                        毛竹 不仅是 Web 终端：它把 AI 助手作为一等公民融入其中 —— AI 通过 Function Calling 直接操作主机、文件、任务、配置；
+                        同时保留"主机树 + 凭证分离 + 多用户隔离 + 全量日志"的企业级运维管理结构。
+                        你可以只用它的终端面板，也可以让 AI 代替你完成 80% 的操作而你只做审批与复盘。
+                    </p>
+                </details>
+                <details class="faq-item" open>
+                    <summary>⚠️ 必须先配置 AI 模型吗？可不可以"纯终端"不用 AI？</summary>
+                    <p>
+                        <strong>必须先配置大模型。</strong>毛竹 把 AI 当成主入口来设计——没有模型时，"AI 助手 / 主机 AI 运维 / 触发任务 / 定时任务 / 本机管理 AI"等绝大部分核心能力都无法工作。
+                        兼容三大类接口：<code>阿里云 DashScope（compatible-mode）</code> / <code>Ollama 本地</code> / <code>OpenAI 原生或兼容</code>。
+                        每个用户都能单独配置 Base URL、Key、模型；也可以继承管理员写好的系统默认配置。
+                        未配置自有 Key 的用户默认使用系统共享 Key，并有 <strong>2000 次</strong>配额（可配置）；每轮 AI 首条回复会提示已用/剩余；用尽后引导用户配置自有模型或联系管理员重置计数 / 写入系统默认配置。管理员可随时清零共享 Key 计数。
+                    </p>
+                </details>
+                <details class="faq-item">
+                    <summary>"主机级 AI 提示词"和"主机知识库"有什么区别？</summary>
+                    <p>
+                        <strong>主机级提示词</strong>：写主机独有的规则、已装工具链、目录约定、禁忌等 —— 用于让 AI 更清楚"在这台机器上能做什么、该怎么做"，支持跨主机按能力检索。
+                        <strong>主机知识库</strong>：写账户、密码、Token 等敏感信息 —— AI 只在真正需要时按主机调用，不用于跨主机搜索。
+                        两者均按用户 × 主机独立保存，主机分享给他人时不会共用。
+                    </p>
+                </details>
+                <details class="faq-item">
+                    <summary>AI 会不会擅自执行危险命令？</summary>
+                    <p>
+                        执行类操作必须经 tool_call 完成，全量写入操作日志；用户可开启「自动同意」或逐条审批。
+                        生产环境建议关闭自动批准高风险工具调用，并在主机级提示词中写明禁止项与变更窗口；需要人工确认的操作保持逐条审批。
+                    </p>
+                </details>
+                <details class="faq-item">
+                    <summary>可以本地部署吗？数据会被上传吗？</summary>
+                    <p>
+                        完全可以本地化：SQLite 单文件数据库，所有数据本地保存。如果你使用 Ollama 模型，连模型推理也不出本地。
+                        如果使用云端 LLM，仅将聊天上下文发给你配置的大模型服务商，不会上传到第三方。
+                    </p>
+                </details>
+                <details class="faq-item">
+                    <summary>一台 毛竹 能服务多少台主机？</summary>
+                    <p>
+                        毛竹 本身是协作工具，连接数主要受内存与 SSH 会话上限约束；数据层用 WAL SQLite 应付中小规模团队绰绰有余。
+                        大型团队可扩展到多进程（Linux 下 <code>EDGEOPS_WORKERS&gt;1</code>），但由于内置调度器与 SQLite 写并发特性，推荐单进程 + 容器副本拓扑。
+                    </p>
+                </details>
+                <details class="faq-item">
+                    <summary>如何开始？</summary>
+                    <p>
+                        ① 注册登录（邮箱可选 + 验证码）→
+                        <strong>② ⚠️ 最重要：进入"系统设置 → 我的 AI 配置"填好 Base URL / Key / 模型；<u>没这一步后面什么都用不了</u></strong> →
+                        ③ 打开顶部"AI 助手"，直接对它说"帮我添加一台 10.0.0.12 的主机"——凭证、主机、标签、批量、任务都交给 AI 用自然语言搞定；
+                        ④（可选）若偏好手动操作，也可以走"主机管理"菜单逐项建立。
+                        <br><br>
+                        记住一个原则：<strong style="color:#ffd9a8">AI 辅助是本系统的核心操作入口，一切操作都从聊天开始。</strong>
+                        详见 README 与 <code>docs/</code> 目录，或在登录后点击右上角"帮助"。
+                    </p>
+                </details>
+            </div>
+        </div>
+    </section>
+
+    <!-- ─────────── CTA ─────────── -->
+    <section class="block" id="cta">
+        <div class="container">
+            <div class="cta reveal">
+                <h2>准备好让 AI 替你守服务器了吗？</h2>
+                <p>
+                    登录你的 毛竹 实例，或在本地 / 内网自建部署 —— 功能持续迭代，欢迎通过站内反馈或邮件交流。<br>
+                    <strong style="color:#ffd9a8">别忘了：第一件事是配置 AI 模型，之后所有操作都从 AI 聊天开始。</strong>
+                </p>
+                <div class="hero-actions" style="justify-content:center">
+                    <a class="btn btn-primary" href="/login">登录 →</a>
+                    <a class="btn btn-ghost" href="#start-here">开机必读 · 配 AI 模型</a>
+                    <a class="btn btn-ghost" href="#features">浏览所有能力</a>
+                </div>
+                <p style="margin-top:26px;font-size:0.85rem;color:var(--text-muted)">使用提示：对生产主机请谨慎开启「自动同意」，并在提示词中约定变更规范。问题与建议：pubsvn@gmail.com</p>
+            </div>
+        </div>
+    </section>
+
+    <footer>
+        <div class="container foot-row">
+            <div>© 毛竹 — 以 SSH 为操作方式的远程 AI 运维系统</div>
+            <div>
+                <a href="/login">登录</a> · 
+                <a href="#start-here">开机必读</a> · 
+                <a href="#features">能力</a> · 
+                <a href="#ai">AI</a> · 
+                <a href="#multihost">多机协同</a> · 
+                <a href="#architecture">架构</a> · 
+                <a href="#faq">FAQ</a>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        // ─── 滚动淡入 ───
+        var observer = new IntersectionObserver(function(entries) {
+            entries.forEach(function(e) {
+                if (e.isIntersecting) { e.target.classList.add('show'); observer.unobserve(e.target); }
+            });
+        }, { threshold: 0.12 });
+        document.querySelectorAll('.reveal').forEach(function(el) { observer.observe(el); });
+
+        // ─── Hero 粒子网络 ───
+        (function(){
+            var c = document.getElementById('heroCanvas');
+            if (!c) return;
+            var ctx = c.getContext('2d');
+            var w = 0, h = 0, dpr = window.devicePixelRatio || 1;
+            var particles = [];
+            var N = 80;
+            function resize(){
+                w = c.clientWidth = c.offsetWidth;
+                h = c.clientHeight = c.offsetHeight;
+                c.width = w * dpr; c.height = h * dpr;
+                ctx.setTransform(dpr,0,0,dpr,0,0);
+            }
+            function init(){
+                particles = [];
+                for (var i=0;i<N;i++){
+                    particles.push({
+                        x: Math.random()*w, y: Math.random()*h,
+                        vx: (Math.random()-0.5)*0.35,
+                        vy: (Math.random()-0.5)*0.35,
+                        r: Math.random()*1.8+0.4
+                    });
+                }
+            }
+            function draw(){
+                ctx.clearRect(0,0,w,h);
+                // 连线
+                for (var i=0;i<particles.length;i++){
+                    var p = particles[i];
+                    p.x += p.vx; p.y += p.vy;
+                    if (p.x<0||p.x>w) p.vx*=-1;
+                    if (p.y<0||p.y>h) p.vy*=-1;
+                    for (var j=i+1;j<particles.length;j++){
+                        var q = particles[j];
+                        var dx=p.x-q.x, dy=p.y-q.y;
+                        var d = Math.sqrt(dx*dx+dy*dy);
+                        if (d<140){
+                            ctx.strokeStyle = 'rgba(111,168,255,'+(0.18*(1-d/140))+')';
+                            ctx.lineWidth = 0.6;
+                            ctx.beginPath();
+                            ctx.moveTo(p.x,p.y); ctx.lineTo(q.x,q.y); ctx.stroke();
+                        }
+                    }
+                }
+                for (var k=0;k<particles.length;k++){
+                    var pp = particles[k];
+                    ctx.fillStyle = 'rgba(156,194,255,0.7)';
+                    ctx.beginPath();
+                    ctx.arc(pp.x,pp.y,pp.r,0,Math.PI*2); ctx.fill();
+                }
+                requestAnimationFrame(draw);
+            }
+            window.addEventListener('resize', function(){ resize(); init(); });
+            resize(); init(); draw();
+        })();
+    </script>
+</body>
+</html>

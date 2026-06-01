@@ -1,0 +1,14466 @@
+/**
+ * 毛竹（Moso）主应用 - 页面渲染（参考 IOTHub 布局与交互）
+ */
+/** 与 config.EDGEOPS_TEMP_SESSION_PREFIX 一致；服务端自动生成的默认会话名以前缀识别（自动总结标题等） */
+var EDGEOPS_TEMP_SESSION_PREFIX = 'edgeops:temp:';
+/** 有翻译则返回译文，否则用 fallback（配合 API 英文默认值 + 中文字条） */
+function tOr(i18nKey, fallback) {
+    var v = t(i18nKey);
+    return (v && v !== i18nKey) ? v : (fallback != null && fallback !== '' ? String(fallback) : '');
+}
+function edgeopsIsTempSessionTitle(title) {
+    return String(title == null ? '' : title).indexOf(EDGEOPS_TEMP_SESSION_PREFIX) === 0;
+}
+/** 列表接口返回的 session_prompt 非空则认为该会话配置了会话提示词（置顶 + 专属样式） */
+function edgeopsSessionHasPrompt(s) {
+    var p = s && s.session_prompt != null ? String(s.session_prompt) : '';
+    return p.trim().length > 0;
+}
+/** 有会话提示词的会话排在前面；各组内仍按 updated_at 降序（与接口一致） */
+function edgeopsSortSessionsPromptFirst(sessions) {
+    if (!sessions || !sessions.length) return sessions || [];
+    var withP = [];
+    var without = [];
+    for (var i = 0; i < sessions.length; i++) {
+        (edgeopsSessionHasPrompt(sessions[i]) ? withP : without).push(sessions[i]);
+    }
+    function byUpdatedDesc(a, b) {
+        var ta = new Date(a.updated_at || a.created_at || 0).getTime();
+        var tb = new Date(b.updated_at || b.created_at || 0).getTime();
+        return tb - ta;
+    }
+    withP.sort(byUpdatedDesc);
+    without.sort(byUpdatedDesc);
+    return withP.concat(without);
+}
+function edgeopsModalFooterClose() {
+    return '<button class="btn" onclick="closeModal()">' + t('common.close') + '</button>';
+}
+function edgeopsModalFooterCancelSave(onclick) {
+    return '<button class="btn" onclick="closeModal()">' + t('common.cancel') + '</button><button class="btn btn-primary" onclick="' + onclick + '">' + t('common.save') + '</button>';
+}
+function edgeopsModalFooterCancelOk(onclick) {
+    return '<button class="btn" onclick="closeModal()">' + t('common.cancel') + '</button><button class="btn btn-primary" onclick="' + onclick + '">' + t('common.ok') + '</button>';
+}
+function userSkillsEnabled() {
+    return !!(API.user && API.user.skills_enabled);
+}
+function edgeopsBuildLayoutHtml() {
+    var u = API.user || {};
+    return ''
+        + '<aside class="sidebar" id="sidebar">'
+        + '<div class="sidebar-header">'
+        + '<div class="sidebar-brand" title="' + esc(t('meta.productName')) + '">'
+        + '<img class="sidebar-brand-logo" src="/static/logo.png" alt="" width="48" height="48" decoding="async">'
+        + '<div class="sidebar-brand-text">'
+        + '<h1>' + esc(t('meta.productName')) + '</h1>'
+        + '<div class="subtitle">' + t('nav.subtitle') + '</div>'
+        + '</div></div>'
+        + '</div>'
+        + '<nav class="sidebar-nav">'
+        + '<div class="nav-item" data-href="/dashboard"><span class="icon">&#9632;</span><span class="nav-item-text">' + t('nav.dashboard') + '</span></div>'
+        + '<div class="nav-item" data-href="/ai"><span class="icon">&#9733;</span><span class="nav-item-text">' + t('nav.aiAssistant') + '</span></div>'
+        + '<div class="nav-divider"></div>'
+        + '<div class="nav-item" data-href="/host-groups"><span class="icon">&#128450;</span><span class="nav-item-text">' + t('nav.hostGroups') + '</span></div>'
+        + '<div class="nav-item" data-href="/hosts"><span class="icon">&#9881;</span><span class="nav-item-text">' + t('nav.hosts') + '</span></div>'
+        + '<div class="nav-item" data-href="/mcp-servers"><span class="icon">&#9889;</span><span class="nav-item-text">' + t('nav.mcpConfig') + '</span></div>'
+        + (userSkillsEnabled() ? '<div class="nav-item" data-href="/skills"><span class="icon">&#9734;</span><span class="nav-item-text">' + t('nav.skills') + '</span></div>' : '')
+        + '<div class="nav-item" data-href="/maintenance-history"><span class="icon">&#128203;</span><span class="nav-item-text">' + t('nav.maintenanceHistory') + '</span></div>'
+        + '<div class="nav-item" data-href="/best-practices"><span class="icon">&#128211;</span><span class="nav-item-text">' + t('nav.bestPractices') + '</span></div>'
+        + '<div class="nav-item" data-href="/files"><span class="icon">&#128193;</span><span class="nav-item-text">' + t('nav.filesystem') + '</span></div>'
+        + '<div class="nav-item" data-href="/batch"><span class="icon">&#128260;</span><span class="nav-item-text">' + t('nav.batch') + '</span></div>'
+        + '<div class="nav-item" data-href="/triggered-tasks"><span class="icon">&#9881;</span><span class="nav-item-text">' + t('nav.triggeredTasks') + '</span></div>'
+        + '<div class="nav-item" data-href="/scheduled-tasks"><span class="icon">&#128337;</span><span class="nav-item-text">' + t('nav.scheduledTasks') + '</span></div>'
+        + '<div class="nav-divider"></div>'
+        + (isAdmin() ? '<div class="nav-item" data-href="/local"><span class="icon">&#128268;</span><span class="nav-item-text">' + t('nav.localAdmin') + '</span></div>' : '')
+        + (isAdmin() ? '<div class="nav-item" data-href="/users"><span class="icon">&#9679;</span><span class="nav-item-text">' + t('nav.userMgmt') + '</span></div>' : '')
+        + '<div class="nav-item" data-href="/credentials"><span class="icon">&#128273;</span><span class="nav-item-text">' + t('nav.credentials') + '</span></div>'
+        + '<div class="nav-item" data-href="' + (isAdmin() ? '/feedback/admin' : '/feedback') + '"><span class="icon">&#128172;</span><span class="nav-item-text">' + (isAdmin() ? t('nav.feedbackAdmin') : t('nav.feedback')) + '</span><span id="feedbackUnreadBadge" class="nav-badge" style="display:none"></span></div>'
+        + (isAdmin() ? '<div class="nav-item" data-href="/feedback/admin/login-board"><span class="icon">&#128488;</span><span class="nav-item-text">' + t('nav.loginBoard') + '</span></div>' : '')
+        + '<div class="nav-item" data-href="/settings"><span class="icon">&#9998;</span><span class="nav-item-text">' + t('nav.settings') + '</span></div>'
+        + '<div class="nav-item" data-href="/logs"><span class="icon">&#9776;</span><span class="nav-item-text">' + t('nav.logs') + '</span></div>'
+        + '<div class="nav-divider"></div>'
+        + '<a class="nav-item" href="/intro/" target="_blank" rel="noopener" style="text-decoration:none;color:inherit" title="' + esc(t('nav.productIntroTitle')) + '"><span class="icon">&#9432;</span><span class="nav-item-text">' + t('nav.productIntro') + '</span></a>'
+        + '</nav>'
+        + '<button type="button" class="sidebar-toggle" id="sidebarToggle" title="' + esc(t('nav.sidebarToggle')) + '" aria-label="' + esc(t('nav.sidebarToggle')) + '"><span class="chevron">&#9664;</span></button>'
+        + '<div class="sidebar-footer">'
+        + '<div class="user-info">'
+        + '<div class="user-info-line1"><span class="username">' + esc(u.display_name || u.username || '') + '</span> <span class="user-role">' + esc(u.role || '') + '</span> <span class="user-info-actions"><button class="btn btn-sm" onclick="showChangePasswordModal()">' + t('nav.changePassword') + '</button> <button class="btn btn-sm" onclick="logout()">' + t('nav.logout') + '</button></span></div>'
+        + '<div class="user-info-line2">' + (u.email ? ('<span class="user-email" title="' + esc(u.email) + '">' + esc(maskEmail(u.email)) + '</span>') : '') + '</div>'
+        + '</div>'
+        + '<div class="sidebar-version">v' + esc(API.version || '0.0.1') + '</div>'
+        + '</div></aside>'
+        + '<div class="main-content"><div id="page-content"></div></div>'
+        + (edgeopsIsMobileViewport() ? '<div class="mobile-quick-actions" id="mobileQuickActions">'
+            + '<button type="button" class="btn btn-sm" id="mobileSidebarBtn">' + t('nav.menu') + '</button>'
+            + '<button type="button" class="btn btn-sm btn-primary" id="mobileQuickAiBtn">' + t('nav.aiMobile') + '</button>'
+            + '<button type="button" class="btn btn-sm" id="mobileQuickLogoutBtn">' + t('nav.logout') + '</button>'
+            + '</div>' : '');
+}
+
+function edgeopsSyncLayoutMeta() {
+    var u = API.user || {};
+    var app = document.getElementById('app');
+    if (!app) return;
+    var usernameEl = app.querySelector('.sidebar-footer .username');
+    if (usernameEl) usernameEl.textContent = u.display_name || u.username || '';
+    var roleEl = app.querySelector('.sidebar-footer .user-role');
+    if (roleEl) roleEl.textContent = u.role || '';
+    var emailWrap = app.querySelector('.sidebar-footer .user-info-line2');
+    if (emailWrap) {
+        emailWrap.innerHTML = u.email ? ('<span class="user-email" title="' + esc(u.email) + '">' + esc(maskEmail(u.email)) + '</span>') : '';
+    }
+    var versionEl = app.querySelector('.sidebar-footer .sidebar-version');
+    if (versionEl) versionEl.textContent = 'v' + (API.version || '0.0.1');
+}
+
+function edgeopsSyncMobileQuickActions() {
+    var app = document.getElementById('app');
+    if (!app) return;
+    var quick = document.getElementById('mobileQuickActions');
+    if (edgeopsIsMobileViewport()) {
+        if (!quick) {
+            app.insertAdjacentHTML(
+                'beforeend',
+                '<div class="mobile-quick-actions" id="mobileQuickActions">'
+                + '<button type="button" class="btn btn-sm" id="mobileSidebarBtn">' + t('nav.menu') + '</button>'
+                + '<button type="button" class="btn btn-sm btn-primary" id="mobileQuickAiBtn">' + t('nav.aiMobile') + '</button>'
+                + '<button type="button" class="btn btn-sm" id="mobileQuickLogoutBtn">' + t('nav.logout') + '</button>'
+                + '</div>'
+            );
+        }
+    } else if (quick && quick.parentNode) {
+        quick.parentNode.removeChild(quick);
+    }
+}
+
+function renderLayout() {
+    setEdgeopsMobileMode(false);
+    var app = document.getElementById('app');
+    var hasLayout = !!(app && document.getElementById('sidebar') && document.getElementById('page-content'));
+    var hasAdminNav = !!(app && app.querySelector && app.querySelector('.nav-item[data-href="/local"]'));
+    var needRebuild = !hasLayout || (hasAdminNav !== !!isAdmin());
+    if (needRebuild) app.innerHTML = edgeopsBuildLayoutHtml();
+    else {
+        edgeopsSyncLayoutMeta();
+        edgeopsSyncMobileQuickActions();
+    }
+    initSidebarCollapse();
+    initMobileQuickActions();
+    if (typeof refreshFeedbackUnreadBadge === 'function') {
+        try { refreshFeedbackUnreadBadge(); } catch (e) {}
+    }
+    if (typeof API !== 'undefined' && API.token && typeof API.refreshUserProfile === 'function') {
+        try { API.refreshUserProfile(); } catch (e) {}
+    }
+}
+
+function initSidebarCollapse() {
+    var sidebar = document.getElementById('sidebar');
+    if (!sidebar) return;
+    var key = 'edgeops_sidebar_collapsed';
+    if (localStorage.getItem(key) === '1') sidebar.classList.add('sidebar-collapsed');
+    if (sidebar._edgeopsSidebarBound) return;
+    sidebar._edgeopsSidebarBound = true;
+    var btn = document.getElementById('sidebarToggle');
+    if (btn) btn.addEventListener('click', function() {
+        sidebar.classList.toggle('sidebar-collapsed');
+        localStorage.setItem(key, sidebar.classList.contains('sidebar-collapsed') ? '1' : '0');
+    });
+    sidebar.querySelectorAll('.nav-item').forEach(function(item) {
+        item.addEventListener('click', function() {
+            if (edgeopsIsMobileViewport()) sidebar.classList.remove('open');
+        });
+    });
+}
+
+function getPageEl() { return document.getElementById('page-content'); }
+
+function toggleMobileSidebar() {
+    var sidebar = document.getElementById('sidebar');
+    if (!sidebar) return;
+    sidebar.classList.toggle('open');
+}
+
+function goToMobileAI() {
+    setEdgeopsMobileMode(true);
+    Router.navigate('/ai-mobile');
+}
+
+function initMobileQuickActions() {
+    if (!edgeopsIsMobileViewport()) return;
+    if (document.body.classList.contains('edgeops-mobile-ai')) return;
+    var menuBtn = document.getElementById('mobileSidebarBtn');
+    var aiBtn = document.getElementById('mobileQuickAiBtn');
+    var logoutBtn = document.getElementById('mobileQuickLogoutBtn');
+    if (menuBtn) menuBtn.onclick = toggleMobileSidebar;
+    if (aiBtn) aiBtn.onclick = goToMobileAI;
+    if (logoutBtn) logoutBtn.onclick = logout;
+}
+
+function edgeopsSyncMobileViewportHeight() {
+    var height = 0;
+    try {
+        if (window.visualViewport && window.visualViewport.height) {
+            height = Math.round(window.visualViewport.height);
+        }
+    } catch (e) {}
+    if (!height) height = Math.round(window.innerHeight || document.documentElement.clientHeight || 0);
+    if (!height) return;
+    document.documentElement.style.setProperty('--edgeops-mobile-app-height', height + 'px');
+}
+
+function edgeopsSetMobileChatFocusState(focused) {
+    focused = !!focused;
+    document.documentElement.classList.toggle('edgeops-mobile-chat-focus', focused);
+    document.body.classList.toggle('edgeops-mobile-chat-focus', focused);
+}
+
+function edgeopsRefreshMobileChatFocusState() {
+    var active = document.activeElement;
+    var focused = !!(
+        document.body.classList.contains('edgeops-mobile-ai') &&
+        active &&
+        active.classList &&
+        active.classList.contains('chat-input-multiline')
+    );
+    edgeopsSetMobileChatFocusState(focused);
+    if (!focused) return;
+    edgeopsSyncMobileViewportHeight();
+    try { window.scrollTo(0, 0); } catch (e) {}
+    var container = active.closest('.ai-chat-container');
+    var messages = container ? container.querySelector('.chat-messages') : null;
+    if (messages) {
+        requestAnimationFrame(function() {
+            edgeopsScrollChatToBottomStepIfPinned(messages);
+        });
+    }
+}
+
+function setEdgeopsMobileMode(enabled) {
+    enabled = !!enabled;
+    edgeopsSyncMobileViewportHeight();
+    document.documentElement.classList.toggle('edgeops-mobile-ai', enabled);
+    document.body.classList.toggle('edgeops-mobile-ai', enabled);
+    var app = document.getElementById('app');
+    if (app) app.classList.toggle('edgeops-mobile-ai-app', enabled);
+    if (!enabled) edgeopsSetMobileChatFocusState(false);
+    else edgeopsRefreshMobileChatFocusState();
+}
+
+function edgeopsIsMobileViewport() {
+    try {
+        if (window.matchMedia && window.matchMedia('(max-width: 768px)').matches) return true;
+    } catch (e) {}
+    var w = Math.min(window.innerWidth || 9999, screen.width || 9999);
+    return w <= 768;
+}
+
+function edgeopsChoosePostLoginPath() {
+    if (!edgeopsIsMobileViewport()) return Promise.resolve('/dashboard');
+    return showConfirm(t('layout.enterMobileTitle'), t('layout.enterMobileMessage'))
+        .then(function(ok) { return ok ? '/ai-mobile' : '/dashboard'; });
+}
+
+function edgeopsInitChatTextarea(textarea) {
+    if (!textarea) return function() {};
+    try {
+        textarea.removeAttribute('placeholder');
+        textarea.placeholder = '';
+    } catch (_e) {}
+    var maxRows = 5;
+    var rowsAttr = parseInt(textarea.getAttribute('rows') || '2', 10);
+    var baseRows = edgeopsIsMobileViewport() ? 1 : (rowsAttr > 0 ? rowsAttr : 2);
+    function syncHeight() {
+        var style = window.getComputedStyle(textarea);
+        var lineHeight = parseFloat(style.lineHeight) || 21;
+        var paddingTop = parseFloat(style.paddingTop) || 0;
+        var paddingBottom = parseFloat(style.paddingBottom) || 0;
+        var borderTop = parseFloat(style.borderTopWidth) || 0;
+        var borderBottom = parseFloat(style.borderBottomWidth) || 0;
+        var frameHeight = paddingTop + paddingBottom + borderTop + borderBottom;
+        var minHeight = Math.ceil(lineHeight * baseRows + frameHeight);
+        var maxHeight = Math.ceil(lineHeight * maxRows + frameHeight);
+        textarea.style.height = 'auto';
+        var nextHeight = Math.min(Math.max(textarea.scrollHeight, minHeight), maxHeight);
+        textarea.style.height = nextHeight + 'px';
+        textarea.style.overflowY = textarea.scrollHeight > maxHeight + 1 ? 'auto' : 'hidden';
+    }
+    textarea.rows = baseRows;
+    textarea._edgeopsAutoResize = syncHeight;
+    textarea.addEventListener('input', syncHeight);
+    requestAnimationFrame(syncHeight);
+    return syncHeight;
+}
+
+function edgeopsBindChatSubmit(textarea, submit) {
+    if (!textarea || typeof submit !== 'function') return;
+    textarea.addEventListener('compositionstart', function() {
+        textarea._edgeopsComposing = true;
+    });
+    textarea.addEventListener('compositionend', function() {
+        textarea._edgeopsComposing = false;
+    });
+    textarea.addEventListener('keydown', function(e) {
+        if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+        if (e.isComposing || e.keyCode === 229 || textarea._edgeopsComposing) return;
+        e.preventDefault();
+        submit();
+    });
+}
+
+function toggleMobileAiHistory() {
+    var sidebar = document.getElementById('aiLeftSidebar');
+    if (!sidebar) return;
+    sidebar.classList.toggle('open');
+    var tab = document.getElementById('aiSidebarTabSessions');
+    if (tab) tab.classList.toggle('active', sidebar.classList.contains('open'));
+}
+
+function edgeopsBindAutoCollapseChatSidebar(sidebar, tab) {
+    if (!sidebar || sidebar._edgeopsAutoCollapseBound) return;
+    sidebar._edgeopsAutoCollapseBound = true;
+    function syncTab() {
+        if (tab) tab.classList.toggle('active', sidebar.classList.contains('open'));
+    }
+    function close() {
+        if (!sidebar.classList.contains('open')) return;
+        sidebar.classList.remove('open');
+        syncTab();
+    }
+    sidebar._edgeopsAutoCollapseClose = close;
+    document.addEventListener('pointerdown', function(ev) {
+        if (!sidebar.classList.contains('open')) return;
+        var target = ev.target;
+        if (sidebar.contains(target)) return;
+        if (tab && tab.contains && tab.contains(target)) return;
+        close();
+    }, true);
+    document.addEventListener('focusin', function(ev) {
+        if (!sidebar.classList.contains('open')) return;
+        var target = ev.target;
+        if (sidebar.contains(target)) return;
+        if (tab && tab.contains && tab.contains(target)) return;
+        close();
+    });
+    document.addEventListener('keydown', function(ev) {
+        if (ev.key === 'Escape') close();
+    });
+    syncTab();
+}
+
+function edgeopsGetTerminalToggleKey(layoutId, scopeId) {
+    return 'edgeops_terminal_hidden_' + String(layoutId || 'default') + (scopeId != null ? ('_' + String(scopeId)) : '');
+}
+
+function edgeopsGetBrowserTabId() {
+    try {
+        var id = sessionStorage.getItem('edgeops_browser_tab_id');
+        if (!id) {
+            id = 'tab_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+            sessionStorage.setItem('edgeops_browser_tab_id', id);
+        }
+        return id;
+    } catch (e) {}
+    return 'tab_fallback';
+}
+
+function edgeopsMakeTerminalScopeId(kind, ref) {
+    var base = [String(kind || 'default'), String(ref == null ? '' : ref), edgeopsGetBrowserTabId()].join(':');
+    return base.replace(/[^a-zA-Z0-9:_-]/g, '_');
+}
+
+function edgeopsGetLayoutPrefix(layoutId) {
+    return layoutId === 'host' ? 'hostAi' : (layoutId === 'local' ? 'local' : 'ai');
+}
+
+function edgeopsApplyTerminalRatio(layoutId) {
+    var prefix = edgeopsGetLayoutPrefix(layoutId);
+    var terminalEl = document.getElementById(prefix + 'LayoutTerminal');
+    var chatEl = document.getElementById(prefix + 'LayoutChat');
+    if (!terminalEl || !chatEl) return;
+    var keyR = 'edgeops_layout_' + layoutId + '_terminal_ratio';
+    var terminalRatio = Math.max(0.2, Math.min(0.8, parseFloat(sessionStorage.getItem(keyR)) || 0.5));
+    terminalEl.style.flex = terminalRatio + ' 1 0';
+    chatEl.style.flex = (1 - terminalRatio) + ' 1 0';
+    chatEl.style.width = '';
+    chatEl.style.maxWidth = '';
+}
+
+function edgeopsBindTerminalToggle(options) {
+    if (!options) return;
+    var page = document.getElementById(options.pageId);
+    var terminal = document.getElementById(options.terminalId);
+    var prefix = edgeopsGetLayoutPrefix(options.layoutId);
+    var chat = document.getElementById(options.chatId || (prefix + 'LayoutChat'));
+    if (!page || !terminal || !chat) return;
+    var buttons = (options.buttonIds || []).map(function(id) { return document.getElementById(id); }).filter(Boolean);
+    var key = edgeopsGetTerminalToggleKey(options.layoutId, options.scopeId);
+    function setButtonText(hidden) {
+        var ex = t('layout.expandTerminal');
+        var hi = t('layout.hideTerminal');
+        buttons.forEach(function(btn) { btn.textContent = hidden ? ex : hi; });
+    }
+    function apply(hidden) {
+        page.classList.toggle('ai-terminal-hidden', !!hidden);
+        if (hidden) {
+            terminal.style.flex = '0 0 0px';
+            chat.style.flex = '1 1 auto';
+            chat.style.width = '100%';
+            chat.style.maxWidth = '100%';
+        } else {
+            edgeopsApplyTerminalRatio(options.layoutId);
+        }
+        setButtonText(!!hidden);
+        try { sessionStorage.setItem(key, hidden ? '1' : '0'); } catch (e) {}
+        if (!hidden && typeof options.onShow === 'function') {
+            setTimeout(function() { options.onShow(); }, 80);
+        }
+    }
+    buttons.forEach(function(btn) {
+        btn.onclick = function() {
+            apply(!page.classList.contains('ai-terminal-hidden'));
+        };
+    });
+    var hidden = true;
+    try {
+        var stored = sessionStorage.getItem(key);
+        if (stored === '0') hidden = false;
+        else if (stored === '1') hidden = true;
+        else hidden = true;
+    } catch (e) {}
+    apply(hidden);
+}
+
+function switchToDesktopAI() {
+    setEdgeopsMobileMode(false);
+    Router.navigate('/ai');
+}
+
+function edgeopsIsMobileTerminalCollapsed() {
+    try {
+        var v = sessionStorage.getItem('edgeops_mobile_ai_terminal_collapsed');
+        if (v === '0') return false;
+        if (v === '1') return true;
+        return true;
+    } catch (e) {}
+    return true;
+}
+
+function setEdgeopsMobileTerminalCollapsed(collapsed) {
+    collapsed = !!collapsed;
+    try { sessionStorage.setItem('edgeops_mobile_ai_terminal_collapsed', collapsed ? '1' : '0'); } catch (e) {}
+    document.body.classList.toggle('edgeops-mobile-ai-terminal-collapsed', collapsed);
+    var page = document.getElementById('aiPageLayout');
+    if (page) page.classList.toggle('ai-mobile-terminal-collapsed', collapsed);
+    var btn = document.getElementById('mobileAiTerminalToggleBtn');
+    if (btn) btn.textContent = collapsed ? t('layout.expandTerminal') : t('layout.collapseTerminal');
+    var inlineBtn = document.getElementById('aiMobileInlineTerminalBtn');
+    if (inlineBtn) inlineBtn.textContent = collapsed ? t('layout.expandTerminal') : t('layout.collapseTerminal');
+}
+
+function toggleMobileAiTerminal() {
+    setEdgeopsMobileTerminalCollapsed(!edgeopsIsMobileTerminalCollapsed());
+    if (!edgeopsIsMobileTerminalCollapsed()) {
+        var panels = document.getElementById('aiConsolePanels');
+        var activeConsole = panels ? panels.querySelector('.ai-console-panel.active') : null;
+        if (activeConsole) {
+            setTimeout(function() {
+                try {
+                    if (typeof aiConsoles !== 'undefined' && aiConsoles && aiConsoles.length) {
+                        aiConsoles.forEach(function(c) { if (c && c.refit) c.refit(); });
+                    }
+                } catch (e) {}
+            }, 120);
+        }
+    }
+}
+
+function activateAIMobileLayout() {
+    setEdgeopsMobileMode(true);
+    var page = document.getElementById('aiPageLayout');
+    var topbar = document.querySelector('#page-content > .topbar');
+    var leftSidebar = document.getElementById('aiLeftSidebar');
+    if (page) page.classList.add('ai-mobile-page');
+    if (leftSidebar) leftSidebar.classList.remove('open');
+    if (topbar) {
+        topbar.classList.add('mobile-ai-topbar');
+        topbar.innerHTML = '<h2>' + t('layout.aiMobilePageTitle') + '</h2><div class="topbar-actions">'
+            + '<button type="button" class="btn btn-sm" id="mobileAiHistoryBtn">' + t('layout.aiMobileSessionBtn') + '</button>'
+            + '<button type="button" class="btn btn-sm" id="mobileAiTerminalToggleBtn">' + t('layout.collapseTerminal') + '</button>'
+            + '<button type="button" class="btn btn-sm" id="mobileAiDesktopBtn">' + t('layout.aiMobileDesktop') + '</button>'
+            + '<button type="button" class="btn btn-sm" id="mobileAiLogoutBtn">' + t('layout.aiMobileSignOut') + '</button>'
+            + '</div>';
+        var historyBtn = document.getElementById('mobileAiHistoryBtn');
+        var terminalBtn = document.getElementById('mobileAiTerminalToggleBtn');
+        var inlineTerminalBtn = document.getElementById('aiMobileInlineTerminalBtn');
+        var desktopBtn = document.getElementById('mobileAiDesktopBtn');
+        var logoutBtn = document.getElementById('mobileAiLogoutBtn');
+        if (historyBtn) historyBtn.onclick = toggleMobileAiHistory;
+        if (terminalBtn) terminalBtn.onclick = toggleMobileAiTerminal;
+        if (inlineTerminalBtn) inlineTerminalBtn.onclick = toggleMobileAiTerminal;
+        if (desktopBtn) desktopBtn.onclick = switchToDesktopAI;
+        if (logoutBtn) logoutBtn.onclick = logout;
+    }
+    setEdgeopsMobileTerminalCollapsed(edgeopsIsMobileTerminalCollapsed());
+}
+
+/** 将对象数组转为 CSV 并触发下载。columns 可选，如 [{key:'id',title:'ID'}]；缺省用首行对象的 key 作为表头。 */
+function downloadCSV(filename, rows, columns) {
+    if (!rows || rows.length === 0) { showToast(t('toast.noDataExport'), 'warning'); return; }
+    var keys = columns ? columns.map(function(c) { return c.key; }) : Object.keys(rows[0]);
+    var titles = columns ? columns.map(function(c) { return c.title || c.key; }) : keys;
+    var escape = function(v) {
+        var s = (v == null ? '' : String(v)).replace(/"/g, '""');
+        return (s.indexOf(',') !== -1 || s.indexOf('\n') !== -1 || s.indexOf('"') !== -1) ? '"' + s + '"' : s;
+    };
+    var line = function(arr) { return arr.map(escape).join(','); };
+    var csv = '\uFEFF' + line(titles) + '\n';
+    rows.forEach(function(r) { csv += line(keys.map(function(k) { return r[k]; })) + '\n'; });
+    var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename || 'export.csv';
+    a.click();
+    URL.revokeObjectURL(a.href);
+}
+
+/** 将 JSON 对象下载为 .json 文件 */
+function downloadJsonFile(filename, data) {
+    var text = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+    var blob = new Blob([text], { type: 'application/json;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename || 'export.json';
+    a.click();
+    URL.revokeObjectURL(a.href);
+}
+
+function edgeopsDownloadBlob(filename, blob) {
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    setTimeout(function() { URL.revokeObjectURL(a.href); }, 0);
+}
+
+function edgeopsDownloadDataUrl(filename, dataUrl) {
+    var a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = filename;
+    a.click();
+}
+
+function edgeopsFormatExportError(err) {
+    var msg = err && err.message ? String(err.message) : String(err || '');
+    if (!msg) return t('toast.exportPngRetry');
+    if (/createImageBitmap|could not be decoded|source image/i.test(msg)) return t('toast.exportPngBitmapDecode');
+    if (/tainted|cross-origin|insecure/i.test(msg)) return t('toast.exportPngTainted');
+    if (/SVG 转 PNG 失败|SVG to PNG failed/i.test(msg)) return t('toast.exportPngSvgConvert');
+    return t('toast.exportPngSaveSvg');
+}
+
+function edgeopsCopyText(text, successMessage) {
+    text = String(text == null ? '' : text);
+    if (!text) {
+        showToast(t('toast.nothingToCopy'), 'warning');
+        return Promise.resolve(false);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(text).then(function() {
+            showToast(successMessage || t('toast.copied'));
+            return true;
+        }).catch(function() {
+            return false;
+        });
+    }
+    return Promise.resolve(false);
+}
+
+function edgeopsFallbackCopyText(text, successMessage) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', 'readonly');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) {}
+    ta.remove();
+    if (ok) showToast(successMessage || t('toast.copied'));
+    else showToast(t('toast.copyFailed'), 'error');
+    return ok;
+}
+
+function edgeopsReadDiagramSource(block) {
+    if (!block) return '';
+    var encoded = block.getAttribute('data-diagram-source') || '';
+    try { return decodeURIComponent(encoded); } catch (e) {}
+    return encoded;
+}
+
+function edgeopsSetMessagePersistenceMeta(messageEl, sessionId, messageId, content) {
+    if (!messageEl) return;
+    if (sessionId != null && !isNaN(parseInt(sessionId, 10))) messageEl.setAttribute('data-session-id', String(parseInt(sessionId, 10)));
+    if (messageId != null && !isNaN(parseInt(messageId, 10))) messageEl.setAttribute('data-message-id', String(parseInt(messageId, 10)));
+    messageEl._edgeopsPersistContent = String(content == null ? '' : content);
+}
+
+function edgeopsFormatChatTimestamp(raw) {
+    // 聊天气泡时间统一走浏览器时区，避免直接显示后端 UTC 字符串
+    if (raw == null || raw === '') return t('ui.chat.unknownTime');
+    if (typeof formatTime === 'function') {
+        return formatTime(raw);
+    }
+    return String(raw);
+}
+
+function edgeopsRenderMessageBubble(contentHtml, createdAt) {
+    var ts = edgeopsFormatChatTimestamp(createdAt);
+    return '<div class="message-content"><div class="message-body">' + contentHtml + '</div><div class="message-time">' + esc(ts) + '</div></div>';
+}
+
+/** 取聊天记录容器内最后一个真正在流式中的 .ai-reply-stream 气泡。
+ * 历史消息的回放气泡也会带 .ai-reply-stream（搭配 .ai-reply-persisted 折叠展示），
+ * 必须排除掉它们，否则新一轮的 cot/tool_stream 事件会误打到旧气泡里、用户看不到当前进度。 */
+function edgeopsPeekLastAiReplyStreamWrap(box) {
+    if (!box) return null;
+    var all = box.querySelectorAll('.ai-reply-stream:not(.ai-reply-persisted)');
+    return all.length ? all[all.length - 1] : null;
+}
+
+/**
+ * 渲染 AI 通过 ask_user_choice 工具发起的选择题卡片。
+ * - ua: { action: 'ask_user_choice', question, options: [{id,label,value,style,description}], allow_multiple, allow_text, default_id }
+ * - submitFn: function(text) { ... }  把用户选择 / 自由文本作为新一条聊天消息发送
+ * 返回一个 DOM 节点，调用方将其插入到对应 assistant 消息的 .message-content 中。
+ */
+function edgeopsRenderChoiceCard(ua, submitFn) {
+    if (!ua || ua.action !== 'ask_user_choice') return null;
+    var card = document.createElement('div');
+    card.className = 'ai-choice-card';
+    card.setAttribute('role', 'group');
+    var headerEl = document.createElement('div');
+    headerEl.className = 'ai-choice-card-header';
+    headerEl.style.display = 'none';
+    var toggleBtn = document.createElement('button');
+    toggleBtn.type = 'button';
+    toggleBtn.className = 'ai-choice-toggle';
+    toggleBtn.setAttribute('data-ai-choice-toggle', '1');
+    toggleBtn.setAttribute('aria-expanded', 'true');
+    toggleBtn.textContent = t('ui.chat.choiceCollapseDetail');
+    var summaryEl = document.createElement('span');
+    summaryEl.className = 'ai-choice-header-summary';
+    headerEl.appendChild(toggleBtn);
+    headerEl.appendChild(summaryEl);
+    var bodyWrap = document.createElement('div');
+    bodyWrap.className = 'ai-choice-collapsible-body';
+    card.appendChild(headerEl);
+    card.appendChild(bodyWrap);
+    var q = (ua.question || '').toString();
+    var opts = Array.isArray(ua.options) ? ua.options : [];
+    var allowMulti = !!ua.allow_multiple;
+    var allowText = ua.allow_text == null ? true : !!ua.allow_text;
+    var defaultId = ua.default_id || '';
+    var autoSeconds = Math.max(0, parseInt(ua.auto_decide_in_seconds || 0, 10) || 0);
+    var countdownTimer = null;
+    var countdownEl = null;
+    var qEl = document.createElement('div');
+    qEl.className = 'ai-choice-question';
+    qEl.textContent = q;
+    bodyWrap.appendChild(qEl);
+    if (autoSeconds > 0) {
+        countdownEl = document.createElement('div');
+        countdownEl.className = 'ai-choice-countdown';
+        var remain = autoSeconds;
+        function renderCountdown() {
+            countdownEl.textContent = remain > 0
+                ? t('ui.chat.autoChoiceCountdown', { seconds: remain })
+                : t('ui.chat.autoChoiceNow');
+        }
+        renderCountdown();
+        countdownTimer = setInterval(function() {
+            remain -= 1;
+            if (remain <= 0) {
+                remain = 0;
+                renderCountdown();
+                clearInterval(countdownTimer);
+                countdownTimer = null;
+                return;
+            }
+            renderCountdown();
+        }, 1000);
+        bodyWrap.appendChild(countdownEl);
+    }
+    var listEl = document.createElement('div');
+    listEl.className = 'ai-choice-options' + (allowMulti ? ' multi' : ' single');
+    bodyWrap.appendChild(listEl);
+    var disabled = false;
+    function lockCard(chosenLabel) {
+        if (disabled) return;
+        disabled = true;
+        if (countdownTimer) {
+            clearInterval(countdownTimer);
+            countdownTimer = null;
+        }
+        if (countdownEl) countdownEl.remove();
+        card.classList.add('locked', 'answered');
+        listEl.querySelectorAll('button.ai-choice-option').forEach(function(b) { b.disabled = true; });
+        listEl.querySelectorAll('input').forEach(function(i) { i.disabled = true; });
+        if (submitBtn) submitBtn.disabled = true;
+        if (textInput) textInput.disabled = true;
+        var summaryLine = '';
+        if (chosenLabel) {
+            var done = document.createElement('div');
+            done.className = 'ai-choice-done';
+            done.textContent = t('ui.chat.submittedWith', { text: chosenLabel });
+            bodyWrap.appendChild(done);
+            summaryLine = t('ui.chat.choiceCardBarAnswered', { text: chosenLabel });
+        }
+        edgeopsFinalizeAnsweredChoiceHeader(card, summaryLine || t('ui.chat.choiceCardBarDone'));
+    }
+    function submit(text, chosenLabel) {
+        if (disabled) return;
+        try {
+            if (typeof submitFn === 'function') submitFn(text);
+        } finally {
+            lockCard(chosenLabel || text);
+        }
+    }
+    var selectedSet = {};
+    opts.forEach(function(o, idx) {
+        if (!o || !o.label) return;
+        var oid = o.id || String.fromCharCode(65 + idx);
+        var style = ['default', 'primary', 'danger', 'success'].indexOf(o.style) >= 0 ? o.style : 'default';
+        var row = document.createElement('div');
+        row.className = 'ai-choice-row';
+        if (allowMulti) {
+            var lab = document.createElement('label');
+            lab.className = 'ai-choice-multi style-' + style + (oid === defaultId ? ' default-hint' : '');
+            var cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.value = oid;
+            cb.onchange = function() { if (cb.checked) selectedSet[oid] = o; else delete selectedSet[oid]; };
+            lab.appendChild(cb);
+            var idTag = document.createElement('span');
+            idTag.className = 'ai-choice-id';
+            idTag.textContent = oid;
+            lab.appendChild(idTag);
+            var t = document.createElement('span');
+            t.className = 'ai-choice-label';
+            t.textContent = o.label;
+            lab.appendChild(t);
+            if (o.description) {
+                var d = document.createElement('div');
+                d.className = 'ai-choice-desc';
+                d.textContent = o.description;
+                lab.appendChild(d);
+            }
+            row.appendChild(lab);
+        } else {
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'ai-choice-option style-' + style + (oid === defaultId ? ' default-hint' : '');
+            var idTag2 = document.createElement('span');
+            idTag2.className = 'ai-choice-id';
+            idTag2.textContent = oid;
+            btn.appendChild(idTag2);
+            var t2 = document.createElement('span');
+            t2.className = 'ai-choice-label';
+            t2.textContent = o.label;
+            btn.appendChild(t2);
+            if (o.description) {
+                var d2 = document.createElement('div');
+                d2.className = 'ai-choice-desc';
+                d2.textContent = o.description;
+                btn.appendChild(d2);
+            }
+            btn.onclick = function() {
+                var v = (typeof o.value === 'string' && o.value) ? o.value : o.label;
+                submit('[' + oid + '] ' + v, '[' + oid + '] ' + o.label);
+            };
+            row.appendChild(btn);
+        }
+        listEl.appendChild(row);
+    });
+    var submitBtn = null;
+    var textInput = null;
+    if (allowMulti || allowText) {
+        var actions = document.createElement('div');
+        actions.className = 'ai-choice-actions';
+        if (allowText) {
+            textInput = document.createElement('input');
+            textInput.type = 'text';
+            textInput.className = 'ai-choice-text';
+            textInput.placeholder = allowMulti ? t('ui.chat.choiceTextMulti') : t('ui.chat.choiceTextSingle');
+            textInput.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    if (submitBtn) submitBtn.click();
+                }
+            });
+            actions.appendChild(textInput);
+        }
+        submitBtn = document.createElement('button');
+        submitBtn.type = 'button';
+        submitBtn.className = 'ai-choice-submit';
+        submitBtn.textContent = t('ui.chat.submit');
+        submitBtn.onclick = function() {
+            var picked = Object.keys(selectedSet);
+            var extra = textInput ? (textInput.value || '').trim() : '';
+            if (allowMulti && picked.length === 0 && !extra) {
+                if (textInput) textInput.focus();
+                return;
+            }
+            if (!allowMulti && !extra) {
+                if (textInput) textInput.focus();
+                return;
+            }
+            var parts = [];
+            if (picked.length) {
+                parts.push(picked.map(function(id) {
+                    var o = selectedSet[id];
+                    var v = (o && typeof o.value === 'string' && o.value) ? o.value : (o && o.label) || id;
+                    return '[' + id + '] ' + v;
+                }).join(allowMulti ? ' ; ' : ' '));
+            }
+            if (extra) parts.push(extra);
+            var full = parts.join(' — ');
+            var human = parts.join(' — ');
+            submit(full, human);
+        };
+        actions.appendChild(submitBtn);
+        bodyWrap.appendChild(actions);
+    }
+    return card;
+}
+
+/**
+ * 流式输出过程中，同一 assistant 气泡内可能出现多轮 ask_user_choice；新卡到来前移除尚未落库还原的卡片，
+ * 避免多轮 tool 询问叠在同一条消息里。带 .persisted 的卡由 loadSession 挂载，不在此列。
+ */
+function edgeopsRemoveStreamingChoiceCards(mc) {
+    if (!mc) return;
+    mc.querySelectorAll('.ai-choice-card:not(.persisted)').forEach(function(el) {
+        try { el.remove(); } catch (_e) {}
+    });
+}
+
+/**
+ * SSE 中断或后端推送 error 时，可能收不到某次 tool 的 completed/failed，
+ * 最后一条会卡在「执行中」。统一标为失败，避免误以为仍在跑 search_web。
+ */
+function edgeopsMarkOpenToolRowsFailed(toolsEl, logBuffer, renderLogFn) {
+    if (toolsEl) {
+        var items = toolsEl.querySelectorAll('.ai-tool-item.ai-tool-executing');
+        for (var i = 0; i < items.length; i++) {
+            var el = items[i];
+            el.classList.remove('ai-tool-executing');
+            el.classList.add('ai-tool-failed');
+            var badge = el.querySelector('.ai-tool-badge');
+            if (badge) badge.textContent = typeof t === 'function' ? t('hostAi.toolFailed') : 'failed';
+        }
+        var cotSteps = toolsEl.querySelectorAll('.ai-cot-step-tool.ai-tool-executing');
+        for (var k = 0; k < cotSteps.length; k++) {
+            var cel = cotSteps[k];
+            cel.classList.remove('ai-tool-executing');
+            cel.classList.add('ai-tool-failed');
+            var cb = cel.querySelector('.ai-cot-tool-badge');
+            if (cb) {
+                cb.classList.remove('ai-cot-badge-running');
+                cb.classList.add('ai-cot-badge-fail');
+                cb.textContent = typeof t === 'function' ? t('hostAi.toolFailed') : 'failed';
+            }
+        }
+        var cotPanel = toolsEl.querySelector('.ai-cot-panel');
+        if (cotPanel && cotPanel._edgeopsCotState) cotPanel._edgeopsCotState.activeToolEl = null;
+        var liveEl = toolsEl.querySelector('.ai-cot-live');
+        if (liveEl) liveEl.textContent = '';
+    }
+    if (logBuffer && logBuffer.length) {
+        for (var j = 0; j < logBuffer.length; j++) {
+            if (logBuffer[j].status === 'executing') {
+                logBuffer[j].status = 'failed';
+                if (logBuffer[j].result == null) logBuffer[j].result = '';
+            }
+        }
+    }
+    if (typeof renderLogFn === 'function') {
+        try { renderLogFn(); } catch (_e) {}
+    }
+}
+
+/**
+ * 通用：把一个新的 user 消息文本送入指定页面的输入框并触发发送。
+ * inputId / sendBtnId 由各聊天页提供（AI 助手页：aiInput/aiSend；主机详情：hostAiInput/hostAiSend；本机管理：localInput/localSend）。
+ */
+function edgeopsTriggerChatSend(inputId, sendBtnId, text) {
+    var inp = document.getElementById(inputId);
+    var btn = document.getElementById(sendBtnId);
+    if (!inp || !btn) return false;
+    inp.value = text || '';
+    if (inp._edgeopsAutoResize) try { inp._edgeopsAutoResize(); } catch (_e) {}
+    try { btn.click(); } catch (_e) { return false; }
+    return true;
+}
+
+var edgeopsActiveChatAbortControllers = [];
+function edgeopsTrackChatAbortController(controller) {
+    if (!controller) return function() {};
+    edgeopsActiveChatAbortControllers.push(controller);
+    return function() {
+        edgeopsActiveChatAbortControllers = edgeopsActiveChatAbortControllers.filter(function(c) { return c !== controller; });
+    };
+}
+function edgeopsAbortActiveChatStreams() {
+    edgeopsActiveChatAbortControllers.slice().forEach(function(controller) {
+        try { controller.abort(); } catch (_e) {}
+    });
+}
+(function() {
+    if (typeof window === 'undefined' || window._edgeopsAbortStreamsOnLeave) return;
+    window._edgeopsAbortStreamsOnLeave = true;
+    window.addEventListener('pagehide', edgeopsAbortActiveChatStreams);
+    window.addEventListener('beforeunload', edgeopsAbortActiveChatStreams);
+})();
+
+function edgeopsRenderContinueConfirmCard(onAction) {
+    var wrap = document.createElement('div');
+    wrap.className = 'ai-runtime-confirm-card';
+    var title = document.createElement('div');
+    title.className = 'ai-runtime-confirm-title';
+    title.textContent = t('hostAi.continueConfirmTitle');
+    var hint = document.createElement('div');
+    hint.className = 'ai-runtime-confirm-hint';
+    hint.textContent = t('hostAi.continueConfirmHint');
+    var actions = document.createElement('div');
+    actions.className = 'ai-runtime-confirm-actions';
+    function mk(label, cls, action, preset) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'btn btn-sm ' + cls;
+        b.textContent = label;
+        b.onclick = function() {
+            if (typeof onAction === 'function') onAction(action, preset || '');
+            try { wrap.remove(); } catch (_e) {}
+        };
+        return b;
+    }
+    actions.appendChild(mk(t('hostAi.continueActionGoOn'), 'btn-primary', 'continue', t('hostAi.continueActionGoOnText')));
+    actions.appendChild(mk(t('hostAi.continueActionPause'), '', 'pause', ''));
+    actions.appendChild(mk(t('hostAi.continueActionStop'), 'btn-danger', 'stop', ''));
+    wrap.appendChild(title);
+    wrap.appendChild(hint);
+    wrap.appendChild(actions);
+    return wrap;
+}
+
+function edgeopsInstallRuntimeControlBar(opts) {
+    opts = opts || {};
+    var inputArea = typeof opts.area === 'string' ? document.getElementById(opts.area) : opts.area;
+    if (!inputArea || inputArea._edgeopsRuntimeCtl) return inputArea && inputArea._edgeopsRuntimeCtl ? inputArea._edgeopsRuntimeCtl : null;
+    var composeRow = inputArea.closest && inputArea.closest('.chat-input-area');
+    if (!composeRow) return null;
+    var bar = document.createElement('div');
+    bar.className = 'ai-runtime-control-bar ai-runtime-control-inline';
+    bar.style.display = 'none';
+    var tip = document.createElement('span');
+    tip.className = 'ai-runtime-control-tip';
+    tip.textContent = t('hostAi.runtimeTipCompact');
+    var input = document.createElement('textarea');
+    input.rows = 1;
+    input.setAttribute('enterkeyhint', 'send');
+    input.setAttribute('spellcheck', 'false');
+    input.className = 'form-control chat-input-multiline ai-runtime-control-input';
+    input.placeholder = '';
+    var pauseBtn = document.createElement('button');
+    pauseBtn.type = 'button';
+    pauseBtn.className = 'btn btn-sm';
+    pauseBtn.textContent = t('hostAi.runtimePause');
+    var sendBtn = document.createElement('button');
+    sendBtn.type = 'button';
+    sendBtn.className = 'btn btn-sm btn-primary';
+    sendBtn.textContent = t('hostAi.runtimeSupplement');
+    var stopBtn = document.createElement('button');
+    stopBtn.type = 'button';
+    stopBtn.className = 'btn btn-sm btn-danger';
+    stopBtn.textContent = t('hostAi.runtimeStop');
+    bar.appendChild(tip);
+    bar.appendChild(input);
+    bar.appendChild(pauseBtn);
+    bar.appendChild(sendBtn);
+    bar.appendChild(stopBtn);
+    composeRow.insertBefore(bar, inputArea.nextSibling);
+    edgeopsInitChatTextarea(input);
+    edgeopsBindChatSubmit(input, function() { sendBtn.click(); });
+
+    function fire(action, message) {
+        if (typeof opts.onControl === 'function') opts.onControl(action, message || '');
+    }
+    function focusRuntimeInput() {
+        requestAnimationFrame(function() {
+            try { input.focus({ preventScroll: true }); } catch (_e) { try { input.focus(); } catch (_e2) {} }
+        });
+    }
+    function focusChatInput() {
+        requestAnimationFrame(function() {
+            try { inputArea.focus({ preventScroll: true }); } catch (_e) { try { inputArea.focus(); } catch (_e2) {} }
+        });
+    }
+    pauseBtn.onclick = function() { fire('pause', input.value || ''); focusRuntimeInput(); };
+    sendBtn.onclick = function() {
+        fire('supplement', input.value || '');
+        input.value = '';
+        if (input._edgeopsAutoResize) try { input._edgeopsAutoResize(); } catch (_e) {}
+        focusRuntimeInput();
+    };
+    stopBtn.onclick = function() { fire('stop', input.value || ''); };
+    function setRuntimeMode(flag, awaitingConfirm) {
+        var wasActive = composeRow.classList.contains('runtime-control-active');
+        var active = !!flag || !!awaitingConfirm;
+        composeRow.classList.toggle('runtime-control-active', active);
+        composeRow.classList.toggle('runtime-awaiting-confirm', !!awaitingConfirm);
+        bar.style.display = active ? 'flex' : 'none';
+        inputArea.style.display = (flag && !awaitingConfirm) ? 'none' : '';
+        if (!active) inputArea.style.display = '';
+        if (!active) {
+            input.value = '';
+            if (input._edgeopsAutoResize) try { input._edgeopsAutoResize(); } catch (_e) {}
+            tip.textContent = t('hostAi.runtimeTipCompact');
+            if (wasActive) focusChatInput();
+        } else if (!wasActive && !awaitingConfirm) {
+            focusRuntimeInput();
+        } else if (awaitingConfirm) {
+            focusChatInput();
+        }
+    }
+    var ctl = {
+        setStreaming: function(flag, awaitingConfirm) {
+            if (flag === 'awaiting' || flag === 'awaiting_confirm') setRuntimeMode(false, true);
+            else setRuntimeMode(!!flag && flag !== 'awaiting', !!awaitingConfirm);
+        },
+        note: function(text) { tip.textContent = text || t('hostAi.runtimeTipCompact'); }
+    };
+    inputArea._edgeopsRuntimeCtl = ctl;
+    return ctl;
+}
+
+/**
+ * 聊天附件管理器：在指定 <textarea> 所在的 chat-input-area 旁边安装：
+ *  - 「📎 附件」按钮（隐藏 file input）
+ *  - 附件缩略条（图片缩略 / 文本文件名 / 上传中占位）
+ *  - 粘贴事件：从剪贴板捕获图片并直接上传
+ *
+ * 返回控制器对象：{ getUuids(), clear(), hasPending(), uploadFile(file) }
+ *
+ * 限制：当前仅允许 image/* 与 text/markdown 等常见类型；其他二进制文件也会上传但 AI 无法直接读内容，
+ * 只能看元信息（原始文件名/大小/UUID），可避免误用。
+ */
+function edgeopsInstallChatAttachments(opts) {
+    opts = opts || {};
+    var input = typeof opts.input === 'string' ? document.getElementById(opts.input) : opts.input;
+    if (!input) return null;
+    var area = input.closest && input.closest('.chat-input-area');
+    if (!area) return null;
+    if (area._edgeopsAttachCtl) return area._edgeopsAttachCtl;
+
+    // 附件缩略条：插入到 chat-input-area 前面，这样不影响原布局
+    var chipsBar = document.createElement('div');
+    chipsBar.className = 'chat-attachments-bar';
+    chipsBar.setAttribute('aria-label', t('ui.attach.aria'));
+    area.parentNode.insertBefore(chipsBar, area);
+
+    // 隐藏 file input
+    var fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.multiple = true;
+    fileInput.style.display = 'none';
+    fileInput.accept = 'image/*,text/*,.md,.markdown,.txt,.log,.json,.yaml,.yml,.xml,.csv,.tsv,.ini,.conf,.env,.py,.js,.ts,.sh,.sql,.toml,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.html,.htm,.epub';
+    area.appendChild(fileInput);
+
+    // 上传按钮：放到 textarea 之前（在输入框左侧）
+    var uploadBtn = document.createElement('button');
+    uploadBtn.type = 'button';
+    uploadBtn.className = 'btn btn-sm chat-attach-upload-btn';
+    uploadBtn.title = t('ui.attach.uploadTitle');
+    uploadBtn.innerHTML = '📎';
+    area.insertBefore(uploadBtn, input);
+
+    var state = {
+        // 每项：{ tempId, uuid|null, name, kind, size, mime, url|null, uploading, error }
+        items: [],
+    };
+
+    function renderChips() {
+        chipsBar.innerHTML = '';
+        state.items.forEach(function(it) {
+            var chip = document.createElement('span');
+            chip.className = 'chat-attachment-chip' + (it.uploading ? ' chip-uploading' : '') + (it.error ? ' chip-error' : '');
+            chip.title = it.error ? (it.name + ' - ' + it.error) : (it.name + (it.uuid ? ('\nuuid: ' + it.uuid) : ''));
+            // 缩略：图片用 <img>；其它用文字图标
+            if (it.kind === 'image' && it.thumbUrl) {
+                var img = document.createElement('img');
+                img.className = 'chip-thumb';
+                img.src = it.thumbUrl;
+                img.alt = it.name;
+                chip.appendChild(img);
+            } else {
+                var ic = document.createElement('span');
+                ic.className = 'chip-icon';
+                ic.textContent = it.kind === 'markdown' ? 'M' : (it.kind === 'text' ? 'T' : (it.kind === 'image' ? '🖼' : (it.kind === 'document' ? 'D' : '📄')));
+                chip.appendChild(ic);
+            }
+            var lb = document.createElement('span');
+            lb.className = 'chip-label';
+            lb.textContent = it.name;
+            chip.appendChild(lb);
+            if (!it.uploading && it.size) {
+                var sz = document.createElement('span');
+                sz.className = 'chip-size';
+                sz.textContent = humanize(it.size);
+                chip.appendChild(sz);
+            }
+            if (it.uploading) {
+                var busy = document.createElement('span');
+                busy.className = 'chip-size';
+                busy.textContent = t('ui.attach.uploading');
+                chip.appendChild(busy);
+            } else if (it.error) {
+                var err = document.createElement('span');
+                err.className = 'chip-size';
+                err.style.color = 'var(--danger, #dc2626)';
+                err.textContent = t('ui.attach.failed');
+                chip.appendChild(err);
+            }
+            var rm = document.createElement('button');
+            rm.type = 'button';
+            rm.className = 'chip-remove';
+            rm.title = t('ui.attach.remove');
+            rm.innerHTML = '×';
+            rm.onclick = function() { removeItem(it); };
+            chip.appendChild(rm);
+            chipsBar.appendChild(chip);
+        });
+    }
+
+    function humanize(n) {
+        n = Number(n) || 0;
+        if (n < 1024) return n + ' B';
+        if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+        return (n / (1024 * 1024)).toFixed(2) + ' MB';
+    }
+
+    function removeItem(it) {
+        var i = state.items.indexOf(it);
+        if (i < 0) return;
+        state.items.splice(i, 1);
+        // 已上传成功：同步删除后端附件，避免残留
+        if (it.uuid) {
+            try { API.deleteChatAttachment(it.uuid); } catch (_e) {}
+        }
+        if (it.thumbUrl && it.thumbUrl.indexOf('blob:') === 0) try { URL.revokeObjectURL(it.thumbUrl); } catch (_e) {}
+        renderChips();
+    }
+
+    function detectKind(file) {
+        var name = (file.name || '').toLowerCase();
+        if (/^image\//.test(file.type || '')) return 'image';
+        if (/\.(md|markdown|mdx)$/.test(name)) return 'markdown';
+        if (/^text\//.test(file.type || '')) return 'text';
+        if (/\.(txt|log|json|ya?ml|xml|csv|tsv|ini|conf|env|py|js|ts|tsx|jsx|go|rs|java|c|h|cpp|sh|bash|ps1|sql|toml)$/.test(name)) return 'text';
+        if (/\.(pdf|docx?|pptx?|xlsx?|html?|epub)$/.test(name)) return 'document';
+        return 'binary';
+    }
+
+    // 单文件上限 20MB（与后端 CHAT_ATTACHMENT_MAX_BYTES 对齐），前端前置拦截避免 413 绕一圈
+    var SINGLE_FILE_MAX = 20 * 1024 * 1024;
+    // 并发上限，避免一次贴几十张图时把浏览器 / 服务器连接池打满
+    var UPLOAD_CONCURRENCY = 4;
+
+    function uploadFile(file) {
+        if (!file) return Promise.resolve(null);
+        var kind = detectKind(file);
+        var it = {
+            tempId: 'tmp-' + Math.random().toString(36).slice(2),
+            uuid: null,
+            name: file.name || 'upload',
+            mime: file.type || '',
+            size: file.size || 0,
+            kind: kind,
+            thumbUrl: null,
+            uploading: true,
+            error: null,
+        };
+        // 前置大小校验：超过后端单文件上限直接标红，不再真正调用 API
+        if ((file.size || 0) > SINGLE_FILE_MAX) {
+            it.uploading = false;
+            it.error = t('ui.attach.overLimit');
+            state.items.push(it);
+            renderChips();
+            if (typeof showToast === 'function') showToast((it.name || '') + ' ' + t('toast.fileOverLimit'), 'warning');
+            return Promise.resolve(null);
+        }
+        if (kind === 'image') {
+            try { it.thumbUrl = URL.createObjectURL(file); } catch (_e) {}
+        }
+        state.items.push(it);
+        renderChips();
+        var sessionId = (typeof opts.getSessionId === 'function') ? opts.getSessionId() : null;
+        return API.uploadChatAttachment(file, sessionId || null).then(function(resp) {
+            var a = resp && resp.attachment;
+            if (!a || !a.uuid) throw new Error(t('ui.attach.missingMeta'));
+            it.uuid = a.uuid;
+            it.kind = a.kind || kind;
+            it.mime = a.mime || it.mime;
+            it.size = a.size || it.size;
+            it.uploading = false;
+            if (it.kind === 'image' && !it.thumbUrl) it.thumbUrl = (API && API.buildChatAttachmentUrl) ? API.buildChatAttachmentUrl(a.uuid) : (a.url || '');
+            renderChips();
+            return it;
+        }).catch(function(err) {
+            it.uploading = false;
+            it.error = (err && err.message) || t('ui.attach.uploadFailed');
+            renderChips();
+            if (typeof showToast === 'function') showToast((it.name || t('toast.attachment')) + t('toast.uploadFailedPrefix') + (it.error != null ? String(it.error) : ''), 'error');
+            return null;
+        });
+    }
+
+    /**
+     * 分批并发上传：一次粘贴/拖入 N 个文件时，按 UPLOAD_CONCURRENCY 切分成若干窗口，
+     * 窗口内 Promise.all 并行、窗口之间串行，避免一次打开 20+ TCP 连接把浏览器/服务器打爆。
+     * 返回所有 it 对象数组（顺序与入参一致；失败/超限的为 null）。
+     */
+    function uploadFiles(fileList) {
+        var arr = [];
+        for (var i = 0; i < fileList.length; i++) arr.push(fileList[i]);
+        if (!arr.length) return Promise.resolve([]);
+        var results = [];
+        var chunks = [];
+        for (var k = 0; k < arr.length; k += UPLOAD_CONCURRENCY) {
+            chunks.push(arr.slice(k, k + UPLOAD_CONCURRENCY));
+        }
+        return chunks.reduce(function(p, chunk) {
+            return p.then(function() {
+                return Promise.all(chunk.map(uploadFile)).then(function(res) {
+                    results.push.apply(results, res);
+                });
+            });
+        }, Promise.resolve()).then(function() { return results; });
+    }
+
+    uploadBtn.addEventListener('click', function() { fileInput.click(); });
+    fileInput.addEventListener('change', function() {
+        if (fileInput.files && fileInput.files.length) uploadFiles(fileInput.files);
+        // 允许重复选同一文件
+        try { fileInput.value = ''; } catch (_e) {}
+    });
+
+    // 粘贴：从剪贴板抓取图片/文件
+    // - 同一次粘贴可能带多张图（浏览器把截图 / 多选都塞进 clipboardData.items）；给每张独立递增名，
+    //   避免多个同名 'image.png' 在 UI / 后端日志里难以区分。
+    input.addEventListener('paste', function(ev) {
+        var cd = ev.clipboardData;
+        if (!cd) return;
+        var files = [];
+        if (cd.items) {
+            for (var i = 0; i < cd.items.length; i++) {
+                var it = cd.items[i];
+                if (it.kind === 'file') {
+                    var f = it.getAsFile();
+                    if (f) files.push(f);
+                }
+            }
+        }
+        if (!files.length && cd.files && cd.files.length) {
+            for (var j = 0; j < cd.files.length; j++) files.push(cd.files[j]);
+        }
+        if (files.length) {
+            var ts = Date.now();
+            files.forEach(function(f, idx) {
+                var needRename = !f.name || f.name === 'image.png' || f.name === 'blob';
+                if (!needRename) return;
+                var ext = (f.type === 'image/png') ? '.png'
+                       : (f.type === 'image/jpeg') ? '.jpg'
+                       : (f.type === 'image/webp') ? '.webp'
+                       : (f.type === 'image/gif') ? '.gif'
+                       : '.bin';
+                var newName = 'pasted-' + ts + '-' + (idx + 1) + ext;
+                try { Object.defineProperty(f, 'name', { value: newName, configurable: true }); } catch (_e) {}
+            });
+            ev.preventDefault();
+            uploadFiles(files);
+        }
+    });
+
+    // 拖入：直接拖文件到输入区也支持
+    area.addEventListener('dragover', function(ev) {
+        if (ev.dataTransfer && ev.dataTransfer.types && Array.prototype.indexOf.call(ev.dataTransfer.types, 'Files') >= 0) {
+            ev.preventDefault();
+        }
+    });
+    area.addEventListener('drop', function(ev) {
+        if (ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files.length) {
+            ev.preventDefault();
+            uploadFiles(ev.dataTransfer.files);
+        }
+    });
+
+    var controller = {
+        getUuids: function() {
+            return state.items.filter(function(i) { return i.uuid && !i.error; }).map(function(i) { return i.uuid; });
+        },
+        getPendingDescriptors: function() {
+            return state.items.slice();
+        },
+        /** 返回已成功上传、可附带发送的附件元信息（供消息气泡内直接预览用）。*/
+        getReadyAttachments: function() {
+            return state.items.filter(function(i) { return i.uuid && !i.error && !i.uploading; }).map(function(i) {
+                return { uuid: i.uuid, name: i.name, kind: i.kind, size: i.size, mime: i.mime };
+            });
+        },
+        hasPending: function() {
+            return state.items.some(function(i) { return i.uploading; });
+        },
+        clear: function() {
+            // 清空时不删除服务器上的附件（因为已经随消息发出，作为该会话的历史）
+            state.items.forEach(function(it) { if (it.thumbUrl && it.thumbUrl.indexOf('blob:') === 0) try { URL.revokeObjectURL(it.thumbUrl); } catch (_e) {} });
+            state.items = [];
+            renderChips();
+        },
+        uploadFile: uploadFile,
+    };
+    area._edgeopsAttachCtl = controller;
+    return controller;
+}
+
+/**
+ * 渲染一段「已随当前用户消息附带的附件」预览 HTML，用于用户消息气泡内的即时反馈。
+ * 图片用缩略图（直接请求 /api/ai/attachments/<uuid>），文本附件显示为带扩展名徽标的链接。
+ * 调用者负责在外层 msg bubble innerHTML 后拼接此字符串。
+ */
+function edgeopsRenderAttachmentsInline(attachments) {
+    if (!attachments || !attachments.length) return '';
+    var html = '<div class="chat-user-attachments" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px">';
+    attachments.forEach(function(a) {
+        var url = (API && API.buildChatAttachmentUrl) ? API.buildChatAttachmentUrl(a.uuid) : ('/api/ai/attachments/' + encodeURIComponent(a.uuid));
+        var name = esc(a.name || t('ui.attach.unnamed'));
+        if (a.kind === 'image') {
+            html += '<a href="' + url + '" target="_blank" title="' + name + '"><img class="chat-attachment-image-inline" src="' + url + '" alt="' + name + '"></a>';
+        } else {
+            var icon = a.kind === 'markdown' ? 'M' : (a.kind === 'text' ? 'T' : '📄');
+            html += '<a class="chat-attachment-chip" href="' + url + '" target="_blank" style="text-decoration:none;color:inherit">' +
+                    '<span class="chip-icon">' + esc(icon) + '</span>' +
+                    '<span class="chip-label">' + name + '</span>' +
+                    '</a>';
+        }
+    });
+    html += '</div>';
+    return html;
+}
+
+/**
+ * 对已渲染的聊天消息 HTML 做附件增强：把形如
+ *   <li>`name.png`（image · xxx）· uuid: <code>UUID</code></li>
+ * 的条目中的 image 类附件转换为内联缩略图；非 image 的保持原状但把 uuid 改成可点击的下载链接。
+ * 仅处理有 📎 附件标记的消息，避免误伤。
+ */
+function edgeopsEnhanceAttachmentList(rootEl) {
+    if (!rootEl) return;
+    // 仅对包含「📎 附件」标记的消息做增强
+    var needs = rootEl.querySelectorAll('li');
+    for (var i = 0; i < needs.length; i++) {
+        var li = needs[i];
+        var text = li.textContent || '';
+        var m = /uuid[:：]\s*([0-9a-fA-F-]{8,})/.exec(text);
+        if (!m) continue;
+        var uuid = m[1];
+        var url = (API && API.buildChatAttachmentUrl) ? API.buildChatAttachmentUrl(uuid) : ('/api/ai/attachments/' + encodeURIComponent(uuid));
+        var isImage = /\bimage\b/.test(text) || /\.(png|jpe?g|gif|webp|bmp)/i.test(text);
+        // 避免重复增强
+        if (li.querySelector('.chat-attachment-image-inline') || li.querySelector('.chat-attachment-dl-link')) continue;
+        if (isImage) {
+            var img = document.createElement('img');
+            img.className = 'chat-attachment-image-inline';
+            img.src = url;
+            img.alt = uuid;
+            img.loading = 'lazy';
+            var link = document.createElement('a');
+            link.href = url;
+            link.target = '_blank';
+            link.appendChild(img);
+            li.appendChild(document.createElement('br'));
+            li.appendChild(link);
+        } else {
+            var a = document.createElement('a');
+            a.href = url;
+            a.target = '_blank';
+            a.textContent = t('ui.attach.downloadBracket');
+            a.className = 'chat-attachment-dl-link';
+            a.style.marginLeft = '6px';
+            li.appendChild(a);
+        }
+    }
+}
+
+/**
+ * 把消息正文里形如 [title](artifact:UUID) 的 markdown 链接增强为下载卡片。
+ * 渲染后 DOM：<a href="artifact:UUID">title</a>，本函数将其替换为带下载按钮的卡片，
+ * 并在首次处理时异步拉 meta（文件数/大小/kind）补全展示。
+ */
+function edgeopsFormatArtifactSize(bytes) {
+    var b = parseInt(bytes, 10) || 0;
+    if (b < 1024) return b + ' B';
+    if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
+    if (b < 1024 * 1024 * 1024) return (b / (1024 * 1024)).toFixed(2) + ' MB';
+    return (b / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+
+function edgeopsEnhanceArtifactLinks(rootEl) {
+    if (!rootEl || !rootEl.querySelectorAll) return;
+    var links = rootEl.querySelectorAll('a[href^="artifact:"]');
+    if (!links || !links.length) return;
+    Array.prototype.forEach.call(links, function(a) {
+        if (!a || a.getAttribute('data-artifact-enhanced') === '1') return;
+        var href = a.getAttribute('href') || '';
+        var uuid = href.substring('artifact:'.length).trim();
+        if (!uuid || !/^[0-9a-fA-F]{8,}$/.test(uuid)) return;
+
+        var rawTitle = (a.textContent || '').replace(/^[📦\s]+/, '').trim() || t('ui.attach.artifactDefault');
+        var dlUrl = (API && API.buildArtifactDownloadUrl) ? API.buildArtifactDownloadUrl(uuid) : ('/api/ai/artifacts/' + encodeURIComponent(uuid) + '/download');
+
+        var card = document.createElement('div');
+        card.className = 'artifact-download-card';
+        card.setAttribute('data-artifact-uuid', uuid);
+        card.innerHTML =
+            '<div class="artifact-icon">📦</div>' +
+            '<div class="artifact-main">' +
+                '<div class="artifact-title"></div>' +
+                '<div class="artifact-meta">' + t('ui.attach.preparing') + '</div>' +
+            '</div>' +
+            '<a class="artifact-dl-btn" href="' + dlUrl + '" download target="_blank" rel="noopener">' + t('artifact.download') + '</a>';
+        card.querySelector('.artifact-title').textContent = rawTitle;
+
+        // 用卡片替换原链接节点
+        if (a.parentNode) a.parentNode.replaceChild(card, a);
+        card.setAttribute('data-artifact-enhanced', '1');
+
+        if (API && API.getArtifactMeta) {
+            API.getArtifactMeta(uuid).then(function(resp) {
+                var art = resp && resp.artifact;
+                if (!art) return;
+                var titleEl = card.querySelector('.artifact-title');
+                if (titleEl && art.title) titleEl.textContent = art.title;
+                var metaEl = card.querySelector('.artifact-meta');
+                if (metaEl) {
+                    var parts = [];
+                    parts.push(art.kind === 'single_file' ? t('ui.attach.singleFile') : t('ui.attach.bundleN', { n: art.file_count || 0 }));
+                    parts.push(edgeopsFormatArtifactSize(art.total_bytes));
+                    if (art.kind === 'bundle') parts.push(t('ui.attach.downloadTgz'));
+                    if (art.entry_file) parts.push(t('ui.attach.entry', { path: art.entry_file }));
+                    metaEl.textContent = parts.join(' · ');
+                }
+                // 预览按钮：对 HTML / Markdown / TXT / CSV / JSON / 图片 / PDF 等均支持"站内模态预览"
+                var entry = art.entry_file || '';
+                var canPreview = /\.(html?|md|markdown|mdx|txt|log|csv|tsv|json|xml|ya?ml|ini|toml|svg|png|jpe?g|gif|webp|bmp|ico|pdf)$/i.test(entry);
+                if (canPreview && !card.querySelector('.artifact-preview-btn')) {
+                    var pv = document.createElement('button');
+                    pv.type = 'button';
+                    pv.className = 'artifact-preview-btn';
+                    pv.textContent = t('ui.attach.preview');
+                    pv.addEventListener('click', function() {
+                        edgeopsOpenArtifactPreview(uuid, art);
+                    });
+                    card.appendChild(pv);
+                }
+            }).catch(function() {
+                var metaEl = card.querySelector('.artifact-meta');
+                if (metaEl) metaEl.textContent = t('ui.attach.metaFailed');
+            });
+        }
+    });
+}
+
+/** 流式/增量渲染后补做附件与 artifact 卡片化（会话列表全量渲染在 edgeopsRenderSessionMessages 里已做） */
+function edgeopsEnhanceChatMessageArtifacts(rootEl) {
+    if (!rootEl) return;
+    try { edgeopsEnhanceAttachmentList(rootEl); } catch (_e) {}
+    try { edgeopsEnhanceChatAttachmentLinks(rootEl); } catch (_e1) {}
+    try { edgeopsEnhanceArtifactLinks(rootEl); } catch (_e2) {}
+}
+
+/**
+ * 修正消息内 /api/ai/attachments/<uuid> 链接/图片的 token，并在附件链接旁内联预览图。
+ */
+function edgeopsEnhanceChatAttachmentLinks(rootEl) {
+    if (!rootEl || !rootEl.querySelectorAll) return;
+    rootEl.querySelectorAll('img[src*="/api/ai/attachments/"]').forEach(function(img) {
+        var src = img.getAttribute('src') || '';
+        var fixed = edgeopsRewriteChatAttachmentUrl(src);
+        if (fixed && fixed !== src) img.setAttribute('src', fixed);
+    });
+    rootEl.querySelectorAll('a[href*="/api/ai/attachments/"]').forEach(function(a) {
+        if (a.getAttribute('data-attachment-enhanced') === '1') return;
+        var href = a.getAttribute('href') || '';
+        var fixed = edgeopsRewriteChatAttachmentUrl(href);
+        if (fixed) a.setAttribute('href', fixed);
+        var uuid = edgeopsExtractAttachmentUuidFromUrl(fixed || href);
+        if (!uuid) return;
+        a.setAttribute('data-attachment-enhanced', '1');
+        var imgUrl = fixed || href;
+        if (a.closest('.chat-fetched-image-wrap')) return;
+        var wrap = document.createElement('div');
+        wrap.className = 'chat-fetched-image-wrap';
+        wrap.style.marginTop = '8px';
+        var img = document.createElement('img');
+        img.className = 'chat-attachment-image-inline chat-md-inline-image';
+        img.src = imgUrl;
+        img.alt = (a.textContent || '').trim() || 'image';
+        img.loading = 'lazy';
+        wrap.appendChild(img);
+        if (a.parentNode) a.parentNode.insertBefore(wrap, a.nextSibling);
+    });
+}
+
+(function edgeopsInstallArtifactLinkClickGuard() {
+    if (window._edgeopsArtifactLinkGuard) return;
+    window._edgeopsArtifactLinkGuard = true;
+    document.addEventListener('click', function(e) {
+        var a = e.target && e.target.closest && e.target.closest('a[href^="artifact:"]');
+        if (!a || a.getAttribute('data-artifact-enhanced') === '1') return;
+        var scope = a.closest('.chat-message') || a.closest('.message-content');
+        if (!scope) return;
+        e.preventDefault();
+        try { edgeopsEnhanceArtifactLinks(scope); } catch (_e) {}
+    }, true);
+})();
+
+/**
+ * AI 成果物站内预览：根据 entry_file 扩展名选择渲染方式，全部在当前 Web 页面的模态窗口里完成。
+ *  - HTML / HTM → iframe srcdoc（bundle 的相对资源 src/href 自动重写为 /api/ai/artifacts/.../file?path=...）
+ *  - Markdown / MDX → markdownToHtml 渲染到 DIV
+ *  - TXT / LOG / YAML / XML / INI / TOML → <pre> 文本
+ *  - CSV / TSV → 简易表格（最多 500 行）
+ *  - JSON → JSON.parse + 缩进输出
+ *  - SVG / 图片 → <img>
+ *  - PDF → <iframe>（浏览器内置查看器）
+ *
+ * 后端 `/file` 端点对常见 MIME 返回 inline Content-Disposition（见 api/ai_artifacts.py），
+ * 因此 iframe/img src 可以直接预览而不会弹出下载对话框。
+ */
+function edgeopsFetchArtifactText(uuid, relPath) {
+    var url = '/api/ai/artifacts/' + encodeURIComponent(uuid) + '/file?path=' + encodeURIComponent(relPath || '');
+    var headers = {};
+    if (API && API.token) headers['Authorization'] = 'Bearer ' + API.token;
+    return fetch(url, { headers: headers, credentials: 'same-origin' }).then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+    });
+}
+
+/**
+ * 把 artifact HTML 中的相对 src/href 重写为 artifact file URL（带 token），让 iframe srcdoc
+ * 能正确加载同 artifact 内的子资源（CSS / JS / 图片 / libs/ 下的 vendor 等）。
+ *  - 绝对 URL / data: / blob: / 以 / 开头的路径保持不变
+ *  - 前导 `./` / `../` 会被规范化掉再拼 file?path=... ，避免后端校验过严
+ *  - srcdoc 没有 base URL，相对引用一律打不开 → 故对所有 HTML 预览统一调用
+ */
+function edgeopsRewriteArtifactHtmlRefs(html, uuid) {
+    var tokenQuery = (API && API.token) ? ('?token=' + encodeURIComponent(API.token)) : '';
+    function rewriteOne(url) {
+        if (!url) return url;
+        var trimmed = String(url).trim();
+        if (!trimmed) return url;
+        if (/^(https?:|data:|blob:|mailto:|tel:|javascript:|#|\/\/)/i.test(trimmed)) return url;
+        if (trimmed.charAt(0) === '/') return url;
+        // 拆成 path + 查询/hash，分别处理
+        var hashIdx = trimmed.indexOf('#');
+        var hash = '';
+        if (hashIdx >= 0) { hash = trimmed.slice(hashIdx); trimmed = trimmed.slice(0, hashIdx); }
+        var queryIdx = trimmed.indexOf('?');
+        var query = '';
+        if (queryIdx >= 0) { query = trimmed.slice(queryIdx); trimmed = trimmed.slice(0, queryIdx); }
+        // 规范化：吸收前导 ./，连续的 ./ 也清掉；`../` 直接返回原值（视为越界，浏览器会自己 404）
+        var normalized = trimmed.replace(/\\/g, '/').replace(/^\/+/, '');
+        while (normalized.indexOf('./') === 0) normalized = normalized.slice(2);
+        if (normalized.indexOf('../') === 0 || normalized.indexOf('/../') !== -1) return url;
+        if (!normalized) return url;
+        // 路径式 URL：与"新窗口打开"按钮一致，浏览器解析相对路径时 base 自然
+        var encoded = normalized.split('/').map(function(seg) { return encodeURIComponent(seg); }).join('/');
+        var out = '/api/ai/artifacts/' + encodeURIComponent(uuid) + '/files/' + encoded + tokenQuery;
+        // 业务用 query/hash 拼回去（不会影响 path）
+        if (query) out += (tokenQuery ? '&' : '?') + '_q=' + encodeURIComponent(query.slice(1));
+        if (hash) out += hash;
+        return out;
+    }
+    return String(html || '').replace(/\b(src|href)\s*=\s*(['"])([^'"]*)\2/gi, function(_m, attr, q, v) {
+        return attr + '=' + q + rewriteOne(v) + q;
+    });
+}
+
+function edgeopsCsvToTableHtml(text, delim) {
+    var d = delim || ',';
+    var lines = String(text || '').split(/\r?\n/);
+    // 去掉完全空行
+    while (lines.length && !lines[lines.length - 1]) lines.pop();
+    if (!lines.length) return '<div class="edgeops-artifact-preview-empty">' + t('artifact.emptyFile') + '</div>';
+    function parseLine(line) {
+        var out = [], cur = '', inQ = false;
+        for (var i = 0; i < line.length; i++) {
+            var ch = line.charAt(i);
+            if (inQ) {
+                if (ch === '"') {
+                    if (line.charAt(i + 1) === '"') { cur += '"'; i++; } else { inQ = false; }
+                } else { cur += ch; }
+            } else {
+                if (ch === '"') inQ = true;
+                else if (ch === d) { out.push(cur); cur = ''; }
+                else cur += ch;
+            }
+        }
+        out.push(cur);
+        return out;
+    }
+    var header = parseLine(lines[0]);
+    var maxRows = 500;
+    var bodyLines = lines.slice(1, 1 + maxRows);
+    var html = '<table class="edgeops-artifact-preview-table"><thead><tr>';
+    header.forEach(function(h) { html += '<th>' + esc(h) + '</th>'; });
+    html += '</tr></thead><tbody>';
+    bodyLines.forEach(function(line) {
+        var row = parseLine(line);
+        html += '<tr>';
+        for (var i = 0; i < Math.max(header.length, row.length); i++) {
+            html += '<td>' + esc(row[i] != null ? row[i] : '') + '</td>';
+        }
+        html += '</tr>';
+    });
+    html += '</tbody></table>';
+    if (lines.length - 1 > maxRows) {
+        html += '<div class="edgeops-artifact-preview-truncated">' + t('artifact.csvTruncated', { maxRows: maxRows, total: lines.length - 1 }) + '</div>';
+    }
+    return html;
+}
+
+function edgeopsCloseArtifactPreview() {
+    var el = document.getElementById('edgeopsArtifactPreviewOverlay');
+    if (el && el.parentNode) el.parentNode.removeChild(el);
+    if (window._edgeopsArtifactPreviewKeyHandler) {
+        document.removeEventListener('keydown', window._edgeopsArtifactPreviewKeyHandler);
+        window._edgeopsArtifactPreviewKeyHandler = null;
+    }
+}
+
+function edgeopsOpenArtifactPreview(uuid, meta) {
+    if (!uuid) return;
+    edgeopsCloseArtifactPreview();
+    var overlay = document.createElement('div');
+    overlay.id = 'edgeopsArtifactPreviewOverlay';
+    overlay.className = 'modal-overlay edgeops-artifact-preview-overlay';
+    overlay.innerHTML = ''
+        + '<div class="modal edgeops-artifact-preview-modal">'
+        + '<div class="modal-header edgeops-artifact-preview-header">'
+        + '<h3 class="edgeops-artifact-preview-title">' + t('artifact.previewTitle') + '</h3>'
+        + '<div class="edgeops-artifact-preview-actions">'
+        + '<a class="btn btn-sm edgeops-artifact-preview-download" target="_blank" rel="noopener">' + t('artifact.download') + '</a>'
+        + '<button type="button" class="btn btn-sm edgeops-artifact-preview-open">' + t('artifact.newWindow') + '</button>'
+        + '<button type="button" class="modal-close edgeops-artifact-preview-close" aria-label="' + esc(t('artifact.close')) + '">&times;</button>'
+        + '</div>'
+        + '</div>'
+        + '<div class="modal-body edgeops-artifact-preview-body"><div class="edgeops-artifact-preview-loading">' + t('artifact.loading') + '</div></div>'
+        + '</div>';
+    document.body.appendChild(overlay);
+
+    var titleEl = overlay.querySelector('.edgeops-artifact-preview-title');
+    var bodyEl = overlay.querySelector('.edgeops-artifact-preview-body');
+    var dlEl = overlay.querySelector('.edgeops-artifact-preview-download');
+    var openBtn = overlay.querySelector('.edgeops-artifact-preview-open');
+    overlay.querySelector('.edgeops-artifact-preview-close').addEventListener('click', edgeopsCloseArtifactPreview);
+    overlay.addEventListener('click', function(ev) { if (ev.target === overlay) edgeopsCloseArtifactPreview(); });
+    window._edgeopsArtifactPreviewKeyHandler = function(ev) { if (ev.key === 'Escape') edgeopsCloseArtifactPreview(); };
+    document.addEventListener('keydown', window._edgeopsArtifactPreviewKeyHandler);
+
+    function applyMeta(art) {
+        if (!art) return;
+        var title = (art.title || 'artifact');
+        if (art.entry_file) title += ' · ' + art.entry_file;
+        titleEl.textContent = title;
+        titleEl.title = title;
+        if (API.buildArtifactDownloadUrl) dlEl.href = API.buildArtifactDownloadUrl(uuid);
+        // 「新窗口打开」必须用路径式 `/files/<rel>`：浏览器会把这个 URL 当 base 解析
+        // HTML 内的 `./libs/x.js` → `/files/libs/x.js`，命中后端 catchall 路由。
+        // `?path=<rel>` 形式作 base 时，`./libs/x.js` 会被解析成兄弟路径 `/libs/x.js`，404。
+        var openUrl = API.buildArtifactPathUrl
+            ? API.buildArtifactPathUrl(uuid, art.entry_file || '')
+            : (API.buildArtifactFileUrl ? API.buildArtifactFileUrl(uuid, art.entry_file || '') : '');
+        openBtn.onclick = function() { if (openUrl) window.open(openUrl, '_blank', 'noopener'); };
+        renderContent(art);
+    }
+
+    function showError(msg) {
+        bodyEl.innerHTML = '<div class="edgeops-artifact-preview-error"></div>';
+        bodyEl.querySelector('.edgeops-artifact-preview-error').textContent = msg || t('artifact.previewFailed');
+    }
+
+    function renderContent(art) {
+        var path = art.entry_file || '';
+        var lower = String(path).toLowerCase();
+        // viewUrl 用于 PDF / 图片直接走 iframe.src / img.src —— 这类资源没有"内部相对引用"
+        // 解析问题；但为了与「新窗口打开」一致用路径式，token 留在 query 更可读。
+        var viewUrl = API.buildArtifactPathUrl
+            ? API.buildArtifactPathUrl(uuid, path)
+            : (API.buildArtifactFileUrl ? API.buildArtifactFileUrl(uuid, path) : '');
+        bodyEl.innerHTML = '<div class="edgeops-artifact-preview-loading">' + t('artifact.loading') + '</div>';
+
+        if (/\.(png|jpe?g|gif|webp|bmp|ico|svg)$/i.test(lower)) {
+            bodyEl.innerHTML = '<div class="edgeops-artifact-preview-img-wrap"><img class="edgeops-artifact-preview-img" alt=""></div>';
+            var img = bodyEl.querySelector('img');
+            img.onerror = function() { showError(t('artifact.imageLoadFailed')); };
+            img.src = viewUrl;
+            return;
+        }
+        if (/\.pdf$/i.test(lower)) {
+            var frame = document.createElement('iframe');
+            frame.className = 'edgeops-artifact-preview-frame';
+            frame.src = viewUrl;
+            bodyEl.innerHTML = '';
+            bodyEl.appendChild(frame);
+            return;
+        }
+        if (/\.(html?|md|markdown|mdx|txt|log|csv|tsv|json|xml|ya?ml|ini|toml)$/i.test(lower)) {
+            edgeopsFetchArtifactText(uuid, path).then(function(text) {
+                if (/\.html?$/i.test(lower)) {
+                    // srcdoc 没有 base URL，所有相对引用（./libs/x.js、css/y.css、img/z.png …）
+                    // 都解析失败 → 不分 kind，统一改写为带 token 的 /file?path=... 后端绝对路径。
+                    var src = edgeopsRewriteArtifactHtmlRefs(text, uuid);
+                    var iframe = document.createElement('iframe');
+                    iframe.className = 'edgeops-artifact-preview-frame';
+                    iframe.setAttribute('sandbox', 'allow-scripts allow-popups allow-forms');
+                    iframe.srcdoc = src;
+                    bodyEl.innerHTML = '';
+                    bodyEl.appendChild(iframe);
+                } else if (/\.(md|markdown|mdx)$/i.test(lower)) {
+                    bodyEl.innerHTML = '<div class="edgeops-artifact-preview-markdown"></div>';
+                    bodyEl.querySelector('.edgeops-artifact-preview-markdown').innerHTML = markdownToHtml(text);
+                } else if (/\.(csv|tsv)$/i.test(lower)) {
+                    var delim = /\.tsv$/i.test(lower) ? '\t' : ',';
+                    bodyEl.innerHTML = '<div class="edgeops-artifact-preview-table-wrap"></div>';
+                    bodyEl.querySelector('.edgeops-artifact-preview-table-wrap').innerHTML = edgeopsCsvToTableHtml(text, delim);
+                } else if (/\.json$/i.test(lower)) {
+                    var pretty = text;
+                    try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch (_e) {}
+                    bodyEl.innerHTML = '<pre class="edgeops-artifact-preview-text"></pre>';
+                    bodyEl.querySelector('pre').textContent = pretty;
+                } else {
+                    bodyEl.innerHTML = '<pre class="edgeops-artifact-preview-text"></pre>';
+                    bodyEl.querySelector('pre').textContent = text;
+                }
+            }).catch(function(err) {
+                showError((err && err.message) || t('artifact.fileLoadFailed'));
+            });
+            return;
+        }
+        // 其它类型退化到 iframe 直接加载
+        if (viewUrl) {
+            var frame2 = document.createElement('iframe');
+            frame2.className = 'edgeops-artifact-preview-frame';
+            frame2.src = viewUrl;
+            bodyEl.innerHTML = '';
+            bodyEl.appendChild(frame2);
+        } else {
+            showError(t('artifact.unsupportedType'));
+        }
+    }
+
+    if (meta) {
+        applyMeta(meta);
+    } else if (API && API.getArtifactMeta) {
+        API.getArtifactMeta(uuid).then(function(resp) {
+            if (resp && resp.artifact) applyMeta(resp.artifact);
+            else showError(t('artifact.noMeta'));
+        }).catch(function(err) {
+            showError((err && err.message) || t('artifact.loadFailed'));
+        });
+    }
+}
+
+/**
+ * UI Action 本地缓存：防止"选择卡一闪而过"。
+ *
+ * 选择卡（ask_user_choice 等）原本通过两条路径存在：
+ *   a) 流式 `ev.ui_action` 事件 → 前端实时 appendChild 到消息气泡（仅 DOM，不落库）；
+ *   b) 后端 `_embed_ui_actions_into_content` 把哨兵注释嵌入 assistant content 落 DB，
+ *      loadSession 重渲时用 `edgeopsExtractUIActions` + `edgeopsAttachPersistedChoiceCards` 还原。
+ * 某些边界路径（模型分多轮 tool_call、流式中断、旧会话迁移、后端未部署 embed 版本等）b 可能缺失，
+ * 一旦 `loadSession()` 在流式结束后立即刷掉 box.innerHTML，用户会看到卡片"只闪一下就消失"。
+ * 为此在前端 localStorage 做一份**按 sessionId 分桶**的兜底缓存：
+ * - 流式收到 `ev.ui_action` 时写入；
+ * - `edgeopsRenderSessionMessages` 渲染历史后，若最后一条 assistant 没还原出选择卡，就用缓存补渲；
+ * - 用户作答（新 user 消息）时清空该 session 的缓存。
+ */
+function _edgeopsUAKey(sessionId) {
+    return 'edgeops_ui_actions_' + String(sessionId || 'none');
+}
+function edgeopsSaveUIActionToCache(sessionId, uiAction) {
+    if (!sessionId || !uiAction || typeof uiAction !== 'object') return;
+    try {
+        var key = _edgeopsUAKey(sessionId);
+        var arr = [];
+        try { arr = JSON.parse(localStorage.getItem(key) || '[]'); } catch (_e) { arr = []; }
+        if (!Array.isArray(arr)) arr = [];
+        arr.push({ action: uiAction, ts: Date.now() });
+        if (arr.length > 5) arr = arr.slice(-5);
+        localStorage.setItem(key, JSON.stringify(arr));
+    } catch (_e) { /* localStorage 不可用就算了 */ }
+}
+function edgeopsReadUIActionCache(sessionId) {
+    if (!sessionId) return [];
+    try {
+        var key = _edgeopsUAKey(sessionId);
+        var arr = JSON.parse(localStorage.getItem(key) || '[]');
+        return Array.isArray(arr) ? arr : [];
+    } catch (_e) { return []; }
+}
+function edgeopsClearUIActionCache(sessionId) {
+    if (!sessionId) return;
+    try { localStorage.removeItem(_edgeopsUAKey(sessionId)); } catch (_e) {}
+}
+
+/** 选择题 ui_action 的稳定指纹（同题同选项会去重）。 */
+function edgeopsChoiceCardFingerprint(ua) {
+    if (!ua || ua.action !== 'ask_user_choice') return '';
+    var q = (ua.question || '').toString().replace(/\s+/g, ' ').trim();
+    var opts = Array.isArray(ua.options) ? ua.options : [];
+    var sig = opts.map(function(o, idx) {
+        if (!o) return '';
+        var oid = (o.id != null ? String(o.id) : String.fromCharCode(65 + idx)).trim();
+        var lab = (o.label || '').toString().replace(/\s+/g, ' ').trim();
+        return oid + ':' + lab;
+    }).join('|');
+    var txt = ua.allow_text === false ? '0t' : 't';
+    var flags = (ua.allow_multiple ? 'M' : '') + txt;
+    return q + '\n' + sig + '\n' + flags;
+}
+
+/** 同一消息内多条重复的 ask_user_choice 哨兵，仅保留每组指纹最后一次出现（通常与文末最新询问一致）。 */
+function edgeopsDedupeAskUserChoiceKeepLast(actions) {
+    if (!actions || !actions.length) return actions || [];
+    var lastIdx = {};
+    for (var i = 0; i < actions.length; i++) {
+        var a = actions[i];
+        if (a && a.action === 'ask_user_choice') {
+            var fp = edgeopsChoiceCardFingerprint(a);
+            if (fp) lastIdx[fp] = i;
+        }
+    }
+    var drop = {};
+    for (var j = 0; j < actions.length; j++) {
+        var a2 = actions[j];
+        if (a2 && a2.action === 'ask_user_choice') {
+            var fp2 = edgeopsChoiceCardFingerprint(a2);
+            if (fp2 && lastIdx[fp2] !== j) drop[j] = true;
+        }
+    }
+    return actions.filter(function(_x, k) { return !drop[k]; });
+}
+
+/** 单行摘要省略，用于折叠标题栏 */
+function edgeopsTruncateChatSummary(str, maxLen) {
+    var s = (str == null ? '' : String(str)).replace(/\s+/g, ' ').trim();
+    var n = maxLen || 120;
+    if (s.length <= n) return s;
+    return s.slice(0, Math.max(0, n - 1)) + '…';
+}
+
+/**
+ * 已作答 / 归档的选择题：顶部摘要条 + 默认折叠题干与选项。
+ */
+function edgeopsFinalizeAnsweredChoiceHeader(card, summaryLine) {
+    if (!card) return;
+    var headerEl = card.querySelector('.ai-choice-card-header');
+    var summaryEl = card.querySelector('.ai-choice-header-summary');
+    var toggleBtn = card.querySelector('[data-ai-choice-toggle]');
+    if (!headerEl || !summaryEl || !toggleBtn) return;
+    headerEl.style.display = 'flex';
+    summaryEl.textContent = edgeopsTruncateChatSummary(summaryLine || '', 140);
+    card.classList.add('collapsed', 'has-answered-header');
+    toggleBtn.setAttribute('aria-expanded', 'false');
+    toggleBtn.textContent = t('ui.chat.choiceExpandDetail');
+    toggleBtn.onclick = function() {
+        card.classList.toggle('collapsed');
+        var collapsed = card.classList.contains('collapsed');
+        toggleBtn.setAttribute('aria-expanded', String(!collapsed));
+        toggleBtn.textContent = collapsed ? t('ui.chat.choiceExpandDetail') : t('ui.chat.choiceCollapseDetail');
+    };
+    var fullSum = (summaryLine != null ? String(summaryLine) : '').trim();
+    if (fullSum.length > 140) headerEl.title = fullSum.slice(0, 500);
+}
+
+/**
+ * 从持久化 assistant 内容中解析 ui_action 哨兵注释。
+ * 后端 `_embed_ui_actions_into_content` 写入的格式：
+ *   <!-- EDGEOPS:UI_ACTION:v1 BASE64_JSON -->
+ * 返回 { cleanContent, uiActions: [obj,...] }
+ */
+function edgeopsExtractUIActions(content) {
+    var raw = String(content == null ? '' : content);
+    if (!raw || raw.indexOf('<!-- EDGEOPS:UI_ACTION:v1 ') < 0) {
+        return { cleanContent: raw, uiActions: [] };
+    }
+    var pattern = /<!--\s*EDGEOPS:UI_ACTION:v1\s+([A-Za-z0-9+/=]+)\s*-->/g;
+    var actions = [];
+    var cleaned = raw.replace(pattern, function(_m, b64) {
+        try {
+            var bin = atob(b64);
+            var bytes = new Uint8Array(bin.length);
+            for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            var json = new TextDecoder('utf-8').decode(bytes);
+            var obj = JSON.parse(json);
+            if (obj && obj.action) actions.push(obj);
+        } catch (e) { /* ignore single bad sentinel */ }
+        return '';
+    });
+    return { cleanContent: cleaned.replace(/\s+$/, ''), uiActions: edgeopsDedupeAskUserChoiceKeepLast(actions) };
+}
+
+/**
+ * 从持久化 assistant 内容中解析 TOOL_TRACE 哨兵（与 ai_agent._embed_tool_trace_into_content 成对）。
+ * 返回 { cleanContent, toolTrace: { v, steps } | null }
+ */
+function edgeopsExtractToolTrace(content) {
+    var raw = String(content == null ? '' : content);
+    if (!raw || raw.indexOf('<!-- EDGEOPS:TOOL_TRACE:v1 ') < 0) {
+        return { cleanContent: raw, toolTrace: null };
+    }
+    var pattern = /<!--\s*EDGEOPS:TOOL_TRACE:v1\s+([A-Za-z0-9+/=]+)\s*-->/g;
+    var trace = null;
+    var cleaned = raw.replace(pattern, function(_m, b64) {
+        try {
+            var bin = atob(b64);
+            var bytes = new Uint8Array(bin.length);
+            for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            var json = new TextDecoder('utf-8').decode(bytes);
+            var obj = JSON.parse(json);
+            if (obj && obj.v === 1 && obj.steps && obj.steps.length) trace = obj;
+        } catch (e) { /* ignore */ }
+        return '';
+    });
+    return { cleanContent: cleaned.replace(/\s+$/, ''), toolTrace: trace };
+}
+
+/**
+ * 调用流程已结束：把 CoT 面板收到「已完成」并默认折叠（仍在 DOM 中，可点击展开）。
+ */
+function edgeopsCotCollapsePanelAfterStream(toolsEl) {
+    var panel = toolsEl && toolsEl.querySelector('.ai-cot-panel');
+    if (!panel) return;
+    var body = panel.querySelector('.ai-cot-body');
+    var header = panel.querySelector('.ai-cot-header');
+    if (!body || body.classList.contains('ai-cot-collapsed')) return;
+    body.classList.add('ai-cot-collapsed');
+    panel.classList.add('ai-cot-collapsed');
+    if (header) header.setAttribute('aria-expanded', 'false');
+    var ch = panel.querySelector('.ai-cot-chevron');
+    if (ch) ch.textContent = '\u25b6';
+}
+
+/** 历史消息：按持久化的 steps 回放工具 / 推理面板 */
+function edgeopsReplayPersistedToolTrace(toolsEl, steps) {
+    if (!toolsEl || !steps || !steps.length) return;
+    toolsEl.innerHTML = '';
+    for (var i = 0; i < steps.length; i++) {
+        var s = steps[i];
+        if (!s || !s.type) continue;
+        if (s.type === 'cot') {
+            var text = s.text != null ? String(s.text) : '';
+            if (!text.trim()) continue;
+            var panel = edgeopsGetOrCreateCotPanel(toolsEl);
+            var st = edgeopsGetCotState(panel);
+            st.roundSeq += 1;
+            var r = st.roundSeq;
+            var stepEl = document.createElement('div');
+            stepEl.className = 'ai-cot-step ai-cot-step-reasoning';
+            var headText = typeof t === 'function' ? t('hostAi.cotRoundReasoning', { round: r }) : ('Round ' + r);
+            stepEl.innerHTML = '<div class="ai-cot-step-head">' + esc(headText) + '</div><div class="ai-cot-step-body ai-cot-reasoning-text"></div>';
+            var rb = stepEl.querySelector('.ai-cot-reasoning-text');
+            if (rb) rb.textContent = edgeopsReasoningBufferToPlain(text);
+            var stepsWrap = panel.querySelector('.ai-cot-steps');
+            if (stepsWrap) stepsWrap.appendChild(stepEl);
+            edgeopsCotRefreshHeader(panel);
+            continue;
+        }
+        if (s.type === 'tool' && s.event === 'executing') {
+            edgeopsCotOnToolExecuting(toolsEl, { tool: s.tool, args: s.args });
+            continue;
+        }
+        if (s.type === 'tool' && s.event === 'finished') {
+            edgeopsCotOnToolFinished(toolsEl, {
+                tool: s.tool,
+                action: s.action === 'failed' ? 'failed' : 'completed',
+                result_preview: s.result_preview,
+            });
+        }
+    }
+    edgeopsCotMarkStreamDone(toolsEl);
+    edgeopsCotCollapsePanelAfterStream(toolsEl);
+}
+
+/**
+ * 把已持久化的 ask_user_choice 卡渲染到指定消息节点下方。
+ *
+ * - 若 chosenText 非空（即下一条 user 消息以 `[ID] ...` 形式作答了）：
+ *   卡片进入**已作答（锁定）态**，保留题目与按钮灰显，并追加「已提交：...」，便于回看。
+ * - 否则（用户还没作答）：卡片为**可交互态**，点击即复发同样的回答。
+ *
+ * 该函数用于 loadSession 重绘时还原聊天历史里的选择卡，避免"选后选项卡就消失、上下文看着不完整"。
+ */
+function edgeopsAttachPersistedChoiceCards(messageEl, uiActions, submitFn, chosenText, opts) {
+    opts = opts || {};
+    if (!messageEl || !uiActions || !uiActions.length) return;
+    var mc = messageEl.querySelector('.message-content');
+    if (!mc) return;
+    // 避免同一节点上被同组 uiActions 重复挂卡（兜底逻辑与循环里都可能触发）
+    if (mc.querySelector('.ai-choice-card.persisted')) return;
+    var choicesOnly = uiActions.filter(function(ua) { return ua && ua.action === 'ask_user_choice'; });
+    if (!choicesOnly.length) return;
+    var staleByLaterAssistant = !!opts.staleByLaterAssistant;
+    var skipAnsweredFpBefore = opts.skipAnsweredFpBefore || null;
+    choicesOnly.forEach(function(ua, idx) {
+        var fp = edgeopsChoiceCardFingerprint(ua);
+        if (fp && skipAnsweredFpBefore && skipAnsweredFpBefore[fp]) return;
+        var staleWithinSameMessage = idx < choicesOnly.length - 1;
+        var forceHistorical = staleByLaterAssistant || staleWithinSameMessage;
+        var card = edgeopsRenderChoiceCard(ua, function(text) {
+            if (typeof submitFn === 'function') submitFn(text);
+        });
+        if (!card) return;
+        card.classList.add('persisted');
+        var bodyW = card.querySelector('.ai-choice-collapsible-body') || card;
+        if (chosenText) {
+            card.classList.add('locked', 'answered');
+            card.querySelectorAll('button.ai-choice-option').forEach(function(b) { b.disabled = true; });
+            card.querySelectorAll('input').forEach(function(i) { i.disabled = true; });
+            var submitBtn = card.querySelector('.ai-choice-submit');
+            if (submitBtn) submitBtn.disabled = true;
+            var textInputLocked = card.querySelector('.ai-choice-text');
+            if (textInputLocked) textInputLocked.disabled = true;
+            var done = document.createElement('div');
+            done.className = 'ai-choice-done';
+            done.textContent = t('ui.chat.submittedWith', { text: chosenText });
+            bodyW.appendChild(done);
+            edgeopsFinalizeAnsweredChoiceHeader(
+                card,
+                t('ui.chat.choiceCardBarAnswered', { text: chosenText })
+            );
+        } else if (forceHistorical) {
+            card.classList.add('locked', 'answered', 'superseded');
+            card.querySelectorAll('button.ai-choice-option').forEach(function(b) { b.disabled = true; });
+            card.querySelectorAll('input').forEach(function(i) { i.disabled = true; });
+            var submitBtnH = card.querySelector('.ai-choice-submit');
+            if (submitBtnH) submitBtnH.disabled = true;
+            var textInputH = card.querySelector('.ai-choice-text');
+            if (textInputH) textInputH.disabled = true;
+            var doneH = document.createElement('div');
+            doneH.className = 'ai-choice-done';
+            doneH.textContent = t('ui.chat.choiceSuperseded');
+            bodyW.appendChild(doneH);
+            edgeopsFinalizeAnsweredChoiceHeader(
+                card,
+                t('ui.chat.choiceCardBarSuperseded')
+            );
+        } else {
+            var hint = document.createElement('div');
+            hint.className = 'ai-choice-history-hint';
+            hint.textContent = t('ui.chat.choiceReasked');
+            hint.style.cssText = 'margin-top:6px;font-size:11px;color:var(--text-muted,#888);opacity:0.75;';
+            bodyW.appendChild(hint);
+        }
+        mc.appendChild(card);
+    });
+}
+
+function edgeopsRenderSessionMessages(box, msgs, formatter, sessionId, options) {
+    if (!box) return;
+    var submitFn = options && options.onChoice;
+    var list = msgs || [];
+    // 先对每条 assistant 原始 content 解析 UI_ACTION、TOOL_TRACE 哨兵，再 stripThinkTags，
+    // 避免哨兵被 think 规则误伤或留在正文中。
+    var perMsg = list.map(function(m) {
+        var raw = m && m.content != null ? String(m.content) : '';
+        if (m && m.role === 'assistant') {
+            var extracted = edgeopsExtractUIActions(raw);
+            var extractedT = edgeopsExtractToolTrace(extracted.cleanContent);
+            return {
+                raw: raw,
+                clean: stripThinkTags(extractedT.cleanContent),
+                uiActions: extracted.uiActions,
+                toolTrace: extractedT.toolTrace,
+            };
+        }
+        return { raw: raw, clean: raw, uiActions: [], toolTrace: null };
+    });
+    box.innerHTML = list.map(function(m, idx) {
+        var p = perMsg[idx];
+        var sidAttr = sessionId != null ? ' data-session-id="' + esc(String(sessionId)) + '"' : '';
+        var midAttr = (m && m.id != null) ? ' data-message-id="' + esc(String(m.id)) + '"' : '';
+        if (m && m.role === 'assistant' && p.toolTrace && p.toolTrace.steps && p.toolTrace.steps.length) {
+            var tsP = edgeopsFormatChatTimestamp(m && m.created_at);
+            return '<div class="chat-message assistant"' + sidAttr + midAttr + '><div class="avatar">A</div>'
+                + '<div class="message-content"><div class="ai-reply-stream ai-reply-persisted">'
+                + '<div class="ai-reply-tools"></div>'
+                + '<div class="ai-reply-text message-body">' + formatter(p.clean) + '</div>'
+                + '</div><div class="message-time">' + esc(tsP) + '</div></div></div>';
+        }
+        return '<div class="chat-message ' + (m.role || 'assistant') + '"' + sidAttr + midAttr + '><div class="avatar">' + ((m && m.role) === 'user' ? 'U' : 'A') + '</div>' + edgeopsRenderMessageBubble(formatter(p.clean), m && m.created_at) + '</div>';
+    }).join('');
+    var lastUnansweredAssistantNode = null;
+    var lastUnansweredHadCard = false;
+    var choiceFpAnsweredInEarlierTurn = {};
+    box.querySelectorAll('.chat-message').forEach(function(node, idx) {
+        var m = list[idx] || {};
+        var p = perMsg[idx] || { raw: '', clean: '', uiActions: [], toolTrace: null };
+        edgeopsSetMessagePersistenceMeta(node, sessionId, m.id, p.clean);
+        if (m && m.role === 'assistant') {
+            var next = list[idx + 1];
+            // 若紧随的下一条是 user 且形如 `[A] xxx`，视为这道选择题已被**按钮**作答（卡进入 locked 「已提交」态）
+            var chosenText = '';
+            // 只要紧随其后有 user 消息（无论按钮回填还是用户自由文字补充提交），都视为这张卡已被「响应过」，
+            // 后续轮次再发起同指纹的 ask_user_choice 时直接跳过渲染，避免同一张卡反复出现。
+            var userRepliedAfter = false;
+            if (next && next.role === 'user' && typeof next.content === 'string') {
+                userRepliedAfter = true;
+                var firstLine = next.content.split(/\r?\n/)[0] || '';
+                if (/^\s*\[[A-Za-z0-9_\-]{1,32}\]\s+\S/.test(firstLine)) {
+                    chosenText = firstLine.trim();
+                }
+            }
+            var hasLaterAssistant = false;
+            for (var j = idx + 1; j < list.length; j++) {
+                if ((list[j] || {}).role === 'assistant') {
+                    hasLaterAssistant = true;
+                    break;
+                }
+            }
+            if (p.uiActions.length) {
+                edgeopsAttachPersistedChoiceCards(node, p.uiActions, submitFn, chosenText, {
+                    staleByLaterAssistant: hasLaterAssistant,
+                    skipAnsweredFpBefore: choiceFpAnsweredInEarlierTurn,
+                });
+            }
+            if (p.toolTrace && p.toolTrace.steps && p.toolTrace.steps.length) {
+                var tpEl = node.querySelector('.ai-reply-tools');
+                if (tpEl) {
+                    edgeopsReplayPersistedToolTrace(tpEl, p.toolTrace.steps);
+                    var rt = node.querySelector('.ai-reply-text');
+                    if (rt) try { edgeopsEnhanceChatMessageArtifacts(rt); } catch (_ert) {}
+                }
+            }
+            // 关键修复：用户对这张卡做出过任何形式的回应（按钮 [A] xxx 或自由文字补充）后，
+            // 把它的指纹记入 choiceFpAnsweredInEarlierTurn，下一条 assistant 若 embed 了同指纹的
+            // ask_user_choice，就会被 edgeopsAttachPersistedChoiceCards 的 skipAnsweredFpBefore 跳掉。
+            if (userRepliedAfter && p.uiActions.length) {
+                for (var u = 0; u < p.uiActions.length; u++) {
+                    var uai = p.uiActions[u];
+                    if (uai && uai.action === 'ask_user_choice') {
+                        var gfp = edgeopsChoiceCardFingerprint(uai);
+                        if (gfp) choiceFpAnsweredInEarlierTurn[gfp] = true;
+                    }
+                }
+            }
+            // 「未作答」必须同时满足：紧随其后没有 user 回应**且**没有 chosenText（按钮回填）。
+            // 之前只看 chosenText，导致用户用补充输入框写了自由文字（不带 [A] 前缀）时，
+            // 这条 assistant 仍被当成「未作答」、最后又被 localStorage fallback 塞了一张幽灵卡进来。
+            if (!userRepliedAfter && !chosenText) {
+                lastUnansweredAssistantNode = node;
+                lastUnansweredHadCard = p.uiActions.length > 0;
+            } else {
+                lastUnansweredAssistantNode = null;
+                lastUnansweredHadCard = false;
+            }
+        }
+        try { edgeopsEnhanceAttachmentList(node); } catch (_e) {}
+        try { edgeopsEnhanceChatAttachmentLinks(node); } catch (_e1) {}
+        try { edgeopsEnhanceArtifactLinks(node); } catch (_e2) {}
+    });
+    // 兜底：最后一条 **未作答** 的 assistant 若没从 DB content 里解析出选择卡（后端 embed 遗漏 /
+    // 旧会话迁移等），再尝试用 localStorage 缓存里本 session 最近一次 ask_user_choice 还原。
+    // 双保险：缓存里那张的指纹如果在 choiceFpAnsweredInEarlierTurn 里说明用户已回应过，
+    // 不要再贴回来；同时只有该缓存条目本身比上一条 user 消息更新（从更晚的 stream 推过来）才有意义。
+    try {
+        if (lastUnansweredAssistantNode && !lastUnansweredHadCard && sessionId != null) {
+            var cached = edgeopsReadUIActionCache(sessionId);
+            if (cached && cached.length) {
+                var lastEntry = cached[cached.length - 1] || {};
+                var lastUA = lastEntry.action;
+                var entryTs = Number(lastEntry.ts || 0);
+                var lastUserTs = 0;
+                for (var lu = list.length - 1; lu >= 0; lu--) {
+                    var lm = list[lu];
+                    if (lm && lm.role === 'user' && lm.created_at) {
+                        lastUserTs = Date.parse(lm.created_at) || 0;
+                        break;
+                    }
+                }
+                if (lastUA && lastUA.action === 'ask_user_choice') {
+                    var fpL = edgeopsChoiceCardFingerprint(lastUA);
+                    var alreadyAnswered = !!(fpL && choiceFpAnsweredInEarlierTurn[fpL]);
+                    var staleVsLastUser = lastUserTs && entryTs && entryTs < lastUserTs;
+                    if (alreadyAnswered || staleVsLastUser) {
+                        // 缓存里这张卡已经被用户回应过 / 或比最近一条 user 消息还旧，
+                        // 直接清掉缓存，避免下次刷新又被错误塞回 UI。
+                        try { edgeopsClearUIActionCache(sessionId); } catch (_ec) {}
+                    } else {
+                        edgeopsAttachPersistedChoiceCards(lastUnansweredAssistantNode, [lastUA], submitFn);
+                    }
+                }
+            }
+        }
+    } catch (_e3) {}
+}
+
+function edgeopsReplaceSingleDiagramSource(content, oldSource, newSource) {
+    var raw = String(content == null ? '' : content);
+    var before = String(oldSource == null ? '' : oldSource);
+    var after = String(newSource == null ? '' : newSource);
+    if (!raw || !before || before === after) return '';
+    var first = raw.indexOf(before);
+    if (first < 0) return '';
+    if (raw.indexOf(before, first + before.length) >= 0) return '';
+    return raw.slice(0, first) + after + raw.slice(first + before.length);
+}
+
+function edgeopsResolveMessagePersistenceMeta(messageEl) {
+    if (!messageEl || !API.getAISession) return Promise.resolve(null);
+    var sessionId = parseInt(messageEl.getAttribute('data-session-id') || '', 10);
+    var messageId = parseInt(messageEl.getAttribute('data-message-id') || '', 10);
+    if (sessionId && messageId) return Promise.resolve({ sessionId: sessionId, messageId: messageId });
+    if (!sessionId || !messageEl._edgeopsPersistContent) return Promise.resolve(null);
+    if (messageEl._edgeopsPersistResolvePromise) return messageEl._edgeopsPersistResolvePromise;
+    messageEl._edgeopsPersistResolvePromise = API.getAISession(sessionId).then(function(r) {
+        var msgs = (r.session && r.session.messages) || [];
+        for (var i = msgs.length - 1; i >= 0; i--) {
+            var m = msgs[i] || {};
+            if (m.role !== 'assistant') continue;
+            if (stripThinkTags(m.content || '') !== messageEl._edgeopsPersistContent) continue;
+            edgeopsSetMessagePersistenceMeta(messageEl, sessionId, m.id, messageEl._edgeopsPersistContent);
+            return { sessionId: sessionId, messageId: m.id };
+        }
+        return null;
+    }).catch(function() {
+        return null;
+    }).finally(function() {
+        messageEl._edgeopsPersistResolvePromise = null;
+    });
+    return messageEl._edgeopsPersistResolvePromise;
+}
+
+function edgeopsPersistRepairedDiagramSource(block, oldSource, newSource) {
+    if (!block || !oldSource || !newSource || oldSource === newSource) return;
+    var messageEl = block.closest('.chat-message');
+    if (!messageEl) return;
+    if (!messageEl._edgeopsPersistContent || !API.updateAISessionMessage) return;
+    var saveKey = String(oldSource) + '\n@@EDGEOPS@@\n' + String(newSource);
+    if (!messageEl._edgeopsRepairSavedMap) messageEl._edgeopsRepairSavedMap = {};
+    if (messageEl._edgeopsRepairSavedMap[saveKey]) return;
+    var updated = edgeopsReplaceSingleDiagramSource(messageEl._edgeopsPersistContent, oldSource, newSource);
+    if (!updated) return;
+    messageEl._edgeopsRepairSavedMap[saveKey] = true;
+    edgeopsResolveMessagePersistenceMeta(messageEl).then(function(meta) {
+        if (!meta || !meta.sessionId || !meta.messageId) {
+            delete messageEl._edgeopsRepairSavedMap[saveKey];
+            return;
+        }
+        return API.updateAISessionMessage(meta.sessionId, meta.messageId, { content: updated }).then(function() {
+            messageEl._edgeopsPersistContent = updated;
+        }).catch(function() {
+            delete messageEl._edgeopsRepairSavedMap[saveKey];
+        });
+    });
+}
+
+function edgeopsDiagramBaseName(type) {
+    var stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+    return 'edgeops-' + (type || 'diagram') + '-' + stamp;
+}
+
+function edgeopsSetDiagramError(block, err) {
+    if (!block) return;
+    var errorEl = block.querySelector('.chat-diagram-error');
+    var sourceEl = block.querySelector('.chat-diagram-source');
+    var canvasEl = block.querySelector('.chat-diagram-canvas');
+    var msg = err && err.message ? err.message : String(err != null && err !== '' ? err : t('ui.diagram.renderFailed'));
+    if (canvasEl && !canvasEl.innerHTML.trim()) {
+        canvasEl.innerHTML = '<div class="chat-diagram-placeholder">' + t('ui.diagram.placeholderFail') + '</div>';
+    }
+    if (errorEl) {
+        errorEl.style.display = 'block';
+        errorEl.textContent = msg;
+    }
+    if (sourceEl) sourceEl.style.display = 'block';
+    var toggleBtn = block.querySelector('[data-diagram-action="toggle-source"]');
+    if (toggleBtn) toggleBtn.textContent = t('ui.diagram.collapseSource');
+    block.setAttribute('data-diagram-ready', 'error');
+}
+
+function edgeopsGetDiagramSvg(block) {
+    return block ? block.querySelector('.chat-diagram-canvas svg') : null;
+}
+
+function edgeopsGetSvgSize(svgEl) {
+    if (!svgEl) return { width: 800, height: 600 };
+    var rect = svgEl.getBoundingClientRect ? svgEl.getBoundingClientRect() : null;
+    var width = rect && rect.width ? rect.width : 0;
+    var height = rect && rect.height ? rect.height : 0;
+    if ((!width || !height) && svgEl.viewBox && svgEl.viewBox.baseVal) {
+        width = width || svgEl.viewBox.baseVal.width;
+        height = height || svgEl.viewBox.baseVal.height;
+    }
+    width = Math.max(1, Math.round(width || 800));
+    height = Math.max(1, Math.round(height || 600));
+    return { width: width, height: height };
+}
+
+function edgeopsTuneDiagramSvg(svgEl, options) {
+    if (!svgEl) return;
+    options = options || {};
+    var size = edgeopsGetSvgSize(svgEl);
+    var minWidth = options.minWidth || (edgeopsIsMobileViewport() ? 420 : 640);
+    var minHeight = options.minHeight || (edgeopsIsMobileViewport() ? 240 : 320);
+    var targetWidth = Math.max(size.width * 1.45, minWidth);
+    var targetHeight = Math.max(size.height * 1.45, minHeight);
+    svgEl.removeAttribute('width');
+    svgEl.removeAttribute('height');
+    svgEl.style.maxWidth = 'none';
+    svgEl.style.width = Math.round(targetWidth) + 'px';
+    svgEl.style.height = 'auto';
+    svgEl.style.minHeight = Math.round(targetHeight) + 'px';
+    svgEl.style.display = 'block';
+}
+
+function edgeopsExportSvgAsPng(svgEl, filename) {
+    if (!svgEl) return Promise.reject(new Error(t('ui.diagram.noSvg')));
+    var clone = svgEl.cloneNode(true);
+    var size = edgeopsGetSvgSize(svgEl);
+    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    clone.setAttribute('width', String(size.width));
+    clone.setAttribute('height', String(size.height));
+    clone.style.width = size.width + 'px';
+    clone.style.height = size.height + 'px';
+    clone.style.minHeight = '';
+    clone.style.maxWidth = 'none';
+    var svgText = new XMLSerializer().serializeToString(clone);
+    var blob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' });
+    function drawImageLike(imageLike) {
+        var canvas = document.createElement('canvas');
+        canvas.width = size.width * 2;
+        canvas.height = size.height * 2;
+        var ctx = canvas.getContext('2d');
+        ctx.setTransform(2, 0, 0, 2, 0, 0);
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(0, 0, size.width, size.height);
+        ctx.drawImage(imageLike, 0, 0, size.width, size.height);
+        edgeopsDownloadDataUrl(filename, canvas.toDataURL('image/png'));
+    }
+    function fallbackImageExport() {
+        return new Promise(function(resolve, reject) {
+            var url = URL.createObjectURL(blob);
+            var img = new Image();
+            img.onload = function() {
+                var done = function() {
+                    try {
+                        drawImageLike(img);
+                        resolve();
+                    } catch (err) {
+                        reject(err);
+                    } finally {
+                        URL.revokeObjectURL(url);
+                    }
+                };
+                if (img.decode) {
+                    img.decode().then(done).catch(done);
+                } else {
+                    done();
+                }
+            };
+            img.onerror = function() {
+                URL.revokeObjectURL(url);
+                reject(new Error(t('toast.exportPngSvgConvert')));
+            };
+            img.src = url;
+        });
+    }
+    if (window.createImageBitmap) {
+        return window.createImageBitmap(blob).then(function(bitmap) {
+            drawImageLike(bitmap);
+            if (bitmap && bitmap.close) bitmap.close();
+        }).catch(function() {
+            return fallbackImageExport();
+        });
+    }
+    return fallbackImageExport();
+}
+
+function edgeopsExportNodeAsPng(node, filename) {
+    if (!node || !window.htmlToImage || !window.htmlToImage.toPng) {
+        return Promise.reject(new Error(t('ui.diagram.imgNotLoaded')));
+    }
+    return window.htmlToImage.toPng(node, {
+        pixelRatio: 2,
+        cacheBust: true,
+        backgroundColor: '#0f172a',
+        skipAutoScale: true
+    }).then(function(dataUrl) {
+        edgeopsDownloadDataUrl(filename, dataUrl);
+    });
+}
+
+function edgeopsEnsureMarkmapCss() {
+    if (!window.markmap || !window.markmap.globalCSS || document.getElementById('edgeopsMarkmapGlobalCss')) return;
+    var style = document.createElement('style');
+    style.id = 'edgeopsMarkmapGlobalCss';
+    style.textContent = window.markmap.globalCSS;
+    document.head.appendChild(style);
+}
+
+function edgeopsCleanupMermaidErrorLeaks() {
+    var app = document.getElementById('app');
+    document.querySelectorAll('body > *').forEach(function(node) {
+        if (!node || node === app) return;
+        if (node.id === 'edgeopsDiagramPreviewOverlay') return;
+        var text = (node.textContent || '').trim();
+        if (/Syntax error in text/i.test(text) || /mermaid version/i.test(text)) {
+            node.remove();
+        }
+    });
+}
+
+function edgeopsParseEchartsOption(source) {
+    var text = String(source || '').trim();
+    if (!text) throw new Error(t('ui.diagram.echartsEmpty'));
+    try { return JSON.parse(text); } catch (e) {}
+    try { return (new Function('"use strict"; return (' + text + ');'))(); } catch (e) {}
+    try {
+        return (new Function('"use strict"; var option; var config; ' + text + '; return option || config;'))();
+    } catch (e) {}
+    throw new Error(t('ui.diagram.echartsParse'));
+}
+
+function edgeopsMergeEchartsTheme(option) {
+    option = option || {};
+    var textPrimary = '#e2e8f0';
+    var textSecondary = '#cbd5e1';
+    var textMuted = '#94a3b8';
+    var axisLine = 'rgba(148, 163, 184, 0.45)';
+    var splitLine = 'rgba(148, 163, 184, 0.16)';
+    var tooltipBg = 'rgba(15, 23, 42, 0.96)';
+    var palette = ['#60a5fa', '#34d399', '#fbbf24', '#f87171', '#a78bfa', '#22d3ee', '#f472b6', '#fb7185'];
+
+    if (!option.backgroundColor) option.backgroundColor = 'transparent';
+    if (!option.color) option.color = palette;
+
+    option.textStyle = Object.assign({ color: textPrimary, fontFamily: 'Microsoft YaHei, Arial, sans-serif' }, option.textStyle || {});
+
+    if (option.title) {
+        var titles = Array.isArray(option.title) ? option.title : [option.title];
+        titles = titles.map(function(item) {
+            item = item || {};
+            item.textStyle = Object.assign({ color: textPrimary, fontWeight: 600, fontSize: 16 }, item.textStyle || {});
+            item.subtextStyle = Object.assign({ color: textMuted }, item.subtextStyle || {});
+            return item;
+        });
+        option.title = Array.isArray(option.title) ? titles : titles[0];
+    }
+
+    if (option.legend) {
+        var legends = Array.isArray(option.legend) ? option.legend : [option.legend];
+        legends = legends.map(function(item) {
+            item = item || {};
+            item.textStyle = Object.assign({ color: textSecondary, fontSize: 12 }, item.textStyle || {});
+            return item;
+        });
+        option.legend = Array.isArray(option.legend) ? legends : legends[0];
+    }
+
+    option.tooltip = Object.assign({
+        backgroundColor: tooltipBg,
+        borderColor: 'rgba(96, 165, 250, 0.35)',
+        borderWidth: 1,
+        textStyle: { color: textPrimary }
+    }, option.tooltip || {});
+    option.tooltip.textStyle = Object.assign({ color: textPrimary }, option.tooltip.textStyle || {});
+
+    function patchAxis(axis) {
+        if (!axis) return axis;
+        var list = Array.isArray(axis) ? axis : [axis];
+        list = list.map(function(item) {
+            item = item || {};
+            item.axisLabel = Object.assign({ color: textSecondary }, item.axisLabel || {});
+            item.nameTextStyle = Object.assign({ color: textSecondary }, item.nameTextStyle || {});
+            item.axisLine = Object.assign({ lineStyle: Object.assign({ color: axisLine }, (item.axisLine && item.axisLine.lineStyle) || {}) }, item.axisLine || {});
+            item.axisTick = Object.assign({ lineStyle: Object.assign({ color: axisLine }, (item.axisTick && item.axisTick.lineStyle) || {}) }, item.axisTick || {});
+            item.splitLine = Object.assign({ lineStyle: Object.assign({ color: splitLine }, (item.splitLine && item.splitLine.lineStyle) || {}) }, item.splitLine || {});
+            return item;
+        });
+        return Array.isArray(axis) ? list : list[0];
+    }
+
+    option.xAxis = patchAxis(option.xAxis);
+    option.yAxis = patchAxis(option.yAxis);
+    option.radar = patchAxis(option.radar);
+
+    if (Array.isArray(option.series)) {
+        option.series = option.series.map(function(series) {
+            series = series || {};
+            series.label = Object.assign({
+                color: textPrimary,
+                textBorderColor: 'rgba(15, 23, 42, 0.96)',
+                textBorderWidth: 3
+            }, series.label || {});
+            if (series.type === 'pie' || series.type === 'funnel') {
+                series.label = Object.assign({
+                    color: textPrimary,
+                    formatter: (series.label && series.label.formatter) ? series.label.formatter : '{b}',
+                    textBorderColor: 'rgba(15, 23, 42, 0.96)',
+                    textBorderWidth: 4
+                }, series.label || {});
+                series.labelLine = Object.assign({
+                    lineStyle: Object.assign({ color: textSecondary }, (series.labelLine && series.labelLine.lineStyle) || {})
+                }, series.labelLine || {});
+            }
+            if (series.type === 'graph' || series.type === 'sankey' || series.type === 'tree' || series.type === 'treemap' || series.type === 'sunburst') {
+                series.label = Object.assign({
+                    color: textPrimary,
+                    textBorderColor: 'rgba(15, 23, 42, 0.96)',
+                    textBorderWidth: 3
+                }, series.label || {});
+                if (series.lineStyle) series.lineStyle = Object.assign({ color: textSecondary }, series.lineStyle || {});
+                if (series.itemStyle) series.itemStyle = Object.assign({
+                    borderColor: 'rgba(226, 232, 240, 0.28)',
+                    borderWidth: 1
+                }, series.itemStyle || {});
+            }
+            if (series.type === 'radar') {
+                series.areaStyle = Object.assign({ opacity: 0.2 }, series.areaStyle || {});
+            }
+            if (series.type === 'gauge') {
+                series.title = Object.assign({ color: textSecondary }, series.title || {});
+                series.detail = Object.assign({ color: textPrimary }, series.detail || {});
+            }
+            return series;
+        });
+    }
+    if (option.radar && !Array.isArray(option.radar)) {
+        option.radar = Object.assign({
+            axisName: { color: textSecondary },
+            splitLine: { lineStyle: { color: splitLine } },
+            splitArea: { areaStyle: { color: ['rgba(30, 41, 59, 0.12)', 'rgba(30, 41, 59, 0.2)'] } },
+            axisLine: { lineStyle: { color: axisLine } }
+        }, option.radar || {});
+        option.radar.axisName = Object.assign({ color: textSecondary }, option.radar.axisName || {});
+    }
+    return option;
+}
+
+function edgeopsNormalizeMermaidSource(source) {
+    var text = String(source || '');
+    if (typeof edgeopsToHalfwidthAscii === 'function') text = edgeopsToHalfwidthAscii(text);
+    text = text.replace(/\r\n?/g, '\n');
+    text = text.replace(/^\s*[-*+]\s+/gm, '');
+    text = text.replace(/^\s*\d+\.\s+/gm, '');
+    text = text.replace(/\t/g, '    ');
+    text = text.replace(/\s+->\s+/g, ' --> ');
+    text = text.replace(/\s+-->\s+/g, ' --> ');
+    text = text.replace(/\s+=>\s+/g, ' --> ');
+    text = text.replace(/[\u2192\u27f6\u279d]/g, '-->');
+    text = text.replace(/[\u2013\u2014\u2212]/g, '-');
+    text = text.replace(/^\s*graph\b/mi, function(match) {
+        return match.replace(/^graph/i, 'flowchart');
+    });
+    var nodeMap = {};
+    var nodeSeq = 0;
+    var diagramType = '';
+    var flowchartReservedIds = {
+        end: true,
+        subgraph: true,
+        direction: true,
+        classdef: true,
+        class: true,
+        style: true,
+        click: true,
+        linkstyle: true
+    };
+    function getDeclarationType(line) {
+        var m = String(line || '').trim().match(/^(flowchart|graph|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|mindmap|timeline)\b/i);
+        return m ? m[1].toLowerCase() : '';
+    }
+    function isFlowchartType(type) {
+        return type === 'flowchart' || type === 'graph';
+    }
+    function sanitizeLabelText(label) {
+        return String(label || '')
+            .replace(/[\[\]\{\}]/g, function(ch) {
+                return { '[': '(', ']': ')', '{': '(', '}': ')' }[ch] || ch;
+            })
+            .replace(/\\/g, '/')
+            .replace(/"/g, '\'')
+            .replace(/[<>]/g, function(ch) { return ch === '<' ? '＜' : '＞'; })
+            .trim();
+    }
+    function looksLikePathLabel(label) {
+        var raw = String(label || '').trim();
+        if (!raw) return false;
+        var plain = raw.replace(/^[\[\(\{<"'`]+/, '').replace(/[\]\)\}>"'`]+$/, '').trim();
+        return /^(\/|\\|\.\/|\.\.\/|#\/?|https?:\/\/|file:\/\/|\?)/i.test(plain);
+    }
+    function normalizeLabelPart(part) {
+        var open = part.charAt(0);
+        var close = part.charAt(part.length - 1);
+        var raw = part.slice(1, -1);
+        if (open === '[' && close === ']') {
+            var trimmed = String(raw).trim();
+            if (trimmed.length >= 2 && trimmed.charAt(0) === '"' && trimmed.charAt(trimmed.length - 1) === '"') {
+                raw = trimmed.slice(1, -1);
+            }
+            if (typeof edgeopsStripLabelQuotes === 'function') raw = edgeopsStripLabelQuotes(raw);
+        }
+        var safe = sanitizeLabelText(raw);
+        if (isFlowchartType(diagramType) && looksLikePathLabel(raw)) return '["' + safe + '"]';
+        if (open === '[' && close === ']') return '["' + safe + '"]';
+        return open + safe + close;
+    }
+    function getSafeNodeId(rawId) {
+        var key = String(rawId || '').trim();
+        if (!key) return '';
+        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+            if (!(isFlowchartType(diagramType) && flowchartReservedIds[key.toLowerCase()])) return key;
+        }
+        if (!nodeMap[key]) {
+            nodeSeq += 1;
+            nodeMap[key] = 'N' + nodeSeq;
+        }
+        return nodeMap[key];
+    }
+    function trimTrailingGarbage(line) {
+        var lastSquare = line.lastIndexOf(']');
+        var lastParen = line.lastIndexOf(')');
+        var lastBrace = line.lastIndexOf('}');
+        var cutAt = Math.max(lastSquare, lastParen, lastBrace);
+        if (cutAt >= 0) {
+            var suffix = line.slice(cutAt + 1);
+            if (suffix && /\S/.test(suffix)) {
+                return line.slice(0, cutAt + 1);
+            }
+        }
+        var m = line.match(/^(\s*[A-Za-z_][A-Za-z0-9_]*(?:\s*(?:-->|---|==>|-.->|===|~~~)\s*[A-Za-z_][A-Za-z0-9_]*)?(?:\s*(?:\[[^\]]*\]|\([^)]+\)|\{[^}]+\}))?)\s+[A-Za-z\u4e00-\u9fff].*$/);
+        if (m) return m[1];
+        var edgeMatch = line.match(/^(\s*[A-Za-z_][A-Za-z0-9_]*\s*(?:-->|---|==>|-.->|===|~~~)\s*[A-Za-z_][A-Za-z0-9_]*(?:\s*(?:\[[^\]]*\]|\([^)]+\)|\{[^}]+\}))?)\s+.*$/);
+        if (edgeMatch) return edgeMatch[1];
+        return line;
+    }
+    text = text.split('\n').map(function(line) {
+        var trimmed = line.trim();
+        if (!trimmed) return line;
+        var declared = getDeclarationType(trimmed);
+        if (declared) {
+            diagramType = declared;
+            return trimmed;
+        }
+        if (/^(subgraph|end|direction|classDef|class|click|linkStyle|style|section|accTitle|accDescr|title|note|participant|actor|state\b|namespace\b|%%)/i.test(trimmed)) return trimmed;
+        if (!/(-->|---|==>|-.->|===|~~~)/.test(trimmed) && !/[\[\](){}]/.test(trimmed) && /^[A-Za-z0-9_\-\u4e00-\u9fff\s:：]+$/.test(trimmed)) {
+            return '%% ' + trimmed.replace(/^#+\s*/, '');
+        }
+        line = line.replace(/(\[[^\]]*\]|\([^)]+\)|\{[^}]+\})/g, function(part) {
+            return normalizeLabelPart(part);
+        });
+        line = line.replace(/^(\s*)([^\s\[\](){}"']+)(\s*)(\[[^\]]*\]|\([^)]+\)|\{[^}]+\})/g, function(_, indent, rawId, gap, labelPart) {
+            return indent + getSafeNodeId(rawId) + gap + labelPart;
+        });
+        line = line.replace(/(-->|---|==>|-.->|-. -|===|==|-.|~~~)\s*([^\s\[\](){}"']+)(\s*)(\[[^\]]*\]|\([^)]+\)|\{[^}]+\})/g, function(_, edge, rawId, gap, labelPart) {
+            return edge + ' ' + getSafeNodeId(rawId) + gap + labelPart;
+        });
+        line = trimTrailingGarbage(line);
+        return line;
+    }).join('\n');
+    return text.trim();
+}
+
+function edgeopsGetMermaidDiagramType(source) {
+    var lines = String(source || '').split('\n');
+    for (var i = 0; i < lines.length; i++) {
+        var trimmed = lines[i].trim();
+        if (!trimmed || /^%%/.test(trimmed)) continue;
+        var match = trimmed.match(/^(flowchart|graph|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|mindmap|timeline)\b/i);
+        return match ? match[1] : '';
+    }
+    return '';
+}
+
+function edgeopsStripMermaidLeadingNoise(source, notes) {
+    var lines = String(source || '').split('\n');
+    var start = -1;
+    for (var i = 0; i < lines.length; i++) {
+        if (/^\s*(flowchart|graph|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|mindmap|timeline)\b/i.test(lines[i])) {
+            start = i;
+            break;
+        }
+    }
+    if (start > 0) {
+        var prefix = lines.slice(0, start).join('\n');
+        if (/\S/.test(prefix.replace(/^\s*%%.*$/gm, '').trim())) {
+            if (notes) notes.push(typeof t === 'function' ? t('ui.diagram.mermaidStripLeading') : '');
+            return lines.slice(start).join('\n');
+        }
+    }
+    return String(source || '');
+}
+
+function edgeopsStripClassDiagramPackages(source, notes) {
+    var lines = String(source || '').split('\n');
+    var out = [];
+    var skipping = false;
+    var braceDepth = 0;
+    var changed = false;
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        var trimmed = line.trim();
+        if (!skipping && /^package\s+["'][^"']+["']\s*\{.*$/i.test(trimmed)) {
+            var opens0 = (line.match(/\{/g) || []).length;
+            var closes0 = (line.match(/\}/g) || []).length;
+            changed = true;
+            if (opens0 <= closes0) {
+                continue;
+            }
+            skipping = true;
+            braceDepth = opens0 - closes0;
+            continue;
+        }
+        if (skipping) {
+            var opens = (line.match(/\{/g) || []).length;
+            var closes = (line.match(/\}/g) || []).length;
+            braceDepth += opens - closes;
+            if (braceDepth <= 0) {
+                skipping = false;
+                braceDepth = 0;
+            }
+            continue;
+        }
+        out.push(line);
+    }
+    if (changed && notes) notes.push(typeof t === 'function' ? t('ui.diagram.mermaidClassPackageStripped') : '');
+    return changed ? out.join('\n') : String(source || '');
+}
+
+var EDGEOPS_MERMAID_CLEANUP_RULES = [
+    {
+        id: 'strip-leading-noise',
+        appliesTo: function() { return true; },
+        run: function(ctx) {
+            return edgeopsStripMermaidLeadingNoise(ctx.source, ctx.notes);
+        }
+    },
+    {
+        id: 'strip-class-packages',
+        appliesTo: function(ctx) { return ctx.type === 'classDiagram'; },
+        run: function(ctx) {
+            return edgeopsStripClassDiagramPackages(ctx.source, ctx.notes);
+        }
+    },
+    {
+        id: 'normalize-common',
+        appliesTo: function() { return true; },
+        run: function(ctx) {
+            return edgeopsNormalizeMermaidSource(ctx.source);
+        }
+    }
+];
+
+function edgeopsApplyMermaidCleanupRules(source) {
+    var ctx = {
+        original: String(source || ''),
+        source: String(source || ''),
+        type: edgeopsGetMermaidDiagramType(source),
+        notes: [],
+        appliedRules: []
+    };
+    EDGEOPS_MERMAID_CLEANUP_RULES.forEach(function(rule) {
+        if (!rule || typeof rule.run !== 'function') return;
+        if (rule.appliesTo && !rule.appliesTo(ctx)) return;
+        var next = rule.run(ctx);
+        if (typeof next !== 'string' || next === ctx.source) return;
+        ctx.source = next;
+        ctx.type = edgeopsGetMermaidDiagramType(ctx.source) || ctx.type;
+        ctx.appliedRules.push(rule.id);
+    });
+    return ctx;
+}
+
+function edgeopsFormatMermaidPrecheckError(err, source, notes) {
+    var defSyntax = typeof t === 'function' ? t('ui.diagram.mermaidSyntaxError') : 'Mermaid syntax error';
+    var msg = err && err.message ? String(err.message) : String(err || defSyntax);
+    var type = edgeopsGetMermaidDiagramType(source);
+    var tips = [];
+    if (notes && notes.length) tips = tips.concat(notes);
+    if (type === 'classDiagram' && /\bpackage\s+["'][^"']+["']\s*\{/i.test(String(source || ''))) {
+        tips.push(typeof t === 'function' ? t('ui.diagram.mermaidClassNoPackage') : '');
+    }
+    if (/Lexical error/i.test(msg)) {
+        tips.push(typeof t === 'function' ? t('ui.diagram.mermaidLexicalHint') : '');
+    }
+    tips = tips.filter(Boolean);
+    var first = tips.length ? tips[0] : (typeof t === 'function' ? t('ui.diagram.mermaidCheckSyntax') : '');
+    return new Error(typeof t === 'function' ? t('ui.diagram.mermaidPrecheckFailed', { hint: first }) : ('Mermaid precheck: ' + first));
+}
+
+function edgeopsValidateMermaidSource(source, notes) {
+    if (!window.mermaid || typeof window.mermaid.parse !== 'function') {
+        return Promise.resolve(source);
+    }
+    try {
+        return Promise.resolve(window.mermaid.parse(source, { suppressErrors: true })).then(function() {
+            return source;
+        }).catch(function(err) {
+            throw edgeopsFormatMermaidPrecheckError(err, source, notes);
+        });
+    } catch (err) {
+        return Promise.reject(edgeopsFormatMermaidPrecheckError(err, source, notes));
+    }
+}
+
+function edgeopsPrecheckMermaidSource(source) {
+    var applied = edgeopsApplyMermaidCleanupRules(source);
+    var notes = applied.notes || [];
+    var preferred = applied.source || String(source || '');
+    var original = applied.original || String(source || '');
+    var type = applied.type || edgeopsGetMermaidDiagramType(preferred);
+    if (preferred !== original) {
+        if (type === 'flowchart' || type === 'graph') {
+            if (typeof t === 'function') notes.push(t('ui.diagram.mermaidFlowchartNodeFix'));
+        } else if (typeof t === 'function') {
+            notes.push(t('ui.diagram.mermaidGenericCleanup'));
+        }
+    }
+    var fallback = preferred === original ? '' : original;
+    var mErr = typeof t === 'function' ? t('ui.diagram.mermaidSyntaxError') : 'Mermaid syntax error';
+    return edgeopsValidateMermaidSource(preferred, notes).catch(function() {
+        if (!fallback) throw edgeopsFormatMermaidPrecheckError(new Error(mErr), preferred, notes);
+        return edgeopsValidateMermaidSource(fallback, notes).then(function() {
+            return fallback;
+        }).catch(function() {
+            throw edgeopsFormatMermaidPrecheckError(new Error(mErr), preferred, notes);
+        });
+    }).then(function(validatedSource) {
+        return {
+            source: validatedSource,
+            repaired: validatedSource !== original,
+            notes: notes,
+            appliedRules: applied.appliedRules || []
+        };
+    });
+}
+
+var EDGEOPS_MERMAID_NODE_BKG = '#1e293b';
+var EDGEOPS_MERMAID_NODE_BORDER = '#475569';
+var EDGEOPS_MERMAID_NODE_TEXT = '#e2e8f0';
+var EDGEOPS_MERMAID_CLUSTER_BKG = 'rgba(15, 23, 42, 0.92)';
+
+function edgeopsForceMermaidNodeColors(svgEl) {
+    if (!svgEl || !svgEl.querySelector) return;
+    var nodeBkg = EDGEOPS_MERMAID_NODE_BKG;
+    var nodeBorder = EDGEOPS_MERMAID_NODE_BORDER;
+    var nodeText = EDGEOPS_MERMAID_NODE_TEXT;
+    var clusterBkg = EDGEOPS_MERMAID_CLUSTER_BKG;
+    svgEl.querySelectorAll('.node, g[class*="node"]').forEach(function(g) {
+        g.querySelectorAll('rect, circle, polygon, path').forEach(function(el) {
+            el.setAttribute('fill', nodeBkg);
+            el.setAttribute('stroke', nodeBorder);
+            el.style.fill = nodeBkg;
+            el.style.stroke = nodeBorder;
+        });
+        g.querySelectorAll('text, tspan').forEach(function(el) {
+            el.setAttribute('fill', nodeText);
+            el.style.fill = nodeText;
+        });
+    });
+    svgEl.querySelectorAll('.cluster, g[class*="cluster"]').forEach(function(g) {
+        g.querySelectorAll('rect, polygon').forEach(function(el) {
+            el.setAttribute('fill', clusterBkg);
+            el.setAttribute('stroke', nodeBorder);
+            el.style.fill = clusterBkg;
+            el.style.stroke = nodeBorder;
+        });
+        g.querySelectorAll('text, tspan').forEach(function(el) {
+            el.setAttribute('fill', nodeText);
+            el.style.fill = nodeText;
+        });
+    });
+    edgeopsStripMermaidLabelQuotes(svgEl);
+}
+
+var EDGEOPS_QUOTE_CHARS = /^[\u0022\u0027\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f\u2039\u203a\u00ab\u00bb\u02bc\u300c\u300d\u3010\u3011\uff02\uff07]+|[\u0022\u0027\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f\u2039\u203a\u00ab\u00bb\u02bc\u300c\u300d\u3010\u3011\uff02\uff07]+$/g;
+
+function edgeopsStripLabelQuotes(s) {
+    if (typeof s !== 'string') return s;
+    var prev;
+    do {
+        prev = s;
+        s = s.replace(EDGEOPS_QUOTE_CHARS, '').trim();
+    } while (s !== prev && s.length > 0);
+    return s;
+}
+
+function edgeopsStripMermaidLabelQuotes(svgEl) {
+    if (!svgEl || !svgEl.querySelectorAll) return;
+    svgEl.querySelectorAll('text, tspan').forEach(function(el) {
+        var s = edgeopsStripLabelQuotes((el.textContent || '').trim());
+        if (s !== (el.textContent || '').trim()) el.textContent = s;
+    });
+    svgEl.querySelectorAll('.node, g[class*="node"], .cluster, g[class*="cluster"]').forEach(function(group) {
+        var texts = group.querySelectorAll('text, tspan');
+        if (texts.length === 0) return;
+        var full = '';
+        texts.forEach(function(el) { full += el.textContent || ''; });
+        var stripped = edgeopsStripLabelQuotes(full.trim());
+        if (stripped === full.trim()) return;
+        texts.forEach(function(el, i) {
+            el.textContent = i === 0 ? stripped : '';
+        });
+    });
+}
+
+function edgeopsRenderMermaidBlock(block) {
+    if (!window.mermaid || !window.mermaid.render) throw new Error(t('ui.diagram.mermaidNotLoaded'));
+    if (!window._edgeopsMermaidInited) {
+        /* 使用 base 主题才能生效 themeVariables；仅 base 可定制，dark 主题为固定配色易导致节点底色过亮、字色对比不足 */
+        var nodeBkg = '#1e293b';
+        var nodeBkgAlt = '#334155';
+        var nodeBkgAlt2 = '#475569';
+        var nodeText = '#e2e8f0';
+        var nodeBorder = '#475569';
+        var lineColor = '#94a3b8';
+        window.mermaid.initialize({
+            startOnLoad: false,
+            securityLevel: 'loose',
+            theme: 'base',
+            suppressErrorRendering: true,
+            themeVariables: {
+                darkMode: true,
+                background: '#0f172a',
+                primaryColor: nodeBkg,
+                primaryTextColor: nodeText,
+                primaryBorderColor: nodeBorder,
+                secondaryColor: nodeBkgAlt,
+                secondaryTextColor: nodeText,
+                secondaryBorderColor: nodeBorder,
+                tertiaryColor: nodeBkgAlt2,
+                tertiaryTextColor: nodeText,
+                tertiaryBorderColor: nodeBorder,
+                lineColor: lineColor,
+                textColor: nodeText,
+                mainBkg: nodeBkg,
+                nodeBorder: nodeBorder,
+                nodeTextColor: nodeText,
+                clusterBkg: 'rgba(15, 23, 42, 0.92)',
+                clusterBorder: nodeBorder,
+                edgeLabelBackground: '#0f172a',
+                labelBoxBkgColor: '#0f172a',
+                labelTextColor: nodeText,
+                actorBkg: nodeBkg,
+                actorBorder: nodeBorder,
+                actorTextColor: nodeText,
+                noteBkgColor: nodeBkgAlt,
+                noteTextColor: nodeText,
+                noteBorderColor: nodeBorder,
+                titleColor: nodeText
+            }
+        });
+        window._edgeopsMermaidInited = true;
+    }
+    edgeopsCleanupMermaidErrorLeaks();
+    var source = edgeopsReadDiagramSource(block);
+    var canvasEl = block.querySelector('.chat-diagram-canvas');
+    var renderId = 'edgeops-mermaid-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    canvasEl.innerHTML = '<div class="chat-diagram-placeholder">' + t('ui.diagram.mermaidLoading') + '</div>';
+    function applyRendered(res, originalSource, usedSource, repaired, notes) {
+        canvasEl.innerHTML = res.svg || '';
+        var svgEl = edgeopsGetDiagramSvg(block);
+        if (svgEl) {
+            edgeopsTuneDiagramSvg(svgEl, { minWidth: edgeopsIsMobileViewport() ? 420 : 700, minHeight: edgeopsIsMobileViewport() ? 240 : 340 });
+            edgeopsForceMermaidNodeColors(svgEl);
+        }
+        if (typeof res.bindFunctions === 'function') res.bindFunctions(canvasEl);
+        block.setAttribute('data-diagram-ready', '1');
+        if (repaired && usedSource && usedSource !== source) {
+            block.setAttribute('data-diagram-source', encodeURIComponent(usedSource));
+            var codeEl = block.querySelector('.chat-diagram-source code');
+            if (codeEl) codeEl.textContent = usedSource;
+            edgeopsPersistRepairedDiagramSource(block, originalSource, usedSource);
+            showToast(notes && notes.length ? notes[0] : t('toast.mermaidAutoFixed'), 'info');
+        }
+    }
+    return edgeopsPrecheckMermaidSource(source).then(function(preflight) {
+        return window.mermaid.render(renderId, preflight.source).then(function(res) {
+            edgeopsCleanupMermaidErrorLeaks();
+            applyRendered(res, source, preflight.source, preflight.repaired, preflight.notes);
+        }).catch(function(err) {
+            edgeopsCleanupMermaidErrorLeaks();
+            throw err;
+        });
+    });
+}
+
+function edgeopsRenderMarkmapBlock(block) {
+    if (!window.markmap || !window.markmap.Transformer || !window.markmap.Markmap) throw new Error(t('ui.diagram.markmapNotLoaded'));
+    edgeopsEnsureMarkmapCss();
+    var source = edgeopsReadDiagramSource(block);
+    var canvasEl = block.querySelector('.chat-diagram-canvas');
+    var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    var height = edgeopsIsMobileViewport() ? 260 : 340;
+    svg.setAttribute('width', '100%');
+    svg.setAttribute('height', String(height));
+    canvasEl.innerHTML = '';
+    canvasEl.appendChild(svg);
+    var transformer = new window.markmap.Transformer();
+    var transformed = transformer.transform(source);
+    var root = transformed && transformed.root ? transformed.root : transformed;
+    block._edgeopsMarkmap = window.markmap.Markmap.create(svg, {
+        autoFit: true,
+        duration: 0,
+        fitRatio: 0.85,
+        maxInitialScale: 5
+    }, root);
+    edgeopsTuneDiagramSvg(svg, { minWidth: edgeopsIsMobileViewport() ? 420 : 760, minHeight: edgeopsIsMobileViewport() ? 260 : 420 });
+    block.setAttribute('data-diagram-ready', '1');
+}
+
+function edgeopsRenderEchartsBlock(block) {
+    if (!window.echarts || !window.echarts.init) throw new Error(t('ui.diagram.echartsLibNotLoaded'));
+    var source = edgeopsReadDiagramSource(block);
+    var canvasEl = block.querySelector('.chat-diagram-canvas');
+    var chartEl = document.createElement('div');
+    chartEl.className = 'chat-diagram-echarts';
+    chartEl.style.width = '100%';
+    chartEl.style.minWidth = (edgeopsIsMobileViewport() ? 420 : 760) + 'px';
+    chartEl.style.height = (edgeopsIsMobileViewport() ? 280 : 420) + 'px';
+    canvasEl.innerHTML = '';
+    canvasEl.appendChild(chartEl);
+    if (block._edgeopsEchart && block._edgeopsEchart.dispose) {
+        try { block._edgeopsEchart.dispose(); } catch (e) {}
+    }
+    var option = edgeopsMergeEchartsTheme(edgeopsParseEchartsOption(source));
+    var chart = window.echarts.init(chartEl, null, { renderer: 'svg' });
+    chart.setOption(option, true);
+    chart.resize();
+    block._edgeopsEchart = chart;
+    block.setAttribute('data-diagram-ready', '1');
+}
+
+function edgeopsRenderDiagramBlock(block) {
+    if (!block || block.getAttribute('data-diagram-ready') === '1') return Promise.resolve();
+    var type = block.getAttribute('data-diagram-type');
+    var errorEl = block.querySelector('.chat-diagram-error');
+    if (errorEl) {
+        errorEl.style.display = 'none';
+        errorEl.textContent = '';
+    }
+    if (type === 'mermaid') return edgeopsRenderMermaidBlock(block).catch(function(err) { edgeopsSetDiagramError(block, err); });
+    if (type === 'markmap') return Promise.resolve().then(function() { edgeopsRenderMarkmapBlock(block); }).catch(function(err) { edgeopsSetDiagramError(block, err); });
+    if (type === 'echarts') return Promise.resolve().then(function() { edgeopsRenderEchartsBlock(block); }).catch(function(err) { edgeopsSetDiagramError(block, err); });
+    edgeopsSetDiagramError(block, t('ui.diagram.unsupported'));
+    return Promise.resolve();
+}
+
+function edgeopsToggleDiagramSource(block) {
+    if (!block) return;
+    var sourceEl = block.querySelector('.chat-diagram-source');
+    var btn = block.querySelector('[data-diagram-action="toggle-source"]');
+    if (!sourceEl || !btn) return;
+    var visible = sourceEl.style.display !== 'none';
+    sourceEl.style.display = visible ? 'none' : 'block';
+    btn.textContent = visible ? t('ui.diagram.expandSource') : t('ui.diagram.collapseSource');
+}
+
+function edgeopsCloseDiagramPreview() {
+    var overlay = document.getElementById('edgeopsDiagramPreviewOverlay');
+    if (overlay) overlay.remove();
+}
+
+function edgeopsSetPreviewZoom(stage, label, zoom) {
+    zoom = Math.max(0.5, Math.min(3, zoom || 1));
+    if (stage) {
+        stage.setAttribute('data-zoom', String(zoom));
+        stage.style.transform = 'scale(' + zoom + ')';
+    }
+    if (label) label.textContent = Math.round(zoom * 100) + '%';
+}
+
+function edgeopsOpenDiagramPreview(block) {
+    if (!block) return;
+    edgeopsCloseDiagramPreview();
+    var overlay = document.createElement('div');
+    overlay.id = 'edgeopsDiagramPreviewOverlay';
+    overlay.className = 'modal-overlay edgeops-diagram-preview-overlay';
+    var type = block.getAttribute('data-diagram-type') || 'diagram';
+    overlay.innerHTML = ''
+        + '<div class="modal edgeops-diagram-preview-modal">'
+        + '<div class="modal-header"><h3>' + t('ui.diagram.previewTitle') + '</h3><div class="edgeops-diagram-preview-actions">'
+        + '<button type="button" class="btn btn-sm" data-preview-action="zoom-out">-</button>'
+        + '<span class="edgeops-diagram-preview-zoom">100%</span>'
+        + '<button type="button" class="btn btn-sm" data-preview-action="zoom-in">+</button>'
+        + '<button type="button" class="btn btn-sm" data-preview-action="reset">' + t('ui.diagram.reset') + '</button>'
+        + '<button type="button" class="btn btn-sm btn-primary" data-preview-action="png">' + t('ui.diagram.exportPng') + '</button>'
+        + '<button type="button" class="btn btn-sm" data-preview-action="svg">' + t('ui.diagram.exportSvg') + '</button>'
+        + '<button type="button" class="modal-close" data-preview-action="close">&times;</button>'
+        + '</div></div>'
+        + '<div class="modal-body edgeops-diagram-preview-body">'
+        + '<div class="edgeops-diagram-preview-scroll"><div class="edgeops-diagram-preview-stage"></div></div>'
+        + '<pre class="chat-diagram-source edgeops-diagram-preview-source"><code></code></pre>'
+        + '</div>'
+        + '</div>';
+    document.body.appendChild(overlay);
+    var stage = overlay.querySelector('.edgeops-diagram-preview-stage');
+    var zoomLabel = overlay.querySelector('.edgeops-diagram-preview-zoom');
+    var previewBlock = document.createElement('div');
+    previewBlock.className = 'chat-diagram-block edgeops-diagram-preview-block';
+    previewBlock.setAttribute('data-diagram-type', type);
+    previewBlock.setAttribute('data-diagram-source', block.getAttribute('data-diagram-source') || '');
+    previewBlock.setAttribute('data-diagram-lang', block.getAttribute('data-diagram-lang') || '');
+    previewBlock.innerHTML = '<div class="chat-diagram-canvas"><div class="chat-diagram-placeholder">' + t('ui.diagram.loading') + '</div></div><div class="chat-diagram-error" style="display:none"></div>';
+    stage.appendChild(previewBlock);
+    var sourceCode = overlay.querySelector('.edgeops-diagram-preview-source code');
+    if (sourceCode) sourceCode.textContent = edgeopsReadDiagramSource(block);
+    edgeopsSetPreviewZoom(stage, zoomLabel, 1);
+    Promise.resolve(edgeopsRenderDiagramBlock(previewBlock)).then(function() {
+        edgeopsSetPreviewZoom(stage, zoomLabel, 1);
+    });
+    overlay.addEventListener('click', function(e) {
+        if (e.target === overlay) {
+            edgeopsCloseDiagramPreview();
+            return;
+        }
+        var btn = e.target.closest('[data-preview-action]');
+        if (!btn) return;
+        var action = btn.getAttribute('data-preview-action');
+        var currentZoom = parseFloat(stage.getAttribute('data-zoom') || '1') || 1;
+        if (action === 'close') edgeopsCloseDiagramPreview();
+        else if (action === 'zoom-in') edgeopsSetPreviewZoom(stage, zoomLabel, currentZoom + 0.2);
+        else if (action === 'zoom-out') edgeopsSetPreviewZoom(stage, zoomLabel, currentZoom - 0.2);
+        else if (action === 'reset') edgeopsSetPreviewZoom(stage, zoomLabel, 1);
+        else if (action === 'png') edgeopsExportDiagram(previewBlock, 'png');
+        else if (action === 'svg') edgeopsExportDiagram(previewBlock, 'svg');
+    });
+}
+
+function edgeopsExportDiagram(block, format) {
+    if (!block) return Promise.resolve();
+    var type = block.getAttribute('data-diagram-type') || 'diagram';
+    var baseName = edgeopsDiagramBaseName(type);
+    if (type === 'echarts' && block._edgeopsEchart) {
+        var chart = block._edgeopsEchart;
+        var dataUrl = chart.getDataURL({ type: format === 'svg' ? 'svg' : 'png', pixelRatio: 2, backgroundColor: '#0f172a' });
+        edgeopsDownloadDataUrl(baseName + '.' + (format === 'svg' ? 'svg' : 'png'), dataUrl);
+        return Promise.resolve();
+    }
+    var svgEl = edgeopsGetDiagramSvg(block);
+    if (format === 'svg' && svgEl) {
+        var svgText = new XMLSerializer().serializeToString(svgEl);
+        edgeopsDownloadBlob(baseName + '.svg', new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' }));
+        return Promise.resolve();
+    }
+    if (format !== 'svg' && svgEl) {
+        return edgeopsExportNodeAsPng(svgEl, baseName + '.png').catch(function() {
+            return edgeopsExportSvgAsPng(svgEl, baseName + '.png');
+        }).catch(function(err) {
+            showToast(edgeopsFormatExportError(err), 'error');
+        });
+    }
+    var canvasEl = block.querySelector('.chat-diagram-canvas');
+    if (!window.htmlToImage || !window.htmlToImage.toPng) {
+        showToast(t('toast.imageExportUnavailable'), 'error');
+        return Promise.resolve();
+    }
+    if (format === 'svg' && window.htmlToImage.toSvg) {
+        return window.htmlToImage.toSvg(canvasEl, { backgroundColor: '#0f172a' }).then(function(dataUrl) {
+            edgeopsDownloadDataUrl(baseName + '.svg', dataUrl);
+        }).catch(function(err) {
+            showToast((err && err.message) || t('toast.exportFailed'), 'error');
+        });
+    }
+    return edgeopsExportNodeAsPng(canvasEl, baseName + '.png').catch(function(err) {
+        showToast(edgeopsFormatExportError(err), 'error');
+    });
+}
+
+function edgeopsBindDiagramBlock(block) {
+    if (!block || block.getAttribute('data-diagram-bound') === '1') return;
+    block.addEventListener('click', function(e) {
+        var btn = e.target.closest('[data-diagram-action]');
+        var action = btn ? btn.getAttribute('data-diagram-action') : '';
+        if (!btn) {
+            if (e.target.closest('.chat-diagram-canvas')) {
+                edgeopsOpenDiagramPreview(block);
+            }
+            return;
+        }
+        var source = edgeopsReadDiagramSource(block);
+        if (action === 'copy') {
+            edgeopsCopyText(source, t('ui.diagram.sourceCopied')).then(function(ok) {
+                if (!ok) edgeopsFallbackCopyText(source, t('ui.diagram.sourceCopied'));
+            });
+        } else if (action === 'preview') {
+            edgeopsOpenDiagramPreview(block);
+        } else if (action === 'toggle-source') {
+            edgeopsToggleDiagramSource(block);
+        } else if (action === 'png') {
+            edgeopsExportDiagram(block, 'png');
+        } else if (action === 'svg') {
+            edgeopsExportDiagram(block, 'svg');
+        }
+    });
+    block.setAttribute('data-diagram-bound', '1');
+}
+
+function edgeopsHydrateChatDiagrams(root) {
+    if (!root || !root.querySelectorAll) return;
+    root.querySelectorAll('.chat-diagram-block').forEach(function(block) {
+        edgeopsBindDiagramBlock(block);
+        if (block.getAttribute('data-diagram-ready')) return;
+        edgeopsRenderDiagramBlock(block);
+    });
+}
+
+/** 判断聊天消息区是否贴近底部（用于「仅贴底时自动跟随滚动」）。 */
+var EDGEOPS_CHAT_STICK_THRESHOLD_PX = 32;
+function edgeopsChatIsNearBottom(box) {
+    if (!box) return true;
+    try {
+        return box.scrollHeight - box.scrollTop - box.clientHeight <= EDGEOPS_CHAT_STICK_THRESHOLD_PX;
+    } catch (_e) {
+        return true;
+    }
+}
+
+/** 绑定滚动监听：用户上滑则取消贴底跟随，滑回底部则恢复。 */
+function edgeopsBindChatStickToBottom(box) {
+    if (!box || box._edgeopsStickBound) return;
+    box._edgeopsStickBound = true;
+    box._edgeopsStickToBottom = true;
+    box.addEventListener('scroll', function() {
+        box._edgeopsStickToBottom = edgeopsChatIsNearBottom(box);
+    }, { passive: true });
+}
+
+/** 流式/增量更新：仅当当前为贴底状态时才滚到底（避免打断用户阅读上方历史）。 */
+function edgeopsScrollChatToBottomStepIfPinned(box) {
+    if (!box || box._edgeopsStickToBottom === false) return;
+    try {
+        var sc = box;
+        sc.scrollTop = sc.scrollHeight;
+        var last = sc.querySelector('.chat-message:last-child');
+        if (last) last.scrollIntoView({ behavior: 'auto', block: 'end' });
+    } catch (_e) {}
+}
+
+/** 将聊天消息区滚到底部（含图表异步增高后的多次对齐）。 */
+function edgeopsScrollChatMessagesToBottom(box) {
+    if (!box) return;
+    box._edgeopsStickToBottom = true;
+    function _edgeopsFullScrollStep() {
+        try {
+            box.scrollTop = box.scrollHeight;
+            var last = box.querySelector('.chat-message:last-child');
+            if (last) last.scrollIntoView({ behavior: 'auto', block: 'end' });
+        } catch (_e) {}
+    }
+    _edgeopsFullScrollStep();
+    requestAnimationFrame(function() {
+        _edgeopsFullScrollStep();
+        requestAnimationFrame(_edgeopsFullScrollStep);
+    });
+    setTimeout(_edgeopsFullScrollStep, 50);
+    setTimeout(_edgeopsFullScrollStep, 200);
+}
+
+/** 从侧栏缓存恢复 AI/本机/主机详情聊天页时，将当前消息列表滚到底部。 */
+function edgeopsScrollRestoredAiChatToBottom(path) {
+    if (!path) return;
+    if (path === '/ai' || path === '/ai-mobile' || path === '/local') {
+        var mid = path === '/local' ? 'localMessages' : 'aiMessages';
+        var b = document.getElementById(mid);
+        if (b) edgeopsScrollChatMessagesToBottom(b);
+        return;
+    }
+    if (path.indexOf('/hosts/') === 0 && path !== '/hosts') {
+        var hb = document.getElementById('hostAiMessages');
+        if (hb) edgeopsScrollChatMessagesToBottom(hb);
+    }
+}
+
+/** 为容器内 .data-table.sortable-table 绑定列排序（th[data-sort]）与筛选（th[data-filter]）。避开长文本/二进制列。 */
+function initDataTableSortFilter(container) {
+    if (!container) return;
+    container.querySelectorAll('table.data-table').forEach(function(tbl) {
+        var thead = tbl.querySelector('thead');
+        var tbody = tbl.querySelector('tbody');
+        if (!thead || !tbody) return;
+        var headerRow = thead.querySelector('tr');
+        if (!headerRow) return;
+        var ths = headerRow.querySelectorAll('th');
+        var colCount = ths.length;
+
+        if (tbl.classList.contains('sortable-table')) {
+            ths.forEach(function(th, idx) {
+                if (!th.hasAttribute('data-sort')) return;
+                th.style.cursor = 'pointer';
+                th.title = t('ui.table.sortClick');
+                th.addEventListener('click', function() {
+                    var dir = th.getAttribute('data-sort-dir') === 'asc' ? 'desc' : 'asc';
+                    headerRow.querySelectorAll('th').forEach(function(h) { h.removeAttribute('data-sort-dir'); });
+                    th.setAttribute('data-sort-dir', dir);
+                    var rows = [].slice.call(tbody.querySelectorAll('tr'));
+                    rows.sort(function(a, b) {
+                        var ac = (a.cells[idx] && a.cells[idx].textContent) ? a.cells[idx].textContent.trim() : '';
+                        var bc = (b.cells[idx] && b.cells[idx].textContent) ? b.cells[idx].textContent.trim() : '';
+                        var anum = parseFloat(ac), bnum = parseFloat(bc);
+                        var useNum = !isNaN(anum) && !isNaN(bnum);
+                        if (useNum) return dir === 'asc' ? anum - bnum : bnum - anum;
+                        return dir === 'asc' ? (ac.localeCompare(bc, 'zh-CN') || 0) : (bc.localeCompare(ac, 'zh-CN') || 0);
+                    });
+                    rows.forEach(function(r) { tbody.appendChild(r); });
+                });
+            });
+        }
+
+        var hasFilter = false;
+        ths.forEach(function(th) { if (th.hasAttribute('data-filter')) hasFilter = true; });
+        if (hasFilter) {
+            var filterRow = document.createElement('tr');
+            filterRow.className = 'table-filter-row';
+            for (var i = 0; i < colCount; i++) {
+                var td = document.createElement('td');
+                if (ths[i] && ths[i].hasAttribute('data-filter')) {
+                    var inp = document.createElement('input');
+                    inp.type = 'text';
+                    inp.className = 'form-control table-filter-input';
+                    inp.placeholder = t('common.filter');
+                    inp.setAttribute('data-col', String(i));
+                    inp.addEventListener('input', function() {
+                        var colIdx = parseInt(this.getAttribute('data-col'), 10);
+                        var val = (this.value || '').trim().toLowerCase();
+                        tbody.querySelectorAll('tr').forEach(function(tr) {
+                            var cell = tr.cells[colIdx];
+                            var text = (cell && cell.textContent) ? cell.textContent.trim().toLowerCase() : '';
+                            tr.style.display = val === '' || text.indexOf(val) !== -1 ? '' : 'none';
+                        });
+                    });
+                    td.appendChild(inp);
+                }
+                filterRow.appendChild(td);
+            }
+            thead.appendChild(filterRow);
+        }
+    });
+}
+
+/** 移除模型输出中的 </think>...</think> 块及未闭合的 </think>，并顺带剥离 UI_ACTION 哨兵注释，避免在界面以原文显示 */
+function stripThinkTags(text) {
+    if (typeof text !== 'string') return '';
+    var reBlock = new RegExp('</think>[\\s\\S]*?</think>', 'gi');
+    var reUnclosed = new RegExp('</think>[\\s\\S]*$', 'gi');
+    var reUIAction = /<!--\s*EDGEOPS:UI_ACTION:v1\s+[A-Za-z0-9+/=]+\s*-->/g;
+    var reToolTrace = /<!--\s*EDGEOPS:TOOL_TRACE:v1\s+[A-Za-z0-9+/=]+\s*-->/g;
+    return text
+        .replace(reBlock, '')
+        .replace(reUnclosed, '')
+        .replace(reUIAction, '')
+        .replace(reToolTrace, '')
+        .trim();
+}
+
+function edgeopsFinalAssistantText(streamedText, hasTools) {
+    var clean = stripThinkTags(streamedText);
+    if (clean) return clean;
+    return hasTools ? t('hostAi.streamNoText') : '';
+}
+
+/** 流式收尾默认 Markdown 渲染（各 AI 面板局部 fmtMd 不可跨闭包引用）。 */
+function edgeopsDefaultFmtMd(text) {
+    if (typeof formatMarkdown !== 'undefined' && formatMarkdown) return formatMarkdown(text);
+    return esc(text || '').replace(/\n/g, '<br>');
+}
+
+/** 任务执行历史等：将 Markdown 渲染为 HTML；失败则转义 + 换行 */
+function edgeopsMdPreview(text) {
+    var s = text == null ? '' : String(text);
+    if (typeof formatMarkdown === 'function') {
+        try { return formatMarkdown(s); } catch (e) { return esc(s).replace(/\n/g, '<br>'); }
+    }
+    return esc(s).replace(/\n/g, '<br>');
+}
+
+/** 在父元素下追加分页栏，默认每页 20 条，可选 10/50/100。返回 { update(data), getPage(), getPageSize(), onPrev(fn), onNext(fn), onPageSizeChange(fn) } */
+function appendPaginationBar(parentEl, initialPageSize) {
+    var page = 1, pageSize = initialPageSize || 20, total = 0;
+    var html = '<div class="pagination-bar" style="display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">'
+        + '<span>' + t('pagination.perPage') + '</span><select class="form-control pagination-page-size" style="width:auto;display:inline-block;min-width:60px">'
+        + '<option value="10">10</option><option value="20">20</option><option value="50">50</option><option value="100">100</option></select>'
+        + ' <span>' + t('pagination.itemsSuffix') + '</span> <span class="pagination-info"></span>'
+        + ' <button type="button" class="btn btn-sm pagination-prev">' + t('pagination.prev') + '</button>'
+        + ' <button type="button" class="btn btn-sm pagination-next">' + t('pagination.next') + '</button></div>';
+    var wrap = document.createElement('div');
+    wrap.innerHTML = html;
+    var bar = wrap.firstElementChild;
+    parentEl.appendChild(bar);
+    var infoEl = bar.querySelector('.pagination-info');
+    var prevBtn = bar.querySelector('.pagination-prev');
+    var nextBtn = bar.querySelector('.pagination-next');
+    var sizeSel = bar.querySelector('.pagination-page-size');
+    if (initialPageSize === 10 || initialPageSize === 50 || initialPageSize === 100) sizeSel.value = String(initialPageSize);
+    else sizeSel.value = '20';
+    function update(data) {
+        if (data != null) { total = data.total || 0; page = data.page || 1; pageSize = data.page_size || 20; }
+        var from = total === 0 ? 0 : (page - 1) * pageSize + 1;
+        var to = Math.min(page * pageSize, total);
+        infoEl.textContent = total > 0
+            ? t('pagination.totalRange', { total: total, from: from, to: to })
+            : t('pagination.totalOnly', { total: total });
+        prevBtn.disabled = page <= 1;
+        nextBtn.disabled = total === 0 || page * pageSize >= total;
+        if (sizeSel && sizeSel.value !== String(pageSize)) sizeSel.value = String(pageSize);
+    }
+    return {
+        update: update,
+        getPage: function() { return page; },
+        getPageSize: function() { return parseInt(sizeSel ? sizeSel.value : 20, 10) || 20; },
+        setPage: function(p) { page = Math.max(1, p); },
+        onPrev: function(fn) { prevBtn.onclick = function() { if (page <= 1) return; page--; fn(); }; },
+        onNext: function(fn) { nextBtn.onclick = function() { if (total > 0 && page * pageSize < total) { page++; fn(); } }; },
+        onPageSizeChange: function(fn) { if (sizeSel) sizeSel.onchange = function() { page = 1; fn(); }; }
+    };
+}
+
+function logout() {
+    setEdgeopsMobileMode(false);
+    API.clearAuth();
+    Router.navigate('/login');
+}
+
+function showChangePasswordModal() {
+    var content = '<div class="form-group"><label>' + t('forms.changePassword.current') + '</label><input type="password" class="form-control" id="changePwdOld" placeholder="' + esc(t('forms.changePassword.currentPh')) + '"></div>'
+        + '<div class="form-group"><label>' + t('forms.changePassword.new') + '</label><input type="password" class="form-control" id="changePwdNew" placeholder="' + esc(t('forms.changePassword.newPh')) + '"></div>'
+        + '<div class="form-group"><label>' + t('forms.changePassword.confirm') + '</label><input type="password" class="form-control" id="changePwdConfirm" placeholder="' + esc(t('forms.changePassword.confirmPh')) + '"></div>';
+    showModal(t('modals.changePassword'), content, edgeopsModalFooterCancelOk('submitChangePassword()'));
+}
+
+function submitChangePassword() {
+    var oldPwd = document.getElementById('changePwdOld') && document.getElementById('changePwdOld').value;
+    var newPwd = document.getElementById('changePwdNew') && document.getElementById('changePwdNew').value;
+    var confirmPwd = document.getElementById('changePwdConfirm') && document.getElementById('changePwdConfirm').value;
+    if (!oldPwd) { showToast(t('toast.enterCurrentPassword'), 'error'); return; }
+    if (!newPwd || newPwd.length < 6) { showToast(t('toast.newPasswordMin6'), 'error'); return; }
+    if (newPwd !== confirmPwd) { showToast(t('toast.passwordMismatch'), 'error'); return; }
+    API.changePassword(oldPwd, newPwd).then(function() {
+        closeModal();
+        showToast(t('toast.passwordChanged'));
+    }).catch(function(err) { showToast(err.message || t('toast.modifyFailed'), 'error'); });
+}
+
+function maskEmail(email) {
+    if (!email || email.indexOf('@') === -1) return email || '';
+    var i = email.indexOf('@');
+    var local = email.slice(0, i);
+    var domain = email.slice(i);
+    if (local.length <= 2) return local.charAt(0) + '***' + domain;
+    return local.charAt(0) + '***' + local.charAt(local.length - 1) + domain;
+}
+
+function showBindEmailModal() {
+    window._bindEmailStep = 1;
+    window._bindEmailAddr = '';
+    var content = '<div id="bindEmailBody"><div class="form-group"><label>' + t('forms.bindEmail.email') + '</label><input type="email" class="form-control" id="bindEmailInput" placeholder="' + esc(t('forms.bindEmail.emailPh')) + '"></div>'
+        + '<p class="text-muted" style="font-size:12px">' + t('forms.bindEmail.hint6') + '</p></div>';
+    var footer = '<button class="btn" onclick="closeModal()">' + t('common.cancel') + '</button> <button class="btn btn-primary" onclick="submitBindEmailStep()">' + t('common.sendVerification') + '</button>';
+    showModal(t('modals.bindEmail'), content, footer);
+}
+
+function submitBindEmailStep() {
+    if (window._bindEmailStep === 1) {
+        var email = (document.getElementById('bindEmailInput') && document.getElementById('bindEmailInput').value) || '';
+        if (!email.trim()) { showToast(t('toast.enterEmail'), 'error'); return; }
+        API.sendBindEmailCode(email.trim()).then(function() {
+            showToast(t('toast.codeSent'));
+            window._bindEmailStep = 2;
+            window._bindEmailAddr = email.trim();
+            var body = document.getElementById('bindEmailBody');
+            if (body) {
+                body.innerHTML = '<p class="text-muted">' + t('forms.bindEmail.sent', { addr: esc(window._bindEmailAddr) }) + '</p>'
+                    + '<div class="form-group"><label>' + t('forms.bindEmail.code') + '</label><input class="form-control" id="bindCodeInput" placeholder="' + esc(t('forms.bindEmail.codePh')) + '" maxlength="6"></div>';
+            }
+            var modal = document.getElementById('modal');
+            if (modal) {
+                var ft = modal.querySelector('.modal-footer');
+                if (ft) ft.innerHTML = '<button class="btn" onclick="closeModal()">' + t('common.cancel') + '</button> <button class="btn btn-primary" onclick="submitBindEmailStep()">' + t('common.completeBinding') + '</button>';
+            }
+        }).catch(function(err) { showToast(err.message || t('toast.sendFailed'), 'error'); });
+    } else {
+        var code = (document.getElementById('bindCodeInput') && document.getElementById('bindCodeInput').value) || '';
+        if (!code.trim() || code.length !== 6) { showToast(t('toast.code6Required'), 'error'); return; }
+        API.verifyBindEmail(window._bindEmailAddr, code.trim()).then(function() {
+            closeModal();
+            showToast(t('toast.emailBound'));
+            if (API.user) API.user.email = window._bindEmailAddr;
+            renderLayout();
+        }).catch(function(err) { showToast(err.message || t('toast.verifyFailed'), 'error'); });
+    }
+}
+
+function confirmUnbindEmail() {
+    showConfirm(t('confirm.unbindEmailTitle'), t('confirm.unbindEmailBody')).then(function(ok) {
+        if (!ok) return;
+        API.unbindEmail().then(function() {
+            showToast(t('toast.unbound'));
+            if (API.user) API.user.email = '';
+            renderLayout();
+        }).catch(function(err) { showToast(err.message || t('toast.unbindFailed'), 'error'); });
+    });
+}
+
+function buildAuthVisualHeroHtml() {
+    var feats = [
+        t('auth.hero.f1'),
+        t('auth.hero.f2'),
+        t('auth.hero.f3'),
+        t('auth.hero.f4'),
+    ];
+    var list = '';
+    for (var i = 0; i < feats.length; i++) {
+        list += '<li><span class="auth-hero-check" aria-hidden="true"></span><span>' + esc(feats[i]) + '</span></li>';
+    }
+    return ''
+        + '<div class="auth-visual-hero" role="presentation">'
+        + '<span class="auth-hero-badge">' + esc(t('auth.hero.badge')) + '</span>'
+        + '<h2 class="auth-hero-title">' + esc(t('auth.hero.title')) + '</h2>'
+        + '<p class="auth-hero-lead">' + esc(t('auth.hero.lead')) + '</p>'
+        + '<ul class="auth-hero-features">' + list + '</ul>'
+        + '</div>';
+}
+
+// ── 登录 ──
+function renderLoginPage() {
+    setEdgeopsMobileMode(false);
+    document.getElementById('app').innerHTML = ''
+        + '<div class="auth-page">'
+        + '<div class="auth-card-wrap"><div class="auth-card">'
+        + '<h1>' + esc(t('meta.productName')) + '</h1><div class="auth-subtitle">' + t('auth.subtitle') + '</div>'
+        + '<form id="loginForm">'
+        + '<div class="form-group"><label>' + t('auth.username') + '</label><input class="form-control" id="loginUser" placeholder="' + esc(t('auth.usernamePlaceholder')) + '" pattern="[A-Za-z0-9._\\-]{3,32}" title="' + esc(t('auth.usernameRule')) + '" required></div>'
+        + '<div class="form-group"><label>' + t('auth.password') + '</label><input class="form-control" id="loginPass" type="password" placeholder="' + esc(t('auth.passwordPlaceholder')) + '" required></div>'
+        + '<div class="form-group"><label>' + t('auth.captcha') + '</label><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+        + '<span id="loginCaptchaQuestion" class="text-muted">' + t('auth.captchaLoading') + '</span>'
+        + '<span style="display:inline-flex;align-items:stretch;gap:6px">'
+        + '<input class="form-control" id="loginCaptchaInput" placeholder="' + esc(t('auth.captchaResultPlaceholder')) + '" style="width:72px">'
+        + '<button type="button" class="btn btn-sm auth-captcha-refresh" id="loginCaptchaRefresh" title="' + esc(t('auth.captchaRefresh')) + '">' + t('common.refresh') + '</button>'
+        + '</span></div></div>'
+        + '<button class="btn btn-primary btn-lg" type="submit">' + t('auth.login') + '</button></form>'
+        + '<div class="auth-footer">' + t('auth.noAccount') + '<a data-href="/register" style="color:var(--accent);cursor:pointer">' + t('auth.register') + '</a> &nbsp;|&nbsp; <a data-href="/forgot-password" style="color:var(--accent);cursor:pointer">' + t('auth.forgotOrUnlock') + '</a> &nbsp;|&nbsp; <a href="/intro/" target="_blank" rel="noopener" style="color:var(--accent);cursor:pointer" title="' + esc(t('auth.productIntroNoLogin')) + '">' + t('auth.productIntro') + '</a></div>'
+        + '<div class="auth-version">v' + esc(API.version || '…') + '</div>'
+        + '</div></div>'
+        + '<div class="auth-visual" id="authVisual">'
+        + '<canvas id="authCanvas"></canvas>'
+        + buildAuthVisualHeroHtml()
+        + '<div id="authAnnouncementSlot"></div>'
+        + '<div id="authPublicMessagesSlot"></div>'
+        + '</div>'
+        + '<div id="authLoginWidgetsSlot"></div>'
+        + '</div>';
+    startLoginPageGlobe();
+    // 异步拉取公开开关；网络失败时退回到"全部展示"，与历史行为一致。
+    var widgetsSlot = document.getElementById('authLoginWidgetsSlot');
+    var publicMsgSlot = document.getElementById('authPublicMessagesSlot');
+    function applyLoginWidgetFlags(flags, announcementMd) {
+        var f = flags || {};
+        var showBoard = f.login_widget_message_board_enabled !== false;
+        var showPublic = f.login_widget_public_messages_enabled !== false;
+        renderAuthAnnouncement(announcementMd || '');
+        var html = '';
+        if (showBoard) html += buildLoginBoardWidgetHtml();
+        if (widgetsSlot) widgetsSlot.innerHTML = html;
+        if (showBoard) initLoginBoardWidget();
+        if (showPublic && publicMsgSlot) {
+            publicMsgSlot.innerHTML = buildPublicMessagesPanelHtml();
+            initPublicMessagesPanel();
+        }
+    }
+    if (API && typeof API.getPublicLoginWidgets === 'function') {
+        API.getPublicLoginWidgets()
+            .then(function(r) { applyLoginWidgetFlags((r && r.flags) || {}, (r && r.announcement_md) || ''); })
+            .catch(function() { applyLoginWidgetFlags({}, ''); });
+    } else {
+        applyLoginWidgetFlags({}, '');
+    }
+    function refreshLoginCaptcha() {
+        var qEl = document.getElementById('loginCaptchaQuestion');
+        var inputEl = document.getElementById('loginCaptchaInput');
+        if (qEl) qEl.textContent = t('auth.captchaLoading');
+        if (inputEl) inputEl.value = '';
+        API.getCaptcha().then(function(r) {
+            window._loginCaptchaToken = r.captcha_token || '';
+            if (qEl) qEl.textContent = r.question || t('auth.captchaLabel');
+        }).catch(function() {
+            if (qEl) qEl.textContent = t('auth.captchaLoadFailed');
+        });
+    }
+    refreshLoginCaptcha();
+    var refreshBtn = document.getElementById('loginCaptchaRefresh');
+    if (refreshBtn) refreshBtn.onclick = refreshLoginCaptcha;
+    document.getElementById('loginForm').onsubmit = function(e) {
+        e.preventDefault();
+        var captchaToken = window._loginCaptchaToken || '';
+        var captchaAnswer = (document.getElementById('loginCaptchaInput') && document.getElementById('loginCaptchaInput').value) || '';
+        API.login((document.getElementById('loginUser').value || '').trim(), document.getElementById('loginPass').value, captchaToken, captchaAnswer)
+            .then(function(res) {
+                API.setAuth(res.access_token, res.user);
+                return fetch('/api/version').then(function(r) { return r.json(); });
+            })
+            .then(function(d) { API.version = d.version; })
+            .then(function() { return API.refreshSiteTimezone ? API.refreshSiteTimezone() : null; })
+            .then(edgeopsChoosePostLoginPath)
+            .then(function(nextPath) { Router.navigate(nextPath || '/dashboard'); })
+            .catch(function(err) {
+                showToast(err.message || t('auth.loginFailed'), 'error');
+                refreshLoginCaptcha();
+            });
+    };
+}
+
+function renderAuthAnnouncement(markdown) {
+    var slot = document.getElementById('authAnnouncementSlot');
+    if (!slot) return;
+    var md = String(markdown || '').trim();
+    if (!md) {
+        slot.innerHTML = '';
+        return;
+    }
+    var body = '';
+    if (typeof formatMarkdown === 'function') {
+        try { body = formatMarkdown(md); } catch (e) { body = esc(md); }
+    } else {
+        body = esc(md).replace(/\n/g, '<br>');
+    }
+    slot.innerHTML = '<aside class="auth-announcement" aria-label="' + esc(tOr('auth.announcement.aria', 'Announcement')) + '">'
+        + '<div class="auth-announcement-title">' + esc(tOr('auth.announcement.title', '公告')) + '</div>'
+        + '<div class="auth-announcement-body chat-message-content">' + body + '</div>'
+        + '</aside>';
+}
+
+// ── 登录页右下角：匿名留言板浮窗（写留言入口；已审核留言在 auth-visual 上以便签层叠展示）──
+function buildLoginBoardWidgetHtml() {
+    return ''
+        + '<div id="loginBoardWidget" class="login-board-widget login-board-collapsed" aria-live="polite">'
+        + '  <button type="button" class="login-board-toggle" id="loginBoardToggle" title="' + esc(t('auth.board.toggleTitle')) + '">'
+        + '    <span class="login-board-toggle-icon">&#128172;</span>'
+        + '    <span class="login-board-toggle-label">' + esc(t('auth.board.toggle')) + '</span>'
+        + '  </button>'
+        + '  <div class="login-board-panel" id="loginBoardPanel">'
+        + '    <div class="login-board-header">'
+        + '      <span class="login-board-title">' + esc(t('auth.board.title')) + '</span>'
+        + '      <button type="button" class="login-board-close" id="loginBoardClose" title="' + esc(t('auth.board.close')) + '">&times;</button>'
+        + '    </div>'
+        + '    <div class="login-board-form">'
+        + '      <div class="login-board-form-tip">' + esc(t('auth.board.formTip')) + '</div>'
+        + '      <input type="text" class="form-control" id="loginBoardNickname" placeholder="' + esc(t('auth.board.nicknamePlaceholder')) + '" maxlength="40">'
+        + '      <textarea class="form-control" id="loginBoardContent" placeholder="' + esc(t('auth.board.contentPlaceholder')) + '" rows="3" maxlength="4000"></textarea>'
+        + '      <div class="login-board-cap-row">'
+        + '        <span class="login-board-cap-q" id="loginBoardCapQ">' + esc(t('auth.board.capLoading')) + '</span>'
+        + '        <input type="text" class="form-control" id="loginBoardCapA" placeholder="' + esc(t('auth.board.capResult')) + '">'
+        + '        <button type="button" class="btn btn-sm" id="loginBoardCapRefresh" title="' + esc(t('auth.board.capRefresh')) + '">&#8635;</button>'
+        + '      </div>'
+        + '      <div class="login-board-actions">'
+        + '        <span class="login-board-tip">' + esc(t('auth.board.submitNote')) + '</span>'
+        + '        <button type="button" class="btn btn-sm btn-primary" id="loginBoardSubmit">' + esc(t('auth.board.submit')) + '</button>'
+        + '      </div>'
+        + '    </div>'
+        + '  </div>'
+        + '</div>'
+        + '<style>'
+        + '.login-board-widget{position:fixed;right:20px;bottom:20px;z-index:9999;font-size:13px;line-height:1.6;color:#e5edff;font-family:inherit;}'
+        + '.login-board-widget.login-board-collapsed .login-board-panel{display:none;}'
+        + '.login-board-widget:not(.login-board-collapsed) .login-board-toggle{display:none;}'
+        + '.login-board-toggle{display:flex;align-items:center;gap:8px;background:linear-gradient(135deg,#3b82f6,#6366f1);color:#fff;border:0;border-radius:999px;padding:10px 18px;cursor:pointer;box-shadow:0 8px 24px rgba(99,102,241,0.45);font-size:14px;font-weight:500;}'
+        + '.login-board-toggle:hover{filter:brightness(1.08);transform:translateY(-1px);transition:.15s ease;}'
+        + '.login-board-toggle-icon{font-size:16px;}'
+        + '.login-board-panel{width:360px;max-width:calc(100vw - 40px);max-height:70vh;background:rgba(15,23,42,0.92);backdrop-filter:blur(8px);border:1px solid rgba(120,160,255,0.25);border-radius:14px;box-shadow:0 20px 40px rgba(0,0,0,0.45);display:flex;flex-direction:column;overflow:hidden;}'
+        + '.login-board-header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid rgba(120,160,255,0.18);}'
+        + '.login-board-title{font-weight:600;font-size:14px;}'
+        + '.login-board-close{background:transparent;border:0;color:#cbd5e1;font-size:20px;line-height:1;cursor:pointer;padding:0 4px;}'
+        + '.login-board-close:hover{color:#fff;}'
+        + '.login-board-list{flex:1;min-height:80px;max-height:280px;overflow-y:auto;padding:10px 16px;font-size:12.5px;color:#cbd5e1;}'
+        + '.login-board-list .lb-item{padding:8px 0;border-bottom:1px dashed rgba(120,160,255,0.12);}'
+        + '.login-board-list .lb-item:last-child{border-bottom:0;}'
+        + '.login-board-list .lb-meta{color:#94a3b8;font-size:11.5px;margin-bottom:4px;}'
+        + '.login-board-list .lb-content{color:#e2e8f0;}'
+        + '.login-board-list .lb-content pre,.login-board-list .lb-reply pre{background:rgba(0,0,0,0.3);padding:6px 8px;border-radius:6px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;}'
+        + '.login-board-list .lb-reply{margin-top:6px;padding:6px 10px;background:rgba(99,102,241,0.10);border-left:3px solid #6366f1;border-radius:0 6px 6px 0;}'
+        + '.login-board-list .lb-reply-meta{color:#a5b4fc;font-size:11.5px;margin-bottom:4px;}'
+        + '.login-board-list .lb-empty{color:#94a3b8;text-align:center;padding:18px 0;}'
+        + '.login-board-form{padding:10px 16px 14px;border-top:1px solid rgba(120,160,255,0.18);display:flex;flex-direction:column;gap:8px;}'
+        + '.login-board-form .form-control{background:rgba(15,23,42,0.6);border:1px solid rgba(120,160,255,0.25);color:#e5edff;border-radius:8px;padding:6px 10px;font-size:12.5px;}'
+        + '.login-board-form textarea.form-control{resize:vertical;min-height:60px;}'
+        + '.login-board-cap-row{display:flex;align-items:center;gap:6px;}'
+        + '.login-board-cap-q{color:#cbd5e1;font-size:12px;flex:1;}'
+        + '.login-board-cap-row .form-control{width:64px;}'
+        + '.login-board-actions{display:flex;justify-content:space-between;align-items:center;gap:6px;}'
+        + '.login-board-tip{color:#94a3b8;font-size:11.5px;}'
+        + '.login-board-form-tip{color:#94a3b8;font-size:11.5px;line-height:1.55;padding:4px 0 2px;border-bottom:1px dashed rgba(120,160,255,0.12);margin-bottom:2px;}'
+        + '@media (max-width:768px){.login-board-widget{right:10px;bottom:10px;}.login-board-panel{width:calc(100vw - 20px);}}'
+        + '</style>';
+}
+
+function _lbEsc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+    });
+}
+
+function _lbMd(text) {
+    if (typeof formatMarkdown === 'function') {
+        try { return formatMarkdown(text || ''); } catch (e) {}
+    }
+    return '<pre>' + _lbEsc(text || '') + '</pre>';
+}
+
+var _PM_STICKY_COLORS = ['#fff9c4', '#ffecb3', '#ffcdd2', '#c8e6c9', '#bbdefb', '#e1bee7', '#ffe0b2', '#dcedc8', '#f8bbd0'];
+
+function _pmStickySeed(id) {
+    var str = String(id == null ? '' : id);
+    var h = 0;
+    for (var i = 0; i < str.length; i++) { h = ((h << 5) - h) + str.charCodeAt(i); h |= 0; }
+    return Math.abs(h) + 1;
+}
+
+function _pmRnd(seed, salt) {
+    var t = (seed * 9301 + 49297 + (salt | 0) * 7919) % 233280;
+    return t / 233280;
+}
+
+// 便签位置：多半落在右半屏、随机旋转与层叠
+function _pmStickyLayout(seed, idx) {
+    var r1 = _pmRnd(seed, idx * 3 + 1);
+    var r2 = _pmRnd(seed, idx * 3 + 2);
+    var useRight = _pmRnd(seed, idx * 999) < 0.68;
+    var x = useRight ? (50 + r1 * 46) : (2 + r1 * 38);
+    var y = 2 + r2 * 78;
+    var rot = -9 + _pmRnd(seed, idx * 7 + 5) * 18;
+    var w = 200 + Math.floor(_pmRnd(seed, idx + 50) * 72);
+    return {
+        left: x.toFixed(2) + '%',
+        top: y.toFixed(2) + '%',
+        rot: rot.toFixed(2),
+        width: w + 'px',
+    };
+}
+
+var _PM_STICKY_Z_FLOOR = 100;
+
+function _pmBumpStickyZ(sticky) {
+    if (!sticky) return;
+    if (!window._pmStickyZCounter) window._pmStickyZCounter = _PM_STICKY_Z_FLOOR;
+    if (window._pmStickyZCounter < 99990) window._pmStickyZCounter++;
+    sticky.style.zIndex = String(window._pmStickyZCounter);
+}
+
+function initPublicMessagesStickyInteractions(listEl) {
+    if (!listEl || listEl._pmInteractBound) return;
+    listEl._pmInteractBound = true;
+    listEl.addEventListener('pointerdown', function(e) {
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        var sticky = e.target.closest && e.target.closest('.pm-sticky');
+        if (!sticky || !listEl.contains(sticky)) return;
+        if (e.target.closest && e.target.closest('a')) return;
+        _pmBumpStickyZ(sticky);
+        var handle = e.target.closest && e.target.closest('.pm-drag-handle');
+        if (!handle || !sticky.contains(handle)) return;
+        e.preventDefault();
+        var capId = e.pointerId;
+        var lr = listEl.getBoundingClientRect();
+        var sr = sticky.getBoundingClientRect();
+        var rot = sticky.getAttribute('data-pm-rot') || '0';
+        var left = sr.left - lr.left;
+        var top = sr.top - lr.top;
+        sticky.style.left = Math.round(left) + 'px';
+        sticky.style.top = Math.round(top) + 'px';
+        sticky.style.transform = 'rotate(' + rot + 'deg)';
+        sticky.classList.add('pm-dragging');
+        var ox = e.clientX - sr.left;
+        var oy = e.clientY - sr.top;
+        function clampMove(ev) {
+            var nl = ev.clientX - lr.left - ox;
+            var nt = ev.clientY - lr.top - oy;
+            var w = sticky.offsetWidth;
+            var h = sticky.offsetHeight;
+            nl = Math.max(0, Math.min(nl, lr.width - w));
+            nt = Math.max(0, Math.min(nt, lr.height - h));
+            sticky.style.left = Math.round(nl) + 'px';
+            sticky.style.top = Math.round(nt) + 'px';
+        }
+        function onUp() {
+            sticky.classList.remove('pm-dragging');
+            document.removeEventListener('pointermove', clampMove);
+            document.removeEventListener('pointerup', onUp);
+            document.removeEventListener('pointercancel', onUp);
+            try { sticky.releaseCapture(capId); } catch (err) {}
+        }
+        document.addEventListener('pointermove', clampMove);
+        document.addEventListener('pointerup', onUp);
+        document.addEventListener('pointercancel', onUp);
+        try { sticky.setPointerCapture(capId); } catch (err2) {}
+    });
+}
+
+function initLoginBoardWidget() {
+    var widget = document.getElementById('loginBoardWidget');
+    if (!widget) return;
+    var toggle = document.getElementById('loginBoardToggle');
+    var closeBtn = document.getElementById('loginBoardClose');
+    if (toggle) toggle.onclick = function() {
+        widget.classList.remove('login-board-collapsed');
+        loadLoginBoardCaptcha();
+    };
+    if (closeBtn) closeBtn.onclick = function() { widget.classList.add('login-board-collapsed'); };
+    var refresh = document.getElementById('loginBoardCapRefresh');
+    if (refresh) refresh.onclick = loadLoginBoardCaptcha;
+    var submit = document.getElementById('loginBoardSubmit');
+    if (submit) submit.onclick = submitLoginBoardMessage;
+}
+
+// 公开留言：便签层叠在 .auth-visual 内
+// `login_widget_public_messages_enabled` 开关控制是否注入。
+function buildPublicMessagesPanelHtml() {
+    return ''
+        + '<aside id="authPublicMessages" class="auth-public-messages" aria-label="' + esc(t('auth.public.aria')) + '">'
+        + '  <button type="button" class="auth-public-messages-refresh" id="authPublicMessagesRefresh" title="' + esc(t('auth.public.refresh')) + '">&#8635;</button>'
+        + '  <div class="auth-public-messages-layer" id="authPublicMessagesList">' + esc(t('auth.public.loading')) + '</div>'
+        + '</aside>'
+        + '<style>'
+        + '.auth-public-messages{position:absolute;inset:0;z-index:2;pointer-events:none;overflow:visible;}'
+        + '.auth-public-messages-refresh{position:absolute;top:10px;right:10px;z-index:3;pointer-events:auto;width:34px;height:34px;border-radius:10px;border:1px solid rgba(120,160,255,0.35);background:rgba(15,23,42,0.75);color:#e2e8f0;font-size:17px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 6px 16px rgba(0,0,0,0.35);}'
+        + '.auth-public-messages-refresh:hover{color:#fff;border-color:rgba(147,197,253,0.55);background:rgba(30,41,59,0.9);}'
+        + '.auth-public-messages-layer{position:absolute;inset:0;pointer-events:none;}'
+        + '.auth-public-messages .pm-sticky{position:absolute;pointer-events:auto;max-width:min(260px,42vw);min-width:160px;padding:12px 12px 10px 14px;border-radius:2px;font-size:12.5px;line-height:1.55;color:#1e293b;box-shadow:3px 4px 14px rgba(0,0,0,0.28),inset 0 -18px 24px -20px rgba(0,0,0,0.06);transform-origin:center center;}'
+        + '.auth-public-messages .pm-sticky::before{content:"";position:absolute;left:0;top:0;right:0;height:10px;background:linear-gradient(180deg,rgba(255,255,255,0.35),transparent);pointer-events:none;border-radius:2px 2px 0 0;}'
+        + '.auth-public-messages .pm-meta.pm-drag-handle{font-size:11px;color:#475569;margin:0 0 6px 0;padding:4px 2px 2px 0;font-weight:600;cursor:grab;user-select:none;-webkit-user-select:none;touch-action:none;}'
+        + '.auth-public-messages .pm-meta.pm-drag-handle::after{content:"⠿";float:right;opacity:.4;font-size:11px;line-height:1.2;letter-spacing:-2px;}'
+        + '.auth-public-messages .pm-sticky.pm-dragging .pm-drag-handle{cursor:grabbing;}'
+        + '.auth-public-messages .pm-content{color:#334155;word-break:break-word;max-height:168px;overflow-y:auto;touch-action:pan-y;}'
+        + '.auth-public-messages .pm-content::-webkit-scrollbar{width:5px;}'
+        + '.auth-public-messages .pm-content::-webkit-scrollbar-thumb{background:rgba(30,41,59,0.25);border-radius:3px;}'
+        + '.auth-public-messages .pm-content pre,.auth-public-messages .pm-reply pre{background:rgba(255,255,255,0.55);padding:5px 7px;border-radius:4px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;font-size:11.5px;}'
+        + '.auth-public-messages .pm-reply{margin-top:8px;padding:7px 9px;background:rgba(99,102,241,0.12);border-left:3px solid #6366f1;border-radius:0 4px 4px 0;}'
+        + '.auth-public-messages .pm-reply-meta{font-size:10.5px;color:#4f46e5;font-weight:600;margin-bottom:4px;}'
+        + '.auth-public-messages .pm-empty{position:absolute;left:50%;top:42%;transform:translate(-50%,-50%);pointer-events:none;text-align:center;color:rgba(148,163,184,0.85);font-size:13px;line-height:1.65;max-width:240px;padding:16px 20px;background:rgba(15,23,42,0.45);border-radius:12px;border:1px dashed rgba(120,160,255,0.22);}'
+        + '@media (max-width:900px){.auth-public-messages .pm-sticky{max-width:min(220px,55vw);font-size:12px;}.auth-public-messages .pm-content{max-height:120px;}}'
+        + '</style>';
+}
+
+function initPublicMessagesPanel() {
+    var refresh = document.getElementById('authPublicMessagesRefresh');
+    if (refresh) refresh.onclick = loadPublicMessagesPanel;
+    var listEl = document.getElementById('authPublicMessagesList');
+    if (listEl) initPublicMessagesStickyInteractions(listEl);
+    loadPublicMessagesPanel();
+}
+
+function loadPublicMessagesPanel() {
+    var listEl = document.getElementById('authPublicMessagesList');
+    if (!listEl) return;
+    listEl.textContent = t('auth.public.loading');
+    API.getLoginBoardPublic(30).then(function(r) {
+        var items = (r && r.items) || [];
+        if (!items.length) {
+            listEl.innerHTML = '<div class="pm-empty">' + t('auth.public.empty') + '</div>';
+            return;
+        }
+        listEl.innerHTML = items.map(function(it, idx) {
+            var nick = it.nickname || t('auth.public.anonymous');
+            var time = formatTimeShort(it.created_at);
+            var seed = _pmStickySeed(it.id != null ? it.id : idx);
+            var lay = _pmStickyLayout(seed, idx);
+            var bg = _PM_STICKY_COLORS[seed % _PM_STICKY_COLORS.length];
+            var html = '<div class="pm-sticky" data-pm-rot="' + lay.rot + '" title="' + esc(t('auth.public.stickyTitle')) + '" style="left:' + lay.left + ';top:' + lay.top
+                + ';width:' + lay.width + ';transform:rotate(' + lay.rot + 'deg);z-index:' + (2 + idx) + ';background:'
+                + bg + ';">'
+                + '<div class="pm-meta pm-drag-handle" title="' + esc(t('auth.public.dragTitle')) + '">' + _lbEsc(nick) + ' · ' + _lbEsc(time) + '</div>'
+                + '<div class="pm-content">' + _lbMd(it.content || '') + '</div>';
+            (it.replies || []).forEach(function(rp) {
+                var rt = formatTimeShort(rp.created_at);
+                html += '<div class="pm-reply">'
+                    + '<div class="pm-reply-meta">' + esc(t('auth.public.admin')) + ' · ' + _lbEsc(rt) + '</div>'
+                    + '<div>' + _lbMd(rp.content || '') + '</div>'
+                    + '</div>';
+            });
+            html += '</div>';
+            return html;
+        }).join('');
+    }).catch(function(e) {
+        listEl.innerHTML = '<div class="pm-empty">' + esc(t('auth.public.loadFailed')) + _lbEsc(e.message || e) + '</div>';
+    });
+}
+
+function loadLoginBoardCaptcha() {
+    var qEl = document.getElementById('loginBoardCapQ');
+    var aEl = document.getElementById('loginBoardCapA');
+    if (qEl) qEl.textContent = t('auth.board.capLoading');
+    if (aEl) aEl.value = '';
+    API.getLoginBoardCaptcha().then(function(r) {
+        window._lbCapToken = r.captcha_token || '';
+        if (qEl) qEl.textContent = r.question || t('auth.captchaLabel');
+    }).catch(function() {
+        if (qEl) qEl.textContent = t('auth.captchaLoadFailed');
+    });
+}
+
+function submitLoginBoardMessage() {
+    var btn = document.getElementById('loginBoardSubmit');
+    var nick = (document.getElementById('loginBoardNickname') || {}).value || '';
+    var content = ((document.getElementById('loginBoardContent') || {}).value || '').trim();
+    var capA = ((document.getElementById('loginBoardCapA') || {}).value || '').trim();
+    var capToken = window._lbCapToken || '';
+    if (!content) { showToast(t('toast.fillMessage'), 'error'); return; }
+    if (!capA || !capToken) { showToast(t('toast.completeCaptcha'), 'error'); return; }
+    if (btn) btn.disabled = true;
+    API.postLoginBoard({
+        nickname: nick, content: content, captcha_token: capToken, captcha_answer: capA,
+    }).then(function(r) {
+        showToast(r.message || t('toast.messageSubmitted'), 'success');
+        var ce = document.getElementById('loginBoardContent'); if (ce) ce.value = '';
+        var ne = document.getElementById('loginBoardNickname'); if (ne) ne.value = '';
+        var capEl = document.getElementById('loginBoardCapA'); if (capEl) capEl.value = '';
+        // 提交成功后收起浮窗（用户期望明确反馈）
+        var widget = document.getElementById('loginBoardWidget');
+        if (widget) widget.classList.add('login-board-collapsed');
+    }).catch(function(err) {
+        showToast(err.message || t('toast.submitFailed'), 'error');
+        loadLoginBoardCaptcha();
+    }).finally(function() { if (btn) btn.disabled = false; });
+}
+
+// 登录页右侧：全屏粒子网络 + 大尺寸数字地球 + 信号飞驰（占满右侧区域）
+function startLoginPageGlobe() {
+    var container = document.getElementById('authVisual');
+    var canvas = document.getElementById('authCanvas');
+    if (!container || !canvas) return;
+    var ctx = canvas.getContext('2d');
+    var w = 0, h = 0;
+    var particles = [];
+    var globeNodes = [];
+    var globeLinks = [];
+    var signals = [];
+    var CONNECT_DIST = 160;
+    var PARTICLE_COUNT = 120;
+    var frameId = 0;
+    var time = 0;
+
+    function resize() {
+        if (!container.parentElement) return;
+        var cw = container.offsetWidth;
+        var ch = container.offsetHeight;
+        if (cw <= 0 || ch <= 0) return;
+        w = cw;
+        h = ch;
+        canvas.width = w;
+        canvas.height = h;
+        initParticles();
+        initGlobeNodes();
+        initSignals();
+    }
+
+    function initParticles() {
+        particles = [];
+        for (var i = 0; i < PARTICLE_COUNT; i++) {
+            particles.push({
+                x: Math.random() * w,
+                y: Math.random() * h,
+                vx: (Math.random() - 0.5) * 0.6,
+                vy: (Math.random() - 0.5) * 0.6,
+                r: 1.2 + Math.random() * 0.8
+            });
+        }
+    }
+
+    function initGlobeNodes() {
+        globeNodes = [];
+        globeLinks = [];
+        var cx = w * 0.5;
+        var cy = h * 0.5;
+        var R = Math.min(w, h) * 0.48;
+        var n = 24;
+        for (var i = 0; i < n; i++) {
+            var angle = (i / n) * Math.PI * 2 - Math.PI / 2;
+            globeNodes.push({
+                x: cx + R * Math.cos(angle),
+                y: cy + R * Math.sin(angle) * 0.45
+            });
+        }
+        for (var i = 0; i < globeNodes.length; i++) {
+            for (var j = i + 1; j < globeNodes.length; j++) {
+                var dx = globeNodes[j].x - globeNodes[i].x, dy = globeNodes[j].y - globeNodes[i].y;
+                if (dx * dx + dy * dy < (R * 1.8) * (R * 1.8) && Math.random() < 0.32) globeLinks.push([i, j]);
+            }
+        }
+    }
+
+    function initSignals() {
+        signals = [];
+        for (var i = 0; i < 24; i++) {
+            var a = Math.floor(Math.random() * globeNodes.length);
+            var b = Math.floor(Math.random() * globeNodes.length);
+            if (a === b) b = (b + 1) % globeNodes.length;
+            signals.push({
+                from: a,
+                to: b,
+                t: Math.random(),
+                speed: 0.006 + Math.random() * 0.008
+            });
+        }
+    }
+
+    function draw() {
+        if (!ctx || !container.parentElement) return;
+        if (w <= 0 || h <= 0) {
+            frameId = requestAnimationFrame(draw);
+            return;
+        }
+        time += 0.016;
+
+        ctx.fillStyle = 'rgba(11, 16, 32, 0.88)';
+        ctx.fillRect(0, 0, w, h);
+
+        var cx = w * 0.5;
+        var cy = h * 0.5;
+        var R = Math.min(w, h) * 0.48;
+
+        // 1) 全屏六边形网格（科技感底纹）
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.04)';
+        ctx.lineWidth = 1;
+        var step = 36;
+        for (var gx = -step; gx <= w + step; gx += step) {
+            ctx.beginPath();
+            ctx.moveTo(gx, 0);
+            ctx.lineTo(gx, h);
+            ctx.stroke();
+        }
+        for (var gy = -step; gy <= h + step; gy += step) {
+            ctx.beginPath();
+            ctx.moveTo(0, gy);
+            ctx.lineTo(w, gy);
+            ctx.stroke();
+        }
+
+        // 2) 粒子运动并连线（填满区域）
+        for (var i = 0; i < particles.length; i++) {
+            var p = particles[i];
+            p.x += p.vx;
+            p.y += p.vy;
+            if (p.x < 0 || p.x > w) p.vx *= -1;
+            if (p.y < 0 || p.y > h) p.vy *= -1;
+            p.x = Math.max(0, Math.min(w, p.x));
+            p.y = Math.max(0, Math.min(h, p.y));
+        }
+        ctx.lineWidth = 0.8;
+        for (var i = 0; i < particles.length; i++) {
+            for (var j = i + 1; j < particles.length; j++) {
+                var dx = particles[j].x - particles[i].x;
+                var dy = particles[j].y - particles[i].y;
+                var d = Math.sqrt(dx * dx + dy * dy);
+                if (d < CONNECT_DIST) {
+                    var alpha = (1 - d / CONNECT_DIST) * 0.2 + 0.04;
+                    ctx.strokeStyle = 'rgba(56, 189, 248, ' + alpha + ')';
+                    ctx.beginPath();
+                    ctx.moveTo(particles[i].x, particles[i].y);
+                    ctx.lineTo(particles[j].x, particles[j].y);
+                    ctx.stroke();
+                }
+            }
+        }
+        for (var i = 0; i < particles.length; i++) {
+            var p = particles[i];
+            var pulse = 0.7 + 0.3 * Math.sin(time * 2 + i * 0.5);
+            ctx.fillStyle = 'rgba(56, 189, 248, ' + (0.35 * pulse) + ')';
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // 3) 中央大地球：多层光晕 + 线框
+        var glowR = R * 1.35;
+        var g0 = ctx.createRadialGradient(cx, cy, R * 0.3, cx, cy, glowR);
+        g0.addColorStop(0, 'rgba(56, 189, 248, 0.12)');
+        g0.addColorStop(0.5, 'rgba(56, 189, 248, 0.04)');
+        g0.addColorStop(1, 'rgba(56, 189, 248, 0)');
+        ctx.fillStyle = g0;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, glowR, glowR * 0.45, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.35)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, R, R * 0.45, 0, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.14)';
+        ctx.lineWidth = 1;
+        for (var k = -3; k <= 3; k++) {
+            if (k === 0) continue;
+            var ry = R * 0.45 * (k / 3);
+            var rx = Math.sqrt(Math.max(0, R * R - (R * 0.45 * k / 3) * (R * 0.45 * k / 3) / (0.2025)));
+            ctx.beginPath();
+            ctx.ellipse(cx, cy + ry, rx, Math.abs(ry) * 0.35 + 3, 0, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        for (var mer = 0; mer < 8; mer++) {
+            var ang = (mer / 8) * Math.PI * 2 + time * 0.08;
+            ctx.beginPath();
+            for (var lat = -1; lat <= 1; lat += 0.08) {
+                var ly = R * 0.45 * lat;
+                var lx = Math.sqrt(Math.max(0, R * R - (R * 0.45 * lat) * (R * 0.45 * lat) / (0.2025)));
+                var px = cx + lx * Math.cos(ang);
+                var py = cy + ly;
+                if (lat === -1) ctx.moveTo(px, py);
+                else ctx.lineTo(px, py);
+            }
+            ctx.stroke();
+        }
+
+        // 4) 地球上的飞驰信号（更亮、更大光点）
+        for (var i = 0; i < signals.length; i++) {
+            var s = signals[i];
+            var n1 = globeNodes[s.from];
+            var n2 = globeNodes[s.to];
+            if (!n1 || !n2) continue;
+            var x = n1.x + (n2.x - n1.x) * s.t;
+            var y = n1.y + (n2.y - n1.y) * s.t;
+            var grad = ctx.createRadialGradient(x, y, 0, x, y, 22);
+            grad.addColorStop(0, 'rgba(56, 189, 248, 1)');
+            grad.addColorStop(0.25, 'rgba(56, 189, 248, 0.5)');
+            grad.addColorStop(0.6, 'rgba(56, 189, 248, 0.15)');
+            grad.addColorStop(1, 'rgba(56, 189, 248, 0)');
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.arc(x, y, 22, 0, Math.PI * 2);
+            ctx.fill();
+            s.t += s.speed;
+            if (s.t >= 1) { s.t = 0; s.from = s.to; s.to = Math.floor(Math.random() * globeNodes.length); if (s.from === s.to) s.to = (s.to + 1) % globeNodes.length; }
+        }
+
+        // 5) 地球节点之间的常驻连线（全球通信网）
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.1)';
+        ctx.lineWidth = 1;
+        for (var li = 0; li < globeLinks.length; li++) {
+            var pair = globeLinks[li];
+            var n1 = globeNodes[pair[0]], n2 = globeNodes[pair[1]];
+            ctx.beginPath();
+            ctx.moveTo(n1.x, n1.y);
+            ctx.lineTo(n2.x, n2.y);
+            ctx.stroke();
+        }
+        // 6) 地球轮廓上的节点（稍大、带光晕）
+        for (var i = 0; i < globeNodes.length; i++) {
+            var n = globeNodes[i];
+            ctx.fillStyle = 'rgba(56, 189, 248, 0.6)';
+            ctx.beginPath();
+            ctx.arc(n.x, n.y, 4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(56, 189, 248, 0.9)';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+        }
+
+        frameId = requestAnimationFrame(draw);
+    }
+
+    function runResize() {
+        resize();
+    }
+    runResize();
+    requestAnimationFrame(function() { runResize(); });
+    setTimeout(runResize, 50);
+    setTimeout(runResize, 200);
+    if (typeof ResizeObserver !== 'undefined') {
+        var ro = new ResizeObserver(function() { runResize(); });
+        ro.observe(container);
+        window._loginGlobeResize = function() { runResize(); ro.disconnect(); ro.observe(container); };
+    } else {
+        window._loginGlobeResize = runResize;
+    }
+    window.addEventListener('resize', runResize);
+    draw();
+}
+
+// ── 找回密码/解除锁定（用户名+邮箱 → 验证码 → 重设密码或仅解锁）──
+function renderForgotPasswordPage() {
+    var step = 1;
+    var recoverUsername = '';
+    var recoverEmail = '';
+    var recoverTempToken = '';
+    function render() {
+        var html = '<div class="auth-page"><div class="auth-card">'
+            + '<h1>' + esc(t('meta.productName')) + '</h1><div class="auth-subtitle">' + esc(t('auth.forgot.subtitle')) + '</div>';
+        if (step === 1) {
+            html += '<form id="forgotForm">'
+                + '<div class="form-group"><label>' + esc(t('auth.forgot.user')) + '</label><input class="form-control" id="forgotUser" placeholder="' + esc(t('auth.forgot.userPh')) + '" required></div>'
+                + '<div class="form-group"><label>' + esc(t('auth.forgot.email')) + '</label><input type="email" class="form-control" id="forgotEmail" placeholder="' + esc(t('auth.forgot.emailPh')) + '" required></div>'
+                + '<p class="text-muted" style="font-size:12px">' + esc(t('auth.forgot.hint1')) + '</p>'
+                + '<button class="btn btn-primary btn-lg" type="submit">' + esc(t('auth.forgot.sendCode')) + '</button></form>';
+        } else if (step === 2) {
+            html += '<form id="forgotCodeForm">'
+                + '<p class="text-muted">' + t('auth.forgot.sentTo', { email: esc(recoverEmail) }) + '</p>'
+                + '<div class="form-group"><label>' + esc(t('auth.forgot.code')) + '</label><input class="form-control" id="forgotCode" placeholder="' + esc(t('auth.forgot.codePh')) + '" maxlength="6" required></div>'
+                + '<div class="form-group"><label>' + esc(t('auth.forgot.action')) + '</label><select class="form-control" id="forgotAction"><option value="reset">' + esc(t('auth.forgot.actionReset')) + '</option><option value="unlock">' + esc(t('auth.forgot.actionUnlock')) + '</option></select></div>'
+                + '<button class="btn btn-primary btn-lg" type="submit">' + esc(t('auth.forgot.next')) + '</button></form>';
+        } else {
+            var action = window._recoverAction || 'reset';
+            if (action === 'reset') {
+                html += '<form id="forgotNewPwdForm">'
+                    + '<div class="form-group"><label>' + esc(t('auth.forgot.newPass')) + '</label><input type="password" class="form-control" id="forgotNewPwd" placeholder="' + esc(t('auth.forgot.newPassPh')) + '" required></div>'
+                    + '<button class="btn btn-primary btn-lg" type="submit">' + esc(t('auth.forgot.resetBtn')) + '</button></form>';
+            } else {
+                html += '<p>' + esc(t('auth.forgot.unlockHint')) + '</p><button class="btn btn-primary btn-lg" id="forgotUnlockBtn">' + esc(t('auth.forgot.unlockBtn')) + '</button>';
+            }
+        }
+        html += '<div class="auth-footer"><a data-href="/login" style="color:var(--accent);cursor:pointer">' + esc(t('auth.backToLogin')) + '</a></div>'
+            + '<div class="auth-version">v' + esc(API.version || '…') + '</div></div></div>';
+        document.getElementById('app').innerHTML = html;
+        if (step === 1) {
+            document.getElementById('forgotForm').onsubmit = function(e) {
+                e.preventDefault();
+                var u = (document.getElementById('forgotUser') && document.getElementById('forgotUser').value) || '';
+                var em = (document.getElementById('forgotEmail') && document.getElementById('forgotEmail').value) || '';
+                if (!u.trim() || !em.trim()) { showToast(t('toast.enterUsernameAndEmail'), 'error'); return; }
+                API.requestRecover(u.trim(), em.trim()).then(function(res) {
+                    showToast(res.message || t('toast.codeSent'));
+                    recoverUsername = u.trim();
+                    recoverEmail = em.trim();
+                    step = 2;
+                    render();
+                }).catch(function(err) { showToast(err.message, 'error'); });
+            };
+        } else if (step === 2) {
+            document.getElementById('forgotCodeForm').onsubmit = function(e) {
+                e.preventDefault();
+                var code = (document.getElementById('forgotCode') && document.getElementById('forgotCode').value) || '';
+                var act = (document.getElementById('forgotAction') && document.getElementById('forgotAction').value) || 'reset';
+                if (!code.trim() || code.length !== 6) { showToast(t('toast.code6Required'), 'error'); return; }
+                API.verifyRecover(recoverUsername, recoverEmail, code.trim()).then(function(res) {
+                    recoverTempToken = res.temp_token || '';
+                    window._recoverAction = act;
+                    step = 3;
+                    render();
+                }).catch(function(err) { showToast(err.message, 'error'); });
+            };
+        } else {
+            if (window._recoverAction === 'reset') {
+                document.getElementById('forgotNewPwdForm').onsubmit = function(e) {
+                    e.preventDefault();
+                    var pwd = (document.getElementById('forgotNewPwd') && document.getElementById('forgotNewPwd').value) || '';
+                    if (pwd.length < 6) { showToast(t('toast.newPasswordMin6'), 'error'); return; }
+                    API.recoverComplete(recoverTempToken, 'reset', pwd).then(function(res) {
+                        showToast(res.message || t('toast.passwordReset'));
+                        Router.navigate('/login');
+                    }).catch(function(err) { showToast(err.message, 'error'); });
+                };
+            } else {
+                document.getElementById('forgotUnlockBtn').onclick = function() {
+                    API.recoverComplete(recoverTempToken, 'unlock').then(function(res) {
+                        showToast(res.message || t('toast.unlocked'));
+                        Router.navigate('/login');
+                    }).catch(function(err) { showToast(err.message, 'error'); });
+                };
+            }
+        }
+    }
+    render();
+}
+
+// ── 重置密码（邮件链接） ──
+function renderResetPasswordPage() {
+    var params = new URLSearchParams(location.search);
+    var token = params.get('token') || '';
+    document.getElementById('app').innerHTML = ''
+        + '<div class="auth-page"><div class="auth-card">'
+        + '<h1>' + esc(t('meta.productName')) + '</h1><div class="auth-subtitle">' + esc(t('auth.reset.subtitle')) + '</div>'
+        + '<form id="resetForm">'
+        + (token ? '' : '<div class="form-group"><label>' + esc(t('auth.reset.tokenLabel')) + '</label><input class="form-control" id="resetToken" placeholder="' + esc(t('auth.reset.tokenPh')) + '"></div>')
+        + '<div class="form-group"><label>' + esc(t('auth.reset.newPass')) + '</label><input class="form-control" id="resetNewPass" type="password" placeholder="' + esc(t('auth.reset.newPassPh')) + '" required></div>'
+        + '<button class="btn btn-primary btn-lg" type="submit">' + esc(t('auth.reset.submit')) + '</button></form>'
+        + '<div class="auth-footer"><a data-href="/login" style="color:var(--accent);cursor:pointer">' + esc(t('auth.backToLogin')) + '</a></div>'
+        + '<div class="auth-version">v' + esc(API.version || '…') + '</div></div></div>';
+    if (token) window._resetToken = token;
+    document.getElementById('resetForm').onsubmit = function(e) {
+        e.preventDefault();
+        var t = window._resetToken || (document.getElementById('resetToken') && document.getElementById('resetToken').value) || '';
+        var pass = (document.getElementById('resetNewPass') && document.getElementById('resetNewPass').value) || '';
+        if (!t.trim()) { showToast(t('toast.useEmailLinkOrToken'), 'error'); return; }
+        if (pass.length < 6) { showToast(t('toast.newPasswordMin6'), 'error'); return; }
+        API.resetPasswordByToken(t.trim(), pass).then(function(res) {
+            showToast(res.message || t('toast.passwordReset'));
+            Router.navigate('/login');
+        }).catch(function(err) { showToast(err.message, 'error'); });
+    };
+}
+
+// ── 邮件解锁账户 ──
+function renderUnlockPage() {
+    var params = new URLSearchParams(location.search);
+    var token = params.get('token') || '';
+    document.getElementById('app').innerHTML = ''
+        + '<div class="auth-page"><div class="auth-card">'
+        + '<h1>' + esc(t('meta.productName')) + '</h1><div class="auth-subtitle">' + esc(t('auth.unlock.subtitle')) + '</div>'
+        + (token ? '<p class="text-muted">' + esc(t('auth.unlock.hint')) + '</p><button class="btn btn-primary btn-lg" id="unlockBtn">' + esc(t('auth.unlock.btn')) + '</button>'
+          : '<form id="unlockForm"><div class="form-group"><label>' + esc(t('auth.unlock.tokenLabel')) + '</label><input class="form-control" id="unlockToken" placeholder="' + esc(t('auth.unlock.tokenPh')) + '"></div><button class="btn btn-primary btn-lg" type="submit">' + esc(t('auth.unlock.btn')) + '</button></form>')
+        + '<div class="auth-footer"><a data-href="/login" style="color:var(--accent);cursor:pointer">' + esc(t('auth.backToLogin')) + '</a></div>'
+        + '<div class="auth-version">v' + esc(API.version || '…') + '</div></div></div>';
+    if (token) {
+        document.getElementById('unlockBtn').onclick = function() {
+            API.unlockByToken(token).then(function(res) {
+                showToast(res.message || t('toast.accountUnlocked'));
+                Router.navigate('/login');
+            }).catch(function(err) { showToast(err.message, 'error'); });
+        };
+    } else {
+        document.getElementById('unlockForm').onsubmit = function(e) {
+            e.preventDefault();
+            var t = (document.getElementById('unlockToken') && document.getElementById('unlockToken').value) || '';
+            if (!t.trim()) { showToast(t('toast.useEmailLinkOrToken'), 'error'); return; }
+            API.unlockByToken(t.trim()).then(function(res) {
+                showToast(res.message || t('toast.accountUnlocked'));
+                Router.navigate('/login');
+            }).catch(function(err) { showToast(err.message, 'error'); });
+        };
+    }
+}
+
+// ── 注册 ──
+function renderRegisterPage() {
+    document.getElementById('app').innerHTML = ''
+        + '<div class="auth-page"><div class="auth-card">'
+        + '<h1>' + esc(t('meta.productName')) + '</h1><div class="auth-subtitle">' + esc(t('auth.registerForm.subtitle')) + '</div>'
+        + '<form id="regForm">'
+        + '<div class="form-group"><label>' + esc(t('auth.registerForm.user')) + '</label><input class="form-control" id="regUser" placeholder="' + esc(t('auth.registerForm.userPh')) + '" pattern="[A-Za-z0-9._\\-]{3,32}" title="' + esc(t('auth.usernameRule')) + '" required></div>'
+        + '<div class="form-group"><label>' + esc(t('auth.registerForm.display')) + '</label><input class="form-control" id="regDisplay" placeholder="' + esc(t('auth.registerForm.displayPh')) + '"></div>'
+        + '<div class="form-group"><label>' + esc(t('auth.registerForm.pass')) + '</label><input class="form-control" id="regPass" type="password" placeholder="' + esc(t('auth.registerForm.passPh')) + '" required></div>'
+        + '<div class="form-group"><label>' + esc(t('auth.captcha')) + '</label><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+        + '<span id="regCaptchaQuestion" class="text-muted">' + esc(t('auth.registerForm.captchaLoad')) + '</span>'
+        + '<input class="form-control" id="regCaptchaInput" placeholder="' + esc(t('auth.captchaResultPlaceholder')) + '" style="width:80px">'
+        + '</div></div>'
+        + '<button class="btn btn-primary btn-lg" type="submit">' + esc(t('auth.registerForm.submit')) + '</button></form>'
+        + '<div class="auth-footer">' + esc(t('auth.registerForm.hasAccount')) + '<a data-href="/login" style="color:var(--accent);cursor:pointer">' + esc(t('auth.login')) + '</a></div>'
+        + '<div class="auth-version">v' + esc(API.version || '…') + '</div>'
+        + '</div></div>';
+    function refreshRegCaptcha() {
+        var qEl = document.getElementById('regCaptchaQuestion');
+        var inputEl = document.getElementById('regCaptchaInput');
+        if (qEl) qEl.textContent = t('auth.registerForm.captchaLoad');
+        if (inputEl) inputEl.value = '';
+        API.getCaptcha().then(function(r) {
+            window._regCaptchaToken = r.captcha_token || '';
+            if (qEl) qEl.textContent = r.question || t('auth.captchaLabel');
+        }).catch(function() {
+            if (qEl) qEl.textContent = t('auth.registerForm.captchaFailed');
+        });
+    }
+    refreshRegCaptcha();
+    document.getElementById('regForm').onsubmit = function(e) {
+        e.preventDefault();
+        var captchaToken = window._regCaptchaToken || '';
+        var captchaAnswer = (document.getElementById('regCaptchaInput') && document.getElementById('regCaptchaInput').value) || '';
+        API.register((document.getElementById('regUser').value || '').trim(), document.getElementById('regPass').value, document.getElementById('regDisplay').value, captchaToken, captchaAnswer)
+            .then(function(res) {
+                API.setAuth(res.access_token, res.user);
+                return fetch('/api/version').then(function(r) { return r.json(); });
+            })
+            .then(function(d) { API.version = d.version; })
+            .then(function() { return API.refreshSiteTimezone ? API.refreshSiteTimezone() : null; })
+            .then(function() {
+                renderLayout();
+                Router.navigate('/dashboard');
+            })
+            .catch(function(err) {
+                showToast(err.message, 'error');
+                refreshRegCaptcha();
+            });
+    };
+}
+
+// ── 仪表盘 ──
+function renderDashboard() {
+    renderLayout();
+    var el = getPageEl();
+    el.innerHTML = '<div class="topbar"><h2>' + t('pages.dashboard.title') + '</h2><div class="topbar-actions">' + esc(API.user && API.user.display_name) + '</div></div>'
+        + '<div class="page-content"><div class="loading-overlay"><div class="spinner"></div></div></div>';
+    var content = el.querySelector('.page-content');
+    Promise.all([API.hostStats(), API.getDashboardStats()]).then(function(results) {
+        var hostData = results[0];
+        var statsData = results[1];
+        var s = (hostData && hostData.stats) || {};
+        var req7 = (statsData && statsData.requests_per_hour_7d) || [];
+        var active30 = (statsData && statsData.daily_active_users_30d) || [];
+        var ai7 = (statsData && statsData.ai_rounds_per_hour_7d) || [];
+        var hosts7 = (statsData && statsData.hosts_per_hour_7d) || [];
+        var aiTop20 = (statsData && statsData.ai_calls_top20_7d) || [];
+        var loginTop20 = (statsData && statsData.login_top20_7d) || [];
+
+        content.innerHTML = ''
+            + '<div class="stats-grid">'
+            + '<div class="stat-card total"><div class="stat-value">' + (s.total_hosts || 0) + '</div><div class="stat-label">' + t('pages.dashboard.totalHosts') + '</div></div>'
+            + '</div>'
+            + '<div class="card"><div class="card-header"><h3>' + t('pages.dashboard.welcomeTitle') + '</h3></div>'
+            + '<p style="color:var(--text-secondary);">' + t('pages.dashboard.welcomeText') + '</p></div>'
+            + '<div class="dashboard-charts">'
+            + '<div class="card dashboard-chart-card"><div class="card-header"><h3>' + t('pages.dashboard.chartRequests7d') + '</h3></div><div class="chart-wrap" id="chartRequests7d"></div></div>'
+            + '<div class="card dashboard-chart-card"><div class="card-header"><h3>' + t('pages.dashboard.chartActive30d') + '</h3></div><div class="chart-wrap" id="chartActive30d"></div></div>'
+            + '<div class="card dashboard-chart-card"><div class="card-header"><h3>' + t('pages.dashboard.chartAi7d') + '</h3></div><div class="chart-wrap" id="chartAi7d"></div></div>'
+            + '<div class="card dashboard-chart-card"><div class="card-header"><h3>' + t('pages.dashboard.chartHosts7d') + '</h3></div><div class="chart-wrap" id="chartHosts7d"></div></div>'
+            + '</div>';
+        drawDashboardLineChart(document.getElementById('chartRequests7d'), req7, 'hour', 7 * 24, t('pages.dashboard.unitRequests'));
+        drawDashboardLineChart(document.getElementById('chartActive30d'), active30, 'date', 30, t('pages.dashboard.unitUsers'));
+        drawDashboardLineChart(document.getElementById('chartAi7d'), ai7, 'hour', 7 * 24, t('pages.dashboard.unitRounds'));
+        drawDashboardLineChart(document.getElementById('chartHosts7d'), hosts7, 'hour', 7 * 24, t('pages.dashboard.unitHosts'));
+
+        content.insertAdjacentHTML(
+            'beforeend',
+            '<div class="dashboard-charts">'
+            + '<div class="card dashboard-chart-card"><div class="card-header"><h3>' + t('pages.dashboard.userAiTop20') + '</h3></div><div class="chart-wrap" id="dashboardAiTop20"></div></div>'
+            + '<div class="card dashboard-chart-card"><div class="card-header"><h3>' + t('pages.dashboard.userLoginTop20') + '</h3></div><div class="chart-wrap" id="dashboardLoginTop20"></div></div>'
+            + '</div>'
+        );
+        drawDashboardTopCurve(document.getElementById('dashboardAiTop20'), aiTop20, t('pages.dashboard.noData7d'));
+        drawDashboardTopCurve(document.getElementById('dashboardLoginTop20'), loginTop20, t('pages.dashboard.noData7d'));
+    }).catch(function(err) {
+        content.innerHTML = '<div class="empty-state"><div class="icon">!</div><h3>' + t('pages.dashboard.loadFailed') + '</h3><p>' + esc(err.message) + '</p></div>';
+    });
+}
+
+function drawDashboardTopCurve(container, items, emptyText) {
+    if (!container) return;
+    var list = Array.isArray(items) ? items : [];
+    if (!list.length) {
+        container.innerHTML = '<div class="empty-state" style="padding:16px 8px"><p>' + esc(emptyText || t('pages.dashboard.noData')) + '</p></div>';
+        return;
+    }
+    var values = list.slice(0, 20).map(function(it) { return Number(it.count) || 0; });
+    var maxVal = Math.max(1, Math.max.apply(null, values));
+    var w = container.offsetWidth || 400;
+    var h = 180;
+    var pad = { top: 8, right: 8, bottom: 24, left: 36 };
+    var plotW = w - pad.left - pad.right;
+    var plotH = h - pad.top - pad.bottom;
+    var pts = [];
+    for (var i = 0; i < values.length; i++) {
+        var x = pad.left + (values.length > 1 ? (i / (values.length - 1)) * plotW : 0);
+        var y = pad.top + plotH - (values[i] / maxVal) * plotH;
+        pts.push(x.toFixed(1) + ',' + y.toFixed(1));
+    }
+    var pathLine = pts.length ? ('M' + pts.join(' L')) : '';
+    container.innerHTML = '<svg class="dashboard-svg" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="xMidYMid meet">'
+        + '<text x="' + (pad.left - 4) + '" y="' + (pad.top + plotH / 2) + '" text-anchor="end" class="chart-label" dominant-baseline="middle">0～' + maxVal + '</text>'
+        + '<path fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="' + pathLine + '"/>'
+        + '<text x="' + (pad.left + plotW / 2) + '" y="' + (h - 4) + '" text-anchor="middle" class="chart-axis">' + t('pages.dashboard.axisRank') + '</text>'
+        + '</svg>';
+}
+
+function drawDashboardLineChart(container, data, keyName, pointsCount, labelUnit) {
+    if (!container) return;
+    var isHour = keyName === 'hour';
+    var keys = [];
+    var now = new Date();
+    if (isHour) {
+        for (var i = pointsCount - 1; i >= 0; i--) {
+            var d = new Date(now.getTime() - i * 3600000);
+            keys.push(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + ' ' + String(d.getHours()).padStart(2, '0') + ':00');
+        }
+    } else {
+        for (var j = pointsCount - 1; j >= 0; j--) {
+            var d2 = new Date(now);
+            d2.setDate(d2.getDate() - j);
+            keys.push(d2.getFullYear() + '-' + String(d2.getMonth() + 1).padStart(2, '0') + '-' + String(d2.getDate()).padStart(2, '0'));
+        }
+    }
+    var map = {};
+    (data || []).forEach(function(p) { map[p[keyName]] = p.count; });
+    var values = keys.map(function(k) { return map[k] || 0; });
+    var maxVal = Math.max(1, Math.max.apply(null, values));
+    var w = container.offsetWidth || 400;
+    var h = 180;
+    var pad = { top: 8, right: 8, bottom: 24, left: 36 };
+    var plotW = w - pad.left - pad.right;
+    var plotH = h - pad.top - pad.bottom;
+    var pts = [];
+    for (var i = 0; i < values.length; i++) {
+        var x = pad.left + (values.length > 1 ? (i / (values.length - 1)) * plotW : 0);
+        var y = pad.top + plotH - (values[i] / maxVal) * plotH;
+        pts.push(x.toFixed(1) + ',' + y.toFixed(1));
+    }
+    var pathLine = pts.length ? ('M' + pts.join(' L')) : '';
+    var label = keys.length ? (keys.length > 12 ? keys[0] + ' … ' + keys[keys.length - 1] : keys.join(', ')) : '';
+    container.innerHTML = '<svg class="dashboard-svg" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="xMidYMid meet">'
+        + '<text x="' + (pad.left - 4) + '" y="' + (pad.top + plotH / 2) + '" text-anchor="end" class="chart-label" dominant-baseline="middle">' + (maxVal === 1 && values.every(function(v){ return v === 0; }) ? '0' : '0～' + maxVal) + '</text>'
+        + '<path fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="' + pathLine + '"/>'
+        + '<text x="' + (pad.left + plotW / 2) + '" y="' + (h - 4) + '" text-anchor="middle" class="chart-axis">' + (isHour ? t('pages.dashboard.axisTime7d') : t('pages.dashboard.axisDate30d')) + '</text>'
+        + '</svg>';
+}
+
+// ── 活动主机（左侧清单：用户打开过的主机，可快速打开或关闭清理） ──
+var ACTIVE_HOSTS_KEY = 'edgeops_active_hosts';
+function getActiveHostsList() {
+    try {
+        var raw = sessionStorage.getItem(ACTIVE_HOSTS_KEY);
+        if (!raw) return [];
+        var list = JSON.parse(raw);
+        return Array.isArray(list) ? list : [];
+    } catch (e) { return []; }
+}
+function saveActiveHostsList(list) {
+    try { sessionStorage.setItem(ACTIVE_HOSTS_KEY, JSON.stringify(list)); } catch (e) {}
+}
+function addActiveHost(host) {
+    if (!host || host.id == null) return;
+    var list = getActiveHostsList().filter(function(x) { return x.id !== host.id; });
+    var entry = { id: host.id, name: host.name || host.host || t('hostList.defaultName', { id: host.id }), host: host.host || '', updated_at: host.updated_at || new Date().toISOString() };
+    list.unshift(entry);
+    saveActiveHostsList(list);
+}
+function removeActiveHost(hostId) {
+    var list = getActiveHostsList().filter(function(x) { return x.id !== hostId; });
+    saveActiveHostsList(list);
+}
+function clearActiveHosts() {
+    saveActiveHostsList([]);
+}
+function refreshActiveHostsListDOM() {
+    var listEl = document.getElementById('activeHostsList');
+    if (!listEl) return;
+    var list = getActiveHostsList();
+    var currentPath = (typeof Router !== 'undefined' && Router.currentPath) ? Router.currentPath : '';
+    var currentHostId = currentPath.indexOf('/hosts/') === 0 ? (currentPath.replace(/^\/hosts\//, '') || null) : null;
+    if (list.length === 0) {
+        listEl.innerHTML = '<div class="chat-history-empty">' + esc(t('ui.emptyStates.activeHosts')) + '</div>';
+        var clearBtn = document.getElementById('activeHostsClearAll');
+        if (clearBtn) clearBtn.disabled = true;
+        return;
+    }
+    listEl.innerHTML = list.map(function(h) {
+        var title = (h.name || h.host || t('hostList.defaultName', { id: h.id }));
+        if (h.host && h.name !== h.host) title += ' · ' + h.host;
+        var isActive = currentHostId && String(h.id) === String(currentHostId);
+        return '<div class="chat-history-item' + (isActive ? ' active' : '') + '" data-host-id="' + esc(String(h.id)) + '">'
+            + '<span class="chat-history-item-title" title="' + esc(title) + '">' + esc(title) + '</span>'
+            + '<span class="chat-history-item-time">' + (typeof formatTime === 'function' ? formatTime(h.updated_at) : (h.updated_at || '')) + '</span>'
+            + '<button type="button" class="chat-history-item-delete" title="' + esc(t('hostList.activeHostCloseTitle')) + '">&times;</button></div>';
+    }).join('');
+    var clearBtn = document.getElementById('activeHostsClearAll');
+    if (clearBtn) clearBtn.disabled = false;
+    listEl.querySelectorAll('.chat-history-item').forEach(function(node) {
+        var hostId = node.getAttribute('data-host-id');
+        if (!hostId) return;
+        var path = '/hosts/' + hostId;
+        node.querySelector('.chat-history-item-delete').onclick = function(e) {
+            e.stopPropagation();
+            Router.clearPageCache(path);
+            removeActiveHost(parseInt(hostId, 10));
+            refreshActiveHostsListDOM();
+            if (currentPath === path) {
+                Router._skipCacheForPath = null;
+                Router.navigate('/hosts');
+            }
+            showToast(t('toast.hostClosed'));
+        };
+        node.onclick = function(ev) {
+            if (ev.target.closest('.chat-history-item-delete')) return;
+            Router.navigate(path);
+        };
+    });
+}
+
+// ── 主机列表 ──
+function renderHostsList() {
+    renderLayout();
+    var el = getPageEl();
+    el.innerHTML = '<div class="topbar"><h2>' + esc(t('nav.hosts')) + '</h2><div class="topbar-actions"><button type="button" class="btn" id="hostsManageTagsBtn">' + esc(t('ui.page.hosts.tagMgmt')) + '</button><button type="button" class="btn" id="hostsReceivedSharesBtn">' + esc(t('ui.page.hosts.receivedShares')) + '</button><button type="button" class="btn" id="hostsListRefreshBtn">' + esc(t('common.refresh')) + '</button></div></div>'
+        + '<div class="page-content ai-page-layout hosts-page-layout" id="hostsPageLayout">'
+        + '<div class="ai-left-sidebar hosts-left-sidebar" id="hostsLeftSidebar">'
+        + '<div class="ai-left-sidebar-tabs"><div class="ai-left-sidebar-tab" id="hostsSidebarTabActive" data-tab="activeHosts" title="' + esc(t('ui.activeHosts.tabExpand')) + '">' + t('ui.activeHosts.title') + '</div></div>'
+        + '<div class="ai-left-sidebar-panel"><div class="chat-history-panel ai-layout-history"><div class="chat-history-header"><span>' + t('ui.activeHosts.title') + '</span><span class="chat-history-header-actions"><button type="button" class="btn btn-sm" id="activeHostsRefresh" title="' + esc(t('ui.activeHosts.refresh')) + '">' + t('ui.activeHosts.refresh') + '</button><button type="button" class="btn btn-sm" id="activeHostsClearAll" title="' + esc(t('ui.activeHosts.clearAllTitle')) + '">' + t('ui.activeHosts.clearAll') + '</button></span></div><div class="chat-history-list-wrap open"><div class="chat-history-list" id="activeHostsList"></div></div></div></div></div>'
+        + '<div class="hosts-main-content" style="flex:1;min-width:0;display:flex;flex-direction:column;overflow:auto;">'
+        + '<div id="hostsTableWrap" class="table-container"></div><div id="hostsPagination"></div></div></div>';
+    var pagination = appendPaginationBar(document.getElementById('hostsPagination'), 20);
+    var initialPage = parseInt(sessionStorage.getItem('hostsListPage'), 10) || 1;
+    if (initialPage > 1) pagination.update({ total: 0, page: initialPage });
+    function load() {
+        var wrap = document.getElementById('hostsTableWrap');
+        if (wrap) wrap.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+        var params = { page: pagination.getPage(), page_size: pagination.getPageSize() };
+        API.listHosts(params).then(function(data) {
+            var hosts = data.hosts || [];
+            var total = data.total != null ? data.total : hosts.length;
+            pagination.update({ total: total, page: data.page, page_size: data.page_size });
+            var wrap = document.getElementById('hostsTableWrap');
+            if (!wrap) return;
+            if (wrap.setAttribute) wrap.setAttribute('data-current-page', String(pagination.getPage()));
+            if (hosts.length === 0 && total === 0) {
+                wrap.innerHTML = '<div class="empty-state"><div class="icon">&#9881;</div><h3>' + esc(t('pages.hosts.emptyTitle')) + '</h3><p>' + esc(t('pages.hosts.emptyHint')) + '</p></div>';
+                return;
+            }
+            var unk = t('common.unknown');
+            var hostsTableHtml = '<table class="data-table sortable-table"><thead><tr><th data-sort data-filter>' + esc(t('pages.hosts.thName')) + '</th><th data-sort data-filter>' + esc(t('pages.hosts.thAlias')) + '</th><th data-sort data-filter>' + esc(t('pages.hosts.thTags')) + '</th><th data-sort data-filter>' + esc(t('pages.hosts.thAddr')) + '</th><th data-sort>' + esc(t('pages.hosts.thPort')) + '</th><th data-sort>' + esc(t('pages.hosts.thTypeVer')) + '</th><th data-sort>' + esc(t('pages.hosts.thAuth')) + '</th><th data-sort data-filter>' + esc(t('pages.hosts.thOwner')) + '</th><th>' + esc(t('pages.hosts.thAction')) + '</th></tr></thead><tbody>';
+            hosts.forEach(function(h) {
+                var typeVer = (h.host_type && h.host_type !== '未知') || (h.host_version && h.host_version !== '未知')
+                    ? (esc(h.host_type || '未知') + ' / ' + esc(h.host_version || '未知'))
+                    : '<span class="text-muted">' + esc(unk) + '</span>';
+                var userLabel = h.is_shared
+                    ? ('<span title="' + esc(t('pages.hosts.titleFromShare')) + '">' + esc(t('pages.hosts.shareFrom')) + esc(h.shared_from_display_name || h.shared_from_username || '-') + '</span>')
+                    : ('<span title="' + esc(t('pages.hosts.titleOwner')) + '">' + esc(t('pages.hosts.ownerMe')) + esc(h.created_by_display_name || h.created_by_username || '-') + esc(t('pages.hosts.ownerSuffix')) + '</span>');
+                var aliasList = Array.isArray(h.aliases) ? h.aliases : [];
+                var aliasCell = aliasList.length ? esc(aliasList.join('、')) : '<span class="text-muted">-</span>';
+                var tagNames = Array.isArray(h.tag_names) ? h.tag_names : ((Array.isArray(h.tags) ? h.tags.map(function(tg) { return tg && tg.name ? tg.name : ''; }) : []).filter(Boolean));
+                var tagCell = tagNames.length ? esc(tagNames.join('、')) : '<span class="text-muted">-</span>';
+                var deleteText = h.is_shared ? t('pages.hosts.unshare') : t('pages.hosts.delete');
+                var shareBtn = h.is_shared ? '' : ('<button class="btn btn-sm" onclick="showHostSharesModal(' + h.id + ', \'' + esc(h.name) + '\')">' + esc(t('pages.hosts.share')) + '</button> ');
+                hostsTableHtml += '<tr><td><a data-href="/hosts/' + h.id + '" class="fs-name">' + esc(h.name) + '</a></td>'
+                    + '<td>' + aliasCell + '</td>'
+                    + '<td>' + tagCell + '</td>'
+                    + '<td>' + esc(h.host) + '</td><td>' + (h.port || 22) + '</td><td>' + typeVer + '</td><td>' + (h.auth_type || 'password') + '</td><td>' + userLabel + '</td>'
+                    + '<td>' + shareBtn + '<button class="btn btn-sm btn-danger" onclick="deleteHost(' + h.id + ', \'' + esc(h.name) + '\', ' + (h.is_shared ? 'true' : 'false') + ')">' + esc(deleteText) + '</button></td></tr>';
+            });
+            hostsTableHtml += '</tbody></table>';
+            wrap.innerHTML = hostsTableHtml;
+            initDataTableSortFilter(wrap);
+        }).catch(function(err) {
+            var wrap = document.getElementById('hostsTableWrap');
+            if (wrap) wrap.innerHTML = '<div class="empty-state"><h3>' + esc(t('ui.loadFailedH3')) + '</h3><p>' + esc(err.message) + '</p></div>';
+        });
+    }
+    var refreshBtn = document.getElementById('hostsListRefreshBtn');
+    if (refreshBtn) refreshBtn.onclick = function() { load(); showToast(t('toast.refreshed')); };
+    var tagBtn = document.getElementById('hostsManageTagsBtn');
+    if (tagBtn) tagBtn.onclick = function() { showHostTagsManageModal(); };
+    var recvBtn = document.getElementById('hostsReceivedSharesBtn');
+    if (recvBtn) recvBtn.onclick = function() { showReceivedHostSharesModal(); };
+    pagination.onPrev(load);
+    pagination.onNext(load);
+    pagination.onPageSizeChange(load);
+    load();
+    refreshActiveHostsListDOM();
+    var activeHostsRefreshBtn = document.getElementById('activeHostsRefresh');
+    if (activeHostsRefreshBtn) activeHostsRefreshBtn.onclick = function() { refreshActiveHostsListDOM(); showToast(t('toast.refreshed')); };
+    var activeHostsClearAllBtn = document.getElementById('activeHostsClearAll');
+    if (activeHostsClearAllBtn) activeHostsClearAllBtn.onclick = function() {
+        var list = getActiveHostsList();
+        if (!list.length) return;
+        if (!confirm(t('confirm.clearAllActiveHosts'))) return;
+        list.forEach(function(h) { Router.clearPageCache('/hosts/' + h.id); });
+        clearActiveHosts();
+        refreshActiveHostsListDOM();
+        if (Router.currentPath && Router.currentPath !== '/hosts' && Router.currentPath.indexOf('/hosts/') === 0) {
+            Router._skipCacheForPath = Router.currentPath;
+            Router.navigate('/hosts');
+        }
+        showToast(t('toast.allCleared'));
+    };
+    var sidebarTab = document.getElementById('hostsSidebarTabActive');
+    var sidebar = document.getElementById('hostsLeftSidebar');
+    if (sidebarTab && sidebar) {
+        sidebarTab.onclick = function() {
+            var isOpen = sidebar.classList.toggle('open');
+            sidebarTab.classList.toggle('active', isOpen);
+            sidebarTab.setAttribute('title', isOpen ? t('ui.activeHosts.tabCollapse') : t('ui.activeHosts.tabExpand'));
+        };
+    }
+}
+
+function deleteHost(id, name, isShared) {
+    var dn = (name != null && String(name).trim() !== '') ? String(name).trim() : (String(id) || ('#' + id));
+    var title = isShared ? t('confirm.ungroupShareTitle') : t('confirm.deletePathTitle');
+    var msg = isShared
+        ? t('confirm.ungroupShareBody', { name: dn })
+        : t('confirm.deleteHostNameBody', { name: dn });
+    showConfirm(title, msg).then(function(ok) {
+        if (!ok) return;
+        API.deleteHost(id).then(function(res) {
+            if (res && res.detached) showToast(t('toast.shareDetached'));
+            else showToast(t('toast.deleted'));
+            renderHostsList();
+        }).catch(function(err) { showToast(err.message, 'error'); });
+    });
+}
+
+function edgeopsCreateUserTypeahead(opts) {
+    opts = opts || {};
+    var selectedId = '';
+    var selectedUsername = '';
+    var remoteSearchMs = typeof opts.remoteSearchDebounceMs === 'number' ? opts.remoteSearchDebounceMs : 200;
+    var remoteSearchTimer = null;
+    var remoteSearchToken = 0;
+    var PH = (opts.placeholder != null && opts.placeholder !== '') ? opts.placeholder : '';
+    var noMatchText = opts.noMatchText || (typeof t === 'function' ? t('forms.hostShare.userNoMatch') : '—');
+    function normLabel(u) {
+        if (!u) return '';
+        var un = u.username || '';
+        var dn = (u.display_name || '').trim();
+        return dn && dn !== un ? (dn + ' (' + un + ')') : un;
+    }
+    function renderListItems(items) {
+        listEl.innerHTML = '';
+        if (!items.length) {
+            listEl.innerHTML = '<div class="text-muted edgeops-user-typeahead-empty" style="padding:8px 12px;font-size:12px;cursor:default">' + esc(noMatchText) + '</div>';
+            listEl.style.display = 'block';
+            return;
+        }
+        items.forEach(function(u) {
+            var row = document.createElement('div');
+            row.className = 'edgeops-user-typeahead-item';
+            row.setAttribute('data-user-id', String(u.id));
+            row.style.cssText = 'padding:8px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--border,#333)';
+            row.textContent = normLabel(u);
+            row.onmouseenter = function() { row.style.background = 'var(--bg-hover,rgba(255,255,255,.06))'; };
+            row.onmouseleave = function() { row.style.background = ''; };
+            row.onmousedown = function(e) { e.preventDefault(); };
+            row.onclick = function() {
+                selectedId = String(u.id);
+                selectedUsername = u.username || '';
+                input.value = normLabel(u);
+                listEl.style.display = 'none';
+            };
+            listEl.appendChild(row);
+        });
+        listEl.style.display = 'block';
+    }
+    function renderList() {
+        var q = (input.value || '').trim();
+        if (!q.length) {
+            listEl.style.display = 'none';
+            return;
+        }
+        remoteSearchToken++;
+        var myTok = remoteSearchToken;
+        if (remoteSearchTimer) clearTimeout(remoteSearchTimer);
+        listEl.innerHTML = '<div class="text-muted" style="padding:8px 12px;font-size:12px;cursor:default">' + esc(typeof t === 'function' ? t('common.loading') : '…') + '</div>';
+        listEl.style.display = 'block';
+        remoteSearchTimer = setTimeout(function() {
+            remoteSearchTimer = null;
+            if (myTok !== remoteSearchToken) return;
+            API.searchUsers({ query: q, limit: 20 }).then(function(r) {
+                if (myTok !== remoteSearchToken) return;
+                renderListItems(r.users || []);
+            }).catch(function(err) {
+                if (myTok !== remoteSearchToken) return;
+                listEl.innerHTML = '<div class="text-danger" style="padding:8px 12px;font-size:12px">' + esc(err.message || '') + '</div>';
+                listEl.style.display = 'block';
+            });
+        }, remoteSearchMs);
+    }
+    var wrap = document.createElement('div');
+    wrap.className = 'edgeops-user-typeahead';
+    wrap.style.cssText = 'position:relative;flex:1;min-width:0';
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'form-control';
+    input.autocomplete = 'off';
+    input.placeholder = PH;
+    var listEl = document.createElement('div');
+    listEl.className = 'edgeops-user-typeahead-list';
+    listEl.style.cssText = 'display:none;position:absolute;left:0;right:0;top:100%;z-index:10050;max-height:min(240px,36vh);overflow:auto;background:var(--bg-primary,#1a1d26);border:1px solid var(--border,#3d4556);border-radius:4px;margin-top:2px;box-shadow:0 8px 24px rgba(0,0,0,.4)';
+    input.oninput = function() {
+        if (selectedUsername && input.value.trim() !== normLabel({ username: selectedUsername, display_name: '' }) && input.value.indexOf(selectedUsername) === -1) {
+            selectedId = '';
+            selectedUsername = '';
+        }
+        renderList();
+    };
+    input.onkeydown = function(e) {
+        if (e.key === 'Escape') { listEl.style.display = 'none'; return; }
+        if (e.key === 'Enter') {
+            var first = listEl.querySelector('.edgeops-user-typeahead-item[data-user-id]');
+            if (first && listEl.style.display !== 'none') {
+                e.preventDefault();
+                first.click();
+            }
+        }
+    };
+    var blurT = null;
+    input.onblur = function() {
+        if (remoteSearchTimer) { clearTimeout(remoteSearchTimer); remoteSearchTimer = null; }
+        remoteSearchToken++;
+        blurT = setTimeout(function() { listEl.style.display = 'none'; }, 180);
+    };
+    input.onfocus = function() {
+        if (blurT) { clearTimeout(blurT); blurT = null; }
+        renderList();
+    };
+    wrap.appendChild(input);
+    wrap.appendChild(listEl);
+    return {
+        el: wrap,
+        getSharePayload: function() {
+            if (selectedId && selectedUsername) return { user_id: parseInt(selectedId, 10) };
+            var q = (input.value || '').trim();
+            if (!q) return null;
+            var m = q.match(/\(([^)]+)\)\s*$/);
+            return { username: m ? m[1].trim() : q };
+        },
+        clear: function() {
+            selectedId = '';
+            selectedUsername = '';
+            input.value = '';
+            listEl.style.display = 'none';
+        },
+        focus: function() { try { input.focus(); } catch (e) {} }
+    };
+}
+
+function showHostSharesModal(hostId, hostName) {
+    var shareName = (hostName != null && String(hostName).trim() !== '') ? String(hostName).trim() : t('modals.hostNameFallback', { id: hostId });
+    var title = t('modals.hostShare', { name: shareName });
+    var hs = 'forms.hostShare';
+    var content = ''
+        + '<div class="form-group"><label>' + t(hs + '.label') + '</label><div style="display:flex;gap:8px;align-items:flex-start">'
+        + '<div id="hostShareUserTypeaheadMount" style="flex:1;min-width:0"></div>'
+        + '<button class="btn btn-primary" type="button" id="hostShareAddBtn" style="flex-shrink:0">' + t(hs + '.shareBtn') + '</button>'
+        + '</div></div>'
+        + '<div class="form-group"><label>' + t(hs + '.list') + '</label><div id="hostShareListWrap"><div class="text-muted">' + t('common.loading') + '</div></div></div>'
+        + '<div class="text-muted">' + t(hs + '.note') + '</div>';
+    showModal(title, content, edgeopsModalFooterClose());
+    var userTa = edgeopsCreateUserTypeahead({ placeholder: t(hs + '.usernamePh') });
+    var mount = document.getElementById('hostShareUserTypeaheadMount');
+    if (mount) mount.appendChild(userTa.el);
+
+    function loadShares() {
+        var wrap = document.getElementById('hostShareListWrap');
+        if (!wrap) return;
+        wrap.innerHTML = '<div class="text-muted">' + t('common.loading') + '</div>';
+        API.listHostShares(hostId).then(function(r) {
+            var items = r.shares || [];
+            if (!items.length) {
+                wrap.innerHTML = '<div class="text-muted">' + t('forms.hostShare.noRecords') + '</div>';
+                return;
+            }
+            var html = '<table class="data-table"><thead><tr><th>' + t('forms.hostShare.thUser') + '</th><th>' + t('forms.hostShare.thTime') + '</th><th>' + t('forms.hostShare.thActions') + '</th></tr></thead><tbody>';
+            items.forEach(function(it) {
+                var userLabel = esc(it.shared_with_display_name || it.shared_with_username || t('common.userPound', { id: it.shared_with_user_id }));
+                html += '<tr><td>' + userLabel + '</td><td>' + formatTime(it.created_at) + '</td>'
+                    + '<td><button type="button" class="btn btn-sm btn-danger" onclick="revokeHostShare(' + hostId + ',' + it.shared_with_user_id + ', window.loadHostSharesCallback)">' + t('forms.hostShare.revoke') + '</button></td></tr>';
+            });
+            html += '</tbody></table>';
+            wrap.innerHTML = html;
+            window.loadHostSharesCallback = loadShares;
+        }).catch(function(err) {
+            wrap.innerHTML = '<div class="text-danger">' + esc(err.message || t('toast.loadFailed')) + '</div>';
+        });
+    }
+
+    var addBtn = document.getElementById('hostShareAddBtn');
+    if (addBtn) addBtn.onclick = function() {
+        var payload = userTa.getSharePayload();
+        if (!payload) { showToast(t('toast.enterUsername'), 'error'); return; }
+        addBtn.disabled = true;
+        API.shareHost(hostId, payload).then(function() {
+            showToast(t('toast.shareOk'));
+            userTa.clear();
+            loadShares();
+        }).catch(function(err) { showToast(err.message || t('toast.shareFailed'), 'error'); }).finally(function() { addBtn.disabled = false; });
+    };
+    loadShares();
+}
+
+function revokeHostShare(hostId, userId, callback) {
+    showConfirm(t('confirm.revokeShareTitle'), t('confirm.revokeShareBody')).then(function(ok) {
+        if (!ok) return;
+        API.revokeHostShare(hostId, userId).then(function() {
+            showToast(t('toast.shareRevoked'));
+            if (typeof callback === 'function') callback();
+        }).catch(function(err) { showToast(err.message || t('toast.revokeFailed'), 'error'); });
+    });
+}
+
+function showReceivedHostSharesModal() {
+    var content = '<div id="receivedSharesWrap"><div class="text-muted">' + esc(t('pages.receivedShares.loading')) + '</div></div>';
+    showModal(t('modals.receivedHostShares'), content, edgeopsModalFooterClose());
+    var wrap = document.getElementById('receivedSharesWrap');
+    if (!wrap) return;
+    API.listReceivedHostShares().then(function(r) {
+        var items = r.shares || [];
+        if (!items.length) {
+            wrap.innerHTML = '<div class="text-muted">' + esc(t('pages.receivedShares.empty')) + '</div>';
+            return;
+        }
+        var html = '<table class="data-table"><thead><tr><th>' + esc(t('pages.receivedShares.thHost')) + '</th><th>' + esc(t('pages.receivedShares.thAddr')) + '</th><th>' + esc(t('pages.receivedShares.thSource')) + '</th><th>' + esc(t('pages.receivedShares.thTime')) + '</th></tr></thead><tbody>';
+        items.forEach(function(it) {
+            html += '<tr>'
+                + '<td>' + esc(it.name || t('pages.receivedShares.hostFallback', { id: it.host_id })) + '</td>'
+                + '<td>' + esc((it.host || '') + ':' + (it.port || 22)) + '</td>'
+                + '<td>' + esc(it.owner_display_name || it.owner_username || t('pages.receivedShares.userFallback', { id: it.owner_user_id })) + '</td>'
+                + '<td>' + formatTime(it.created_at) + '</td>'
+                + '</tr>';
+        });
+        html += '</tbody></table>';
+        wrap.innerHTML = html;
+    }).catch(function(err) {
+        wrap.innerHTML = '<div class="text-danger">' + esc(err.message || t('toast.loadFailed')) + '</div>';
+    });
+}
+
+function showHostTagsManageModal(onChanged) {
+    var ht = 'forms.hostTag';
+    var content = ''
+        + '<div class="form-group"><label>' + t(ht + '.new') + '</label><div style="display:flex;gap:8px">'
+        + '<input class="form-control" id="hostTagNameInput" placeholder="' + esc(t(ht + '.namePh')) + '">'
+        + '<input class="form-control" id="hostTagColorInput" placeholder="' + esc(t(ht + '.colorPh')) + '" style="max-width:150px">'
+        + '<button class="btn btn-primary" type="button" id="hostTagCreateBtn">' + t(ht + '.add') + '</button>'
+        + '</div></div>'
+        + '<div class="form-group"><label>' + t(ht + '.myTags') + '</label><div id="hostTagsManageWrap"><div class="text-muted">' + t('common.loading') + '</div></div></div>'
+        + '<div class="text-muted">' + t(ht + '.hint') + '</div>';
+    showModal(t('modals.hostTagsManage'), content, edgeopsModalFooterClose());
+    var wrap = document.getElementById('hostTagsManageWrap');
+    if (!wrap) return;
+
+    function loadTags() {
+        wrap.innerHTML = '<div class="text-muted">' + t('common.loading') + '</div>';
+        API.listHostTags().then(function(r) {
+            var tags = r.tags || [];
+            if (!tags.length) {
+                wrap.innerHTML = '<div class="text-muted">' + t('forms.hostTag.noTags') + '</div>';
+                return;
+            }
+            var html = '<table class="data-table"><thead><tr><th>' + t('forms.hostTag.thId') + '</th><th>' + t('forms.hostTag.thName') + '</th><th>' + t('forms.hostTag.thColor') + '</th><th>' + t('forms.hostTag.thHostCount') + '</th><th>' + t('forms.hostTag.thActions') + '</th></tr></thead><tbody>';
+            tags.forEach(function(tag) {
+                var colorBadge = tag.color ? ('<span style="display:inline-flex;align-items:center;gap:6px"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + esc(tag.color) + ';border:1px solid rgba(0,0,0,.2)"></span>' + esc(tag.color) + '</span>') : '<span class="text-muted">-</span>';
+                html += '<tr><td>' + tag.id + '</td><td>' + esc(tag.name || '') + '</td><td>' + colorBadge + '</td><td>' + (tag.host_count || 0) + '</td>'
+                    + '<td><button type="button" class="btn btn-sm" onclick="window._editHostTag(' + tag.id + ',\'' + esc(tag.name || '') + '\',\'' + esc(tag.color || '') + '\')">' + t('common.edit') + '</button> '
+                    + '<button type="button" class="btn btn-sm btn-danger" onclick="window._deleteHostTag(' + tag.id + ')">' + t('common.delete') + '</button></td></tr>';
+            });
+            html += '</tbody></table>';
+            wrap.innerHTML = html;
+        }).catch(function(err) {
+            wrap.innerHTML = '<div class="text-danger">' + esc(err.message || t('toast.loadFailed')) + '</div>';
+        });
+    }
+
+    var createBtn = document.getElementById('hostTagCreateBtn');
+    if (createBtn) createBtn.onclick = function() {
+        var name = ((document.getElementById('hostTagNameInput') || {}).value || '').trim();
+        var color = ((document.getElementById('hostTagColorInput') || {}).value || '').trim();
+        if (!name) { showToast(t('toast.enterTagName'), 'error'); return; }
+        createBtn.disabled = true;
+        API.createHostTag({ name: name, color: color }).then(function() {
+            showToast(t('toast.tagCreated'));
+            if (document.getElementById('hostTagNameInput')) document.getElementById('hostTagNameInput').value = '';
+            loadTags();
+            if (typeof onChanged === 'function') onChanged();
+        }).catch(function(err) {
+            showToast(err.message || t('toast.createFailed'), 'error');
+        }).finally(function() {
+            createBtn.disabled = false;
+        });
+    };
+
+    window._editHostTag = function(id, name, color) {
+        var nextName = prompt(t('forms.hostTag.promptName'), name || '');
+        if (nextName == null) return;
+        nextName = String(nextName).trim();
+        if (!nextName) { showToast(t('toast.tagNameEmpty'), 'error'); return; }
+        var nextColor = prompt(t('forms.hostTag.promptColor'), color || '') || '';
+        API.updateHostTag(id, { name: nextName, color: String(nextColor).trim() }).then(function() {
+            showToast(t('toast.tagUpdated'));
+            loadTags();
+            if (typeof onChanged === 'function') onChanged();
+        }).catch(function(err) { showToast(err.message || t('toast.updateFailed'), 'error'); });
+    };
+
+    window._deleteHostTag = function(id) {
+        showConfirm(t('confirm.deleteTagTitle'), t('confirm.deleteTagBody')).then(function(ok) {
+            if (!ok) return;
+            API.deleteHostTag(id).then(function() {
+                showToast(t('toast.deleted'));
+                loadTags();
+                if (typeof onChanged === 'function') onChanged();
+            }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
+        });
+    };
+
+    loadTags();
+}
+
+// ── 主机详情（Tab：AI运维 / 命令执行 / 详情） ──
+var hostAiTerminalWs = null;
+var hostAiTerminalTerm = null;
+var hostAiTerminalFitDispose = null;
+
+/**
+ * 构建远程主机解压命令，兼容 Windows / Linux / macOS。
+ * hostType: 主机类型（Windows / Linux / macOS / 未知），用于选择 unzip/tar 或 PowerShell。
+ * escShForBash: 用于 Unix 的路径转义函数，如 function(s){ return '"'+s.replace(/\\/g,'\\\\').replace(/"/g,'\\"')+'"'; }
+ * 返回 { command: string } 或 { unsupported: true }。
+ */
+function buildRemoteUnpackCommand(path, parentDir, hostType, escShForBash) {
+    hostType = String(hostType || '').trim();
+    var isWin = (hostType.toLowerCase() === 'windows');
+    function escWin(s) {
+        s = String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        return '"' + s + '"';
+    }
+    function escPsSingle(s) {
+        return "'" + String(s).replace(/'/g, "''") + "'";
+    }
+    if (/\.zip$/i.test(path)) {
+        if (isWin) {
+            return { command: 'powershell -NoProfile -Command "& { Expand-Archive -LiteralPath ' + escPsSingle(path) + ' -DestinationPath ' + escPsSingle(parentDir) + ' -Force }"' };
+        }
+        return { command: 'unzip -o ' + escShForBash(path) + ' -d ' + escShForBash(parentDir) };
+    }
+    if (/\.(tgz|tar\.gz)$/i.test(path)) {
+        var tarCmd = 'tar -xzf ' + (isWin ? escWin(path) + ' -C ' + escWin(parentDir) : escShForBash(path) + ' -C ' + escShForBash(parentDir));
+        return { command: tarCmd };
+    }
+    if (/\.tar\.bz2$/i.test(path)) {
+        var tarBz = 'tar -xjf ' + (isWin ? escWin(path) + ' -C ' + escWin(parentDir) : escShForBash(path) + ' -C ' + escShForBash(parentDir));
+        return { command: tarBz };
+    }
+    if (/\.tar\.xz$/i.test(path)) {
+        var tarXz = 'tar -xJf ' + (isWin ? escWin(path) + ' -C ' + escWin(parentDir) : escShForBash(path) + ' -C ' + escShForBash(parentDir));
+        return { command: tarXz };
+    }
+    if (/\.tar$/i.test(path)) {
+        var tarPlain = 'tar -xf ' + (isWin ? escWin(path) + ' -C ' + escWin(parentDir) : escShForBash(path) + ' -C ' + escShForBash(parentDir));
+        return { command: tarPlain };
+    }
+    return { unsupported: true };
+}
+
+/**
+ * 是否支持远程解压（按扩展名）；用于决定是否显示「解压」菜单项。
+ */
+function isRemoteUnpackSupported(path) {
+    return /\.(zip|tgz|tar\.gz|tar\.bz2|tar\.xz|tar)$/i.test(path || '');
+}
+
+function renderHostDetail(hostId) {
+    renderLayout();
+    var el = getPageEl();
+    el.innerHTML = '<div class="topbar"><h2>' + esc(t('hostDetail.title')) + '</h2><div class="topbar-actions"><button class="btn" onclick="Router.navigate(\'/hosts\')" title="' + esc(t('hostDetail.backToListTitle')) + '">' + esc(t('hostDetail.backToList')) + '</button><button type="button" class="btn btn-sm" onclick="(function(){ var id = ' + hostId + '; if (typeof removeActiveHost === \'function\') removeActiveHost(id); Router.clearPageCache(Router.currentPath); Router._skipCacheForPath = Router.currentPath; Router.navigate(\'/hosts\'); })();" title="' + esc(t('hostDetail.closeTitle')) + '">' + esc(t('hostDetail.close')) + '</button></div></div>'
+        + '<div class="page-content host-detail-page"><div class="loading-overlay"><div class="spinner"></div></div></div>';
+    API.getHost(hostId).then(function(data) {
+        var h = data.host || {};
+        addActiveHost({ id: h.id, name: h.name, host: h.host, updated_at: new Date().toISOString() });
+        var unk = t('hostDetail.unknown');
+        var needCheckType = !h.host_type || String(h.host_type).trim() === '' || h.host_type === '未知';
+        function applyCheckResult(res) {
+            if (res) {
+                h.host_type = res.host_type || '未知';
+                h.host_version = res.host_version || '未知';
+                h.host_shell = res.host_shell;
+                h.host_package_manager = res.host_package_manager;
+            }
+        }
+        function doRender() {
+            var authInfo = h.credential_id ? (t('hostDetail.credentialPrefix') + esc(h.credential_name || h.credential_code || '')) : (t('hostDetail.userPrefix') + esc(h.username) + ' / ' + esc(h.auth_type || 'password'));
+            var hostNameRaw = (h.name || h.host || '').trim();
+            var hostForAi = hostNameRaw || t('hostDetail.defaultName', { id: hostId });
+            var hostName = esc(hostForAi);
+            var hostType = esc((!h.host_type || h.host_type === '未知') ? unk : h.host_type);
+            var hostVer = esc((!h.host_version || h.host_version === '未知') ? unk : h.host_version);
+            var hostShell = esc(h.host_shell || '-');
+            var hostPkg = esc(h.host_package_manager || '-');
+            el.querySelector('.page-content').innerHTML = ''
+            + '<div class="host-detail-tabs">'
+            + '<button type="button" class="host-detail-tab active" data-tab="hostDetailTabAi">' + esc(t('hostDetail.tabAi')) + '</button>'
+            + '<button type="button" class="host-detail-tab" data-tab="hostDetailTabExec">' + esc(t('hostDetail.tabExec')) + '</button>'
+            + '<button type="button" class="host-detail-tab" data-tab="hostDetailTabDetail">' + esc(t('hostDetail.tabDetail')) + '</button>'
+            + '</div>'
+            + '<div id="hostDetailTabAi" class="host-detail-tab-panel active">'
+            + '<div id="hostAiPanel" class="host-ai-panel"></div></div>'
+            + '<div id="hostDetailTabExec" class="host-detail-tab-panel">'
+            + '<div class="card host-detail-exec-card">'
+            + '<div class="card-header"><h3>' + esc(t('hostDetail.execTitle')) + '</h3></div>'
+            + '<div class="host-detail-exec-form"><div class="form-group"><label>' + esc(t('hostDetail.cmdLabel')) + '</label><input class="form-control" id="cmdInput" placeholder="' + esc(t('hostDetail.cmdPlaceholder')) + '" style="font-family:monospace"></div>'
+            + '<button class="btn btn-primary" onclick="runHostCommand(' + hostId + ')">' + esc(t('hostDetail.run')) + '</button></div>'
+            + '<div class="host-detail-exec-output-wrap"><pre id="cmdOutput">' + esc(t('hostDetail.cmdOutputHint')) + '</pre></div></div></div>'
+            + '<div id="hostDetailTabDetail" class="host-detail-tab-panel">'
+            + '<div class="card"><div class="card-header"><h3>' + hostName + '</h3></div>'
+            + '<div class="detail-row-with-actions">'
+            + '<div class="detail-grid detail-grid-inline">'
+            + '<div class="detail-item"><span class="label">' + esc(t('hostDetail.labelAddr')) + '</span><span class="value">' + esc(h.host) + ':' + (h.port || 22) + '</span></div>'
+            + '<div class="detail-item"><span class="label">' + esc(t('hostDetail.labelAuth')) + '</span><span class="value">' + authInfo + '</span></div>'
+            + '<div class="detail-item"><span class="label">' + esc(t('hostDetail.labelHostType')) + '</span><span class="value" id="hostDetailType">' + hostType + '</span></div>'
+            + '<div class="detail-item"><span class="label">' + esc(t('hostDetail.labelVersion')) + '</span><span class="value" id="hostDetailVersion">' + hostVer + '</span></div>'
+            + '<div class="detail-item"><span class="label">' + esc(t('hostDetail.labelShell')) + '</span><span class="value" id="hostDetailShell">' + hostShell + '</span></div>'
+            + '<div class="detail-item"><span class="label">' + esc(t('hostDetail.labelPkg')) + '</span><span class="value" id="hostDetailPkg">' + hostPkg + '</span></div>'
+            + '</div>'
+            + '<div class="detail-actions"><button type="button" class="btn" id="hostCheckTypeBtn">' + esc(t('hostDetail.checkType')) + '</button></div>'
+            + '</div>'
+            + '<div class="card" style="margin-top:1rem"><div class="card-header"><h3>' + esc(t('hostDetail.aliasesTitle')) + '</h3></div>'
+            + '<div class="host-detail-exec-form" style="padding:12px">'
+            + '<div class="form-group"><label>' + esc(t('hostDetail.tagsLabel')) + '</label><div id="hostTagEditWrap" class="host-tag-edit-wrap"></div><div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn" id="hostManageTagsBtn">' + esc(t('hostDetail.manageTags')) + '</button><button type="button" class="btn btn-primary" id="hostSaveTagsBtn">' + esc(t('hostDetail.saveTags')) + '</button></div></div>'
+            + '<div class="form-group"><label>' + esc(t('hostDetail.aliasesLabel')) + '</label><textarea class="form-control" id="hostAliasesEdit" rows="2" placeholder="' + esc(t('hostDetail.aliasesPlaceholder')) + '">' + esc((Array.isArray(h.aliases) ? h.aliases : []).join(', ')) + '</textarea></div>'
+            + '<div class="form-group"><label>' + esc(t('hostDetail.remarkLabel')) + '</label><textarea class="form-control" id="hostRemarkEdit" rows="2" placeholder="' + esc(t('hostDetail.remarkPlaceholder')) + '">' + esc(h.remark || '') + '</textarea></div>'
+            + '<button type="button" class="btn btn-primary" id="hostSaveAliasesRemark">' + esc(t('hostDetail.save')) + '</button></div></div>'
+            + '<div class="card" style="margin-top:1rem"><div class="card-header"><h3>' + esc(t('hostDetail.hostPromptTitle')) + '</h3><span class="text-muted" style="font-size:12px;margin-left:10px">' + esc(t('hostDetail.hostPromptIntro')) + ' <b>' + esc(t('hostDetail.hostPromptNoSecrets')) + '</b>' + esc(t('hostDetail.hostPromptNoSecrets2')) + '</span></div>'
+            + '<div class="host-detail-prompt-form">'
+            + '<div class="session-prompt-toolbar" style="margin-bottom:6px"><button type="button" class="btn btn-sm active" id="hostPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm" id="hostPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button><span class="text-muted" style="font-size:12px;margin-left:8px" id="hostPromptUpdatedAt"></span></div>'
+            + '<div id="hostPromptEditWrap"><textarea class="form-control" id="hostPromptText" rows="10" placeholder="' + esc(t('hostDetail.promptPlaceholder')) + '"></textarea></div>'
+            + '<div id="hostPromptPreview" class="session-prompt-preview" style="display:none"></div>'
+            + '<div class="modal-actions" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn btn-sm btn-primary" id="hostPromptSave">' + esc(t('hostDetail.promptSave')) + '</button><button type="button" class="btn btn-sm" id="hostPromptSummarize" title="' + esc(t('hostAi.hostSummarizeReplaceTitle')) + '">' + esc(t('hostDetail.promptSummarize')) + '</button><button type="button" class="btn btn-sm" id="hostPromptAppend" title="' + esc(t('hostAi.hostSummarizeAppendTitle')) + '">' + esc(t('hostDetail.promptAppend')) + '</button><button type="button" class="btn btn-sm" id="hostPromptReload">' + esc(t('hostDetail.promptReload')) + '</button></div>'
+            + '</div></div>'
+            + '</div></div></div></div>';
+        var pageContent = el.querySelector('.page-content');
+        var tabs = pageContent.querySelectorAll('.host-detail-tab');
+        var panels = pageContent.querySelectorAll('.host-detail-tab-panel');
+        function showTab(tabId) {
+            tabs.forEach(function(t) { t.classList.toggle('active', t.getAttribute('data-tab') === tabId); });
+            panels.forEach(function(p) {
+                var isActive = p.id === tabId;
+                p.classList.toggle('active', isActive);
+                p.style.display = isActive ? 'flex' : 'none';
+            });
+            if (tabId === 'hostDetailTabAi') {
+                var panel = document.getElementById('hostAiPanel');
+                if (panel && !panel.innerHTML.trim()) initHostAIPanel(hostId, hostForAi, panel, h);
+                setTimeout(function() {
+                    var msgBox = document.getElementById('hostAiMessages');
+                    if (msgBox && typeof edgeopsScrollChatMessagesToBottom === 'function') edgeopsScrollChatMessagesToBottom(msgBox);
+                }, 0);
+            }
+        }
+        tabs.forEach(function(btn) {
+            btn.onclick = function() { showTab(btn.getAttribute('data-tab')); };
+        });
+        showTab('hostDetailTabAi');
+        var checkTypeBtn = document.getElementById('hostCheckTypeBtn');
+        var saveArBtn = document.getElementById('hostSaveAliasesRemark');
+        var saveTagBtn = document.getElementById('hostSaveTagsBtn');
+        var manageTagsBtn = document.getElementById('hostManageTagsBtn');
+        function renderTagSelection(allTags) {
+            var wrap = document.getElementById('hostTagEditWrap');
+            if (!wrap) return;
+            var selectedTagIds = new Set((Array.isArray(h.tags) ? h.tags : []).map(function(t) { return t && t.id != null ? String(t.id) : ''; }).filter(Boolean));
+            if (!allTags || !allTags.length) {
+                wrap.innerHTML = '<div class="text-muted">' + esc(t('hostDetail.tagNoneHint')) + '</div>';
+                return;
+            }
+            wrap.innerHTML = allTags.map(function(t) {
+                var checked = selectedTagIds.has(String(t.id)) ? ' checked' : '';
+                var colorDot = t.color ? ('<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + esc(t.color) + ';margin-right:4px;border:1px solid rgba(0,0,0,.2)"></span>') : '';
+                return '<label style="display:inline-flex;align-items:center;gap:6px;margin-right:10px;margin-bottom:8px"><input type="checkbox" class="host-tag-checkbox" value="' + t.id + '"' + checked + '>' + colorDot + esc(t.name || '') + '</label>';
+            }).join('');
+        }
+        function reloadAllTags() {
+            return API.listHostTags().then(function(r) {
+                renderTagSelection(r.tags || []);
+            }).catch(function(err) {
+                var wrap = document.getElementById('hostTagEditWrap');
+                if (wrap) wrap.innerHTML = '<div class="text-danger">' + esc(err.message || t('hostDetail.tagLoadFailed')) + '</div>';
+            });
+        }
+        reloadAllTags();
+        if (manageTagsBtn) {
+            manageTagsBtn.onclick = function() {
+                showHostTagsManageModal(function() {
+                    reloadAllTags();
+                });
+            };
+        }
+        if (saveTagBtn) {
+            saveTagBtn.onclick = function() {
+                var ids = [];
+                var boxes = document.querySelectorAll('#hostTagEditWrap .host-tag-checkbox:checked');
+                boxes.forEach(function(b) {
+                    var v = parseInt(b.value, 10);
+                    if (!isNaN(v)) ids.push(v);
+                });
+                saveTagBtn.disabled = true;
+                API.setHostTagsForHost(hostId, ids).then(function(res) {
+                    h.tags = res.tags || [];
+                    h.tag_names = (h.tags || []).map(function(t) { return t.name || ''; }).filter(Boolean);
+                    showToast(t('toast.tagSaved'));
+                }).catch(function(err) {
+                    showToast(err.message || t('toast.saveTagFailed'), 'error');
+                }).finally(function() {
+                    saveTagBtn.disabled = false;
+                });
+            };
+        }
+        if (saveArBtn) {
+            if (h.is_shared) {
+                saveArBtn.disabled = true;
+                saveArBtn.title = t('hostDetail.sharedReadonlyTitle');
+            }
+            saveArBtn.onclick = function() {
+                if (h.is_shared) { showToast(t('toast.sharedHostReadonly'), 'error'); return; }
+                var raw = (document.getElementById('hostAliasesEdit') || {}).value || '';
+                var aliases = raw.split(/[,，\n]/).map(function(s) { return String(s).trim(); }).filter(Boolean);
+                var remark = ((document.getElementById('hostRemarkEdit') || {}).value || '').trim();
+                saveArBtn.disabled = true;
+                API.updateHost(hostId, { aliases: aliases, remark: remark }).then(function() {
+                    h.aliases = aliases;
+                    h.remark = remark;
+                    showToast(t('toast.aliasSaved'));
+                }).catch(function(err) { showToast(err.message, 'error'); }).finally(function() { saveArBtn.disabled = false; });
+            };
+        }
+        if (checkTypeBtn) {
+            checkTypeBtn.onclick = function() {
+                checkTypeBtn.disabled = true;
+                API.checkHostType(hostId).then(function(res) {
+                    document.getElementById('hostDetailType').textContent = (!res.host_type || res.host_type === '未知') ? unk : res.host_type;
+                    document.getElementById('hostDetailVersion').textContent = (!res.host_version || res.host_version === '未知') ? unk : res.host_version;
+                    var shellEl = document.getElementById('hostDetailShell');
+                    var pkgEl = document.getElementById('hostDetailPkg');
+                    if (shellEl) shellEl.textContent = res.host_shell || '-';
+                    if (pkgEl) pkgEl.textContent = res.host_package_manager || '-';
+                    showToast(t('toast.hostTypeUpdated') + (res.host_type || '') + ' / ' + (res.host_version || '') + (res.host_shell ? ' ' + t('toast.shell') + res.host_shell : '') + (res.host_package_manager ? ' ' + t('toast.pkgMgr') + res.host_package_manager : ''));
+                }).catch(function(err) { showToast(err.message, 'error'); }).finally(function() { checkTypeBtn.disabled = false; });
+            };
+        }
+        (function bindHostPromptCard() {
+            var textEl = document.getElementById('hostPromptText');
+            var previewDiv = document.getElementById('hostPromptPreview');
+            var editWrap = document.getElementById('hostPromptEditWrap');
+            var editTab = document.getElementById('hostPromptEditTab');
+            var previewTab = document.getElementById('hostPromptPreviewTab');
+            var updatedAtEl = document.getElementById('hostPromptUpdatedAt');
+            var saveBtn = document.getElementById('hostPromptSave');
+            var sumBtn = document.getElementById('hostPromptSummarize');
+            var appendBtn = document.getElementById('hostPromptAppend');
+            var reloadBtn = document.getElementById('hostPromptReload');
+            if (!textEl) return;
+            function loadPrompt() {
+                if (textEl) textEl.value = t('hostDetail.promptLoading');
+                if (updatedAtEl) updatedAtEl.textContent = '';
+                API.getHostPrompt(hostId).then(function(r) {
+                    if (textEl) textEl.value = r.prompt || '';
+                    if (updatedAtEl) updatedAtEl.textContent = r.updated_at ? (t('hostDetail.promptUpdated') + formatTime(r.updated_at)) : t('hostDetail.promptNotSet');
+                }).catch(function(err) {
+                    if (textEl) textEl.value = '';
+                    if (updatedAtEl) updatedAtEl.textContent = '';
+                    showToast(err.message || t('toast.loadHostPromptFailed'), 'error');
+                });
+            }
+            if (editTab) editTab.onclick = function() {
+                if (editWrap) editWrap.style.display = '';
+                if (previewDiv) previewDiv.style.display = 'none';
+                editTab.classList.add('active');
+                if (previewTab) previewTab.classList.remove('active');
+            };
+            if (previewTab) previewTab.onclick = function() {
+                if (textEl && previewDiv) previewDiv.innerHTML = (typeof formatMarkdown !== 'undefined' ? formatMarkdown(textEl.value) : esc(textEl.value));
+                if (previewDiv) previewDiv.style.display = 'block';
+                if (editWrap) editWrap.style.display = 'none';
+                previewTab.classList.add('active');
+                if (editTab) editTab.classList.remove('active');
+            };
+            if (saveBtn) saveBtn.onclick = function() {
+                saveBtn.disabled = true;
+                API.updateHostPrompt(hostId, textEl.value || '').then(function() {
+                    showToast(t('toast.hostPromptSaved'));
+                    if (updatedAtEl) updatedAtEl.textContent = t('hostDetail.promptUpdated') + new Date().toLocaleString();
+                }).catch(function(err) {
+                    showToast(err.message || t('toast.saveFailed'), 'error');
+                }).finally(function() { saveBtn.disabled = false; });
+            };
+            function doSummarize(action) {
+                var btn = action === 'append' ? appendBtn : sumBtn;
+                if (btn) btn.disabled = true;
+                showToast(t('toast.summarizingHostPrompt'));
+                API.summarizeHostPrompt(hostId, action).then(function(r) {
+                    if (r.skipped) { showToast(t('toast.noValidSummary')); return; }
+                    if (textEl) textEl.value = r.prompt || '';
+                    if (updatedAtEl) updatedAtEl.textContent = t('hostDetail.promptUpdated') + new Date().toLocaleString();
+                    showToast(action === 'append' ? t('toast.summaryAppended') : t('toast.summaryReplaced'));
+                }).catch(function(err) {
+                    showToast(err.message || t('toast.summarizeFailed'), 'error');
+                }).finally(function() { if (btn) btn.disabled = false; });
+            }
+            if (sumBtn) sumBtn.onclick = function() { doSummarize('replace'); };
+            if (appendBtn) appendBtn.onclick = function() { doSummarize('append'); };
+            if (reloadBtn) reloadBtn.onclick = loadPrompt;
+            loadPrompt();
+        })();
+        }
+        if (needCheckType) {
+            showToast(t('toast.detectingHostType'), 'info');
+            API.checkHostType(hostId).then(function(res) {
+                applyCheckResult(res);
+                doRender();
+            }).catch(function() { doRender(); });
+        } else {
+            doRender();
+        }
+    }).catch(function(err) {
+        el.querySelector('.page-content').innerHTML = '<div class="empty-state"><h3>' + esc(t('hostDetail.loadFailed')) + '</h3><p>' + esc(err.message) + '</p></div>';
+    });
+}
+
+var hostAiLogBuffer = [];
+var aiLogBuffer = [];
+var AI_LOG_DISPLAY_ENTRIES = 5;
+var AI_LOG_DISPLAY_LINES = 5;
+
+function lastNLines(str, n) {
+    if (!str) return '';
+    var lines = String(str).split('\n');
+    if (lines.length <= n) return str;
+    return lines.slice(-n).join('\n');
+}
+function renderHostAiLog() {
+    var wrap = document.getElementById('hostAiLogEntries');
+    if (!wrap) return;
+    var entries = hostAiLogBuffer.slice(-AI_LOG_DISPLAY_ENTRIES).reverse();
+    if (!entries.length) { wrap.innerHTML = '<div class="ai-log-empty">' + esc(t('hostAi.emptyLog')) + '</div>'; return; }
+    wrap.innerHTML = entries.map(function(e) {
+        var argsStr = typeof e.args === 'object' ? JSON.stringify(e.args) : (e.args || '');
+        var resultShow = lastNLines(e.result || '', AI_LOG_DISPLAY_LINES);
+        var more = (e.result || '').split('\n').length > AI_LOG_DISPLAY_LINES ? t('hostAi.logLinesNote', { n: AI_LOG_DISPLAY_LINES }) : '';
+        return '<div class="ai-log-entry status-' + (e.status || '') + '">'
+            + '<div class="ai-log-entry-head"><span class="ai-log-entry-time">' + esc(e.time || '') + '</span><span class="ai-log-entry-tool">' + esc(e.tool || '') + '</span></div>'
+            + (argsStr ? '<div class="ai-log-entry-args">' + esc(argsStr) + '</div>' : '')
+            + '<div class="ai-log-entry-result">' + esc(resultShow) + esc(more) + '</div></div>';
+    }).join('');
+}
+function copyHostAiLogFull() {
+    var lines = hostAiLogBuffer.map(function(e) {
+        var argsStr = typeof e.args === 'object' ? JSON.stringify(e.args) : (e.args || '');
+        return '[' + (e.time || '') + '] ' + (e.tool || '') + '\n' + t('hostAi.logArgs') + argsStr + '\n' + t('hostAi.logResult') + (e.result || t('hostAi.logNone'));
+    });
+    var text = lines.join('\n\n');
+    if (!text) { showToast(t('toast.noCopyYet'), 'info'); return; }
+    try {
+        navigator.clipboard.writeText(text);
+        showToast(t('toast.copiedLogLines', {n: hostAiLogBuffer.length}));
+    } catch (err) { showToast(t('toast.copyFailed'), 'error'); }
+}
+/** AI 思维链面板：与 stripThinkTags 相同的 thinking 块分隔符，抽取块内正文用于推理卡展示 */
+function edgeopsReasoningBufferToPlain(buf) {
+    if (!buf) return '';
+    var reBlock = new RegExp('</think>([\\s\\S]*?)</think>', 'gi');
+    var thinkParts = [];
+    var m;
+    while ((m = reBlock.exec(buf)) !== null) {
+        thinkParts.push(m[1].trim());
+    }
+    var outside = buf.replace(reBlock, '').trim();
+    var thinkText = thinkParts.join('\n\n');
+    if (thinkText && outside) return thinkText + '\n\n' + outside;
+    if (thinkText) return thinkText;
+    return outside;
+}
+
+/** 可折叠区块（默认收起）：参数、流式输出、结果摘要 */
+function edgeopsCotMakeDetails(extraClass, summaryText, bodyChild) {
+    var det = document.createElement('details');
+    det.className = 'ai-cot-details' + (extraClass ? ' ' + extraClass : '');
+    det.open = false;
+    var sumEl = document.createElement('summary');
+    sumEl.className = 'ai-cot-details-summary';
+    sumEl.textContent = summaryText;
+    det.appendChild(sumEl);
+    var wrap = document.createElement('div');
+    wrap.className = 'ai-cot-details-body';
+    wrap.appendChild(bodyChild);
+    det.appendChild(wrap);
+    return det;
+}
+
+/** 非流式工具（如 ssh_execute）不会下发 tool_stream，执行输出区会空；用于判断是否需用 result 回填 */
+function edgeopsCotExecutionStreamIsEmpty(stepEl) {
+    if (!stepEl) return true;
+    var host = stepEl.querySelector('.ai-tool-stream-host');
+    if (!host) return true;
+    var stream = host.querySelector('.ai-tool-stream');
+    if (!stream) return true;
+    return !((stream.textContent || '').trim());
+}
+
+/** 执行输出尚无流式行时，用工具完成时的 result_preview 填入（与左侧 Log 同源，避免「只有摘要、输出空」） */
+function edgeopsCotBackfillExecutionOutputIfEmpty(stepEl, text) {
+    if (!stepEl || text == null || !String(text).trim()) return false;
+    if (!edgeopsCotExecutionStreamIsEmpty(stepEl)) return false;
+    var host = stepEl.querySelector('.ai-tool-stream-host');
+    if (!host) return false;
+    var stream = host.querySelector('.ai-tool-stream');
+    if (!stream) {
+        stream = document.createElement('div');
+        stream.className = 'ai-tool-stream';
+        stream.style.cssText = 'font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; color: #6b7280; white-space: pre-wrap;';
+        host.appendChild(stream);
+    }
+    var div = document.createElement('div');
+    div.className = 'ai-cot-stream-backfill';
+    div.textContent = String(text);
+    stream.appendChild(div);
+    return true;
+}
+
+function edgeopsGetCotState(panel) {
+    if (!panel._edgeopsCotState) {
+        panel._edgeopsCotState = {
+            roundSeq: 0,
+            reasoningBuffer: '',
+            reasoningBodyEl: null,
+            activeToolEl: null,
+            done: false,
+            paused: false
+        };
+    }
+    return panel._edgeopsCotState;
+}
+
+function edgeopsGetOrCreateCotPanel(toolsEl) {
+    if (!toolsEl) return null;
+    var first = toolsEl.firstElementChild;
+    if (first && first.classList && first.classList.contains('ai-cot-panel')) return first;
+    var panel = document.createElement('div');
+    panel.className = 'ai-cot-panel';
+    panel.innerHTML = '<button type="button" class="ai-cot-header" aria-expanded="true">'
+        + '<span class="ai-cot-chevron">\u25bc</span>'
+        + '<span class="ai-cot-head-main"></span>'
+        + '<span class="ai-cot-head-status"></span>'
+        + '</button>'
+        + '<div class="ai-cot-body">'
+        + '<div class="ai-cot-steps"></div>'
+        + '<div class="ai-cot-live"></div>'
+        + '</div>';
+    toolsEl.appendChild(panel);
+    var header = panel.querySelector('.ai-cot-header');
+    var body = panel.querySelector('.ai-cot-body');
+    header.addEventListener('click', function() {
+        var collapsed = body.classList.toggle('ai-cot-collapsed');
+        panel.classList.toggle('ai-cot-collapsed', collapsed);
+        header.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        var ch = panel.querySelector('.ai-cot-chevron');
+        if (ch) ch.textContent = collapsed ? '\u25b6' : '\u25bc';
+    });
+    edgeopsGetCotState(panel);
+    edgeopsCotRefreshHeader(panel);
+    return panel;
+}
+
+function edgeopsCotRefreshHeader(panel) {
+    var st = edgeopsGetCotState(panel);
+    var steps = panel.querySelector('.ai-cot-steps');
+    var n = steps ? steps.children.length : 0;
+    var main = panel.querySelector('.ai-cot-head-main');
+    var statusEl = panel.querySelector('.ai-cot-head-status');
+    if (main) main.textContent = typeof t === 'function' ? t('hostAi.cotTitleSteps', { n: n }) : ('CoT (' + n + ')');
+    if (statusEl) {
+        if (st.done) {
+            statusEl.textContent = typeof t === 'function' ? t('hostAi.cotDoneHint') : '';
+            statusEl.className = 'ai-cot-head-status ai-cot-status-done';
+        } else if (st.paused) {
+            statusEl.textContent = typeof t === 'function' ? t('hostAi.cotPausedHint') : '';
+            statusEl.className = 'ai-cot-head-status ai-cot-status-paused';
+        } else {
+            statusEl.textContent = typeof t === 'function' ? t('hostAi.cotLiveHint') : '';
+            statusEl.className = 'ai-cot-head-status ai-cot-status-live';
+        }
+    }
+}
+
+/**
+ * 创建 / 复用 CoT 面板，并立即在 live 区显示「正在思考」提示。
+ * 让用户在 LLM 第一次响应（可能要 5~10s）之前就能看到反馈，避免空气泡误以为没在工作。
+ */
+function edgeopsCotEnsureThinkingPlaceholder(toolsEl) {
+    if (!toolsEl) return;
+    var panel = edgeopsGetOrCreateCotPanel(toolsEl);
+    if (!panel) return;
+    var live = panel.querySelector('.ai-cot-live');
+    if (live) {
+        var label = typeof t === 'function' ? t('hostAi.cotThinking') : 'AI is thinking…';
+        live.textContent = label;
+    }
+}
+
+function edgeopsCotOnReasoningChunk(toolsEl, cot) {
+    if (!toolsEl || !cot || cot.kind !== 'reasoning_chunk') return;
+    var panel = edgeopsGetOrCreateCotPanel(toolsEl);
+    var st = edgeopsGetCotState(panel);
+    if (!st.reasoningBodyEl) {
+        st.roundSeq += 1;
+        var steps = panel.querySelector('.ai-cot-steps');
+        var step = document.createElement('div');
+        step.className = 'ai-cot-step ai-cot-step-reasoning';
+        var r = st.roundSeq;
+        var headText = typeof t === 'function' ? t('hostAi.cotRoundReasoning', { round: r }) : ('Round ' + r);
+        step.innerHTML = '<div class="ai-cot-step-head">' + esc(headText) + '</div><div class="ai-cot-step-body ai-cot-reasoning-text"></div>';
+        steps.appendChild(step);
+        st.reasoningBodyEl = step.querySelector('.ai-cot-reasoning-text');
+        edgeopsCotRefreshHeader(panel);
+    }
+    st.reasoningBuffer += cot.text != null ? String(cot.text) : '';
+    if (st.reasoningBodyEl) st.reasoningBodyEl.textContent = edgeopsReasoningBufferToPlain(st.reasoningBuffer);
+}
+
+function edgeopsCotOnReasoningEnd(toolsEl) {
+    var panel = toolsEl && toolsEl.querySelector('.ai-cot-panel');
+    if (!panel) return;
+    var st = edgeopsGetCotState(panel);
+    st.reasoningBodyEl = null;
+    st.reasoningBuffer = '';
+}
+
+function edgeopsCotDispatch(toolsEl, cot) {
+    if (!toolsEl || !cot || !cot.kind) return;
+    if (cot.kind === 'reasoning_chunk') edgeopsCotOnReasoningChunk(toolsEl, cot);
+    else if (cot.kind === 'reasoning_end') edgeopsCotOnReasoningEnd(toolsEl);
+}
+
+function edgeopsCotAppendMcpFetchedImages(container, previewRaw) {
+    if (!container || !previewRaw) return;
+    var obj = null;
+    try { obj = JSON.parse(String(previewRaw)); } catch (_e) { return; }
+    if (!obj || !obj.fetched_assets || !obj.fetched_assets.length) return;
+    obj.fetched_assets.forEach(function(a) {
+        if (!a || !a.success || !a.uuid) return;
+        var url = (typeof edgeopsRewriteChatAttachmentUrl === 'function')
+            ? edgeopsRewriteChatAttachmentUrl(a.local_url || ('/api/ai/attachments/' + a.uuid))
+            : ((API && API.buildChatAttachmentUrl) ? API.buildChatAttachmentUrl(a.uuid) : '');
+        if (!url) return;
+        var wrap = document.createElement('div');
+        wrap.className = 'chat-fetched-image-wrap ai-cot-fetched-image';
+        wrap.style.marginTop = '8px';
+        var img = document.createElement('img');
+        img.className = 'chat-attachment-image-inline';
+        img.src = url;
+        img.alt = a.name || 'image';
+        img.loading = 'lazy';
+        wrap.appendChild(img);
+        container.appendChild(wrap);
+    });
+}
+
+function edgeopsCotOnToolExecuting(toolsEl, ev) {
+    if (!toolsEl || !ev || !ev.tool) return;
+    var panel = edgeopsGetOrCreateCotPanel(toolsEl);
+    var st = edgeopsGetCotState(panel);
+    st.reasoningBodyEl = null;
+    st.reasoningBuffer = '';
+    st.roundSeq += 1;
+    var idx = st.roundSeq;
+    var steps = panel.querySelector('.ai-cot-steps');
+    var step = document.createElement('div');
+    step.className = 'ai-cot-step ai-cot-step-tool ai-tool-executing';
+    step.dataset.toolName = ev.tool || '';
+    var argsStr = '';
+    try {
+        argsStr = ev.args != null ? JSON.stringify(ev.args) : '';
+    } catch (eArgs) {
+        argsStr = String(ev.args);
+    }
+    var labelExec = typeof t === 'function' ? t('hostAi.toolExecuting') : 'Running';
+    var headLine = typeof t === 'function' ? t('hostAi.cotRoundTool', { round: idx, tool: ev.tool || '' }) : ((idx) + ' ' + (ev.tool || ''));
+    var head = document.createElement('div');
+    head.className = 'ai-cot-step-head';
+    head.innerHTML = '<span class="ai-cot-step-title">' + esc(headLine) + '</span>'
+        + '<span class="ai-cot-tool-badge ai-cot-badge-running">' + esc(labelExec) + '</span>';
+    step.appendChild(head);
+    var extras = document.createElement('div');
+    extras.className = 'ai-cot-tool-extras';
+    if (argsStr) {
+        var preA = document.createElement('pre');
+        preA.className = 'ai-cot-args';
+        preA.textContent = argsStr;
+        var labA = typeof t === 'function' ? t('hostAi.cotArgsLabel') : 'Arguments';
+        extras.appendChild(edgeopsCotMakeDetails('ai-cot-details-args', labA, preA));
+    }
+    var streamHost = document.createElement('div');
+    streamHost.className = 'ai-tool-stream-host';
+    var labS = typeof t === 'function' ? t('hostAi.cotStreamLabel') : 'Stream output';
+    extras.appendChild(edgeopsCotMakeDetails('ai-cot-details-stream', labS, streamHost));
+    step.appendChild(extras);
+    steps.appendChild(step);
+    st.activeToolEl = step;
+    var live = panel.querySelector('.ai-cot-live');
+    if (live) live.textContent = typeof t === 'function' ? t('hostAi.cotExecuting', { tool: ev.tool || '' }) : '';
+    edgeopsCotRefreshHeader(panel);
+}
+
+function edgeopsCotOnToolFinished(toolsEl, ev) {
+    if (!toolsEl || !ev || !ev.tool) return;
+    var panel = toolsEl.querySelector('.ai-cot-panel');
+    if (!panel) return;
+    var st = edgeopsGetCotState(panel);
+    var target = st.activeToolEl;
+    if (!target || (target.dataset.toolName && target.dataset.toolName !== ev.tool)) {
+        var all = panel.querySelectorAll('.ai-cot-step-tool.ai-tool-executing');
+        target = all.length ? all[all.length - 1] : null;
+    }
+    if (!target) return;
+    target.classList.remove('ai-tool-executing');
+    var ok = ev.action === 'completed';
+    target.classList.add(ok ? 'ai-tool-completed' : 'ai-tool-failed');
+    var badge = target.querySelector('.ai-cot-tool-badge');
+    if (badge) {
+        badge.classList.remove('ai-cot-badge-running');
+        badge.classList.add(ok ? 'ai-cot-badge-done' : 'ai-cot-badge-fail');
+        badge.textContent = typeof t === 'function' ? (ok ? t('hostAi.toolDone') : t('hostAi.toolFailed')) : (ok ? 'ok' : 'fail');
+    }
+    var previewRaw = ev.result_preview != null ? String(ev.result_preview) : '';
+    var previewTrim = previewRaw.trim();
+    var backfilledStream = false;
+    if (previewTrim) {
+        backfilledStream = edgeopsCotBackfillExecutionOutputIfEmpty(target, previewRaw.slice(0, 12000));
+    }
+    if (previewTrim && !backfilledStream) {
+        var preR = document.createElement('pre');
+        preR.className = 'ai-cot-result-preview';
+        preR.textContent = previewRaw.slice(0, 12000);
+        var labR = typeof t === 'function' ? t('hostAi.cotResultLabel') : 'Result';
+        var extras = target.querySelector('.ai-cot-tool-extras');
+        if (extras) extras.appendChild(edgeopsCotMakeDetails('ai-cot-details-result', labR, preR));
+        else target.appendChild(edgeopsCotMakeDetails('ai-cot-details-result', labR, preR));
+        try { edgeopsCotAppendMcpFetchedImages(extras || target, previewRaw); } catch (_imgE) {}
+    }
+    if (st.activeToolEl === target) st.activeToolEl = null;
+    var live = panel.querySelector('.ai-cot-live');
+    if (live) live.textContent = '';
+    edgeopsCotRefreshHeader(panel);
+}
+
+function edgeopsCotMarkStreamDone(toolsEl) {
+    var panel = toolsEl && toolsEl.querySelector('.ai-cot-panel');
+    if (!panel) return;
+    var st = edgeopsGetCotState(panel);
+    st.done = true;
+    st.paused = false;
+    st.reasoningBodyEl = null;
+    st.reasoningBuffer = '';
+    var live = panel.querySelector('.ai-cot-live');
+    if (live) live.textContent = '';
+    edgeopsCotRefreshHeader(panel);
+}
+
+/** 流已结束但任务未跑完（等待用户点「继续」、或工具仍显示执行中）— 勿标「已完成」。 */
+function edgeopsCotMarkStreamPaused(toolsEl, hintKey) {
+    var panel = toolsEl && toolsEl.querySelector('.ai-cot-panel');
+    if (!panel) return;
+    var st = edgeopsGetCotState(panel);
+    st.done = false;
+    st.paused = true;
+    st.reasoningBodyEl = null;
+    st.reasoningBuffer = '';
+    var live = panel.querySelector('.ai-cot-live');
+    if (live) {
+        var key = hintKey || 'hostAi.cotPausedHint';
+        live.textContent = typeof t === 'function' ? t(key) : '';
+    }
+    edgeopsCotRefreshHeader(panel);
+}
+
+function edgeopsCotHasOpenToolSteps(toolsEl) {
+    if (!toolsEl) return false;
+    return !!(toolsEl.querySelector('.ai-cot-step-tool.ai-tool-executing') || toolsEl.querySelector('.ai-tool-item.ai-tool-executing'));
+}
+
+function edgeopsLooksActionableUserRequest(text) {
+    var t = (text || '').trim().toLowerCase();
+    if (!t || t.length < 2) return false;
+    var kws = ['上传', '下载', '解压', '安装', '部署', '执行', '运行', '重启', '复制', '同步', '附件', 'scp', 'rsync', 'upload', 'download', 'extract', 'deploy', 'install', 'execute'];
+    for (var i = 0; i < kws.length; i++) { if (t.indexOf(kws[i]) >= 0) return true; }
+    return false;
+}
+
+function edgeopsReplySuggestsPendingWork(text) {
+    var s = (text || '').trim().toLowerCase();
+    if (!s) return false;
+    var done = ['已完成', '已经完成', '执行成功', '操作完成', 'successfully completed', 'completed successfully'];
+    for (var d = 0; d < done.length; d++) { if (s.indexOf(done[d]) >= 0) return false; }
+    var pending = ['我将', '我会', '我去', '我来', '马上', '接下来', '即将', '将要', 'i will ', "i'll ", 'going to '];
+    for (var p = 0; p < pending.length; p++) { if (s.indexOf(pending[p]) >= 0) return true; }
+    if (/将.{0,12}(上传|解压|执行|部署|安装)/.test(s)) return true;
+    return false;
+}
+
+function edgeopsMakeChatStreamingUISetter(opts) {
+    opts = opts || {};
+    return function setStreamingUI(mode) {
+        var input = opts.inputId ? document.getElementById(opts.inputId) : opts.input;
+        var sendBtn = opts.sendId ? document.getElementById(opts.sendId) : opts.sendBtn;
+        var newBtn = opts.newSessionId ? document.getElementById(opts.newSessionId) : opts.newBtn;
+        var active = mode === true || mode === 'active' || mode === 'auto_continuing';
+        var awaiting = mode === 'awaiting' || mode === 'awaiting_confirm';
+        var idle = !active && !awaiting;
+        var composeRow = input && input.closest ? input.closest('.chat-input-area') : null;
+        if (composeRow) {
+            composeRow.classList.toggle('runtime-awaiting-confirm', !!awaiting);
+            if (idle) composeRow.classList.remove('runtime-control-active');
+        }
+        if (input) {
+            input.disabled = !!active && !awaiting;
+            if (idle) input.style.display = '';
+        }
+        if (sendBtn) sendBtn.style.display = (active && !awaiting) ? 'none' : '';
+        if (newBtn) newBtn.style.display = active ? 'none' : '';
+        var ctl = opts.runtimeCtl;
+        if (ctl && typeof ctl.setStreaming === 'function') {
+            if (awaiting) ctl.setStreaming('awaiting');
+            else ctl.setStreaming(active);
+            if (typeof ctl.note === 'function') {
+                if (mode === 'auto_continuing') ctl.note(typeof t === 'function' ? t('hostAi.runtimeAutoContinuing') : '');
+                else if (awaiting) ctl.note(typeof t === 'function' ? t('hostAi.runtimeAwaitingConfirm') : '');
+                else ctl.note(typeof t === 'function' ? t('hostAi.runtimeTipCompact') : '');
+            }
+        }
+    };
+}
+
+function edgeopsInitStreamReplyState(replyWrap, userMsg) {
+    if (!replyWrap) return;
+    replyWrap._edgeopsStreamPhase = 'active';
+    replyWrap._edgeopsToolFinishedCount = 0;
+    replyWrap._edgeopsPausedForConfirm = false;
+    replyWrap._edgeopsUserMsg = userMsg || '';
+}
+
+function edgeopsEnsureChatWaitHost(toolsEl) {
+    if (!toolsEl) return null;
+    var panel = edgeopsGetOrCreateCotPanel(toolsEl);
+    if (!panel) return null;
+    var body = panel.querySelector('.ai-cot-body');
+    if (!body) return null;
+    var host = body.querySelector('.ai-cot-wait-host');
+    if (!host) {
+        host = document.createElement('div');
+        host.className = 'ai-cot-wait-host';
+        body.insertBefore(host, body.firstChild);
+    }
+    return host;
+}
+
+function edgeopsClearChatPollWait(toolsEl) {
+    if (!toolsEl) return;
+    var panel = toolsEl.querySelector('.ai-cot-panel');
+    var host = panel && panel.querySelector('.ai-cot-wait-host');
+    if (host) {
+        host.innerHTML = '';
+        host.style.display = 'none';
+    }
+}
+
+function edgeopsUpdateChatPollWait(toolsEl, ev, opts) {
+    opts = opts || {};
+    if (!ev || (ev.action !== 'waiting' && ev.action !== 'waiting_aborted')) return;
+    if (ev.action === 'waiting_aborted') {
+        edgeopsClearChatPollWait(toolsEl);
+        if (opts.runtimeCtl && opts.runtimeCtl.note) {
+            opts.runtimeCtl.note(typeof t === 'function' ? t('hostAi.runtimeTipCompact') : '');
+        }
+        return;
+    }
+    var host = edgeopsEnsureChatWaitHost(toolsEl);
+    if (!host) return;
+    var rem = ev.wait_remaining != null ? ev.wait_remaining : (ev.seconds || 0);
+    host.style.display = 'block';
+    var tip = typeof t === 'function'
+        ? t('hostAi.pollWaitRuntimeTip', { remaining: rem })
+        : (rem + 's');
+    host.innerHTML = '<div class="ai-cot-wait-bar">'
+        + '<span class="ai-cot-wait-text">' + esc(tip) + '</span>'
+        + '<button type="button" class="btn btn-sm ai-cot-wait-cancel">'
+        + esc(typeof t === 'function' ? t('hostAi.runtimeStop') : 'Stop')
+        + '</button></div>';
+    var cancelBtn = host.querySelector('.ai-cot-wait-cancel');
+    if (cancelBtn) {
+        cancelBtn.onclick = function() {
+            if (typeof opts.onAbort === 'function') opts.onAbort();
+        };
+    }
+    if (opts.runtimeCtl && opts.runtimeCtl.note) {
+        opts.runtimeCtl.note(typeof t === 'function'
+            ? t('hostAi.pollWaitRuntimeTip', { remaining: rem })
+            : tip);
+    }
+}
+
+function edgeopsApplyStreamStatus(replyWrap, setStreamingUI, phase) {
+    if (replyWrap) replyWrap._edgeopsStreamPhase = phase || replyWrap._edgeopsStreamPhase;
+    if (!setStreamingUI) return;
+    if (phase === 'auto_continuing') setStreamingUI('auto_continuing');
+    else if (phase === 'awaiting_user_confirm') setStreamingUI('awaiting');
+    else if (phase === 'completed') {
+        if (replyWrap) replyWrap._edgeopsStreamPhase = 'completed';
+    } else if (phase === 'active') setStreamingUI(true);
+}
+
+function edgeopsResolveStreamEndPhase(replyWrap, toolsEl, streamedText) {
+    if (!replyWrap) return 'idle';
+    var phase = replyWrap._edgeopsStreamPhase;
+    if (phase === 'completed') phase = '';
+    if (replyWrap._edgeopsPausedForConfirm || phase === 'awaiting_user_confirm') return 'awaiting';
+    if (edgeopsCotHasOpenToolSteps(toolsEl)) return 'incomplete';
+    if ((replyWrap._edgeopsToolFinishedCount || 0) > 0) return 'idle';
+    if (edgeopsLooksActionableUserRequest(replyWrap._edgeopsUserMsg) && edgeopsReplySuggestsPendingWork(streamedText)) return 'incomplete';
+    return 'idle';
+}
+
+function edgeopsApplyStreamEndUI(endPhase, setStreamingUI) {
+    if (endPhase === 'awaiting') {
+        if (setStreamingUI) setStreamingUI('awaiting');
+    } else if (setStreamingUI) {
+        setStreamingUI(false);
+    }
+}
+
+/** 流式聊天收尾：渲染气泡并恢复输入区；异常时仍强制回到可输入状态（除非等待继续）。 */
+function edgeopsFinishChatStreamRound(opts) {
+    opts = opts || {};
+    edgeopsClearChatPollWait(opts.toolsEl);
+    var endPhase = 'idle';
+    try {
+        endPhase = edgeopsResolveStreamEndPhase(opts.replyWrap, opts.toolsEl, opts.streamedText || '');
+        edgeopsFinalizeAssistantStreamReply({
+            replyWrap: opts.replyWrap,
+            toolsEl: opts.toolsEl,
+            textEl: opts.textEl,
+            replyMsgEl: opts.replyMsgEl,
+            streamedText: opts.streamedText,
+            logBuffer: opts.logBuffer,
+            renderLogFn: opts.renderLogFn,
+            formatMd: opts.formatMd,
+            endPhase: endPhase === 'awaiting' ? 'awaiting' : (endPhase === 'incomplete' ? 'incomplete' : 'complete'),
+            incompleteNoTools: endPhase === 'incomplete'
+        });
+    } catch (e) {
+        endPhase = opts.replyWrap && opts.replyWrap._edgeopsPausedForConfirm ? 'awaiting' : 'idle';
+        if (typeof console !== 'undefined' && console.error) console.error('edgeopsFinishChatStreamRound', e);
+    }
+    edgeopsApplyStreamEndUI(endPhase, opts.setStreamingUI);
+    return endPhase;
+}
+
+function edgeopsOnChatStreamToolEvent(replyWrap, toolsEl, ev, logBuffer, renderLogFn, onAfter) {
+    if (ev.action === 'executing') edgeopsCotOnToolExecuting(toolsEl, ev);
+    else edgeopsCotOnToolFinished(toolsEl, ev);
+    if (replyWrap && ev.action && ev.action !== 'executing') {
+        replyWrap._edgeopsToolFinishedCount = (replyWrap._edgeopsToolFinishedCount || 0) + 1;
+        if (replyWrap._edgeopsStreamPhase === 'incomplete') replyWrap._edgeopsStreamPhase = 'active';
+    }
+    if (ev.action === 'executing') {
+        logBuffer.push({ time: new Date().toLocaleString(), tool: ev.tool, args: ev.args, result: null, status: 'executing' });
+    } else if (logBuffer.length) {
+        logBuffer[logBuffer.length - 1].result = ev.result_preview != null ? ev.result_preview : '';
+        logBuffer[logBuffer.length - 1].status = ev.action;
+    }
+    if (typeof renderLogFn === 'function') renderLogFn();
+    if (typeof onAfter === 'function') onAfter();
+}
+
+/** 流式 assistant 气泡收尾：区分真正完成 / 等待继续 / 工具未闭合。 */
+function edgeopsFinalizeAssistantStreamReply(opts) {
+    opts = opts || {};
+    var replyWrap = opts.replyWrap;
+    var toolsEl = opts.toolsEl;
+    var textEl = opts.textEl;
+    var replyMsgEl = opts.replyMsgEl;
+    var streamedText = opts.streamedText || '';
+    var logBuffer = opts.logBuffer;
+    var renderLogFn = opts.renderLogFn;
+    if (!replyWrap) return 'idle';
+    var hadOpenTools = edgeopsCotHasOpenToolSteps(toolsEl);
+    if (hadOpenTools) edgeopsMarkOpenToolRowsFailed(toolsEl, logBuffer, renderLogFn);
+    replyWrap.classList.remove('ai-reply-stream');
+    var endPhase = opts.endPhase;
+    if (!endPhase) {
+        if (replyWrap._edgeopsPausedForConfirm) endPhase = 'awaiting';
+        else if (hadOpenTools) endPhase = 'incomplete';
+        else if (opts.incompleteNoTools) endPhase = 'incomplete';
+        else endPhase = 'complete';
+    }
+    if (endPhase === 'awaiting') {
+        edgeopsCotMarkStreamPaused(toolsEl, 'hostAi.cotPausedHint');
+    } else if (endPhase === 'incomplete') {
+        edgeopsCotMarkStreamPaused(toolsEl, 'hostAi.cotIncompleteHint');
+        if (typeof showToast === 'function') {
+            showToast(typeof t === 'function' ? t('hostAi.cotIncompleteToast') : '', 'warning');
+        }
+    } else if (hadOpenTools) {
+        edgeopsCotMarkStreamPaused(toolsEl, 'hostAi.cotInterruptedHint');
+        if (typeof showToast === 'function') {
+            showToast(typeof t === 'function' ? t('hostAi.cotInterruptedToast') : '', 'warning');
+        }
+    } else {
+        edgeopsCotMarkStreamDone(toolsEl);
+        edgeopsCotCollapsePanelAfterStream(toolsEl);
+    }
+    var toolsHtml = toolsEl && toolsEl.children.length ? toolsEl.outerHTML : '';
+    var finalText = edgeopsFinalAssistantText(streamedText, !!toolsHtml);
+    var fmtFn = typeof opts.formatMd === 'function' ? opts.formatMd : edgeopsDefaultFmtMd;
+    if (textEl && typeof edgeopsClearStreamIncrementalState === 'function') edgeopsClearStreamIncrementalState(textEl);
+    var bodyHtml = toolsHtml + (finalText ? '<div class="ai-reply-text">' + fmtFn(finalText) + '</div>' : '');
+    if (endPhase === 'incomplete') {
+        var bannerTxt = typeof t === 'function' ? t('hostAi.streamIncompleteBanner') : '';
+        bodyHtml += '<div class="ai-reply-incomplete-banner" role="status">' + esc(bannerTxt) + '</div>';
+    }
+    replyWrap.innerHTML = bodyHtml;
+    if (replyMsgEl) replyMsgEl._edgeopsPersistContent = stripThinkTags(streamedText);
+    edgeopsHydrateChatDiagrams(replyWrap);
+    if (typeof edgeopsEnhanceChatMessageArtifacts === 'function') edgeopsEnhanceChatMessageArtifacts(replyWrap);
+    replyWrap._edgeopsStreamEndPhase = endPhase;
+    return endPhase;
+}
+
+// 流式工具进度：追加到当前「执行中」的工具步骤（或旧版 .ai-tool-item）
+function renderToolStreamEvent(toolsEl, ev) {
+    if (!toolsEl || !ev || !ev.tool_stream) return;
+    var attachParent = null;
+    var panel = toolsEl.querySelector('.ai-cot-panel');
+    if (panel && panel._edgeopsCotState && panel._edgeopsCotState.activeToolEl) {
+        attachParent = panel._edgeopsCotState.activeToolEl.querySelector('.ai-tool-stream-host');
+    }
+    if (!attachParent) attachParent = toolsEl.querySelector('.ai-tool-item:last-child');
+    if (!attachParent) return;
+    var streamInCot = attachParent.classList && attachParent.classList.contains('ai-tool-stream-host');
+    var body = attachParent.querySelector('.ai-tool-stream');
+    if (!body) {
+        body = document.createElement('div');
+        body.className = 'ai-tool-stream';
+        if (streamInCot) {
+            body.style.cssText = 'font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; color: #6b7280; white-space: pre-wrap;';
+        } else {
+            body.style.cssText = 'font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; color: #6b7280; margin-top: 4px; white-space: pre-wrap; max-height: 140px; overflow: auto; border-top: 1px dashed #e5e7eb; padding-top: 4px;';
+        }
+        attachParent.appendChild(body);
+    }
+    var s = ev.tool_stream;
+    var line = '';
+    var tag = s.kind || '';
+    if (tag === 'chain_step_start') {
+        line = '\u25b6 [' + (s.index + 1) + '] ' + (s.name || '') + '  kind=' + (s.step_kind || '') + (s.host_label ? '  @' + s.host_label : '');
+    } else if (tag === 'chain_step_skip') {
+        line = '\u23ed [' + (s.index + 1) + '] ' + (s.name || '') + '  skipped: ' + (s.reason || '');
+    } else if (tag === 'chain_step_end') {
+        line = (s.success ? '\u2713' : '\u2717') + ' [' + (s.index + 1) + '] ' + (s.name || '') + (s.duration_sec != null ? '  ' + s.duration_sec + 's' : '') + (s.exit_code != null ? '  exit=' + s.exit_code : '') + (s.error ? '  err=' + String(s.error).slice(0, 80) : '');
+    } else if (tag === 'chain_step_line' || tag === 'sub_agent_line') {
+        var prefix = tag === 'chain_step_line' ? ('[' + (s.index + 1) + '] ' + (s.step_kind || '') + ' \u00b7 ') : '';
+        line = prefix + '[' + (s.stream || 'stdout') + '] ' + (s.line || '').slice(0, 500);
+    } else {
+        line = tag + ' ' + JSON.stringify(s).slice(0, 200);
+    }
+    var div = document.createElement('div');
+    div.textContent = line;
+    body.appendChild(div);
+    var all = body.querySelectorAll('div');
+    if (all.length > 40) {
+        for (var ri = 0; ri < all.length - 40; ri++) body.removeChild(all[ri]);
+    }
+    body.scrollTop = body.scrollHeight;
+}
+
+function renderAiLog() {
+    var wrap = document.getElementById('aiLogEntries');
+    if (!wrap) return;
+    var entries = aiLogBuffer.slice(-AI_LOG_DISPLAY_ENTRIES).reverse();
+    if (!entries.length) { wrap.innerHTML = '<div class="ai-log-empty">' + esc(t('hostAi.emptyLog')) + '</div>'; return; }
+    wrap.innerHTML = entries.map(function(e) {
+        var argsStr = typeof e.args === 'object' ? JSON.stringify(e.args) : (e.args || '');
+        var resultShow = lastNLines(e.result || '', AI_LOG_DISPLAY_LINES);
+        var more = (e.result || '').split('\n').length > AI_LOG_DISPLAY_LINES ? t('hostAi.logLinesNote', { n: AI_LOG_DISPLAY_LINES }) : '';
+        return '<div class="ai-log-entry status-' + (e.status || '') + '">'
+            + '<div class="ai-log-entry-head"><span class="ai-log-entry-time">' + esc(e.time || '') + '</span><span class="ai-log-entry-tool">' + esc(e.tool || '') + '</span></div>'
+            + (argsStr ? '<div class="ai-log-entry-args">' + esc(argsStr) + '</div>' : '')
+            + '<div class="ai-log-entry-result">' + esc(resultShow) + esc(more) + '</div></div>';
+    }).join('');
+}
+function copyAiLogFull() {
+    var lines = aiLogBuffer.map(function(e) {
+        var argsStr = typeof e.args === 'object' ? JSON.stringify(e.args) : (e.args || '');
+        return '[' + (e.time || '') + '] ' + (e.tool || '') + '\n' + t('hostAi.logArgs') + argsStr + '\n' + t('hostAi.logResult') + (e.result || t('hostAi.logNone'));
+    });
+    var text = lines.join('\n\n');
+    if (!text) { showToast(t('toast.noCopyYet'), 'info'); return; }
+    try {
+        navigator.clipboard.writeText(text);
+        showToast(t('toast.copiedLogLines', {n: aiLogBuffer.length}));
+    } catch (err) { showToast(t('toast.copyFailed'), 'error'); }
+}
+
+function exportChatToMarkdown(sessionId) {
+    if (!sessionId) { showToast(t('toast.selectOrCreateSession')); return; }
+    API.getAISession(sessionId).then(function(r) {
+        var session = r.session;
+        if (!session || !session.messages || !session.messages.length) { showToast(t('toast.noMessagesInSession')); return; }
+        var st = t('common.exportSessionTitle');
+        var title = (session.title || st).replace(/[/\\?*:"<>|]/g, '_').slice(0, 80);
+        var loc = (typeof I18n !== 'undefined' && I18n.locale === 'en') ? 'en' : 'zh-CN';
+        var lines = ['# ' + (session.title || st), '', t('common.exportedAt') + new Date().toLocaleString(loc), ''];
+        session.messages.forEach(function(m) {
+            var role = m.role === 'user' ? t('common.exportRoleUser') : t('common.exportRoleAssistant');
+            lines.push('## ' + role);
+            lines.push('');
+            lines.push((m.content || '').trim());
+            lines.push('');
+        });
+        var md = lines.join('\n');
+        var blob = new Blob(['\ufeff' + md], { type: 'text/markdown;charset=utf-8' });
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = title + '_' + new Date().toISOString().slice(0, 10) + '.md';
+        a.click();
+        URL.revokeObjectURL(a.href);
+        showToast(t('toast.exportedMd'));
+    }).catch(function(err) { showToast(err.message || t('toast.exportFailed'), 'error'); });
+}
+
+function initAiLayoutSplitters(layoutId) {
+    var prefix = edgeopsGetLayoutPrefix(layoutId);
+    var root = document.getElementById(prefix + 'PageLayout');
+    if (!root) return;
+    var terminalEl = document.getElementById(prefix + 'LayoutTerminal');
+    var chatEl = document.getElementById(prefix + 'LayoutChat');
+    var splitters = root.querySelectorAll('.layout-splitter-vertical[data-layout="' + layoutId + '"]');
+    if (!terminalEl || !chatEl || splitters.length < 1) return;
+    var keyR = 'edgeops_layout_' + layoutId + '_terminal_ratio';
+    var terminalRatio = Math.max(0.2, Math.min(0.8, parseFloat(sessionStorage.getItem(keyR)) || 0.5));
+    edgeopsApplyTerminalRatio(layoutId);
+    function applyRatio(r) {
+        r = Math.max(0.2, Math.min(0.8, r));
+        terminalEl.style.flex = r + ' 1 0';
+        chatEl.style.flex = (1 - r) + ' 1 0';
+        chatEl.style.width = '';
+        chatEl.style.maxWidth = '';
+        terminalRatio = r;
+        try { sessionStorage.setItem(keyR, String(r)); } catch (e) {}
+    }
+    function setupSplitter(splitter) {
+        splitter.addEventListener('mousedown', function(e) {
+            e.preventDefault();
+            splitter.classList.add('dragging');
+            var startX = e.clientX;
+            var startRatio = terminalRatio;
+            var bodyStyle = document.body.style;
+            var prevUserSelect = bodyStyle.userSelect;
+            bodyStyle.userSelect = 'none';
+            function move(e) {
+                var rootRect = root.getBoundingClientRect();
+                var sidebarEl = root.querySelector('.ai-left-sidebar');
+                var sidebarW = (sidebarEl && sidebarEl.getBoundingClientRect().width) || 0;
+                var rest = rootRect.width - sidebarW - 6;
+                if (rest <= 0) return;
+                var totalDx = e.clientX - startX;
+                var r = startRatio + totalDx / rest;
+                applyRatio(r);
+            }
+            function up() {
+                splitter.classList.remove('dragging');
+                bodyStyle.userSelect = prevUserSelect || '';
+                document.removeEventListener('mousemove', move);
+                document.removeEventListener('mouseup', up);
+            }
+            document.addEventListener('mousemove', move);
+            document.addEventListener('mouseup', up);
+        });
+    }
+    setupSplitter(splitters[0]);
+}
+
+function initHostAIPanel(hostId, hostName, panel, hostInfo) {
+    hostAiLogBuffer = [];
+    var hostTypeForCmd = (hostInfo && hostInfo.host_type) ? String(hostInfo.host_type) : '未知';
+    var hostTerminalScopeId = edgeopsMakeTerminalScopeId('host-ai', hostId);
+    var sshTitle = t('hostAi.sshTitle', { name: String(hostName) });
+    var hostModalHint = esc(t('hostAi.hostPromptModalHint')) + '<br>' + esc(t('hostAi.hostPromptModalNoSecret'));
+    panel.innerHTML = '<div class="ai-page-layout ai-terminal-hidden" id="hostAiPageLayout">'
+        + '<div class="ai-left-sidebar" id="hostAiLeftSidebar">'
+        + '<div class="ai-left-sidebar-tabs"><div class="ai-left-sidebar-tab" id="hostAiSidebarTabSessions" data-tab="sessions" title="' + esc(t('hostAi.sessionTabTitle')) + '">' + esc(t('hostAi.sessionList')) + '</div></div>'
+        + '<div class="ai-left-sidebar-panel"><div class="chat-history-panel ai-layout-history" id="hostAiLayoutHistory"><div class="chat-history-header"><span>' + esc(t('hostAi.sessionList')) + '</span><span class="chat-history-header-actions"><button type="button" class="btn btn-sm" id="hostAiRefreshSessions" title="' + esc(t('hostAi.refresh')) + '">' + esc(t('hostAi.refresh')) + '</button><button type="button" class="btn btn-sm" id="hostAiClearSessions">' + esc(t('hostAi.clearAll')) + '</button></span></div><div class="chat-history-list-wrap open"><div class="chat-history-list" id="hostAiSessionList"></div></div></div></div></div>'
+        + '<div class="card ai-terminal-card ai-layout-terminal" id="hostAiLayoutTerminal">'
+        + '<div class="terminal-tabs ai-terminal-header"><button type="button" class="terminal-tab-btn active" data-tab="hostAiTabConsole">' + esc(t('hostAi.tabConsole')) + '</button><button type="button" class="terminal-tab-btn" data-tab="hostAiTabRemoteFs">' + esc(t('hostAi.tabFs')) + '</button><button type="button" class="terminal-tab-btn" data-tab="hostAiTabLog">' + esc(t('hostAi.tabLog')) + '</button><span class="ai-terminal-header-meta"><span class="ai-terminal-header-title" title="' + esc(sshTitle) + '">' + esc(sshTitle) + '</span><span class="ai-terminal-header-sep">·</span><span id="hostAiTerminalStatus" class="ai-terminal-status">' + esc(t('hostAi.statusDisconnected')) + '</span></span></div>'
+        + '<div id="hostAiTabConsole" class="terminal-tab-panel active">'
+        + '<div id="hostAiConsoleTabsRow" class="ai-console-tabs-row"><label class="ai-console-auto-switch-label"><input type="checkbox" id="hostAiConsoleNoAutoSwitch"> ' + esc(t('hostAi.noAutoSwitch')) + '</label></div>'
+        + '<div id="hostAiConsoleEmptyState" class="ai-console-empty-state" style="flex:1;display:flex;align-items:center;justify-content:center;padding:24px;color:var(--text-muted);font-size:14px;">' + esc(t('hostAi.consoleEmpty')) + '</div>'
+        + '<div id="hostAiConsolePanels" class="ai-console-panels" style="display:none;flex:1;min-height:0;flex-direction:column"></div>'
+        + '</div>'
+        + '<div id="hostAiTabRemoteFs" class="terminal-tab-panel"><div class="remote-fs-layout"><div class="remote-fs-tree-wrap"><div class="remote-fs-tree-header">' + esc(t('hostAi.fsTreeHeader')) + '</div><div id="hostAiRemoteFsTree" class="remote-fs-tree"></div><div id="hostAiRemoteFsCtxMenu" class="remote-fs-ctxmenu"></div></div><div class="remote-fs-main"><div class="remote-fs-toolbar"><input type="text" class="form-control remote-fs-path" id="hostAiRemoteFsPath" placeholder="' + esc(t('hostAi.fsPathPlaceholder')) + '" value="/" readonly><button type="button" class="btn btn-sm" id="hostAiRemoteFsRefresh">' + esc(t('hostAi.fsRefresh')) + '</button><button type="button" class="btn btn-sm" id="hostAiRemoteFsUpload">' + esc(t('hostAi.fsUpload')) + '</button><input type="file" id="hostAiRemoteFsFileInput" style="display:none"><button type="button" class="btn btn-sm" id="hostAiRemoteFsDownload">' + esc(t('hostAi.fsDownload')) + '</button><button type="button" class="btn btn-sm" id="hostAiRemoteFsSave">' + esc(t('hostAi.fsSave')) + '</button></div><div id="hostAiRemoteFsPreview" class="remote-fs-preview"><div class="remote-fs-preview-inner" id="hostAiRemoteFsPreviewInner"><span class="text-muted">' + esc(t('hostAi.fsPreviewHint')) + '</span></div></div></div></div></div>'
+        + '<div id="hostAiTabLog" class="terminal-tab-panel"><div class="ai-log-window"><div class="ai-log-toolbar"><button type="button" class="btn btn-sm" id="hostAiLogCopyAll">' + esc(t('hostAi.logCopyAll')) + '</button></div><div id="hostAiLogEntries" class="ai-log-entries"></div></div></div>'
+        + '</div>'
+        + '<div class="layout-splitter-vertical" data-layout="host" data-split="terminal" title="' + esc(t('hostAi.splitterTitle')) + '"></div>'
+        + '<div class="chat-container ai-chat-container ai-layout-chat" id="hostAiLayoutChat" style="flex:1;min-width:0">'
+        + '<div class="host-ai-chat-bar"><button type="button" class="btn btn-sm" id="hostAiSessionPromptBtn" title="' + esc(t('hostAi.barSessionPromptTitle')) + '">' + esc(t('hostAi.barSessionPrompt')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptBtn" title="' + esc(t('hostAi.barHostPromptTitle')) + '">' + esc(t('hostAi.barHostPrompt')) + '</button><button type="button" class="btn btn-sm" id="hostAiClearChat">' + esc(t('hostAi.clearChat')) + '</button><span class="host-ai-clear-n"><input type="number" id="hostAiClearN" min="1" value="10" style="width:84px">' + esc(t('hostAi.clearN')) + '</span><button type="button" class="btn btn-sm" id="hostAiClearLastN">' + esc(t('hostAi.clearGtN')) + '</button><button type="button" class="btn btn-sm" id="hostAiExportMd" title="' + esc(t('hostAi.exportMdTitle')) + '">' + esc(t('hostAi.exportMd')) + '</button><button type="button" class="btn btn-sm" id="hostAiToggleTerminalBtn">' + esc(t('hostAi.hideTerminal')) + '</button><button type="button" class="btn btn-sm btn-primary" id="hostAiNewSession">' + esc(t('hostAi.newSession')) + '</button></div>'
+        + '<div id="hostAiSessionPromptModal" class="modal-overlay" style="display:none"><div class="modal modal-session-prompt"><div class="modal-header"><span>' + esc(t('hostAi.sessionPromptTitle')) + '</span><button type="button" class="modal-close" id="hostAiSessionPromptClose">&times;</button></div><div class="modal-body"><div class="session-prompt-toolbar"><button type="button" class="btn btn-sm active" id="hostAiSessionPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm" id="hostAiSessionPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button></div><div id="hostAiSessionPromptEditWrap"><textarea id="hostAiSessionPromptText" class="form-control" rows="6" placeholder="' + esc(t('hostAi.sessionPromptPlaceholder')) + '"></textarea></div><div id="hostAiSessionPromptPreview" class="session-prompt-preview" style="display:none"></div><div class="modal-actions" style="margin-top:8px"><button type="button" class="btn btn-sm btn-primary" id="hostAiSessionPromptSave">' + esc(t('hostAi.sessionPromptSave')) + '</button><button type="button" class="btn btn-sm" id="hostAiSessionPromptSummarize" title="' + esc(t('hostAi.sessionSummarizeReplaceTitle')) + '">' + esc(t('hostDetail.promptSummarize')) + '</button><button type="button" class="btn btn-sm" id="hostAiSessionPromptAppend" title="' + esc(t('hostAi.sessionSummarizeAppendTitle')) + '">' + esc(t('hostDetail.promptAppend')) + '</button><button type="button" class="btn btn-sm" id="hostAiSessionPromptCancel">' + esc(t('hostAi.sessionPromptClose')) + '</button></div></div></div></div>'
+        + '<div id="hostAiHostPromptModal" class="modal-overlay" style="display:none"><div class="modal modal-session-prompt"><div class="modal-header"><span>' + esc(t('hostAi.hostPromptModalTitle')) + '</span><button type="button" class="modal-close" id="hostAiHostPromptClose">&times;</button></div><div class="modal-body"><div class="text-muted" style="margin-bottom:6px;font-size:12px">' + hostModalHint + '</div><div class="session-prompt-toolbar"><button type="button" class="btn btn-sm active" id="hostAiHostPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button></div><div id="hostAiHostPromptEditWrap"><textarea id="hostAiHostPromptText" class="form-control" rows="10" placeholder="' + esc(t('hostAi.hostPromptModalTextareaPh')) + '"></textarea></div><div id="hostAiHostPromptPreview" class="session-prompt-preview" style="display:none"></div><div class="modal-actions" style="margin-top:8px"><button type="button" class="btn btn-sm btn-primary" id="hostAiHostPromptSave">' + esc(t('hostDetail.promptSave')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptSummarize" title="' + esc(t('hostAi.hostSummarizeReplaceTitle')) + '">' + esc(t('hostDetail.promptSummarize')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptAppend" title="' + esc(t('hostAi.hostSummarizeAppendTitle')) + '">' + esc(t('hostDetail.promptAppend')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptCancel">' + esc(t('hostAi.sessionPromptClose')) + '</button></div></div></div></div>'
+        + '<div class="chat-messages" id="hostAiMessages"></div>'
+        + '<div class="chat-input-area"><label class="chat-low-interaction-toggle" title="' + esc(t('hostAi.lowInteractionTitle')) + '"><input type="checkbox" id="hostAiLowInteractionToggle"> ' + esc(t('hostAi.lowInteractionLabel')) + '</label><textarea class="form-control chat-input-multiline" id="hostAiInput" rows="1" enterkeyhint="send" spellcheck="false"></textarea><button class="btn btn-primary" id="hostAiSend">' + esc(t('hostAi.send')) + '</button><button type="button" class="btn btn-sm" id="hostAiNewSessionBtn">' + esc(t('hostAi.newSession')) + '</button></div></div></div>';
+    initAiLayoutSplitters('host');
+    (function() {
+        var _hm = document.getElementById('hostAiMessages');
+        if (_hm) edgeopsBindChatStickToBottom(_hm);
+    })();
+    var sessionId = null;
+    var openSessionPromptModal = null;
+    var hostAiFirstLoad = true;
+    var fmtMd = function(t) { return (typeof formatMarkdown !== 'undefined' && formatMarkdown ? formatMarkdown(t) : (esc(t || '').replace(/\n/g, '<br>'))); };
+    function loadSessions() {
+        API.listAISessions(hostId).then(function(r) {
+            var list = document.getElementById('hostAiSessionList');
+            if (!list) return;
+            var rawSessions = r.sessions || [];
+            var sessions = edgeopsSortSessionsPromptFirst(rawSessions.slice());
+            list.innerHTML = '<div class="chat-history-empty">' + esc(t('hostAi.noSessions')) + '</div>';
+            if (sessions.length) {
+                if (sessionId == null) {
+                    sessionId = rawSessions[0].id;
+                    loadSession(sessionId);
+                }
+                list.innerHTML = sessions.map(function(s) {
+                    return '<div class="chat-history-item' + (s.id === sessionId ? ' active' : '') + (edgeopsSessionHasPrompt(s) ? ' chat-history-item-session-prompt' : '') + '" data-id="' + s.id + '">'
+                        + '<span class="chat-history-item-title" title="' + esc(t('hostAi.doubleClickRename')) + '">' + esc(s.title) + '</span><span class="chat-history-item-time">' + formatTime(s.updated_at) + '</span>'
+                        + '<button type="button" class="chat-history-item-rename" title="' + esc(t('hostAi.renameTitle')) + '">' + esc(t('hostAi.rename')) + '</button>'
+                        + '<button type="button" class="chat-history-item-ai-title" title="' + esc(t('hostAi.aiNameTitle')) + '">AI</button>'
+                        + '<button type="button" class="chat-history-item-delete" title="' + esc(t('hostAi.deleteTitle')) + '" data-id="' + s.id + '">&times;</button></div>';
+                }).join('');
+                list.querySelectorAll('.chat-history-item').forEach(function(node) {
+                    var id = parseInt(node.getAttribute('data-id'), 10);
+                    if (!id || isNaN(id)) return;
+                    var titleEl = node.querySelector('.chat-history-item-title');
+                    function startRename() {
+                        var val = (titleEl.textContent || '').trim();
+                        var input = document.createElement('input');
+                        input.type = 'text';
+                        input.className = 'chat-history-item-title-edit';
+                        input.value = val;
+                        input.style.width = (node.offsetWidth - 90) + 'px';
+                        titleEl.replaceWith(input);
+                        input.focus();
+                        input.select();
+                        function done() {
+                            var newTitle = (input.value || '').trim();
+                            input.replaceWith(titleEl);
+                            titleEl.textContent = newTitle || val;
+                            if (newTitle !== val) API.updateAISession(id, { title: newTitle }).then(function() { showToast(t('toast.renamed')); }).catch(function(err) { showToast(err.message, 'error'); titleEl.textContent = val; });
+                        }
+                        input.onblur = done;
+                        input.onkeydown = function(ev) { if (ev.key === 'Enter') { ev.preventDefault(); done(); } if (ev.key === 'Escape') { input.value = val; done(); } };
+                    }
+                    titleEl.ondblclick = function(e) { e.stopPropagation(); startRename(); };
+                    node.querySelector('.chat-history-item-rename').onclick = function(e) { e.stopPropagation(); startRename(); };
+                    (function() {
+                        var aiBtn = node.querySelector('.chat-history-item-ai-title');
+                        aiBtn.onclick = function(e) {
+                            e.stopPropagation();
+                            var btn = this;
+                            var oldText = btn.textContent;
+                            btn.textContent = '\u2026';
+                            btn.disabled = true;
+                            showToast(t('toast.generatingTitle'));
+                            API.summarizeAISessionTitle(id).then(function(res) {
+                                btn.textContent = oldText;
+                                btn.disabled = false;
+                                if (res.title) { titleEl.textContent = res.title; showToast(t('toast.titleGenerated')); }
+                            }).catch(function(err) {
+                                btn.textContent = oldText;
+                                btn.disabled = false;
+                                showToast(err.message || t('toast.generateTitleFailed'), 'error');
+                            });
+                        };
+                    })();
+                    node.querySelector('.chat-history-item-delete').onclick = function(e) { e.stopPropagation(); if (!confirm(t('toast.confirmDelete'))) return; API.deleteAISession(id).then(function() { if (sessionId === id) { sessionId = null; document.getElementById('hostAiMessages').innerHTML = ''; } loadSessions(); showToast(t('toast.deleted')); }).catch(function(err) { showToast(err.message, 'error'); }); };
+                    node.onclick = function(ev) { if (ev.target.closest('button') || ev.target.classList.contains('chat-history-item-title-edit')) return; sessionId = id; loadSession(id); list.querySelectorAll('.chat-history-item').forEach(function(n) { n.classList.remove('active'); }); node.classList.add('active'); };
+                });
+            }
+            var refreshBtn = document.getElementById('hostAiRefreshSessions');
+            if (refreshBtn) refreshBtn.onclick = function() { loadSessions(); showToast(t('toast.refreshed')); };
+            var clearBtn = document.getElementById('hostAiClearSessions');
+            if (clearBtn) { clearBtn.disabled = !rawSessions.length; clearBtn.onclick = function() { if (!rawSessions.length) return; if (!confirm(t('confirm.clearHostAllSessions'))) return; API.clearAISessions(hostId).then(function() { sessionId = null; document.getElementById('hostAiMessages').innerHTML = ''; loadSessions(); showToast(t('toast.cleared')); }).catch(function(err) { showToast(err.message, 'error'); }); }; }
+            if (hostAiFirstLoad && rawSessions.length) {
+                hostAiFirstLoad = false;
+                var toSummarize = null;
+                if (sessionId) { var cur = rawSessions.filter(function(s) { return s.id === sessionId; })[0]; if (cur && edgeopsIsTempSessionTitle(cur.title)) toSummarize = cur.id; }
+                if (!toSummarize) {
+                    for (var si = 0; si < rawSessions.length; si++) {
+                        var srow = rawSessions[si];
+                        if (srow.title && edgeopsIsTempSessionTitle(srow.title)) { toSummarize = srow.id; break; }
+                    }
+                }
+                if (toSummarize) API.summarizeAISessionTitle(toSummarize).then(function(res) { if (res && res.title) loadSessions(); }).catch(function() {});
+            }
+        });
+    }
+    function loadSession(id) {
+        sessionId = id;
+        API.getAISession(id).then(function(r) {
+            var msgs = (r.session && r.session.messages) || [];
+            var lowToggle = document.getElementById('hostAiLowInteractionToggle');
+            if (lowToggle) lowToggle.checked = String((r.session && r.session.low_interaction_mode) || 'false').toLowerCase() === 'true';
+            var box = document.getElementById('hostAiMessages');
+            if (!box) return;
+            edgeopsRenderSessionMessages(box, msgs, fmtMd, id, {
+                onChoice: function(text) { edgeopsTriggerChatSend('hostAiInput', 'hostAiSend', text); }
+            });
+            edgeopsHydrateChatDiagrams(box);
+            edgeopsScrollChatMessagesToBottom(box);
+        });
+    }
+    (function() {
+        var lowToggle = document.getElementById('hostAiLowInteractionToggle');
+        if (!lowToggle) return;
+        lowToggle.checked = false;
+        lowToggle.onchange = function() {
+            if (!sessionId) { showToast(t('toast.selectOrCreateSession'), 'info'); lowToggle.checked = false; return; }
+            API.updateAISession(sessionId, { low_interaction_mode: !!lowToggle.checked })
+                .catch(function(err) { showToast((err && err.message) || t('toast.requestFailed'), 'error'); lowToggle.checked = !lowToggle.checked; });
+        };
+    })();
+    loadSessions();
+    var hostAiAbortController = null;
+    var hostAiRuntimeCtl = edgeopsInstallRuntimeControlBar({
+        area: 'hostAiInput',
+        onControl: function(action, message) {
+            if (!sessionId) { showToast(t('toast.selectOrCreateSession'), 'info'); return; }
+            if (action === 'stop' && hostAiAbortController) hostAiAbortController.abort();
+            API.pushAIRuntimeControl(sessionId, { action: action, message: message || '' })
+                .then(function() {
+                    if (action === 'stop' && hostAiAbortController) hostAiAbortController.abort();
+                })
+                .catch(function(err) { showToast((err && err.message) || t('toast.requestFailed'), 'error'); });
+        }
+    });
+    var setStreamingUI = edgeopsMakeChatStreamingUISetter({
+        inputId: 'hostAiInput', sendId: 'hostAiSend', newSessionId: 'hostAiNewSessionBtn', runtimeCtl: hostAiRuntimeCtl
+    });
+    document.getElementById('hostAiClearChat').onclick = function() {
+        if (!sessionId) { showToast(t('toast.selectOrCreateSession')); return; }
+        if (!confirm(t('confirm.clearSessionChat'))) return;
+        API.clearSessionMessages(sessionId, { clear: 'all' }).then(function() {
+            loadSession(sessionId);
+            showToast(t('toast.chatCleared'));
+        }).catch(function(err) { showToast(err.message || t('toast.clearFailed'), 'error'); });
+    };
+    document.getElementById('hostAiClearLastN').onclick = function() {
+        if (!sessionId) { showToast(t('toast.selectOrCreateSession')); return; }
+        var n = parseInt(document.getElementById('hostAiClearN').value, 10) || 10;
+        n = Math.max(1, Math.min(10000, n));
+        if (!confirm(t('confirm.keepNMessages', {n: n}))) return;
+        API.clearSessionMessages(sessionId, { clear: 'after', keep_n: n }).then(function() {
+            loadSession(sessionId);
+            showToast(t('toast.clearedAfterN', {n: n}));
+        }).catch(function(err) { showToast(err.message || t('toast.opFailed'), 'error'); });
+    };
+    (function() {
+        var modal = document.getElementById('hostAiSessionPromptModal');
+        var textEl = document.getElementById('hostAiSessionPromptText');
+        function openModal() {
+            if (!sessionId) { showToast(t('toast.selectOrCreateSession')); return; }
+            var modalEl = document.getElementById('hostAiSessionPromptModal');
+            if (!modalEl) {
+                var hostId = parseInt((location.pathname.match(/\/hosts\/(\d+)/) || [])[1], 10);
+                var panel = document.getElementById('hostAiPanel');
+                if (panel && hostId) {
+                    try { window._hostAiRestoreSessionId = sessionId; } catch (e) {}
+                    API.getHost(hostId).then(function(data) {
+                        var h = data.host || {};
+                        var hn = (h.name || h.host || '').trim() || t('hostDetail.defaultName', { id: hostId });
+                        if (typeof initHostAIPanel === 'function') initHostAIPanel(hostId, hn, panel, h);
+                    }).catch(function() { try { window._hostAiRestoreSessionId = null; } catch (e) {} showToast(t('toast.uiNotReady')); });
+                    return;
+                }
+                showToast(t('toast.uiNotReady'));
+                return;
+            }
+            modalEl.style.display = 'flex';
+            var editWrap = document.getElementById('hostAiSessionPromptEditWrap');
+            var previewDiv = document.getElementById('hostAiSessionPromptPreview');
+            if (editWrap) editWrap.style.display = '';
+            if (previewDiv) previewDiv.style.display = 'none';
+            var editTab = document.getElementById('hostAiSessionPromptEditTab');
+            var previewTab = document.getElementById('hostAiSessionPromptPreviewTab');
+            if (editTab) editTab.classList.add('active'); if (previewTab) previewTab.classList.remove('active');
+            var textInput = document.getElementById('hostAiSessionPromptText');
+            API.getSessionPrompt(sessionId).then(function(r) { if (textInput) textInput.value = (r.prompt || ''); }).catch(function(err) { showToast(err.message, 'error'); });
+        }
+        openSessionPromptModal = openModal;
+        function closeModal() {
+            var m = document.getElementById('hostAiSessionPromptModal');
+            if (m) m.style.display = 'none';
+        }
+        var promptBtn = document.getElementById('hostAiSessionPromptBtn');
+        if (promptBtn) promptBtn.onclick = openModal;
+        var closeBtn = document.getElementById('hostAiSessionPromptClose');
+        if (closeBtn) closeBtn.onclick = closeModal;
+        var cancelBtn = document.getElementById('hostAiSessionPromptCancel');
+        if (cancelBtn) cancelBtn.onclick = closeModal;
+        (function() {
+            var editTab = document.getElementById('hostAiSessionPromptEditTab');
+            var previewTab = document.getElementById('hostAiSessionPromptPreviewTab');
+            var editWrap = document.getElementById('hostAiSessionPromptEditWrap');
+            var previewDiv = document.getElementById('hostAiSessionPromptPreview');
+            if (editTab) editTab.onclick = function() { if (editWrap) editWrap.style.display = ''; if (previewDiv) previewDiv.style.display = 'none'; editTab.classList.add('active'); if (previewTab) previewTab.classList.remove('active'); };
+            if (previewTab) previewTab.onclick = function() { if (textEl && previewDiv) previewDiv.innerHTML = (typeof formatMarkdown !== 'undefined' ? formatMarkdown(textEl.value) : esc(textEl.value)); if (previewDiv) previewDiv.style.display = 'block'; if (editWrap) editWrap.style.display = 'none'; previewTab.classList.add('active'); if (editTab) editTab.classList.remove('active'); };
+        })();
+        document.getElementById('hostAiSessionPromptSave').onclick = function() {
+            API.updateSessionPrompt(sessionId, textEl.value).then(function() { showToast(t('toast.saved')); closeModal(); loadSessions(); }).catch(function(err) { showToast(err.message, 'error'); });
+        };
+        document.getElementById('hostAiSessionPromptSummarize').onclick = function() {
+            var btn = this;
+            btn.disabled = true;
+            showToast(t('toast.summarizingSession'));
+            API.summarizeSessionPrompt(sessionId, 'replace').then(function(r) {
+                if (r.skipped) { showToast(t('toast.sessionPromptNoChange')); return; }
+                if (textEl) textEl.value = r.prompt || '';
+                showToast(modal.style.display !== 'none' ? t('toast.sessionReplacedByAi') : t('toast.sessionUpdatedShort'));
+            }).catch(function(err) { showToast(err.message || t('toast.summarizeFailed'), 'error'); }).finally(function() { btn.disabled = false; });
+        };
+        document.getElementById('hostAiSessionPromptAppend').onclick = function() {
+            var btn = this;
+            btn.disabled = true;
+            showToast(t('toast.summarizingSession'));
+            API.summarizeSessionPrompt(sessionId, 'append').then(function(r) {
+                if (r.skipped) { showToast(t('toast.sessionPromptNoAppend')); return; }
+                if (textEl) textEl.value = r.prompt || '';
+                showToast(modal.style.display !== 'none' ? t('toast.sessionAppendedByAi') : t('toast.sessionUpdatedShort'));
+            }).catch(function(err) { showToast(err.message || t('toast.summarizeFailed'), 'error'); }).finally(function() { btn.disabled = false; });
+        };
+    })();
+    (function() {
+        var modal = document.getElementById('hostAiHostPromptModal');
+        var textEl = document.getElementById('hostAiHostPromptText');
+        function openModal() {
+            if (!hostId) { showToast(t('toast.hostIdUnknown')); return; }
+            if (!modal) { showToast(t('toast.uiNotReady')); return; }
+            modal.style.display = 'flex';
+            var editWrap = document.getElementById('hostAiHostPromptEditWrap');
+            var previewDiv = document.getElementById('hostAiHostPromptPreview');
+            var editTab = document.getElementById('hostAiHostPromptEditTab');
+            var previewTab = document.getElementById('hostAiHostPromptPreviewTab');
+            if (editWrap) editWrap.style.display = '';
+            if (previewDiv) previewDiv.style.display = 'none';
+            if (editTab) editTab.classList.add('active');
+            if (previewTab) previewTab.classList.remove('active');
+            if (textEl) textEl.value = '加载中…';
+            API.getHostPrompt(hostId).then(function(r) {
+                if (textEl) textEl.value = (r.prompt || '');
+            }).catch(function(err) {
+                if (textEl) textEl.value = '';
+                showToast(err.message || t('toast.loadHostPromptFailed'), 'error');
+            });
+        }
+        function closeModal() { if (modal) modal.style.display = 'none'; }
+        var openBtn = document.getElementById('hostAiHostPromptBtn');
+        if (openBtn) openBtn.onclick = openModal;
+        var closeBtn = document.getElementById('hostAiHostPromptClose');
+        if (closeBtn) closeBtn.onclick = closeModal;
+        var cancelBtn = document.getElementById('hostAiHostPromptCancel');
+        if (cancelBtn) cancelBtn.onclick = closeModal;
+        var editTab = document.getElementById('hostAiHostPromptEditTab');
+        var previewTab = document.getElementById('hostAiHostPromptPreviewTab');
+        var editWrap = document.getElementById('hostAiHostPromptEditWrap');
+        var previewDiv = document.getElementById('hostAiHostPromptPreview');
+        if (editTab) editTab.onclick = function() {
+            if (editWrap) editWrap.style.display = '';
+            if (previewDiv) previewDiv.style.display = 'none';
+            editTab.classList.add('active');
+            if (previewTab) previewTab.classList.remove('active');
+        };
+        if (previewTab) previewTab.onclick = function() {
+            if (textEl && previewDiv) previewDiv.innerHTML = (typeof formatMarkdown !== 'undefined' ? formatMarkdown(textEl.value) : esc(textEl.value));
+            if (previewDiv) previewDiv.style.display = 'block';
+            if (editWrap) editWrap.style.display = 'none';
+            previewTab.classList.add('active');
+            if (editTab) editTab.classList.remove('active');
+        };
+        var saveBtn = document.getElementById('hostAiHostPromptSave');
+        if (saveBtn) saveBtn.onclick = function() {
+            if (!hostId) { showToast(t('toast.hostIdUnknown')); return; }
+            saveBtn.disabled = true;
+            API.updateHostPrompt(hostId, textEl.value || '').then(function() {
+                showToast(t('toast.hostPromptSaved')); closeModal();
+            }).catch(function(err) {
+                showToast(err.message || t('toast.saveFailed'), 'error');
+            }).finally(function() { saveBtn.disabled = false; });
+        };
+        function doSummarize(action) {
+            if (!hostId) { showToast(t('toast.hostIdUnknown')); return; }
+            var btnId = action === 'append' ? 'hostAiHostPromptAppend' : 'hostAiHostPromptSummarize';
+            var btn = document.getElementById(btnId);
+            if (btn) btn.disabled = true;
+            showToast(t('toast.summarizingHostModal'));
+            API.summarizeHostPrompt(hostId, action).then(function(r) {
+                if (r.skipped) { showToast(t('toast.hostPromptNoSummary')); return; }
+                if (textEl) textEl.value = r.prompt || '';
+                showToast(action === 'append' ? t('toast.sessionAppendedByAi') : t('toast.sessionReplacedByAi'));
+            }).catch(function(err) {
+                showToast(err.message || t('toast.summarizeFailed'), 'error');
+            }).finally(function() { if (btn) btn.disabled = false; });
+        }
+        var sumBtn = document.getElementById('hostAiHostPromptSummarize');
+        if (sumBtn) sumBtn.onclick = function() { doSummarize('replace'); };
+        var appendBtn = document.getElementById('hostAiHostPromptAppend');
+        if (appendBtn) appendBtn.onclick = function() { doSummarize('append'); };
+    })();
+    if (window._hostAiRestoreSessionId) {
+        var sid = window._hostAiRestoreSessionId;
+        try { window._hostAiRestoreSessionId = null; } catch (e) {}
+        sessionId = sid;
+        loadSession(sid);
+        loadSessions();
+        setTimeout(function() { if (typeof openSessionPromptModal === 'function') openSessionPromptModal(); }, 150);
+    }
+    document.getElementById('hostAiExportMd').onclick = function() { exportChatToMarkdown(sessionId); };
+    function doHostAiNewSession() {
+        var oldSessionId = sessionId;
+        API.createAISession('default', hostId).then(function(r) {
+            var id = r.session_id || (r.session && r.session.id);
+            if (id != null) {
+                sessionId = id;
+                document.getElementById('hostAiMessages').innerHTML = '';
+                loadSessions();
+                loadSession(id);
+                showToast(t('toast.newSessionCreated'));
+                if (oldSessionId) {
+                    API.summarizeAISessionTitle(oldSessionId).then(function(res) { if (res && res.title) loadSessions(); }).catch(function() {});
+                }
+            }
+        }).catch(function(err) { showToast(err.message || t('toast.createFailed'), 'error'); });
+    }
+    document.getElementById('hostAiNewSession').onclick = doHostAiNewSession;
+    document.getElementById('hostAiNewSessionBtn').onclick = doHostAiNewSession;
+    (function() {
+        var sidebar = document.getElementById('hostAiLeftSidebar');
+        var tab = document.getElementById('hostAiSidebarTabSessions');
+        if (sidebar && tab) {
+            edgeopsBindAutoCollapseChatSidebar(sidebar, tab);
+            tab.onclick = function() {
+                var isOpen = sidebar.classList.toggle('open');
+                tab.classList.toggle('active', isOpen);
+            };
+        }
+    })();
+    var hostAiAttachCtl = edgeopsInstallChatAttachments({ input: 'hostAiInput', getSessionId: function() { return sessionId; } });
+    function doSend() {
+        var input = document.getElementById('hostAiInput'); var msg = input && input.value.trim();
+        var attachments = hostAiAttachCtl ? hostAiAttachCtl.getReadyAttachments() : [];
+        var attachUuids = attachments.map(function(a) { return a.uuid; });
+        if (!msg && !attachUuids.length) return;
+        if (hostAiAttachCtl && hostAiAttachCtl.hasPending()) { showToast(t('toast.attachUploading'), 'warning'); return; }
+        if (!msg) msg = '（见下方附件）';
+        input.value = '';
+        if (input._edgeopsAutoResize) input._edgeopsAutoResize();
+        var box = document.getElementById('hostAiMessages'); if (!box) return;
+        edgeopsBindChatStickToBottom(box);
+        box._edgeopsStickToBottom = edgeopsChatIsNearBottom(box);
+        setStreamingUI(true);
+        var now = new Date();
+        var nowTs = edgeopsFormatChatTimestamp(now);
+        var userBubble = edgeopsRenderMessageBubble(fmtMd(msg) + edgeopsRenderAttachmentsInline(attachments), now);
+        box.insertAdjacentHTML('beforeend', '<div class="chat-message user"><div class="avatar">U</div>' + userBubble + '</div>');
+        if (hostAiAttachCtl) hostAiAttachCtl.clear();
+        box.insertAdjacentHTML('beforeend', '<div class="chat-message assistant"><div class="avatar">A</div><div class="message-content"><div class="ai-reply-stream"><div class="ai-reply-tools"></div><div class="ai-reply-text"></div></div><div class="message-time">' + esc(nowTs) + '</div></div></div>');
+        edgeopsHydrateChatDiagrams(box);
+        edgeopsScrollChatToBottomStepIfPinned(box);
+        var replyWrap = edgeopsPeekLastAiReplyStreamWrap(box);
+        if (!replyWrap) return;
+        var toolsEl = replyWrap.querySelector('.ai-reply-tools');
+        var textEl = replyWrap.querySelector('.ai-reply-text');
+        var replyMsgEl = replyWrap.closest('.chat-message');
+        edgeopsInitStreamReplyState(replyWrap, msg);
+        edgeopsSetMessagePersistenceMeta(replyMsgEl, sessionId, null, '');
+        edgeopsCotEnsureThinkingPlaceholder(toolsEl);
+        edgeopsScrollChatToBottomStepIfPinned(box);
+        var streamedText = '';
+        var hostAiStreamInputMode = 'idle';
+        function flushStreamReplyText() {
+            var clean = stripThinkTags(streamedText);
+            if (typeof edgeopsRenderStreamIncremental === 'function') edgeopsRenderStreamIncremental(textEl, clean, replyWrap);
+            else if (typeof edgeopsRenderStreamPlainText === 'function') edgeopsRenderStreamPlainText(textEl, clean);
+            else textEl.textContent = clean;
+            if (replyMsgEl) replyMsgEl._edgeopsPersistContent = clean;
+            edgeopsScrollChatToBottomStepIfPinned(box);
+        }
+        function finishStreamAndRender() {
+            hostAiStreamInputMode = edgeopsFinishChatStreamRound({
+                replyWrap: replyWrap, toolsEl: toolsEl, textEl: textEl, replyMsgEl: replyMsgEl,
+                streamedText: streamedText, logBuffer: hostAiLogBuffer, renderLogFn: renderHostAiLog,
+                formatMd: fmtMd, setStreamingUI: setStreamingUI
+            });
+        }
+        hostAiAbortController = new AbortController();
+        var hostAiUntrackAbort = edgeopsTrackChatAbortController(hostAiAbortController);
+        try { edgeopsClearUIActionCache(sessionId); } catch (_e) {}
+        API.chatStream(msg, sessionId, function(ev) {
+            if (ev.session_id != null) { sessionId = ev.session_id; edgeopsSetMessagePersistenceMeta(replyMsgEl, sessionId, null, replyMsgEl && replyMsgEl._edgeopsPersistContent); }
+            if (ev.ui_action) {
+                if (ev.ui_action.action === 'ask_user_choice') {
+                    var _dupFp = edgeopsChoiceCardFingerprint(ev.ui_action);
+                    if (_dupFp && replyMsgEl && replyMsgEl._edgeopsLastStreamChoiceFp === _dupFp) {
+                        try { edgeopsSaveUIActionToCache(sessionId, ev.ui_action); } catch (_ed) {}
+                    } else {
+                        if (_dupFp && replyMsgEl) replyMsgEl._edgeopsLastStreamChoiceFp = _dupFp;
+                        var card = edgeopsRenderChoiceCard(ev.ui_action, function(text) {
+                            // 用户回答了这张卡（按钮或自由文字均算）：缓存里这张卡已无意义，先清掉，
+                            // 避免后续刷新走 edgeopsRenderSessionMessages fallback 时再被错误塞回新 assistant 气泡里。
+                            try { edgeopsClearUIActionCache(sessionId); } catch (_e) {}
+                            if (sessionId && hostAiAbortController) {
+                                API.pushAIRuntimeControl(sessionId, { action: 'choice', message: text || '' })
+                                    .catch(function(err) { showToast((err && err.message) || t('toast.requestFailed'), 'error'); });
+                                return;
+                            }
+                            edgeopsTriggerChatSend('hostAiInput', 'hostAiSend', text);
+                        });
+                        if (card && replyMsgEl) {
+                            var mc = replyMsgEl.querySelector('.message-content');
+                            if (mc) {
+                                edgeopsRemoveStreamingChoiceCards(mc);
+                                mc.appendChild(card);
+                            }
+                            edgeopsScrollChatToBottomStepIfPinned(box);
+                        }
+                        try { edgeopsSaveUIActionToCache(sessionId, ev.ui_action); } catch (_e) {}
+                    }
+                } else {
+                    runHostConsoleUIAction(ev.ui_action);
+                }
+            }
+            if (ev.error) {
+                edgeopsMarkOpenToolRowsFailed(toolsEl, hostAiLogBuffer, renderHostAiLog);
+                streamedText += '\n' + t('hostAi.streamError') + ev.error;
+                flushStreamReplyText();
+                showToast(ev.error, 'error');
+            }
+            else if (ev.stream_status && ev.stream_status.phase) {
+                edgeopsApplyStreamStatus(replyWrap, setStreamingUI, ev.stream_status.phase);
+            }
+            else if (ev.assistant_continue) {
+                streamedText += '\n\n' + t('hostAi.streamCont') + (ev.assistant_continue || t('hostAi.streamContDefault')) + '*\n\n';
+                flushStreamReplyText();
+                if (ev.requires_user_confirm) {
+                    if (replyWrap) {
+                        replyWrap._edgeopsPausedForConfirm = true;
+                        replyWrap._edgeopsStreamPhase = 'awaiting_user_confirm';
+                    }
+                    setStreamingUI('awaiting');
+                }
+                if (ev.requires_user_confirm && replyMsgEl) {
+                    var _mc = replyMsgEl.querySelector('.message-content');
+                    if (_mc) {
+                        _mc.appendChild(edgeopsRenderContinueConfirmCard(function(action, presetText) {
+                            if (action === 'continue') {
+                                edgeopsTriggerChatSend('hostAiInput', 'hostAiSend', presetText || t('hostAi.continueActionGoOnText'));
+                                return;
+                            }
+                            if (sessionId) API.pushAIRuntimeControl(sessionId, { action: action, message: '' }).catch(function() {});
+                        }));
+                    }
+                }
+                edgeopsScrollChatToBottomStepIfPinned(box);
+            }
+            else if (ev.cot) {
+                edgeopsCotDispatch(toolsEl, ev.cot);
+                edgeopsScrollChatToBottomStepIfPinned(box);
+            }
+            else if (ev.content_refresh) {
+                streamedText = String(ev.content_refresh || '');
+                flushStreamReplyText();
+            }
+            else if (ev.content) {
+                streamedText += ev.content;
+                flushStreamReplyText();
+            }
+            else if (ev.tool_stream) {
+                renderToolStreamEvent(toolsEl, ev);
+                edgeopsScrollChatToBottomStepIfPinned(box);
+            }
+            else if (ev.runtime_control) {
+                var rc = ev.runtime_control || {};
+                streamedText += '\n\n`' + t('hostAi.runtimeEventPrefix') + (rc.action || 'supplement') + '`\n\n';
+                flushStreamReplyText();
+                edgeopsScrollChatToBottomStepIfPinned(box);
+            }
+            else if (ev.action === 'waiting' || ev.action === 'waiting_aborted') {
+                edgeopsUpdateChatPollWait(toolsEl, ev, {
+                    runtimeCtl: hostAiRuntimeCtl,
+                    onAbort: function() {
+                        if (hostAiAbortController) hostAiAbortController.abort();
+                        if (sessionId) {
+                            API.pushAIRuntimeControl(sessionId, { action: 'stop', message: '' })
+                                .catch(function(err) { showToast((err && err.message) || t('toast.requestFailed'), 'error'); });
+                        }
+                    }
+                });
+                edgeopsScrollChatToBottomStepIfPinned(box);
+            }
+            else if (ev.action && ev.tool) {
+                edgeopsOnChatStreamToolEvent(replyWrap, toolsEl, ev, hostAiLogBuffer, renderHostAiLog, function() {
+                    edgeopsScrollChatToBottomStepIfPinned(box);
+                });
+            }
+        }, { signal: hostAiAbortController.signal, hostId: hostId, terminalScopeId: hostTerminalScopeId, preferredTerminalSlot: getHostAiPreferredTerminalSlot(), attachmentUuids: attachUuids }).then(function(sid) {
+            if (sid != null) sessionId = sid;
+            finishStreamAndRender();
+            loadSession(sessionId); loadSessions();
+            requestAnimationFrame(function() {
+                var _boxF = document.getElementById('hostAiMessages');
+                if (_boxF) edgeopsScrollChatMessagesToBottom(_boxF);
+            });
+        }).catch(function(err) {
+            edgeopsMarkOpenToolRowsFailed(toolsEl, hostAiLogBuffer, renderHostAiLog);
+            if (err.name === 'AbortError') { streamedText += '\n\n' + t('hostAi.streamAborted'); showToast(t('toast.aborted'), 'info'); }
+            else { streamedText += '\n' + t('hostAi.streamError') + (err && err.message ? err.message : t('toast.requestFailed')); showToast(err.message || t('toast.requestFailed'), 'error'); }
+            flushStreamReplyText();
+            finishStreamAndRender();
+            loadSessions();
+        }).finally(function() {
+            if (hostAiStreamInputMode !== 'awaiting') setStreamingUI(false);
+            if (hostAiUntrackAbort) hostAiUntrackAbort();
+            hostAiAbortController = null;
+        });
+    }
+    document.getElementById('hostAiSend').onclick = doSend;
+    var hostAiInput = document.getElementById('hostAiInput');
+    edgeopsInitChatTextarea(hostAiInput);
+    edgeopsBindChatSubmit(hostAiInput, doSend);
+    var hostAiConsoles = [];
+    var hostAiActiveConsoleSlot = 0;
+    var hostAiAutoSwitchConsole = true;
+    var hostAiUserTookOverConsole = false;
+    edgeopsBindTerminalToggle({
+        layoutId: 'host',
+        scopeId: hostId,
+        pageId: 'hostAiPageLayout',
+        terminalId: 'hostAiLayoutTerminal',
+        buttonIds: ['hostAiToggleTerminalBtn'],
+        onShow: function() {
+            hostAiConsoles.forEach(function(c) { if (c.refit) c.refit(); });
+        }
+    });
+    if (window._hostAiPendingPollTimer) {
+        clearInterval(window._hostAiPendingPollTimer);
+        window._hostAiPendingPollTimer = null;
+    }
+    var hostConsoleTabsRow = document.getElementById('hostAiConsoleTabsRow');
+    var hostConsolePanelsEl = document.getElementById('hostAiConsolePanels');
+    var hostConsoleStatusEl = document.getElementById('hostAiTerminalStatus');
+    var hostConsoleEmptyStateEl = document.getElementById('hostAiConsoleEmptyState');
+    function getNextHostConsoleSlot() {
+        var max = 0;
+        hostAiConsoles.forEach(function(c) { if (c.slot >= max) max = c.slot + 1; });
+        return max;
+    }
+    function getHostAiActiveConsole() {
+        return hostAiConsoles.filter(function(c) { return c.slot === hostAiActiveConsoleSlot; })[0] || null;
+    }
+    function getHostAiPreferredTerminalSlot() {
+        var active = getHostAiActiveConsole();
+        if (active && active.createdBy === 'ai') return active.slot;
+        var aiConnected = hostAiConsoles.filter(function(c) { return c.createdBy === 'ai' && c.ws && c.ws.readyState === WebSocket.OPEN; })[0];
+        if (aiConnected) return aiConnected.slot;
+        var anyAi = hostAiConsoles.filter(function(c) { return c.createdBy === 'ai'; })[0];
+        return anyAi ? anyAi.slot : null;
+    }
+    function canHostAiAutoSwitchTo(slot) {
+        var current = getHostAiActiveConsole();
+        var target = hostAiConsoles.filter(function(c) { return c.slot === slot; })[0] || null;
+        if (!target || target.createdBy !== 'ai') return false;
+        if (current && current.createdBy !== 'ai') return false;
+        return hostAiAutoSwitchConsole && !hostAiUserTookOverConsole;
+    }
+    function syncHostConsoleGlobals() {
+        var active = getHostAiActiveConsole();
+        hostAiTerminalWs = active && active.ws ? active.ws : null;
+        hostAiTerminalTerm = active && active.term ? active.term : null;
+        hostAiTerminalFitDispose = active && active.fitDispose ? active.fitDispose : null;
+    }
+    function updateHostHeaderStatus() {
+        var n = 0;
+        hostAiConsoles.forEach(function(c) { if (c.ws && c.ws.readyState === WebSocket.OPEN) n++; });
+        if (hostConsoleStatusEl) hostConsoleStatusEl.textContent = n ? t('hostAi.statusConnected', { n: n }) : t('hostAi.statusDisconnected');
+    }
+    function showHostConsolePanels(show) {
+        if (hostConsolePanelsEl) hostConsolePanelsEl.style.display = show ? 'flex' : 'none';
+        if (hostConsoleEmptyStateEl) hostConsoleEmptyStateEl.style.display = show ? 'none' : 'flex';
+    }
+    function activateHostConsole(slot, userTriggered) {
+        hostAiActiveConsoleSlot = slot;
+        var active = hostAiConsoles.filter(function(c) { return c.slot === slot; })[0] || null;
+        if (userTriggered) hostAiUserTookOverConsole = !!(active && active.createdBy !== 'ai');
+        if (active && active.createdBy === 'ai') hostAiUserTookOverConsole = false;
+        hostAiConsoles.forEach(function(c) {
+            c.panelEl.style.display = c.slot === slot ? 'flex' : 'none';
+            c.panelEl.style.flexDirection = 'column';
+            c.tabEl.classList.toggle('active', c.slot === slot);
+            if (c.tabBtn) c.tabBtn.classList.toggle('active', c.slot === slot);
+        });
+        if (active && active.refit) active.refit();
+        syncHostConsoleGlobals();
+    }
+    function removeHostConsole(slot) {
+        var rec = hostAiConsoles.filter(function(c) { return c.slot === slot; })[0];
+        if (!rec) return;
+        rec.tabEl.remove();
+        rec.panelEl.remove();
+        hostAiConsoles = hostAiConsoles.filter(function(c) { return c.slot !== slot; });
+        if (!hostAiConsoles.length) {
+            showHostConsolePanels(false);
+            hostAiActiveConsoleSlot = 0;
+        } else if (hostAiActiveConsoleSlot === slot) {
+            activateHostConsole(hostAiConsoles[0].slot, false);
+        }
+        updateHostHeaderStatus();
+        syncHostConsoleGlobals();
+    }
+    function connectHostConsole(slot, createdBy) {
+        var rec = hostAiConsoles.filter(function(c) { return c.slot === slot; })[0];
+        if (!rec) return;
+        edgeopsOpenSshConsole(rec, {
+            hostId: hostId,
+            slot: slot,
+            createdBy: createdBy,
+            scopeId: hostTerminalScopeId,
+            fontSize: 12,
+            cols: 72,
+            rows: 12,
+            onReady: function(readyRec, ws) {
+                hostAiTerminalWs = ws;
+                hostAiTerminalTerm = readyRec.term;
+                hostAiTerminalFitDispose = readyRec.fitDispose;
+                if (createdBy === 'user' || canHostAiAutoSwitchTo(slot)) activateHostConsole(slot, createdBy === 'user');
+                updateHostHeaderStatus();
+            },
+            onClose: function() {
+                removeHostConsole(slot);
+            }
+        });
+    }
+    function addHostConsole(slot, createdBy, autoConnect) {
+        createdBy = createdBy || 'user';
+        if (!hostConsoleTabsRow || !hostConsolePanelsEl) return null;
+        var who = createdBy === 'ai' ? t('hostAi.whoAi') : t('hostAi.whoUser');
+        var tabWrap = document.createElement('div');
+        tabWrap.className = 'ai-console-tab-wrap' + (hostAiConsoles.length === 0 ? ' active' : '');
+        tabWrap.dataset.slot = String(slot);
+        tabWrap.style.cssText = 'display:inline-flex;align-items:center;margin-right:4px;';
+        var tabLabel = document.createElement('button');
+        tabLabel.type = 'button';
+        tabLabel.className = 'terminal-tab-btn ai-console-tab' + (hostAiConsoles.length === 0 ? ' active' : '');
+        tabLabel.style.marginRight = '0';
+        tabLabel.textContent = t('hostAi.consoleTabLabel', { slot: slot, who: who });
+        tabWrap.appendChild(tabLabel);
+        var closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'ai-console-tab-close';
+        closeBtn.innerHTML = '&times;';
+        closeBtn.title = t('hostAi.closeConsoleTitle');
+        closeBtn.style.marginLeft = '2px';
+        tabWrap.appendChild(closeBtn);
+        var panelEl = document.createElement('div');
+        panelEl.className = 'ai-console-panel terminal-tab-panel' + (hostAiConsoles.length === 0 ? ' active' : '');
+        panelEl.dataset.slot = String(slot);
+        panelEl.style.display = hostAiConsoles.length === 0 ? 'flex' : 'none';
+        panelEl.style.flexDirection = 'column';
+        var placeholderEl = document.createElement('div');
+        placeholderEl.className = 'ai-terminal-placeholder';
+        placeholderEl.style.cssText = 'padding:16px;color:var(--text-muted);font-size:13px;flex:1';
+        placeholderEl.textContent = autoConnect ? t('hostAi.placeholderConnecting') : t('hostAi.placeholderIdle');
+        var mountEl = document.createElement('div');
+        mountEl.className = 'ai-terminal-mount';
+        mountEl.style.display = 'none';
+        var rowEl = document.createElement('div');
+        rowEl.style.cssText = 'display:flex;gap:8px;align-items:center;margin-top:8px';
+        var connectBtn = document.createElement('button');
+        connectBtn.className = 'btn btn-sm btn-primary';
+        connectBtn.textContent = t('hostAi.connect');
+        var disconnectBtn = document.createElement('button');
+        disconnectBtn.className = 'btn btn-sm';
+        disconnectBtn.textContent = t('hostAi.disconnect');
+        disconnectBtn.style.display = 'none';
+        var statusSpan = document.createElement('span');
+        statusSpan.style.cssText = 'font-size:12px;color:var(--text-muted)';
+        statusSpan.textContent = t('hostAi.tabStatusDisconnected');
+        rowEl.appendChild(connectBtn);
+        rowEl.appendChild(disconnectBtn);
+        rowEl.appendChild(statusSpan);
+        var container = document.createElement('div');
+        container.className = 'ai-terminal-container';
+        container.appendChild(placeholderEl);
+        container.appendChild(mountEl);
+        panelEl.appendChild(container);
+        panelEl.appendChild(rowEl);
+        hostConsoleTabsRow.insertBefore(tabWrap, hostConsoleTabsRow.querySelector('.ai-console-new-btn'));
+        hostConsolePanelsEl.appendChild(panelEl);
+        var rec = {
+            slot: slot,
+            createdBy: createdBy,
+            ws: null,
+            term: null,
+            fitDispose: null,
+            refit: null,
+            placeholderEl: placeholderEl,
+            mountEl: mountEl,
+            connectBtn: connectBtn,
+            disconnectBtn: disconnectBtn,
+            statusEl: statusSpan,
+            tabEl: tabWrap,
+            tabBtn: tabLabel,
+            panelEl: panelEl
+        };
+        hostAiConsoles.push(rec);
+        showHostConsolePanels(true);
+        tabLabel.onclick = function() { activateHostConsole(slot, true); };
+        closeBtn.onclick = function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (rec.ws) rec.ws.close();
+            else removeHostConsole(slot);
+        };
+        connectBtn.onclick = function() { connectHostConsole(slot, createdBy); };
+        disconnectBtn.onclick = function() { if (rec.ws) rec.ws.close(); };
+        if (hostAiConsoles.length === 1) activateHostConsole(slot, false);
+        if (autoConnect) connectHostConsole(slot, createdBy);
+        return rec;
+    }
+    function runHostConsoleUIAction(ua) {
+        if (!ua) return;
+        if (ua.action === 'connect_terminal' && ua.host_id === parseInt(hostId, 10)) {
+            addHostConsole(getNextHostConsoleSlot(), 'ai', true);
+            showToast(t('toast.creatingAiConsole'));
+            return;
+        }
+        if (ua.action === 'switch_console') {
+            var slot = ua.slot != null ? parseInt(ua.slot, 10) : 0;
+            if (canHostAiAutoSwitchTo(slot)) activateHostConsole(slot, false);
+        }
+    }
+    var hostNewConsoleBtn = document.createElement('button');
+    hostNewConsoleBtn.type = 'button';
+    hostNewConsoleBtn.className = 'btn btn-sm ai-console-new-btn';
+    hostNewConsoleBtn.textContent = t('hostAi.newConsole');
+    hostNewConsoleBtn.onclick = function() { addHostConsole(getNextHostConsoleSlot(), 'user', true); };
+    if (hostConsoleTabsRow) hostConsoleTabsRow.appendChild(hostNewConsoleBtn);
+    showHostConsolePanels(false);
+    var hostNoAutoSwitchEl = document.getElementById('hostAiConsoleNoAutoSwitch');
+    if (hostNoAutoSwitchEl) hostNoAutoSwitchEl.onchange = function() { hostAiAutoSwitchConsole = !this.checked; };
+    window._hostAiPendingPollTimer = setInterval(function() {
+        if (!panel || !panel.isConnected) {
+            if (window._hostAiPendingPollTimer) {
+                clearInterval(window._hostAiPendingPollTimer);
+                window._hostAiPendingPollTimer = null;
+            }
+            return;
+        }
+        API.terminalPendingConsoleCreations(hostTerminalScopeId).then(function(r) {
+            var list = r && r.items ? r.items : [];
+            list.forEach(function(item) {
+                var pendingHostId = item.host_id != null ? parseInt(item.host_id, 10) : parseInt(item.hostId, 10);
+                var createdBy = item.created_by || 'ai';
+                if (!pendingHostId || pendingHostId !== parseInt(hostId, 10)) return;
+                addHostConsole(getNextHostConsoleSlot(), createdBy, true);
+            });
+        }).catch(function() {});
+    }, 2500);
+    document.getElementById('hostAiLogCopyAll').onclick = copyHostAiLogFull;
+    var hostAiRemoteFsCurrentPath = '/';
+    var hostAiRemoteFsCurrentFile = null;
+    var hostRemoteFsClipboard = null;
+    var hostRemoteFsExpandedPaths = new Set();
+    function findHostRemoteFsLiByPath(container, path) {
+        if (!container) return null;
+        var sel = container.querySelector('li[data-path="' + String(path).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]');
+        return sel || null;
+    }
+    function restoreHostRemoteFsTreeExpanded(container, paths, loadTreeFn) {
+        if (!container || !paths.length) return Promise.resolve();
+        paths = paths.slice().sort(function(a, b) { return (a.split('/').filter(Boolean).length) - (b.split('/').filter(Boolean).length); });
+        var i = 0;
+        function next() {
+            if (i >= paths.length) return Promise.resolve();
+            var path = paths[i++];
+            var li = findHostRemoteFsLiByPath(container, path);
+            if (!li || li.dataset.dir !== '1') return next();
+            return loadTreeFn(path, li).then(next);
+        }
+        return next();
+    }
+    function doHostRemoteFsRefresh() {
+        var treeEl = document.getElementById('hostAiRemoteFsTree');
+        var expanded = Array.from(hostRemoteFsExpandedPaths).sort(function(a, b) { return (a.split('/').filter(Boolean).length) - (b.split('/').filter(Boolean).length); });
+        return loadHostRemoteFsTree('', null).then(function() { return restoreHostRemoteFsTreeExpanded(treeEl, expanded, loadHostRemoteFsTree); }).then(function() {
+            if (hostAiRemoteFsCurrentFile) loadHostRemoteFsPreview(hostAiRemoteFsCurrentFile);
+        });
+    }
+    function loadHostRemoteFsTree(path, parentNode) {
+        path = (path || '/').replace(/^\/+|\/+$/g, '') || '/';
+        return API.remoteFsList(hostId, path).then(function(r) {
+            if (!r.success || !r.items) return;
+            var treeEl = document.getElementById('hostAiRemoteFsTree');
+            if (!treeEl) return;
+            var ul = document.createElement('ul');
+            ul.className = 'remote-fs-tree-list';
+            r.items.forEach(function(it) {
+                var li = document.createElement('li');
+                li.className = 'remote-fs-tree-item' + (it.dir ? ' remote-fs-dir' : ' remote-fs-file');
+                li.dataset.path = it.path;
+                li.dataset.dir = it.dir ? '1' : '0';
+                var label = document.createElement('span');
+                label.className = 'remote-fs-tree-label';
+                label.textContent = it.name + (it.dir ? '/' : '');
+                if (it.dir) {
+                    var arrow = document.createElement('span');
+                    arrow.className = 'remote-fs-tree-arrow';
+                    arrow.textContent = '\u25b6';
+                    li.insertBefore(arrow, li.firstChild);
+                    li.appendChild(label);
+                    li.appendChild(document.createElement('span'));
+                    arrow.onclick = function(e) { e.stopPropagation(); toggleHostRemoteFsDir(li); };
+                    label.onclick = function(e) { e.stopPropagation(); hostAiRemoteFsCurrentPath = it.path; document.getElementById('hostAiRemoteFsPath').value = it.path; loadHostRemoteFsPreview(null); };
+                } else {
+                    li.appendChild(label);
+                    label.onclick = function(e) { e.stopPropagation(); hostAiRemoteFsCurrentFile = it.path; hostAiRemoteFsCurrentPath = it.path; document.getElementById('hostAiRemoteFsPath').value = it.path; loadHostRemoteFsPreview(it.path); };
+                }
+                li.oncontextmenu = function(e) { e.preventDefault(); e.stopPropagation(); showHostRemoteFsCtxMenu(e, it.path, !!it.dir); };
+                li.draggable = true;
+                li.addEventListener('dragstart', function(ev) { ev.dataTransfer.setData('application/x-remote-fs', JSON.stringify({ hostId: hostId, path: it.path, isDir: !!it.dir })); ev.dataTransfer.effectAllowed = 'move'; });
+                li.addEventListener('dragover', function(ev) { ev.preventDefault(); ev.dataTransfer.dropEffect = 'move'; });
+                li.addEventListener('drop', function(ev) {
+                    ev.preventDefault();
+                    var raw = ev.dataTransfer.getData('application/x-remote-fs');
+                    if (!raw) return;
+                    try {
+                        var payload = JSON.parse(raw);
+                        if (payload.hostId !== hostId) return;
+                        var destDir = it.dir ? it.path : (it.path.replace(/\/[^/]+$/, '') || '/');
+                        if (destDir === payload.path || (payload.path + '/').indexOf(destDir + '/') === 0) { showToast(t('toast.cannotMoveIntoSelf'), 'error'); return; }
+                        if (!confirm(t('confirm.moveConfirm'))) return;
+                        API.remoteFsCopy(hostId, payload.path, destDir, true).then(function() { showToast(t('toast.moved')); doHostRemoteFsRefresh(); }).catch(function(err) { showToast(err.message || t('toast.moveFailed'), 'error'); });
+                    } catch (e) {}
+                });
+                ul.appendChild(li);
+            });
+            if (parentNode) {
+                var ph = parentNode.querySelector('span:last-child');
+                if (ph && !ph.classList.contains('remote-fs-tree-label')) ph.replaceWith(ul);
+                else parentNode.appendChild(ul);
+                ul.classList.add('loaded');
+            } else {
+                treeEl.innerHTML = '';
+                treeEl.appendChild(ul);
+            }
+        }
+        ).catch(function(err) {
+            if (parentNode) { var ph = parentNode.querySelector('span:last-child'); if (ph && !ph.classList.contains('remote-fs-tree-label')) ph.textContent = '?'; }
+            showToast(err.message || t('toast.loadFailed'), 'error');
+        });
+    }
+    function toggleHostRemoteFsDir(li) {
+        var path = li.dataset.path;
+        var ul = li.querySelector('ul');
+        var arrow = li.querySelector('.remote-fs-tree-arrow');
+        if (ul && ul.classList.contains('loaded')) {
+            ul.style.display = ul.style.display === 'none' ? 'block' : 'none';
+            if (ul.style.display === 'none') hostRemoteFsExpandedPaths.delete(path); else hostRemoteFsExpandedPaths.add(path);
+            if (arrow) arrow.textContent = ul.style.display === 'none' ? '\u25b6' : '\u25bc';
+        } else {
+            hostRemoteFsExpandedPaths.add(path);
+            loadHostRemoteFsTree(path, li);
+            if (arrow) arrow.textContent = '\u25bc';
+        }
+    }
+    function loadHostRemoteFsPreview(filePath) {
+        var inner = document.getElementById('hostAiRemoteFsPreviewInner');
+        if (!inner) return;
+        if (!filePath) { inner.innerHTML = '<span class="text-muted">' + esc(t('ai.fsPreviewPickFile')) + '</span>'; return; }
+        inner.innerHTML = '<span class="text-muted">' + esc(t('common.loading')) + '</span>';
+        API.remoteFsRead(hostId, filePath).then(function(r) {
+            if (!r.success) {
+                var msg = (r.detail || r.message || '读取失败');
+                if (msg.indexOf('过大') !== -1 || msg.indexOf('非文本') !== -1) msg = '文本过大或非文本文件';
+                inner.innerHTML = '<span class="text-warning">' + esc(msg) + '</span>';
+                return;
+            }
+            var content = r.content || '';
+            inner.innerHTML = '';
+            var ta = document.createElement('textarea');
+            ta.className = 'remote-fs-edit';
+            ta.id = 'hostAiRemoteFsEditArea';
+            ta.value = content;
+            ta.setAttribute('spellcheck', 'false');
+            inner.appendChild(ta);
+        }).catch(function(err) {
+            var msg = err.message || '读取失败';
+            if (msg.indexOf('过大') !== -1 || msg.indexOf('非文本') !== -1) msg = '文本过大或非文本文件';
+            inner.innerHTML = '<span class="text-warning">' + esc(msg) + '</span>';
+        });
+    }
+    document.getElementById('hostAiRemoteFsRefresh').onclick = function() {
+        doHostRemoteFsRefresh();
+    };
+    var hostAiRemoteFsUploadTargetPath = null;
+    document.getElementById('hostAiRemoteFsUpload').onclick = function() {
+        hostAiRemoteFsUploadTargetPath = hostAiRemoteFsCurrentPath || '/';
+        document.getElementById('hostAiRemoteFsFileInput').click();
+    };
+    document.getElementById('hostAiRemoteFsFileInput').onchange = function() {
+        var file = this.files && this.files[0];
+        this.value = '';
+        if (!file) return;
+        var target = hostAiRemoteFsUploadTargetPath != null ? hostAiRemoteFsUploadTargetPath : (hostAiRemoteFsCurrentPath || '/');
+        hostAiRemoteFsUploadTargetPath = null;
+        API.remoteFsUpload(hostId, target, file).then(function() {
+            showToast(t('toast.uploaded'));
+            doHostRemoteFsRefresh();
+        }).catch(function(err) { showToast(err.message || t('toast.uploadFailed'), 'error'); });
+    };
+    document.getElementById('hostAiRemoteFsDownload').onclick = function() {
+        if (!hostAiRemoteFsCurrentFile) { showToast(t('toast.selectDownloadFile'), 'error'); return; }
+        API.remoteFsDownload(hostId, hostAiRemoteFsCurrentFile).catch(function(err) { showToast(err.message, 'error'); });
+    };
+    document.getElementById('hostAiRemoteFsSave').onclick = function() {
+        if (!hostAiRemoteFsCurrentFile) { showToast(t('toast.selectSaveFile'), 'error'); return; }
+        var ta = document.getElementById('hostAiRemoteFsEditArea');
+        if (!ta) { showToast(t('toast.nothingToEdit'), 'error'); return; }
+        var content = ta.value;
+        API.remoteFsWrite(hostId, hostAiRemoteFsCurrentFile, content).then(function() {
+            showToast(t('toast.saved'));
+        }).catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); });
+    };
+    function escSh(s) { return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'; }
+    function showHostRemoteFsCtxMenu(e, path, isDir) {
+        var menu = document.getElementById('hostAiRemoteFsCtxMenu');
+        if (!menu) return;
+        if (!menu._ctxMenuParent) menu._ctxMenuParent = menu.parentNode;
+        document.body.appendChild(menu);
+        menu.style.left = e.clientX + 'px';
+        menu.style.top = e.clientY + 'px';
+        menu.innerHTML = '';
+        var close = function() {
+            menu.classList.remove('open');
+            document.removeEventListener('click', close);
+            if (menu._ctxMenuParent && menu._ctxMenuParent.appendChild) menu._ctxMenuParent.appendChild(menu);
+        };
+        function addItem(text, fn) {
+            var b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'remote-fs-ctxitem';
+            b.textContent = text;
+            b.onclick = function() { close(); fn(); };
+            menu.appendChild(b);
+        }
+        var destDir = isDir ? path : (path.replace(/\/[^/]+$/, '') || '/');
+        var baseDir = destDir === '/' ? '' : destDir;
+        addItem('新建目录', function() {
+            var name = prompt('目录名');
+            if (!name || !name.trim()) return;
+            var newPath = (baseDir ? baseDir + '/' : '/') + name.trim();
+            API.remoteFsMkdir(hostId, newPath).then(function() { showToast(t('toast.fileCreated')); doHostRemoteFsRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+        });
+        addItem('新建文件', function() {
+            var name = prompt('文件名');
+            if (!name || !name.trim()) return;
+            var newPath = (baseDir ? baseDir + '/' : '/') + name.trim();
+            API.remoteFsWrite(hostId, newPath, '').then(function() { showToast(t('toast.fileCreated')); doHostRemoteFsRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+        });
+        addItem('复制', function() { hostRemoteFsClipboard = { hostId: hostId, path: path, cut: false }; showToast(t('toast.copiedToClipboard')); });
+        addItem('粘贴', function() {
+            if (!hostRemoteFsClipboard || hostRemoteFsClipboard.hostId !== hostId) { showToast(t('toast.noPaste'), 'error'); return; }
+            API.remoteFsCopy(hostId, hostRemoteFsClipboard.path, destDir, hostRemoteFsClipboard.cut).then(function() {
+                showToast(hostRemoteFsClipboard.cut ? t('toast.moved') : t('toast.pasted'));
+                hostRemoteFsClipboard = null;
+                doHostRemoteFsRefresh();
+            }).catch(function(err) { showToast(err.message, 'error'); });
+        });
+        addItem('剪切', function() { hostRemoteFsClipboard = { hostId: hostId, path: path, cut: true }; showToast(t('toast.cut')); });
+        if (isDir) addItem('上传到此处', function() { hostAiRemoteFsUploadTargetPath = path; document.getElementById('hostAiRemoteFsFileInput').click(); });
+        if (!isDir) addItem('下载', function() { API.remoteFsDownload(hostId, path).catch(function(err) { showToast(err.message, 'error'); }); });
+        addItem('删除', function() {
+            showConfirm(t('confirm.deletePathTitle'), t('confirm.deleteFileBody', { type: isDir ? t('confirm.dir') : t('confirm.file'), path: path })).then(function(ok) {
+                if (!ok) return;
+                API.remoteFsDelete(hostId, path).then(function() {
+                    showToast(t('toast.deleted'));
+                    if (hostAiRemoteFsCurrentFile === path) hostAiRemoteFsCurrentFile = null;
+                    doHostRemoteFsRefresh();
+                }).catch(function(err) { showToast(err.message, 'error'); });
+            });
+        });
+        addItem('改名', function() {
+            var name = path.split('/').filter(Boolean).pop() || path;
+            var newName = prompt('新名称', name);
+            if (newName == null || newName.trim() === '') return;
+            var parent = path.replace(/\/[^/]+$/, '') || '/';
+            var newPath = (parent === '/' ? '/' : parent + '/') + newName.trim();
+            if (newPath === path) return;
+            API.remoteFsRename(hostId, path, newPath).then(function() { showToast(t('toast.renamed')); doHostRemoteFsRefresh(); if (hostAiRemoteFsCurrentFile === path) { hostAiRemoteFsCurrentFile = newPath; loadHostRemoteFsPreview(newPath); } }).catch(function(err) { showToast(err.message, 'error'); });
+        });
+        addItem('打包', function() {
+            var archivePath = prompt('归档路径（如 /tmp/out.tar.gz）', (path.replace(/\/[^/]+$/, '') || '/') + '/' + (path.split('/').filter(Boolean).pop() || 'out') + '.tar.gz');
+            if (!archivePath || !archivePath.trim()) return;
+            API.executeHost(hostId, 'tar -czvf ' + escSh(archivePath.trim()) + ' ' + escSh(path), 60).then(function() { showToast(t('toast.archived')); doHostRemoteFsRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+        });
+        if (!isDir && isRemoteUnpackSupported(path)) addItem('解压', function() {
+            var parentDir = path.replace(/\/[^/]+$/, '') || '/';
+            var res = buildRemoteUnpackCommand(path, parentDir, hostTypeForCmd, escSh);
+            if (res.unsupported) { showToast(t('toast.extractUnsupported'), 'error'); return; }
+            API.executeHost(hostId, res.command, 60).then(function() { showToast(t('toast.extracted')); doHostRemoteFsRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+        });
+        addItem('刷新', function() { doHostRemoteFsRefresh(); });
+        menu.classList.add('open');
+        setTimeout(function() { document.addEventListener('click', close); }, 0);
+    }
+    var tabBtns = panel.querySelectorAll('.terminal-tabs > .terminal-tab-btn[data-tab]');
+    if (tabBtns.length) {
+        tabBtns.forEach(function(btn) {
+            btn.onclick = function() {
+                var tabId = btn.getAttribute('data-tab');
+                if (tabId === 'hostAiTabRemoteFs') {
+                    var treeEl = document.getElementById('hostAiRemoteFsTree');
+                    if (treeEl && !treeEl.querySelector('ul')) doHostRemoteFsRefresh();
+                }
+                panel.querySelectorAll('.terminal-tabs > .terminal-tab-btn[data-tab]').forEach(function(b) { b.classList.remove('active'); });
+                ['hostAiTabConsole', 'hostAiTabRemoteFs', 'hostAiTabLog'].forEach(function(id) {
+                    var p = document.getElementById(id);
+                    if (p) p.classList.remove('active');
+                });
+                btn.classList.add('active');
+                var panelEl = document.getElementById(tabId);
+                if (panelEl) panelEl.classList.add('active');
+                if (tabId === 'hostAiTabConsole' && hostAiConsoles.length) {
+                    var activeConsole = hostAiConsoles.filter(function(c) { return c.slot === hostAiActiveConsoleSlot; })[0] || hostAiConsoles[0];
+                    if (activeConsole && activeConsole.refit) activeConsole.refit();
+                }
+            };
+        });
+    }
+    renderHostAiLog();
+    // 页面缓存恢复时需对终端做 refit，否则尺寸为 0 导致错乱；按 path 注册以便恢复时调用
+    (window._edgeopsRefitByPath = window._edgeopsRefitByPath || {})['/hosts/' + hostId] = function() {
+        hostAiConsoles.forEach(function(c) { if (c.refit) c.refit(); });
+    };
+}
+
+function runHostCommand(hostId) {
+    var cmd = document.getElementById('cmdInput') && document.getElementById('cmdInput').value.trim();
+    var out = document.getElementById('cmdOutput');
+    if (!cmd) { showToast(t('toast.enterCommand'), 'error'); return; }
+    if (out) out.textContent = t('hostDetail.cmdRunning');
+    API.executeHost(hostId, cmd).then(function(data) {
+        var outText = (data.stdout || '') + (data.stderr ? t('hostDetail.cmdStderrLabel') + data.stderr : '');
+        if (out) out.textContent = outText || (t('hostDetail.cmdNoOutput') + (data.exit_code || 0));
+    }).catch(function(err) {
+        if (out) out.textContent = t('hostDetail.cmdErrorPrefix') + err.message;
+        showToast(err.message, 'error');
+    });
+}
+
+// ── 终端自适应：严格按「可见内容区」算列/行，避免 nano/vim 等因认为行宽大于实际而换行错乱 ──
+var EDGEOPS_TERM_PAD = 16;
+function edgeopsFitTerminal(term, mount) {
+    if (!term || !mount || typeof term.resize !== 'function') return;
+    var canvas = mount.querySelector('.xterm-screen canvas') || mount.querySelector('canvas');
+    if (!canvas || !term.cols || !term.rows) return;
+    var rect = mount.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    var xtermEl = mount.querySelector('.xterm');
+    var cw = Math.floor(rect.width) - EDGEOPS_TERM_PAD;
+    var ch = Math.floor(rect.height) - EDGEOPS_TERM_PAD;
+    if (xtermEl && xtermEl.clientWidth > 0 && xtermEl.clientHeight > 0) {
+        cw = Math.min(cw, xtermEl.clientWidth);
+        ch = Math.min(ch, xtermEl.clientHeight);
+    }
+    if (cw <= 0 || ch <= 0) return;
+    var cellW = canvas.clientWidth / term.cols;
+    var cellH = canvas.clientHeight / term.rows;
+    if (cellW <= 0 || cellH <= 0) return;
+    var newCols = Math.max(2, Math.floor(cw / cellW));
+    var newRows = Math.max(1, Math.floor(ch / cellH));
+    term.resize(newCols, newRows);
+}
+function edgeopsTerminalFitAfterOpen(term, mount, fitAddon, onResizeCallback) {
+    var fitDebounceTimer = null;
+    var fitDebounceMs = 100;
+    function fit() {
+        if (fitAddon && typeof fitAddon.fit === 'function') {
+            try { fitAddon.fit(); } catch (e) { }
+        }
+        edgeopsFitTerminal(term, mount);
+        if (onResizeCallback && typeof onResizeCallback === 'function' && term.cols != null && term.rows != null) onResizeCallback(term.cols, term.rows);
+    }
+    function scheduleFit() {
+        if (fitDebounceTimer != null) clearTimeout(fitDebounceTimer);
+        fitDebounceTimer = setTimeout(function() {
+            fitDebounceTimer = null;
+            fit();
+        }, fitDebounceMs);
+    }
+    var run = function() {
+        fit();
+        setTimeout(fit, 50);
+        setTimeout(fit, 200);
+    };
+    requestAnimationFrame(function() {
+        requestAnimationFrame(function() { run(); });
+    });
+    var target = mount && mount.parentElement ? mount.parentElement : mount;
+    var ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(scheduleFit) : null;
+    if (ro && target) ro.observe(target);
+    window.addEventListener('resize', scheduleFit);
+    return {
+        dispose: function() {
+            if (fitDebounceTimer != null) { clearTimeout(fitDebounceTimer); fitDebounceTimer = null; }
+            if (ro && target) ro.disconnect();
+            window.removeEventListener('resize', scheduleFit);
+        },
+        refit: function() {
+            if (fitDebounceTimer != null) { clearTimeout(fitDebounceTimer); fitDebounceTimer = null; }
+            fit();
+            setTimeout(fit, 120);
+        }
+    };
+}
+
+function edgeopsWriteConsoleChunk(rec, chunk) {
+    if (!rec || !rec.term) return;
+    if (!rec.writeBuf) {
+        rec.term.write(chunk);
+        return;
+    }
+    rec.writeBuf.push(chunk);
+    if (rec.writeRafId == null) {
+        rec.writeRafId = requestAnimationFrame(function() {
+            rec.writeRafId = null;
+            if (!rec.term || !rec.writeBuf || !rec.writeBuf.length) return;
+            var merged = rec.writeBuf.join('');
+            rec.writeBuf = [];
+            rec.term.write(merged);
+        });
+    }
+}
+
+function edgeopsOpenSshConsole(rec, options) {
+    if (!rec || !options || !options.hostId || !API.token) return null;
+    var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var wsUrl = protocol + '//' + location.host + '/api/terminal/ws?token=' + encodeURIComponent(API.token);
+    var ws = new WebSocket(wsUrl);
+    rec.ws = ws;
+    rec.hostId = String(options.hostId);
+    if (rec.connectBtn) rec.connectBtn.disabled = true;
+    if (rec.statusEl) rec.statusEl.textContent = t('hostAi.tabStatusConnecting');
+    var firstMsg = true;
+    ws.onmessage = function(ev) {
+        if (firstMsg) {
+            firstMsg = false;
+            try {
+                var j = JSON.parse(ev.data);
+                if (j.type === 'error') {
+                    showToast(j.message || t('toast.connectFailed'), 'error');
+                    ws.close();
+                    if (rec.connectBtn) rec.connectBtn.disabled = false;
+                    if (rec.statusEl) rec.statusEl.textContent = t('hostAi.tabStatusDisconnected');
+                    return;
+                }
+                if (j.type === 'ready') {
+                    if (rec.placeholderEl) rec.placeholderEl.style.display = 'none';
+                    if (rec.mountEl) {
+                        rec.mountEl.style.display = 'block';
+                        rec.mountEl.innerHTML = '';
+                    }
+                    if (typeof window.Terminal !== 'undefined' && rec.mountEl) {
+                        var term = new window.Terminal({
+                            theme: { background: '#0b1020', foreground: '#e2e8f0' },
+                            fontSize: options.fontSize || 13,
+                            cols: options.cols || 80,
+                            rows: options.rows || 14,
+                            cursorBlink: options.cursorBlink !== false
+                        });
+                        var fitAddon = null;
+                        if (window.FitAddon) try { fitAddon = new window.FitAddon(); term.loadAddon(fitAddon); } catch (e) { fitAddon = null; }
+                        term.open(rec.mountEl);
+                        term.onData(function(d) {
+                            if (ws.readyState === WebSocket.OPEN) ws.send(d);
+                        });
+                        rec.term = term;
+                        rec.writeBuf = [];
+                        rec.writeRafId = null;
+                        if (rec.fitDispose) rec.fitDispose();
+                        var fitResult = edgeopsTerminalFitAfterOpen(term, rec.mountEl, fitAddon, function(cols, rows) {
+                            if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'resize', cols: cols, rows: rows }));
+                        });
+                        rec.fitDispose = fitResult.dispose;
+                        rec.refit = fitResult.refit;
+                        setTimeout(function() { try { term.focus(); } catch (e) {} }, 100);
+                    } else if (rec.mountEl) {
+                        ws.onmessage = function(e) { rec.mountEl.innerText += e.data; };
+                    }
+                    if (rec.connectBtn) rec.connectBtn.style.display = 'none';
+                    if (rec.disconnectBtn) rec.disconnectBtn.style.display = 'inline-block';
+                    if (rec.statusEl) rec.statusEl.textContent = t('hostAi.tabStatusConnected');
+                    if (typeof options.onReady === 'function') options.onReady(rec, ws);
+                }
+            } catch (err) {}
+            return;
+        }
+        edgeopsWriteConsoleChunk(rec, ev.data);
+    };
+    ws.onclose = function() {
+        if (rec.writeRafId != null) {
+            cancelAnimationFrame(rec.writeRafId);
+            rec.writeRafId = null;
+        }
+        rec.writeBuf = null;
+        rec.ws = null;
+        if (rec.fitDispose) { rec.fitDispose(); rec.fitDispose = null; rec.refit = null; }
+        if (rec.term) { rec.term.dispose(); rec.term = null; }
+        if (rec.placeholderEl) rec.placeholderEl.style.display = 'block';
+        if (rec.mountEl) {
+            rec.mountEl.style.display = 'none';
+            rec.mountEl.innerHTML = '';
+        }
+        if (rec.connectBtn) {
+            rec.connectBtn.style.display = 'inline-block';
+            rec.connectBtn.disabled = false;
+        }
+        if (rec.disconnectBtn) rec.disconnectBtn.style.display = 'none';
+        if (rec.statusEl) rec.statusEl.textContent = t('hostAi.tabStatusDisconnected');
+        if (typeof options.onClose === 'function') options.onClose(rec);
+    };
+    ws.onerror = function() {
+        if (rec.connectBtn) rec.connectBtn.disabled = false;
+        if (rec.statusEl) rec.statusEl.textContent = t('hostAi.tabStatusDisconnected');
+    };
+    ws.onopen = function() {
+        ws.send(JSON.stringify({
+            type: 'init',
+            host_id: parseInt(options.hostId, 10),
+            slot: options.slot || 0,
+            created_by: options.createdBy || 'user',
+            scope_id: options.scopeId || 'default'
+        }));
+    };
+    return ws;
+}
+
+/** AI 助手页：可输入渐进筛选的主机选择器（替代长列表下拉框）。
+ * 说明：GET /hosts 默认仅 page_size=20；此处配合 listHosts(100) + 有输入时防抖调用 /hosts/search，避免生产环境主机多时补全漏项或「无匹配」。 */
+function edgeopsCreateHostTypeahead(opts) {
+    opts = opts || {};
+    var allHosts = [];
+    var hostsLoaded = false;
+    var useHostSearchApi = opts.useHostSearchApi !== false;
+    var remoteSearchMs = typeof opts.remoteSearchDebounceMs === 'number' ? opts.remoteSearchDebounceMs : 200;
+    var selectedId = '';
+    var PH = (opts.placeholder != null && opts.placeholder !== '') ? opts.placeholder : '';
+    var remoteSearchTimer = null;
+    var remoteSearchToken = 0;
+    function normLabel(h) {
+        if (!h) return '';
+        return (h.name || '') + ' (' + (h.host || '') + ')';
+    }
+    function parseAliases(h) {
+        var a = h && h.aliases;
+        if (a == null) return [];
+        if (Array.isArray(a)) return a.map(function(x) { return String(x); });
+        if (typeof a === 'string') {
+            try {
+                var j = JSON.parse(a);
+                return Array.isArray(j) ? j.map(String) : [];
+            } catch (e) { return []; }
+        }
+        return [];
+    }
+    function findHost(hostId) {
+        var id = String(hostId);
+        for (var i = 0; i < allHosts.length; i++) {
+            if (String(allHosts[i].id) === id) return allHosts[i];
+        }
+        return null;
+    }
+    function filterHosts(q) {
+        q = (q || '').trim().toLowerCase();
+        if (!q) return allHosts.slice(0, 80);
+        var out = [];
+        for (var i = 0; i < allHosts.length && out.length < 80; i++) {
+            var h = allHosts[i];
+            var idStr = String(h.id);
+            var name = (h.name || '').toLowerCase();
+            var host = (h.host || '').toLowerCase();
+            var match = (idStr === q) || (name.indexOf(q) !== -1) || (host.indexOf(q) !== -1);
+            if (!match) {
+                var als = parseAliases(h);
+                for (var j = 0; j < als.length; j++) {
+                    if (String(als[j]).toLowerCase().indexOf(q) !== -1) { match = true; break; }
+                }
+            }
+            if (match) out.push(h);
+        }
+        return out;
+    }
+    function mergeHostsFromSearch(hits) {
+        if (!hits || !hits.length) return;
+        hits.forEach(function(nh) {
+            var id = String(nh.id);
+            for (var i = 0; i < allHosts.length; i++) {
+                if (String(allHosts[i].id) === id) {
+                    allHosts[i] = nh;
+                    return;
+                }
+            }
+            allHosts.push(nh);
+        });
+    }
+    function renderListItems(items) {
+        listEl.innerHTML = '';
+        if (!items.length) {
+            listEl.innerHTML = '<div class="text-muted edgeops-host-typeahead-empty" style="padding:8px 12px;font-size:12px;cursor:default">' + esc(typeof t === 'function' ? t('ai.fsHostNoMatch') : '—') + '</div>';
+            listEl.style.display = 'block';
+            return;
+        }
+        items.forEach(function(h) {
+            var row = document.createElement('div');
+            row.className = 'edgeops-host-typeahead-item';
+            row.setAttribute('data-host-id', String(h.id));
+            row.style.cssText = 'padding:8px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--border,#333)';
+            row.textContent = normLabel(h);
+            row.onmouseenter = function() { row.style.background = 'var(--bg-hover,rgba(255,255,255,.06))'; };
+            row.onmouseleave = function() { row.style.background = ''; };
+            row.onmousedown = function(e) { e.preventDefault(); };
+            row.onclick = function() {
+                selectedId = String(h.id);
+                input.value = normLabel(h);
+                listEl.style.display = 'none';
+                if (opts.onHostIdChange) opts.onHostIdChange(selectedId);
+            };
+            listEl.appendChild(row);
+        });
+        listEl.style.display = 'block';
+    }
+    function renderList() {
+        if (!hostsLoaded) {
+            listEl.innerHTML = '<div class="text-muted edgeops-host-typeahead-empty" style="padding:8px 12px;font-size:12px;cursor:default">' + esc(typeof t === 'function' ? t('common.loading') : '…') + '</div>';
+            listEl.style.display = 'block';
+            return;
+        }
+        var q = (input.value || '').trim();
+        if (useHostSearchApi && q.length >= 1) {
+            remoteSearchToken++;
+            var myTok = remoteSearchToken;
+            if (remoteSearchTimer) clearTimeout(remoteSearchTimer);
+            listEl.innerHTML = '<div class="text-muted edgeops-host-typeahead-empty" style="padding:8px 12px;font-size:12px;cursor:default">' + esc(typeof t === 'function' ? t('common.loading') : '…') + '</div>';
+            listEl.style.display = 'block';
+            remoteSearchTimer = setTimeout(function() {
+                remoteSearchTimer = null;
+                if (myTok !== remoteSearchToken) return;
+                API.searchHosts({ query: q, limit: 80 }).then(function(r) {
+                    if (myTok !== remoteSearchToken) return;
+                    var hits = r.hosts || [];
+                    mergeHostsFromSearch(hits);
+                    renderListItems(hits);
+                }).catch(function(err) {
+                    if (myTok !== remoteSearchToken) return;
+                    renderListItems(filterHosts(q));
+                    if (typeof showToast === 'function') showToast(err.message, 'error');
+                });
+            }, remoteSearchMs);
+            return;
+        }
+        remoteSearchToken++;
+        if (remoteSearchTimer) { clearTimeout(remoteSearchTimer); remoteSearchTimer = null; }
+        renderListItems(filterHosts(q));
+    }
+    var wrap = document.createElement('div');
+    wrap.className = 'edgeops-host-typeahead';
+    wrap.style.cssText = 'position:relative;flex:1;min-width:0';
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'form-control';
+    input.autocomplete = 'off';
+    input.placeholder = PH;
+    var listEl = document.createElement('div');
+    listEl.className = 'edgeops-host-typeahead-list';
+    listEl.style.cssText = 'display:none;position:absolute;left:0;right:0;top:100%;z-index:100;max-height:min(280px,42vh);overflow:auto;background:var(--bg-primary,#1a1d26);border:1px solid var(--border,#3d4556);border-radius:4px;margin-top:2px;box-shadow:0 8px 24px rgba(0,0,0,.4)';
+    input.oninput = function() {
+        var h = findHost(selectedId);
+        if (!h || normLabel(h) !== input.value.trim()) selectedId = '';
+        renderList();
+    };
+    input.onkeydown = function(e) {
+        if (e.key === 'Escape') { listEl.style.display = 'none'; return; }
+        if (e.key === 'Enter') {
+            var first = listEl.querySelector('.edgeops-host-typeahead-item[data-host-id]');
+            if (first && listEl.style.display !== 'none') {
+                e.preventDefault();
+                first.click();
+            }
+        }
+    };
+    var blurT = null;
+    input.onblur = function() {
+        if (remoteSearchTimer) { clearTimeout(remoteSearchTimer); remoteSearchTimer = null; }
+        remoteSearchToken++;
+        blurT = setTimeout(function() { listEl.style.display = 'none'; }, 180);
+    };
+    input.onfocus = function() {
+        if (blurT) { clearTimeout(blurT); blurT = null; }
+        renderList();
+    };
+    wrap.appendChild(input);
+    wrap.appendChild(listEl);
+    return {
+        el: wrap,
+        setHosts: function(hosts) {
+            allHosts = hosts || [];
+            hostsLoaded = true;
+        },
+        getHostId: function() {
+            var h = findHost(selectedId);
+            if (h && normLabel(h) === input.value.trim()) return selectedId;
+            var q = input.value.trim();
+            if (!q) return '';
+            for (var i = 0; i < allHosts.length; i++) {
+                if (normLabel(allHosts[i]) === q) return String(allHosts[i].id);
+            }
+            return '';
+        },
+        setHostId: function(id) {
+            if (!id) { selectedId = ''; input.value = ''; return; }
+            var h = findHost(id);
+            selectedId = h ? String(h.id) : String(id);
+            input.value = h ? normLabel(h) : '';
+        },
+        findHost: findHost,
+        getHostType: function(hostId) {
+            var h = findHost(hostId);
+            return (h && h.host_type) ? String(h.host_type) : '';
+        },
+        focus: function() { try { input.focus(); } catch (e) {} }
+    };
+}
+
+// ── AI 助手（SSH 终端 + 聊天，xterm.js + WebSocket） ──
+var aiTerminalWs = null;
+var aiTerminalTerm = null;
+var aiTerminalFitDispose = null;
+var aiTerminalRefit = null;
+var aiConsoles = [];
+var aiActiveConsoleSlot = 0;
+var aiAutoSwitchConsole = true;
+var aiUserTookOverConsole = false;
+var aiPendingPollTimer = null;
+
+function renderAIPage() {
+    renderLayout();
+    var el = getPageEl();
+    var aiTerminalScopeId = edgeopsMakeTerminalScopeId('ai', 'default');
+    aiLogBuffer = [];
+    aiConsoles = [];
+    aiActiveConsoleSlot = 0;
+    if (aiPendingPollTimer) { clearInterval(aiPendingPollTimer); aiPendingPollTimer = null; }
+    el.innerHTML = '<div class="topbar"><h2>' + esc(t('nav.aiAssistant')) + '</h2></div>'
+        + '<div class="page-content ai-page-layout ai-terminal-hidden" id="aiPageLayout">'
+        + '<div class="ai-left-sidebar" id="aiLeftSidebar">'
+        + '<div class="ai-left-sidebar-tabs"><div class="ai-left-sidebar-tab" id="aiSidebarTabSessions" data-tab="sessions" title="' + esc(t('hostAi.sessionTabTitle')) + '">' + esc(t('hostAi.sessionList')) + '</div></div>'
+        + '<div class="ai-left-sidebar-panel"><div class="chat-history-panel ai-session-list ai-layout-history" id="aiLayoutHistory"><div class="chat-history-header"><span>' + esc(t('hostAi.sessionList')) + '</span><span class="chat-history-header-actions"><button type="button" class="btn btn-sm" id="aiRefreshSessions" title="' + esc(t('hostAi.refresh')) + '">' + esc(t('hostAi.refresh')) + '</button><button type="button" class="btn btn-sm" id="aiClearAllSessions" title="' + esc(t('hostAi.clearAll')) + '">' + esc(t('hostAi.clearAll')) + '</button></span></div><div class="chat-history-list-wrap open"><div class="chat-history-list" id="aiSessionList"></div></div></div></div></div>'
+        + '<div class="card ai-terminal-card ai-layout-terminal" id="aiLayoutTerminal">'
+        + '<div class="terminal-tabs ai-terminal-header"><button type="button" class="terminal-tab-btn active" data-tab="aiTabConsole">' + esc(t('hostAi.tabConsole')) + '</button><button type="button" class="terminal-tab-btn" data-tab="aiTabRemoteFs">' + esc(t('hostAi.tabFs')) + '</button><button type="button" class="terminal-tab-btn" data-tab="aiTabLog">' + esc(t('hostAi.tabLog')) + '</button><span class="ai-terminal-header-meta"><span class="ai-terminal-header-title">' + esc(t('ai.globalSshTitle')) + '</span><span class="ai-terminal-header-sep">·</span><span id="aiTerminalStatus" class="ai-terminal-status">' + esc(t('hostAi.statusDisconnected')) + '</span></span></div>'
+        + '<div id="aiTabConsole" class="terminal-tab-panel active">'
+        + '<div id="aiConsoleTabsRow" class="ai-console-tabs-row"><label class="ai-console-auto-switch-label"><input type="checkbox" id="aiConsoleNoAutoSwitch"> ' + esc(t('hostAi.noAutoSwitch')) + '</label></div>'
+        + '<div id="aiConsoleEmptyState" class="ai-console-empty-state" style="flex:1;display:flex;align-items:center;justify-content:center;padding:24px;color:var(--text-muted);font-size:14px;">' + esc(t('hostAi.consoleEmpty')) + '</div>'
+        + '<div id="aiConsolePanels" class="ai-console-panels" style="display:none;flex:1;min-height:0;flex-direction:column"></div>'
+        + '</div>'
+        + '<div id="aiTabRemoteFs" class="terminal-tab-panel"><div class="remote-fs-layout"><div class="remote-fs-tree-wrap"><div class="remote-fs-tree-header">' + esc(t('hostAi.fsTreeHeader')) + '</div><div class="remote-fs-host-row" style="padding:6px 8px;border-bottom:1px solid var(--border);align-items:center;display:flex;gap:8px"><label style="margin-right:0;flex-shrink:0">' + esc(t('ai.fsHostLabel')) + '</label><div id="aiRemoteFsHostPickerMount" style="flex:1;min-width:0"></div></div><div id="aiRemoteFsTree" class="remote-fs-tree"></div><div id="aiRemoteFsCtxMenu" class="remote-fs-ctxmenu"></div></div><div class="remote-fs-main"><div class="remote-fs-toolbar"><input type="text" class="form-control remote-fs-path" id="aiRemoteFsPath" placeholder="' + esc(t('hostAi.fsPathPlaceholder')) + '" value="/" readonly><button type="button" class="btn btn-sm" id="aiRemoteFsRefresh">' + esc(t('hostAi.fsRefresh')) + '</button><button type="button" class="btn btn-sm" id="aiRemoteFsUpload">' + esc(t('hostAi.fsUpload')) + '</button><input type="file" id="aiRemoteFsFileInput" style="display:none"><button type="button" class="btn btn-sm" id="aiRemoteFsDownload">' + esc(t('hostAi.fsDownload')) + '</button><button type="button" class="btn btn-sm" id="aiRemoteFsSave">' + esc(t('hostAi.fsSave')) + '</button></div><div id="aiRemoteFsPreview" class="remote-fs-preview"><div class="remote-fs-preview-inner" id="aiRemoteFsPreviewInner"><span class="text-muted">' + esc(t('ai.fsPreviewNeedHost')) + '</span></div></div></div></div></div>'
+        + '<div id="aiTabLog" class="terminal-tab-panel"><div class="ai-log-window"><div class="ai-log-toolbar"><button type="button" class="btn btn-sm" id="aiLogCopyAll">' + esc(t('hostAi.logCopyAll')) + '</button></div><div id="aiLogEntries" class="ai-log-entries"></div></div></div>'
+        + '</div>'
+        + '<div class="layout-splitter-vertical" data-layout="ai" data-split="terminal" title="' + esc(t('hostAi.splitterTitle')) + '"></div>'
+        + '<div class="chat-container ai-chat-container ai-layout-chat" id="aiLayoutChat">'
+        + '<div class="host-ai-chat-bar"><button type="button" class="btn btn-sm" id="aiSessionPromptBtn" title="' + esc(t('hostAi.barSessionPromptTitle')) + '">' + esc(t('ai.promptButtonShort')) + '</button><button type="button" class="btn btn-sm" id="aiClearChat">' + esc(t('hostAi.clearChat')) + '</button><span class="host-ai-clear-n"><input type="number" id="aiClearN" min="1" value="10" style="width:84px">' + esc(t('hostAi.clearN')) + '</span><button type="button" class="btn btn-sm" id="aiClearLastN">' + esc(t('hostAi.clearGtN')) + '</button><button type="button" class="btn btn-sm" id="aiExportMd" title="' + esc(t('hostAi.exportMdTitle')) + '">' + esc(t('hostAi.exportMd')) + '</button><button type="button" class="btn btn-sm" id="aiToggleTerminalBtn">' + esc(t('hostAi.hideTerminal')) + '</button><button type="button" class="btn btn-sm mobile-ai-inline-only" id="aiMobileInlineTerminalBtn">' + esc(t('ai.collapseInlineTerminal')) + '</button><button type="button" class="btn btn-sm btn-primary" id="aiNewSessionTop">' + esc(t('hostAi.newSession')) + '</button></div>'
+        + '<div id="aiSessionPromptModal" class="modal-overlay" style="display:none"><div class="modal modal-session-prompt"><div class="modal-header"><span>' + esc(t('hostAi.sessionPromptTitle')) + '</span><button type="button" class="modal-close" id="aiSessionPromptClose">&times;</button></div><div class="modal-body"><div class="session-prompt-toolbar"><button type="button" class="btn btn-sm active" id="aiSessionPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm" id="aiSessionPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button></div><div id="aiSessionPromptEditWrap"><textarea id="aiSessionPromptText" class="form-control" rows="6" placeholder="' + esc(t('hostAi.sessionPromptPlaceholder')) + '"></textarea></div><div id="aiSessionPromptPreview" class="session-prompt-preview" style="display:none"></div><div class="modal-actions" style="margin-top:8px"><button type="button" class="btn btn-sm btn-primary" id="aiSessionPromptSave">' + esc(t('hostAi.sessionPromptSave')) + '</button><button type="button" class="btn btn-sm" id="aiSessionPromptSummarize" title="' + esc(t('hostAi.sessionSummarizeReplaceTitle')) + '">' + esc(t('hostDetail.promptSummarize')) + '</button><button type="button" class="btn btn-sm" id="aiSessionPromptAppend" title="' + esc(t('hostAi.sessionSummarizeAppendTitle')) + '">' + esc(t('hostDetail.promptAppend')) + '</button><button type="button" class="btn btn-sm" id="aiSessionPromptCancel">' + esc(t('hostAi.sessionPromptClose')) + '</button></div></div></div></div>'
+        + '<div class="chat-messages" id="aiMessages"></div>'
+        + '<div class="chat-input-area"><label class="chat-low-interaction-toggle" title="' + esc(t('hostAi.lowInteractionTitle')) + '"><input type="checkbox" id="aiLowInteractionToggle"> ' + esc(t('hostAi.lowInteractionLabel')) + '</label><textarea class="form-control chat-input-multiline" id="aiInput" rows="1" enterkeyhint="send" spellcheck="false"></textarea><button class="btn btn-primary" id="aiSend">' + esc(t('hostAi.send')) + '</button><button type="button" class="btn btn-sm" id="aiNewSessionBtn">' + esc(t('hostAi.newSession')) + '</button></div></div>'
+        + '</div>';
+    initAiLayoutSplitters('ai');
+    (function() {
+        var _am = document.getElementById('aiMessages');
+        if (_am) edgeopsBindChatStickToBottom(_am);
+    })();
+    var aiAssistantHostsCache = null;
+    var aiAssistantHostsInflight = null;
+    function withAiAssistantHosts(cb) {
+        if (aiAssistantHostsCache !== null) {
+            cb(aiAssistantHostsCache);
+            return;
+        }
+        if (!aiAssistantHostsInflight) {
+            aiAssistantHostsInflight = API.listHosts({ page: 1, page_size: 100 }).then(function(r) {
+                aiAssistantHostsCache = r.hosts || [];
+                aiAssistantHostsInflight = null;
+                return aiAssistantHostsCache;
+            }).catch(function() {
+                aiAssistantHostsCache = [];
+                aiAssistantHostsInflight = null;
+                return aiAssistantHostsCache;
+            });
+        }
+        aiAssistantHostsInflight.then(function(hosts) { cb(hosts); });
+    }
+    var aiFsHostPicker = null;
+    var tabsRow = document.getElementById('aiConsoleTabsRow');
+    var panelsContainer = document.getElementById('aiConsolePanels');
+    var statusEl = document.getElementById('aiTerminalStatus');
+    edgeopsBindTerminalToggle({
+        layoutId: 'ai',
+        pageId: 'aiPageLayout',
+        terminalId: 'aiLayoutTerminal',
+        buttonIds: ['aiToggleTerminalBtn'],
+        onShow: function() {
+            aiConsoles.forEach(function(c) { if (c.refit) c.refit(); });
+        }
+    });
+    function getNextSlot() { var max = 0; aiConsoles.forEach(function(c) { if (c.slot >= max) max = c.slot + 1; }); return max; }
+    function getAiActiveConsole() {
+        return aiConsoles.filter(function(c) { return c.slot === aiActiveConsoleSlot; })[0] || null;
+    }
+    function getAiPreferredTerminalSlot() {
+        var active = getAiActiveConsole();
+        // 与界面当前标签一致：用户自建控制台也要用其 slot，否则后端会读到错误的终端缓冲 / host_id
+        if (active) return active.slot;
+        var aiConnected = aiConsoles.filter(function(c) { return c.createdBy === 'ai' && c.ws && c.ws.readyState === WebSocket.OPEN; })[0];
+        if (aiConnected) return aiConnected.slot;
+        var anyAi = aiConsoles.filter(function(c) { return c.createdBy === 'ai'; })[0];
+        return anyAi ? anyAi.slot : null;
+    }
+    /** 全局 AI 页：优先远程文件树所选主机，否则活动 SSH 控制台主机，供后端注入该机主机级提示词 */
+    function getAiGlobalContextHostId() {
+        var fs = getAiRemoteFsHost();
+        if (fs) {
+            var a = parseInt(fs, 10);
+            if (!isNaN(a)) return a;
+        }
+        var active = getAiActiveConsole();
+        if (active && active.hostId) {
+            var b = parseInt(String(active.hostId), 10);
+            if (!isNaN(b)) return b;
+        }
+        return null;
+    }
+    function canAiAutoSwitchTo(slot) {
+        var current = getAiActiveConsole();
+        var target = aiConsoles.filter(function(c) { return c.slot === slot; })[0] || null;
+        if (!target || target.createdBy !== 'ai') return false;
+        if (current && current.createdBy !== 'ai') return false;
+        return aiAutoSwitchConsole && !aiUserTookOverConsole;
+    }
+    function updateHeaderStatus() {
+        var n = 0; aiConsoles.forEach(function(c) { if (c.ws && c.ws.readyState === WebSocket.OPEN) n++; });
+        statusEl.textContent = n ? t('hostAi.statusConnected', { n: n }) : t('hostAi.statusDisconnected');
+    }
+    var emptyStateEl = document.getElementById('aiConsoleEmptyState');
+    function showConsolePanels(show) {
+        if (panelsContainer) panelsContainer.style.display = show ? 'flex' : 'none';
+        if (emptyStateEl) emptyStateEl.style.display = show ? 'none' : 'flex';
+    }
+    function addAiConsole(slot, createdBy, presetHostId) {
+        var who = createdBy === 'ai' ? t('hostAi.whoAi') : t('hostAi.whoUser');
+        var tabWrap = document.createElement('div');
+        tabWrap.className = 'ai-console-tab-wrap' + (aiConsoles.length === 0 ? ' active' : '');
+        tabWrap.dataset.slot = String(slot);
+        tabWrap.style.cssText = 'display:inline-flex;align-items:center;margin-right:4px;';
+        var tabLabel = document.createElement('button');
+        tabLabel.type = 'button';
+        tabLabel.className = 'terminal-tab-btn ai-console-tab' + (aiConsoles.length === 0 ? ' active' : '');
+        tabLabel.style.marginRight = '0';
+        tabLabel.textContent = t('hostAi.consoleTabLabel', { slot: slot, who: who });
+        tabWrap.appendChild(tabLabel);
+        var closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'ai-console-tab-close';
+        closeBtn.innerHTML = '&times;';
+        closeBtn.title = t('hostAi.closeConsoleTitle');
+        closeBtn.style.marginLeft = '2px';
+        tabWrap.appendChild(closeBtn);
+        var panelEl = document.createElement('div');
+        panelEl.className = 'ai-console-panel terminal-tab-panel' + (aiConsoles.length === 0 ? ' active' : '');
+        panelEl.dataset.slot = String(slot);
+        panelEl.style.display = aiConsoles.length === 0 ? 'flex' : 'none';
+        panelEl.style.flexDirection = 'column';
+        var placeholderEl = document.createElement('div');
+        placeholderEl.className = 'ai-terminal-placeholder';
+        placeholderEl.style.cssText = 'padding:16px;color:var(--text-muted);font-size:13px;flex:1';
+        placeholderEl.textContent = presetHostId ? t('hostAi.placeholderConnecting') : t('ai.consoleEmptyPickHost');
+        var mountEl = document.createElement('div');
+        mountEl.className = 'ai-terminal-mount';
+        mountEl.style.display = 'none';
+        var rowEl = document.createElement('div');
+        rowEl.style.cssText = 'display:flex;gap:8px;align-items:center;margin-top:8px';
+        var hostPicker = edgeopsCreateHostTypeahead({
+            placeholder: t('ai.fsHostTypeaheadPh'),
+            onHostIdChange: function(id) {
+                connectBtn.disabled = !id && !presetHostId;
+            }
+        });
+        if (presetHostId) hostPicker.el.style.display = 'none';
+        var connectBtn = document.createElement('button');
+        connectBtn.className = 'btn btn-sm btn-primary';
+        connectBtn.textContent = t('hostAi.connect');
+        connectBtn.disabled = !presetHostId;
+        var disconnectBtn = document.createElement('button');
+        disconnectBtn.className = 'btn btn-sm';
+        disconnectBtn.textContent = t('hostAi.disconnect');
+        disconnectBtn.style.display = 'none';
+        var statusSpan = document.createElement('span');
+        statusSpan.style.cssText = 'font-size:12px;color:var(--text-muted)';
+        statusSpan.textContent = t('hostAi.tabStatusDisconnected');
+        rowEl.appendChild(hostPicker.el);
+        rowEl.appendChild(connectBtn);
+        rowEl.appendChild(disconnectBtn);
+        rowEl.appendChild(statusSpan);
+        var container = document.createElement('div');
+        container.className = 'ai-terminal-container';
+        container.appendChild(placeholderEl);
+        container.appendChild(mountEl);
+        panelEl.appendChild(container);
+        panelEl.appendChild(rowEl);
+        tabsRow.insertBefore(tabWrap, tabsRow.querySelector('.ai-console-new-btn'));
+        panelsContainer.appendChild(panelEl);
+        var rec = { slot: slot, createdBy: createdBy, hostId: null, ws: null, term: null, fitDispose: null, refit: null, placeholderEl: placeholderEl, mountEl: mountEl, connectBtn: connectBtn, disconnectBtn: disconnectBtn, statusEl: statusSpan, hostPicker: hostPicker, tabEl: tabWrap, tabBtn: tabLabel, panelEl: panelEl };
+        aiConsoles.push(rec);
+        showConsolePanels(true);
+        tabLabel.onclick = function() {
+            if (aiActiveConsoleSlot === slot) return;
+            aiActiveConsoleSlot = slot;
+            var toRec = aiConsoles.filter(function(c) { return c.slot === slot; })[0];
+            aiUserTookOverConsole = toRec && toRec.createdBy !== 'ai';
+            aiConsoles.forEach(function(c) {
+                c.panelEl.style.display = c.slot === slot ? 'flex' : 'none';
+                c.panelEl.style.flexDirection = 'column';
+                c.tabEl.classList.toggle('active', c.slot === slot);
+                if (c.tabBtn) c.tabBtn.classList.toggle('active', c.slot === slot);
+            });
+            if (toRec && toRec.refit) toRec.refit();
+        };
+        closeBtn.onclick = function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (rec.ws) rec.ws.close();
+            rec.tabEl.remove();
+            rec.panelEl.remove();
+            aiConsoles = aiConsoles.filter(function(c) { return c.slot !== slot; });
+            updateHeaderStatus();
+            if (aiConsoles.length === 0) {
+                showConsolePanels(false);
+            } else if (aiActiveConsoleSlot === slot) {
+                aiActiveConsoleSlot = aiConsoles[0].slot;
+                aiConsoles.forEach(function(c) {
+                    c.panelEl.style.display = c.slot === aiActiveConsoleSlot ? 'flex' : 'none';
+                    c.panelEl.style.flexDirection = 'column';
+                    c.tabEl.classList.toggle('active', c.slot === aiActiveConsoleSlot);
+                    if (c.tabBtn) c.tabBtn.classList.toggle('active', c.slot === aiActiveConsoleSlot);
+                });
+            }
+        };
+        connectBtn.onclick = function() {
+            var hid = presetHostId || (hostPicker && hostPicker.getHostId());
+            if (hid) doConnectTerminal(hid, slot, createdBy);
+        };
+        disconnectBtn.onclick = function() { if (rec.ws) rec.ws.close(); };
+        withAiAssistantHosts(function(hosts) {
+            hostPicker.setHosts(hosts);
+            if (slot === 0) {
+                var lastHost = sessionStorage.getItem('edgeops_terminal_host');
+                if (lastHost) { hostPicker.setHostId(lastHost); connectBtn.disabled = false; }
+            }
+        });
+        if (presetHostId) doConnectTerminal(String(presetHostId), slot, createdBy);
+        return rec;
+    }
+    var newBtn = document.createElement('button');
+    newBtn.type = 'button';
+    newBtn.className = 'btn btn-sm ai-console-new-btn';
+    newBtn.textContent = t('hostAi.newConsole');
+    newBtn.onclick = function() { addAiConsole(getNextSlot(), 'user', null); };
+    tabsRow.appendChild(newBtn);
+    function doConnectTerminal(hostId, slot, createdBy) {
+        if (!hostId || !API.token) return;
+        hostId = String(hostId);
+        var rec = aiConsoles.filter(function(c) { return c.slot === slot; })[0];
+        if (!rec) return;
+        edgeopsOpenSshConsole(rec, {
+            hostId: hostId,
+            slot: slot,
+            createdBy: createdBy,
+            scopeId: aiTerminalScopeId,
+            fontSize: 13,
+            cols: 80,
+            rows: 14,
+            onReady: function(readyRec, ws) {
+                if (slot === 0) {
+                    aiTerminalWs = ws;
+                    aiTerminalTerm = readyRec.term;
+                    aiTerminalFitDispose = readyRec.fitDispose;
+                    aiTerminalRefit = readyRec.refit;
+                    sessionStorage.setItem('edgeops_terminal_host', hostId);
+                    if (aiFsHostPicker) aiFsHostPicker.setHostId(hostId);
+                }
+                updateHeaderStatus();
+            },
+            onClose: function() {
+                if (slot === 0) {
+                    aiTerminalWs = null;
+                    aiTerminalTerm = null;
+                    aiTerminalFitDispose = null;
+                    aiTerminalRefit = null;
+                    sessionStorage.removeItem('edgeops_terminal_host');
+                    aiRemoteFsLastHost = null;
+                }
+                if (rec.connectBtn) rec.connectBtn.disabled = !!(rec.hostPicker && rec.hostPicker.getHostId());
+                updateHeaderStatus();
+                rec.tabEl.remove();
+                rec.panelEl.remove();
+                aiConsoles = aiConsoles.filter(function(c) { return c.slot !== slot; });
+                if (aiConsoles.length === 0) {
+                    showConsolePanels(false);
+                } else if (aiActiveConsoleSlot === slot) {
+                    aiActiveConsoleSlot = aiConsoles[0].slot;
+                    aiConsoles.forEach(function(c) {
+                        c.panelEl.style.display = c.slot === aiActiveConsoleSlot ? 'flex' : 'none';
+                        c.panelEl.style.flexDirection = 'column';
+                        c.tabEl.classList.toggle('active', c.slot === aiActiveConsoleSlot);
+                        if (c.tabBtn) c.tabBtn.classList.toggle('active', c.slot === aiActiveConsoleSlot);
+                    });
+                }
+            }
+        });
+    }
+    showConsolePanels(false);
+    var noAutoSwitchEl = document.getElementById('aiConsoleNoAutoSwitch');
+    if (noAutoSwitchEl) noAutoSwitchEl.onchange = function() { aiAutoSwitchConsole = !this.checked; };
+    if (noAutoSwitchEl) noAutoSwitchEl.checked = !aiAutoSwitchConsole;
+    window.edgeopsRunUIAction = function(ua) {
+        if (!ua) return;
+        if (ua.action === 'connect_terminal' && ua.host_id) {
+            var hostId = String(ua.host_id);
+            addAiConsole(getNextSlot(), 'ai', parseInt(hostId, 10));
+            showToast(t('toast.creatingAiConsoleUnicode'));
+            return;
+        }
+        if (ua.action === 'switch_console' && (ua.scope === 'ai' || ua.scope === undefined)) {
+            var s = ua.slot != null ? parseInt(ua.slot, 10) : 0;
+            var con = aiConsoles.filter(function(c) { return c.slot === s; })[0];
+            if (con && aiActiveConsoleSlot !== s && canAiAutoSwitchTo(s)) {
+                aiActiveConsoleSlot = s;
+                aiConsoles.forEach(function(c) {
+                    c.panelEl.style.display = c.slot === s ? 'flex' : 'none';
+                    c.panelEl.style.flexDirection = 'column';
+                    c.tabEl.classList.toggle('active', c.slot === s);
+                    if (c.tabBtn) c.tabBtn.classList.toggle('active', c.slot === s);
+                });
+                if (con.refit) con.refit();
+            }
+        }
+    };
+    window.addEventListener('beforeunload', function() { aiConsoles.forEach(function(c) { if (c.ws) c.ws.close(); }); });
+    aiPendingPollTimer = setInterval(function() {
+        API.terminalPendingConsoleCreations(aiTerminalScopeId).then(function(r) {
+            var list = r && r.items ? r.items : [];
+            list.forEach(function(item) {
+                var hostId = item.host_id != null ? item.host_id : item.hostId;
+                var createdBy = item.created_by || 'ai';
+                if (!hostId) return;
+                addAiConsole(getNextSlot(), createdBy, hostId);
+            });
+        }).catch(function() {});
+    }, 2500);
+    var aiRemoteFsCurrentPath = '/';
+    var aiRemoteFsCurrentFile = null;
+    var aiRemoteFsClipboard = null;
+    var aiRemoteFsExpandedPaths = new Set();
+    var aiRemoteFsLastHost = null;
+    function getAiRemoteFsHost() {
+        if (aiFsHostPicker) {
+            var pid = aiFsHostPicker.getHostId();
+            if (pid) return pid;
+        }
+        return sessionStorage.getItem('edgeops_terminal_host') || '';
+    }
+    /** 若主机类型为未知则自动调用检查并更新 host 对象上的 host_type，完成后执行 done */
+    function ensureHostTypeChecked(hostId, done) {
+        if (!hostId) { if (done) done(); return; }
+        var h = aiFsHostPicker && aiFsHostPicker.findHost(hostId);
+        if (!h) { if (done) done(); return; }
+        var ht = (h.host_type || '').trim();
+        if (ht && ht !== '未知') { if (done) done(); return; }
+        API.checkHostType(parseInt(hostId, 10)).then(function(res) {
+            h.host_type = res.host_type || '未知';
+            showToast(t('toast.updateHostTypeOk') + (res.host_type || t('common.unknown')));
+            if (done) done();
+        }).catch(function() { if (done) done(); });
+    }
+    function findAiRemoteFsLiByPath(container, path) {
+        if (!container) return null;
+        var sel = container.querySelector('li[data-path="' + String(path).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]');
+        return sel || null;
+    }
+    function restoreAiRemoteFsTreeExpanded(container, paths, loadTreeFn) {
+        if (!container || !paths.length) return Promise.resolve();
+        paths = paths.slice().sort(function(a, b) { return (a.split('/').filter(Boolean).length) - (b.split('/').filter(Boolean).length); });
+        var i = 0;
+        function next() {
+            if (i >= paths.length) return Promise.resolve();
+            var path = paths[i++];
+            var li = findAiRemoteFsLiByPath(container, path);
+            if (!li || li.dataset.dir !== '1') return next();
+            return loadTreeFn(path, li).then(next);
+        }
+        return next();
+    }
+    function doAiRemoteFsRefresh() {
+        var hostId = getAiRemoteFsHost();
+        if (!hostId) { if (aiRemoteFsCurrentFile) loadAiRemoteFsPreview(aiRemoteFsCurrentFile); return Promise.resolve(); }
+        var treeEl = document.getElementById('aiRemoteFsTree');
+        var expanded = Array.from(aiRemoteFsExpandedPaths).sort(function(a, b) { return (a.split('/').filter(Boolean).length) - (b.split('/').filter(Boolean).length); });
+        return loadAiRemoteFsTree('', null).then(function() { return restoreAiRemoteFsTreeExpanded(treeEl, expanded, loadAiRemoteFsTree); }).then(function() {
+            if (aiRemoteFsCurrentFile) loadAiRemoteFsPreview(aiRemoteFsCurrentFile);
+        });
+    }
+    (function initAiFsHostPicker() {
+        var mount = document.getElementById('aiRemoteFsHostPickerMount');
+        if (!mount) return;
+        aiFsHostPicker = edgeopsCreateHostTypeahead({
+            placeholder: t('ai.fsHostTypeaheadPh'),
+            onHostIdChange: function(selHostId) {
+                aiRemoteFsLastHost = null;
+                var treeEl = document.getElementById('aiRemoteFsTree');
+                if (treeEl) treeEl.innerHTML = '';
+                var inner = document.getElementById('aiRemoteFsPreviewInner');
+                if (inner) inner.innerHTML = '<span class="text-muted">' + esc(t('ai.fsPreviewNeedHost')) + '</span>';
+                document.getElementById('aiRemoteFsPath').value = '/';
+                aiRemoteFsCurrentPath = '/';
+                aiRemoteFsCurrentFile = null;
+                if (selHostId) ensureHostTypeChecked(selHostId, doAiRemoteFsRefresh);
+            }
+        });
+        mount.appendChild(aiFsHostPicker.el);
+        withAiAssistantHosts(function(hosts) {
+            aiFsHostPicker.setHosts(hosts);
+            var lastHost = sessionStorage.getItem('edgeops_terminal_host');
+            if (lastHost) aiFsHostPicker.setHostId(lastHost);
+        });
+    })();
+    function loadAiRemoteFsTree(path, parentNode) {
+        var hostId = getAiRemoteFsHost();
+        if (!hostId) {
+            var treeEl = document.getElementById('aiRemoteFsTree');
+            if (treeEl) treeEl.innerHTML = '<div class="text-muted" style="padding:12px">' + esc(t('ai.fsPickHostShort')) + '</div>';
+            return Promise.resolve();
+        }
+        path = (path || '/').replace(/^\/+|\/+$/g, '') || '/';
+        return API.remoteFsList(parseInt(hostId, 10), path).then(function(r) {
+            if (!r.success || !r.items) return;
+            var treeEl = document.getElementById('aiRemoteFsTree');
+            if (!treeEl) return;
+            var ul = document.createElement('ul');
+            ul.className = 'remote-fs-tree-list';
+            r.items.forEach(function(it) {
+                var li = document.createElement('li');
+                li.className = 'remote-fs-tree-item' + (it.dir ? ' remote-fs-dir' : ' remote-fs-file');
+                li.dataset.path = it.path;
+                li.dataset.dir = it.dir ? '1' : '0';
+                var label = document.createElement('span');
+                label.className = 'remote-fs-tree-label';
+                label.textContent = it.name + (it.dir ? '/' : '');
+                if (it.dir) {
+                    var arrow = document.createElement('span');
+                    arrow.className = 'remote-fs-tree-arrow';
+                    arrow.textContent = '\u25b6';
+                    li.insertBefore(arrow, li.firstChild);
+                    li.appendChild(label);
+                    li.appendChild(document.createElement('span'));
+                    arrow.onclick = function(e) { e.stopPropagation(); toggleAiRemoteFsDir(li); };
+                    label.onclick = function(e) { e.stopPropagation(); aiRemoteFsCurrentPath = it.path; document.getElementById('aiRemoteFsPath').value = it.path; loadAiRemoteFsPreview(null); };
+                } else {
+                    li.appendChild(label);
+                    label.onclick = function(e) { e.stopPropagation(); aiRemoteFsCurrentFile = it.path; aiRemoteFsCurrentPath = it.path; document.getElementById('aiRemoteFsPath').value = it.path; loadAiRemoteFsPreview(it.path); };
+                }
+                li.oncontextmenu = function(e) { e.preventDefault(); e.stopPropagation(); showAiRemoteFsCtxMenu(e, it.path, !!it.dir); };
+                li.draggable = true;
+                li.addEventListener('dragstart', function(ev) { ev.dataTransfer.setData('application/x-remote-fs', JSON.stringify({ hostId: hostId, path: it.path, isDir: !!it.dir })); ev.dataTransfer.effectAllowed = 'move'; });
+                li.addEventListener('dragover', function(ev) { ev.preventDefault(); ev.dataTransfer.dropEffect = 'move'; });
+                li.addEventListener('drop', function(ev) {
+                    ev.preventDefault();
+                    var raw = ev.dataTransfer.getData('application/x-remote-fs');
+                    if (!raw) return;
+                    try {
+                        var payload = JSON.parse(raw);
+                        if (payload.hostId !== hostId) return;
+                        var destDir = it.dir ? it.path : (it.path.replace(/\/[^/]+$/, '') || '/');
+                        if (destDir === payload.path || (payload.path + '/').indexOf(destDir + '/') === 0) { showToast(t('toast.cannotMoveIntoSelf'), 'error'); return; }
+                        if (!confirm(t('confirm.moveConfirm'))) return;
+                        API.remoteFsCopy(parseInt(hostId, 10), payload.path, destDir, true).then(function() {
+                            showToast(t('toast.moved'));
+                            doAiRemoteFsRefresh();
+                        }).catch(function(err) { showToast(err.message || t('toast.moveFailed'), 'error'); });
+                    } catch (e) {}
+                });
+                ul.appendChild(li);
+            });
+            if (parentNode) {
+                var ph = parentNode.querySelector('span:last-child');
+                if (ph && !ph.classList.contains('remote-fs-tree-label')) ph.replaceWith(ul);
+                else parentNode.appendChild(ul);
+                ul.classList.add('loaded');
+            } else {
+                treeEl.innerHTML = '';
+                treeEl.appendChild(ul);
+            }
+        }
+        ).catch(function(err) {
+            if (parentNode) { var ph = parentNode.querySelector('span:last-child'); if (ph && !ph.classList.contains('remote-fs-tree-label')) ph.textContent = '?'; }
+            showToast(err.message || t('toast.loadFailed'), 'error');
+        });
+    }
+    function toggleAiRemoteFsDir(li) {
+        var path = li.dataset.path;
+        var ul = li.querySelector('ul');
+        var arrow = li.querySelector('.remote-fs-tree-arrow');
+        if (ul && ul.classList.contains('loaded')) {
+            ul.style.display = ul.style.display === 'none' ? 'block' : 'none';
+            if (ul.style.display === 'none') aiRemoteFsExpandedPaths.delete(path); else aiRemoteFsExpandedPaths.add(path);
+            if (arrow) arrow.textContent = ul.style.display === 'none' ? '\u25b6' : '\u25bc';
+        } else {
+            aiRemoteFsExpandedPaths.add(path);
+            loadAiRemoteFsTree(path, li);
+            if (arrow) arrow.textContent = '\u25bc';
+        }
+    }
+    function loadAiRemoteFsPreview(filePath) {
+        var inner = document.getElementById('aiRemoteFsPreviewInner');
+        if (!inner) return;
+        if (!filePath) { inner.innerHTML = '<span class="text-muted">' + esc(t('ai.fsPreviewPickFile')) + '</span>'; return; }
+        var hostId = getAiRemoteFsHost();
+        if (!hostId) { inner.innerHTML = '<span class="text-muted">' + esc(t('ai.fsPickHostShort')) + '</span>'; return; }
+        inner.innerHTML = '<span class="text-muted">' + esc(t('common.loading')) + '</span>';
+        API.remoteFsRead(parseInt(hostId, 10), filePath).then(function(r) {
+            if (!r.success) {
+                var msg = (r.detail || r.message || '读取失败');
+                if (msg.indexOf('过大') !== -1 || msg.indexOf('非文本') !== -1) msg = '文本过大或非文本文件';
+                inner.innerHTML = '<span class="text-warning">' + esc(msg) + '</span>';
+                return;
+            }
+            var content = r.content || '';
+            inner.innerHTML = '';
+            var ta = document.createElement('textarea');
+            ta.className = 'remote-fs-edit';
+            ta.id = 'aiRemoteFsEditArea';
+            ta.value = content;
+            ta.setAttribute('spellcheck', 'false');
+            inner.appendChild(ta);
+        }).catch(function(err) {
+            var msg = err.message || '读取失败';
+            if (msg.indexOf('过大') !== -1 || msg.indexOf('非文本') !== -1) msg = '文本过大或非文本文件';
+            inner.innerHTML = '<span class="text-warning">' + esc(msg) + '</span>';
+        });
+    }
+    document.getElementById('aiRemoteFsRefresh').onclick = function() {
+        var hostId = getAiRemoteFsHost();
+        if (!hostId) { showToast(t('toast.selectHostFirst'), 'error'); return; }
+        aiRemoteFsLastHost = null;
+        doAiRemoteFsRefresh();
+    };
+    var aiRemoteFsUploadTargetPath = null;
+    document.getElementById('aiRemoteFsUpload').onclick = function() {
+        aiRemoteFsUploadTargetPath = aiRemoteFsCurrentPath || '/';
+        document.getElementById('aiRemoteFsFileInput').click();
+    };
+    document.getElementById('aiRemoteFsFileInput').onchange = function() {
+        var file = this.files && this.files[0];
+        this.value = '';
+        if (!file) return;
+        var hostId = getAiRemoteFsHost();
+        if (!hostId) { showToast(t('toast.selectHostFirst'), 'error'); return; }
+        var target = aiRemoteFsUploadTargetPath != null ? aiRemoteFsUploadTargetPath : (aiRemoteFsCurrentPath || '/');
+        aiRemoteFsUploadTargetPath = null;
+        API.remoteFsUpload(parseInt(hostId, 10), target, file).then(function() {
+            showToast(t('toast.uploaded'));
+            doAiRemoteFsRefresh();
+        }).catch(function(err) { showToast(err.message || t('toast.uploadFailed'), 'error'); });
+    };
+    document.getElementById('aiRemoteFsDownload').onclick = function() {
+        if (!aiRemoteFsCurrentFile) { showToast(t('toast.selectDownloadFile'), 'error'); return; }
+        var hostId = getAiRemoteFsHost();
+        if (!hostId) { showToast(t('toast.selectHostFirst'), 'error'); return; }
+        API.remoteFsDownload(parseInt(hostId, 10), aiRemoteFsCurrentFile).catch(function(err) { showToast(err.message, 'error'); });
+    };
+    document.getElementById('aiRemoteFsSave').onclick = function() {
+        if (!aiRemoteFsCurrentFile) { showToast(t('toast.selectSaveFile'), 'error'); return; }
+        var hostId = getAiRemoteFsHost();
+        if (!hostId) { showToast(t('toast.selectHostFirst'), 'error'); return; }
+        var ta = document.getElementById('aiRemoteFsEditArea');
+        if (!ta) { showToast(t('toast.nothingToEdit'), 'error'); return; }
+        API.remoteFsWrite(parseInt(hostId, 10), aiRemoteFsCurrentFile, ta.value).then(function() {
+            showToast(t('toast.saved'));
+        }).catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); });
+    };
+    function escShAi(s) { return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'; }
+    function showAiRemoteFsCtxMenu(e, path, isDir) {
+        var hostId = getAiRemoteFsHost();
+        if (!hostId) return;
+        hostId = parseInt(hostId, 10);
+        var hostTypeForCmd = (aiFsHostPicker && aiFsHostPicker.getHostType(hostId)) || '未知';
+        var menu = document.getElementById('aiRemoteFsCtxMenu');
+        if (!menu) return;
+        if (!menu._ctxMenuParent) menu._ctxMenuParent = menu.parentNode;
+        document.body.appendChild(menu);
+        menu.style.left = e.clientX + 'px';
+        menu.style.top = e.clientY + 'px';
+        menu.innerHTML = '';
+        var close = function() {
+            menu.classList.remove('open');
+            document.removeEventListener('click', close);
+            if (menu._ctxMenuParent && menu._ctxMenuParent.appendChild) menu._ctxMenuParent.appendChild(menu);
+        };
+        function addItem(text, fn) {
+            var b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'remote-fs-ctxitem';
+            b.textContent = text;
+            b.onclick = function() { close(); fn(); };
+            menu.appendChild(b);
+        }
+        var destDir = isDir ? path : (path.replace(/\/[^/]+$/, '') || '/');
+        var baseDir = destDir === '/' ? '' : destDir;
+        addItem('新建目录', function() {
+            var name = prompt('目录名');
+            if (!name || !name.trim()) return;
+            var newPath = (baseDir ? baseDir + '/' : '/') + name.trim();
+            API.remoteFsMkdir(hostId, newPath).then(function() {
+                showToast(t('toast.fileCreated'));
+                doAiRemoteFsRefresh();
+            }).catch(function(err) { showToast(err.message, 'error'); });
+        });
+        addItem('新建文件', function() {
+            var name = prompt('文件名');
+            if (!name || !name.trim()) return;
+            var newPath = (baseDir ? baseDir + '/' : '/') + name.trim();
+            API.remoteFsWrite(hostId, newPath, '').then(function() {
+                showToast(t('toast.fileCreated'));
+                doAiRemoteFsRefresh();
+            }).catch(function(err) { showToast(err.message, 'error'); });
+        });
+        addItem('复制', function() { aiRemoteFsClipboard = { hostId: hostId, path: path, cut: false }; showToast(t('toast.copiedToClipboard')); });
+        addItem('粘贴', function() {
+            if (!aiRemoteFsClipboard || aiRemoteFsClipboard.hostId !== hostId) { showToast(t('toast.noPaste'), 'error'); return; }
+            API.remoteFsCopy(hostId, aiRemoteFsClipboard.path, destDir, aiRemoteFsClipboard.cut).then(function() {
+                showToast(aiRemoteFsClipboard.cut ? t('toast.moved') : t('toast.pasted'));
+                aiRemoteFsClipboard = null;
+                doAiRemoteFsRefresh();
+            }).catch(function(err) { showToast(err.message, 'error'); });
+        });
+        addItem('剪切', function() { aiRemoteFsClipboard = { hostId: hostId, path: path, cut: true }; showToast(t('toast.cut')); });
+        if (isDir) addItem('上传到此处', function() { aiRemoteFsUploadTargetPath = path; document.getElementById('aiRemoteFsFileInput').click(); });
+        if (!isDir) addItem('下载', function() { API.remoteFsDownload(hostId, path).catch(function(err) { showToast(err.message, 'error'); }); });
+        addItem('删除', function() {
+            showConfirm(t('confirm.deletePathTitle'), t('confirm.deleteFileBody', { type: isDir ? t('confirm.dir') : t('confirm.file'), path: path })).then(function(ok) {
+                if (!ok) return;
+                API.remoteFsDelete(hostId, path).then(function() {
+                    showToast(t('toast.deleted'));
+                    if (aiRemoteFsCurrentFile === path) aiRemoteFsCurrentFile = null;
+                    doAiRemoteFsRefresh();
+                }).catch(function(err) { showToast(err.message, 'error'); });
+            });
+        });
+        addItem('改名', function() {
+            var name = path.split('/').filter(Boolean).pop() || path;
+            var newName = prompt('新名称', name);
+            if (newName == null || newName.trim() === '') return;
+            var parent = path.replace(/\/[^/]+$/, '') || '/';
+            var newPath = (parent === '/' ? '/' : parent + '/') + newName.trim();
+            if (newPath === path) return;
+            API.remoteFsRename(hostId, path, newPath).then(function() {
+                showToast(t('toast.renamed'));
+                doAiRemoteFsRefresh();
+                if (aiRemoteFsCurrentFile === path) { aiRemoteFsCurrentFile = newPath; loadAiRemoteFsPreview(newPath); }
+            }).catch(function(err) { showToast(err.message, 'error'); });
+        });
+        addItem('打包', function() {
+            var archivePath = prompt('归档路径（如 /tmp/out.tar.gz）', (path.replace(/\/[^/]+$/, '') || '/') + '/' + (path.split('/').filter(Boolean).pop() || 'out') + '.tar.gz');
+            if (!archivePath || !archivePath.trim()) return;
+            API.executeHost(hostId, 'tar -czvf ' + escShAi(archivePath.trim()) + ' ' + escShAi(path), 60).then(function() { showToast(t('toast.archived')); doAiRemoteFsRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+        });
+        if (!isDir && isRemoteUnpackSupported(path)) addItem('解压', function() {
+            var parentDir = path.replace(/\/[^/]+$/, '') || '/';
+            var res = buildRemoteUnpackCommand(path, parentDir, hostTypeForCmd, escShAi);
+            if (res.unsupported) { showToast(t('toast.extractUnsupported'), 'error'); return; }
+            API.executeHost(hostId, res.command, 60).then(function() { showToast(t('toast.extracted')); doAiRemoteFsRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+        });
+        addItem('刷新', function() { doAiRemoteFsRefresh(); });
+        menu.classList.add('open');
+        setTimeout(function() { document.addEventListener('click', close); }, 0);
+    }
+    (function() {
+        var card = document.getElementById('aiLayoutTerminal');
+        if (!card) return;
+        var mainTabBtns = card.querySelectorAll('.terminal-tabs .terminal-tab-btn');
+        var mainPanels = card.querySelectorAll('.terminal-tab-panel');
+        mainTabBtns.forEach(function(btn) {
+            btn.onclick = function() {
+                var tabId = btn.getAttribute('data-tab');
+                if (tabId === 'aiTabRemoteFs') {
+                    var hostId = getAiRemoteFsHost();
+                    var treeEl = document.getElementById('aiRemoteFsTree');
+                    if (treeEl) {
+                        if (!hostId) {
+                            treeEl.innerHTML = '<div class="text-muted" style="padding:12px">' + esc(t('ai.fsPickHostShort')) + '</div>';
+                            document.getElementById('aiRemoteFsPreviewInner').innerHTML = '<span class="text-muted">' + esc(t('ai.fsPreviewNeedHost')) + '</span>';
+                        } else {
+                            ensureHostTypeChecked(hostId, function() {
+                                if (aiRemoteFsLastHost !== hostId) {
+                                    aiRemoteFsLastHost = hostId;
+                                    aiRemoteFsExpandedPaths.clear();
+                                    treeEl.innerHTML = '';
+                                    doAiRemoteFsRefresh();
+                                } else if (!treeEl.querySelector('ul')) {
+                                    doAiRemoteFsRefresh();
+                                }
+                            });
+                        }
+                    }
+                }
+                mainTabBtns.forEach(function(b) { b.classList.remove('active'); });
+                mainPanels.forEach(function(p) { p.classList.remove('active'); });
+                btn.classList.add('active');
+                var panelEl = document.getElementById(tabId);
+                if (panelEl) panelEl.classList.add('active');
+                if (tabId === 'aiTabConsole') {
+                    var con = aiConsoles.filter(function(c) { return c.slot === aiActiveConsoleSlot; })[0];
+                    if (con && con.refit) con.refit();
+                }
+            };
+        });
+    })();
+    document.getElementById('aiLogCopyAll').onclick = copyAiLogFull;
+    renderAiLog();
+    var sessionId = null;
+    var aiFirstLoad = true;
+    function loadSessions() {
+        API.listAISessions().then(function(r) {
+            var list = document.getElementById('aiSessionList');
+            var rawSessions = r.sessions || [];
+            var sessions = edgeopsSortSessionsPromptFirst(rawSessions.slice());
+            list.innerHTML = '<div class="chat-history-empty">' + esc(t('hostAi.noSessions')) + '</div>';
+            if (sessions.length) {
+                list.innerHTML = sessions.map(function(s) {
+                    return '<div class="chat-history-item' + (s.id === sessionId ? ' active' : '') + (edgeopsSessionHasPrompt(s) ? ' chat-history-item-session-prompt' : '') + '" data-id="' + s.id + '">'
+                        + '<span class="chat-history-item-title" title="' + esc(t('hostAi.doubleClickRename')) + '">' + esc(s.title) + '</span><span class="chat-history-item-time">' + formatTime(s.updated_at) + '</span>'
+                        + '<button type="button" class="chat-history-item-rename" title="' + esc(t('hostAi.renameTitle')) + '">' + esc(t('hostAi.rename')) + '</button>'
+                        + '<button type="button" class="chat-history-item-ai-title" title="' + esc(t('hostAi.aiNameTitle')) + '">AI</button>'
+                        + '<button type="button" class="chat-history-item-delete" title="' + esc(t('hostAi.deleteTitle')) + '" data-id="' + s.id + '">&times;</button></div>';
+                }).join('');
+                list.querySelectorAll('.chat-history-item').forEach(function(node) {
+                    var id = parseInt(node.getAttribute('data-id'), 10);
+                    if (!id || isNaN(id)) return;
+                    var titleEl = node.querySelector('.chat-history-item-title');
+                    function startRename() {
+                        var val = (titleEl.textContent || '').trim();
+                        var input = document.createElement('input');
+                        input.type = 'text';
+                        input.className = 'chat-history-item-title-edit';
+                        input.value = val;
+                        input.style.width = (node.offsetWidth - 90) + 'px';
+                        titleEl.replaceWith(input);
+                        input.focus();
+                        input.select();
+                        function done() {
+                            var newTitle = (input.value || '').trim();
+                            input.replaceWith(titleEl);
+                            titleEl.textContent = newTitle || val;
+                            if (newTitle !== val) API.updateAISession(id, { title: newTitle }).then(function() { showToast(t('toast.renamed')); }).catch(function(err) { showToast(err.message, 'error'); titleEl.textContent = val; });
+                        }
+                        input.onblur = done;
+                        input.onkeydown = function(ev) { if (ev.key === 'Enter') { ev.preventDefault(); done(); } if (ev.key === 'Escape') { input.value = val; done(); } };
+                    }
+                    titleEl.ondblclick = function(e) { e.stopPropagation(); startRename(); };
+                    node.querySelector('.chat-history-item-rename').onclick = function(e) { e.stopPropagation(); startRename(); };
+                    (function() {
+                        var aiBtn = node.querySelector('.chat-history-item-ai-title');
+                        aiBtn.onclick = function(e) {
+                            e.stopPropagation();
+                            var btn = this;
+                            var oldText = btn.textContent;
+                            btn.textContent = '\u2026';
+                            btn.disabled = true;
+                            showToast(t('toast.generatingTitle'));
+                            API.summarizeAISessionTitle(id).then(function(res) {
+                                btn.textContent = oldText;
+                                btn.disabled = false;
+                                if (res.title) { titleEl.textContent = res.title; showToast(t('toast.titleGenerated')); }
+                            }).catch(function(err) {
+                                btn.textContent = oldText;
+                                btn.disabled = false;
+                                showToast(err.message || t('toast.generateTitleFailed'), 'error');
+                            });
+                        };
+                    })();
+                    node.querySelector('.chat-history-item-delete').onclick = function(e) {
+                        e.stopPropagation();
+                        if (!confirm(t('confirm.deleteThisSession'))) return;
+                        API.deleteAISession(id).then(function() {
+                            if (sessionId === id) { sessionId = null; document.getElementById('aiMessages').innerHTML = ''; }
+                            loadSessions();
+                            showToast(t('toast.deleted'));
+                        }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
+                    };
+                    node.onclick = function(ev) {
+                        if (ev.target.closest('button') || ev.target.classList.contains('chat-history-item-title-edit')) return;
+                        sessionId = id;
+                        loadSession(sessionId);
+                        list.querySelectorAll('.chat-history-item').forEach(function(n) { n.classList.remove('active'); });
+                        node.classList.add('active');
+                    };
+                });
+            }
+            var refreshBtn = document.getElementById('aiRefreshSessions');
+            if (refreshBtn) refreshBtn.onclick = function() { loadSessions(); showToast(t('toast.refreshed')); };
+            var clearBtn = document.getElementById('aiClearAllSessions');
+            if (clearBtn) {
+                clearBtn.disabled = !rawSessions.length;
+                clearBtn.onclick = function() {
+                    if (!rawSessions.length) return;
+                    if (!confirm(t('confirm.clearAllSessionsIrreversible'))) return;
+                    API.clearAISessions().then(function() {
+                        sessionId = null;
+                        document.getElementById('aiMessages').innerHTML = '';
+                        loadSessions();
+                        showToast(t('toast.cleared'));
+                    }).catch(function(err) { showToast(err.message || t('toast.clearFailed'), 'error'); });
+                };
+            }
+            if (aiFirstLoad && rawSessions.length) {
+                aiFirstLoad = false;
+                var toSummarize = null;
+                if (sessionId) { var cur = rawSessions.filter(function(s) { return s.id === sessionId; })[0]; if (cur && edgeopsIsTempSessionTitle(cur.title)) toSummarize = cur.id; }
+                if (!toSummarize) {
+                    for (var si = 0; si < rawSessions.length; si++) {
+                        var srow = rawSessions[si];
+                        if (srow.title && edgeopsIsTempSessionTitle(srow.title)) { toSummarize = srow.id; break; }
+                    }
+                }
+                if (toSummarize) API.summarizeAISessionTitle(toSummarize).then(function(res) { if (res && res.title) loadSessions(); }).catch(function() {});
+            }
+        });
+    }
+    var fmtMd = function(t) { return (typeof formatMarkdown !== 'undefined' && formatMarkdown ? formatMarkdown(t) : (esc(t || '').replace(/\n/g, '<br>'))); };
+    function loadSession(id) {
+        sessionId = id;
+        API.getAISession(id).then(function(r) {
+            var msgs = (r.session && r.session.messages) || [];
+            var lowToggle = document.getElementById('aiLowInteractionToggle');
+            if (lowToggle) lowToggle.checked = String((r.session && r.session.low_interaction_mode) || 'false').toLowerCase() === 'true';
+            var box = document.getElementById('aiMessages');
+            if (!box) return;
+            edgeopsRenderSessionMessages(box, msgs, fmtMd, id, {
+                onChoice: function(text) { edgeopsTriggerChatSend('aiInput', 'aiSend', text); }
+            });
+            edgeopsHydrateChatDiagrams(box);
+            edgeopsScrollChatMessagesToBottom(box);
+        });
+    }
+    (function() {
+        var lowToggle = document.getElementById('aiLowInteractionToggle');
+        if (!lowToggle) return;
+        lowToggle.checked = false;
+        lowToggle.onchange = function() {
+            if (!sessionId) { showToast(t('toast.selectOrCreateSession'), 'info'); lowToggle.checked = false; return; }
+            API.updateAISession(sessionId, { low_interaction_mode: !!lowToggle.checked })
+                .catch(function(err) { showToast((err && err.message) || t('toast.requestFailed'), 'error'); lowToggle.checked = !lowToggle.checked; });
+        };
+    })();
+    loadSessions();
+    var aiAbortController = null;
+    var aiRuntimeCtl = edgeopsInstallRuntimeControlBar({
+        area: 'aiInput',
+        onControl: function(action, message) {
+            if (!sessionId) { showToast(t('toast.selectOrCreateSession'), 'info'); return; }
+            if (action === 'stop' && aiAbortController) aiAbortController.abort();
+            API.pushAIRuntimeControl(sessionId, { action: action, message: message || '' })
+                .then(function() {
+                    if (action === 'stop' && aiAbortController) aiAbortController.abort();
+                })
+                .catch(function(err) { showToast((err && err.message) || t('toast.requestFailed'), 'error'); });
+        }
+    });
+    var setStreamingUI = edgeopsMakeChatStreamingUISetter({
+        inputId: 'aiInput', sendId: 'aiSend', newSessionId: 'aiNewSessionBtn', runtimeCtl: aiRuntimeCtl
+    });
+    var aiAttachCtl = edgeopsInstallChatAttachments({ input: 'aiInput', getSessionId: function() { return sessionId; } });
+    function doSend() {
+        var input = document.getElementById('aiInput');
+        var msg = input && input.value.trim();
+        var attachments = aiAttachCtl ? aiAttachCtl.getReadyAttachments() : [];
+        var attachUuids = attachments.map(function(a) { return a.uuid; });
+        if (!msg && !attachUuids.length) return;
+        if (aiAttachCtl && aiAttachCtl.hasPending()) { showToast(t('toast.attachUploading'), 'warning'); return; }
+        if (!msg) msg = '（见下方附件）';
+        input.value = '';
+        if (input._edgeopsAutoResize) input._edgeopsAutoResize();
+        var box = document.getElementById('aiMessages');
+        if (!box) return;
+        edgeopsBindChatStickToBottom(box);
+        box._edgeopsStickToBottom = edgeopsChatIsNearBottom(box);
+        setStreamingUI(true);
+        var now = new Date();
+        var nowTs = edgeopsFormatChatTimestamp(now);
+        var userBubble = edgeopsRenderMessageBubble(fmtMd(msg) + edgeopsRenderAttachmentsInline(attachments), now);
+        box.insertAdjacentHTML('beforeend', '<div class="chat-message user"><div class="avatar">U</div>' + userBubble + '</div>');
+        if (aiAttachCtl) aiAttachCtl.clear();
+        box.insertAdjacentHTML('beforeend', '<div class="chat-message assistant"><div class="avatar">A</div><div class="message-content"><div class="ai-reply-stream"><div class="ai-reply-tools"></div><div class="ai-reply-text"></div></div><div class="message-time">' + esc(nowTs) + '</div></div></div>');
+        edgeopsHydrateChatDiagrams(box);
+        edgeopsScrollChatToBottomStepIfPinned(box);
+        var replyWrap = edgeopsPeekLastAiReplyStreamWrap(box);
+        if (!replyWrap) return;
+        var toolsEl = replyWrap.querySelector('.ai-reply-tools');
+        var textEl = replyWrap.querySelector('.ai-reply-text');
+        var replyMsgEl = replyWrap.closest('.chat-message');
+        edgeopsInitStreamReplyState(replyWrap, msg);
+        edgeopsSetMessagePersistenceMeta(replyMsgEl, sessionId, null, '');
+        edgeopsCotEnsureThinkingPlaceholder(toolsEl);
+        edgeopsScrollChatToBottomStepIfPinned(box);
+        var streamedText = '';
+        var aiStreamInputMode = 'idle';
+        function flushStreamReplyText() {
+            var clean = stripThinkTags(streamedText);
+            if (typeof edgeopsRenderStreamIncremental === 'function') edgeopsRenderStreamIncremental(textEl, clean, replyWrap);
+            else if (typeof edgeopsRenderStreamPlainText === 'function') edgeopsRenderStreamPlainText(textEl, clean);
+            else textEl.textContent = clean;
+            if (replyMsgEl) replyMsgEl._edgeopsPersistContent = clean;
+            edgeopsScrollChatToBottomStepIfPinned(box);
+        }
+        function finishStreamAndRender() {
+            aiStreamInputMode = edgeopsFinishChatStreamRound({
+                replyWrap: replyWrap, toolsEl: toolsEl, textEl: textEl, replyMsgEl: replyMsgEl,
+                streamedText: streamedText, logBuffer: aiLogBuffer, renderLogFn: renderAiLog,
+                formatMd: fmtMd, setStreamingUI: setStreamingUI
+            });
+        }
+        aiAbortController = new AbortController();
+        var aiUntrackAbort = edgeopsTrackChatAbortController(aiAbortController);
+        try { edgeopsClearUIActionCache(sessionId); } catch (_e) {}
+        API.chatStream(msg, sessionId, function(ev) {
+            if (ev.session_id != null) { sessionId = ev.session_id; edgeopsSetMessagePersistenceMeta(replyMsgEl, sessionId, null, replyMsgEl && replyMsgEl._edgeopsPersistContent); }
+            if (ev.ui_action) {
+                if (ev.ui_action.action === 'ask_user_choice') {
+                    var _dupFp2 = edgeopsChoiceCardFingerprint(ev.ui_action);
+                    if (_dupFp2 && replyMsgEl && replyMsgEl._edgeopsLastStreamChoiceFp === _dupFp2) {
+                        try { edgeopsSaveUIActionToCache(sessionId, ev.ui_action); } catch (_ed2) {}
+                    } else {
+                        if (_dupFp2 && replyMsgEl) replyMsgEl._edgeopsLastStreamChoiceFp = _dupFp2;
+                        var card = edgeopsRenderChoiceCard(ev.ui_action, function(text) {
+                            try { edgeopsClearUIActionCache(sessionId); } catch (_e) {}
+                            if (sessionId && aiAbortController) {
+                                API.pushAIRuntimeControl(sessionId, { action: 'choice', message: text || '' })
+                                    .catch(function(err) { showToast((err && err.message) || t('toast.requestFailed'), 'error'); });
+                                return;
+                            }
+                            edgeopsTriggerChatSend('aiInput', 'aiSend', text);
+                        });
+                        if (card && replyMsgEl) {
+                            var mc = replyMsgEl.querySelector('.message-content');
+                            if (mc) {
+                                edgeopsRemoveStreamingChoiceCards(mc);
+                                mc.appendChild(card);
+                            }
+                            edgeopsScrollChatToBottomStepIfPinned(box);
+                        }
+                        try { edgeopsSaveUIActionToCache(sessionId, ev.ui_action); } catch (_e) {}
+                    }
+                } else if (typeof window.edgeopsRunUIAction === 'function') {
+                    window.edgeopsRunUIAction(ev.ui_action);
+                }
+            }
+            if (ev.error) {
+                edgeopsMarkOpenToolRowsFailed(toolsEl, aiLogBuffer, renderAiLog);
+                streamedText += '\n' + t('hostAi.streamError') + ev.error;
+                flushStreamReplyText();
+                showToast(ev.error, 'error');
+            } else if (ev.stream_status && ev.stream_status.phase) {
+                edgeopsApplyStreamStatus(replyWrap, setStreamingUI, ev.stream_status.phase);
+            } else if (ev.assistant_continue) {
+                streamedText += '\n\n' + t('hostAi.streamCont') + (ev.assistant_continue || t('hostAi.streamContDefault')) + '*\n\n';
+                flushStreamReplyText();
+                if (ev.requires_user_confirm) {
+                    if (replyWrap) {
+                        replyWrap._edgeopsPausedForConfirm = true;
+                        replyWrap._edgeopsStreamPhase = 'awaiting_user_confirm';
+                    }
+                    setStreamingUI('awaiting');
+                }
+                if (ev.requires_user_confirm && replyMsgEl) {
+                    var _mc2 = replyMsgEl.querySelector('.message-content');
+                    if (_mc2) {
+                        _mc2.appendChild(edgeopsRenderContinueConfirmCard(function(action, presetText) {
+                            if (action === 'continue') {
+                                edgeopsTriggerChatSend('aiInput', 'aiSend', presetText || t('hostAi.continueActionGoOnText'));
+                                return;
+                            }
+                            if (sessionId) API.pushAIRuntimeControl(sessionId, { action: action, message: '' }).catch(function() {});
+                        }));
+                    }
+                }
+                edgeopsScrollChatToBottomStepIfPinned(box);
+            } else if (ev.cot) {
+                edgeopsCotDispatch(toolsEl, ev.cot);
+                edgeopsScrollChatToBottomStepIfPinned(box);
+            } else if (ev.content_refresh) {
+                streamedText = String(ev.content_refresh || '');
+                flushStreamReplyText();
+            } else if (ev.content) {
+                streamedText += ev.content;
+                flushStreamReplyText();
+            } else if (ev.tool_stream) {
+                renderToolStreamEvent(toolsEl, ev);
+                edgeopsScrollChatToBottomStepIfPinned(box);
+            } else if (ev.runtime_control) {
+                var rc2 = ev.runtime_control || {};
+                streamedText += '\n\n`' + t('hostAi.runtimeEventPrefix') + (rc2.action || 'supplement') + '`\n\n';
+                flushStreamReplyText();
+                edgeopsScrollChatToBottomStepIfPinned(box);
+            } else if (ev.action === 'waiting' || ev.action === 'waiting_aborted') {
+                edgeopsUpdateChatPollWait(toolsEl, ev, {
+                    runtimeCtl: aiRuntimeCtl,
+                    onAbort: function() {
+                        if (aiAbortController) aiAbortController.abort();
+                        if (sessionId) {
+                            API.pushAIRuntimeControl(sessionId, { action: 'stop', message: '' })
+                                .catch(function(err) { showToast((err && err.message) || t('toast.requestFailed'), 'error'); });
+                        }
+                    }
+                });
+                edgeopsScrollChatToBottomStepIfPinned(box);
+            } else if (ev.action && ev.tool) {
+                edgeopsOnChatStreamToolEvent(replyWrap, toolsEl, ev, aiLogBuffer, renderAiLog, function() {
+                    edgeopsScrollChatToBottomStepIfPinned(box);
+                });
+            }
+        }, { signal: aiAbortController.signal, terminalScopeId: aiTerminalScopeId, preferredTerminalSlot: getAiPreferredTerminalSlot(), contextHostId: getAiGlobalContextHostId(), attachmentUuids: attachUuids }).then(function(sid) {
+            if (sid != null) sessionId = sid;
+            finishStreamAndRender();
+            loadSession(sessionId);
+            loadSessions();
+            requestAnimationFrame(function() {
+                var _boxF = document.getElementById('aiMessages');
+                if (_boxF) edgeopsScrollChatMessagesToBottom(_boxF);
+            });
+        }).catch(function(err) {
+            edgeopsMarkOpenToolRowsFailed(toolsEl, aiLogBuffer, renderAiLog);
+            if (err.name === 'AbortError') {
+                streamedText += '\n\n' + t('hostAi.streamAborted');
+                showToast(t('toast.aborted'), 'info');
+            } else {
+                streamedText += '\n' + t('hostAi.streamError') + (err && err.message ? err.message : t('toast.requestFailed'));
+                showToast(err.message || t('toast.requestFailed'), 'error');
+            }
+            flushStreamReplyText();
+            finishStreamAndRender();
+            loadSessions();
+        }).finally(function() {
+            if (aiStreamInputMode !== 'awaiting') setStreamingUI(false);
+            if (aiUntrackAbort) aiUntrackAbort();
+            aiAbortController = null;
+        });
+    }
+    document.getElementById('aiSend').onclick = doSend;
+    function doAiNewSession() {
+        var oldSessionId = sessionId;
+        API.createAISession('default').then(function(r) {
+            var id = r.session_id || (r.session && r.session.id);
+            if (id != null) {
+                sessionId = id;
+                document.getElementById('aiMessages').innerHTML = '';
+                loadSessions();
+                loadSession(id);
+                showToast(t('toast.newSessionCreated'));
+                if (oldSessionId) {
+                    API.summarizeAISessionTitle(oldSessionId).then(function(res) { if (res && res.title) loadSessions(); }).catch(function() {});
+                }
+            }
+        }).catch(function(err) { showToast(err.message || t('toast.createFailed'), 'error'); });
+    }
+    document.getElementById('aiNewSessionBtn').onclick = doAiNewSession;
+    document.getElementById('aiNewSessionTop').onclick = doAiNewSession;
+    (function() {
+        var sidebar = document.getElementById('aiLeftSidebar');
+        var tab = document.getElementById('aiSidebarTabSessions');
+        if (sidebar && tab) {
+            edgeopsBindAutoCollapseChatSidebar(sidebar, tab);
+            tab.onclick = function() {
+                var isOpen = sidebar.classList.toggle('open');
+                tab.classList.toggle('active', isOpen);
+            };
+        }
+    })();
+    document.getElementById('aiClearChat').onclick = function() {
+        if (!sessionId) { showToast(t('toast.selectOrCreateSession')); return; }
+        if (!confirm(t('confirm.clearSessionChat'))) return;
+        API.clearSessionMessages(sessionId, { clear: 'all' }).then(function() {
+            loadSession(sessionId);
+            showToast(t('toast.chatCleared'));
+        }).catch(function(err) { showToast(err.message || t('toast.clearFailed'), 'error'); });
+    };
+    document.getElementById('aiClearLastN').onclick = function() {
+        if (!sessionId) { showToast(t('toast.selectOrCreateSession')); return; }
+        var n = parseInt(document.getElementById('aiClearN').value, 10) || 10;
+        n = Math.max(1, Math.min(10000, n));
+        if (!confirm(t('confirm.keepNMessages', {n: n}))) return;
+        API.clearSessionMessages(sessionId, { clear: 'after', keep_n: n }).then(function() {
+            loadSession(sessionId);
+            showToast(t('toast.clearedAfterN', {n: n}));
+        }).catch(function(err) { showToast(err.message || t('toast.opFailed'), 'error'); });
+    };
+    (function() {
+        var modal = document.getElementById('aiSessionPromptModal');
+        var textEl = document.getElementById('aiSessionPromptText');
+        function openModal() {
+            if (!sessionId) { showToast(t('toast.selectOrCreateSession')); return; }
+            modal.style.display = 'flex';
+            var editWrap = document.getElementById('aiSessionPromptEditWrap');
+            var previewDiv = document.getElementById('aiSessionPromptPreview');
+            if (editWrap) editWrap.style.display = '';
+            if (previewDiv) previewDiv.style.display = 'none';
+            var editTab = document.getElementById('aiSessionPromptEditTab');
+            var previewTab = document.getElementById('aiSessionPromptPreviewTab');
+            if (editTab) editTab.classList.add('active'); if (previewTab) previewTab.classList.remove('active');
+            API.getSessionPrompt(sessionId).then(function(r) { if (textEl) textEl.value = (r.prompt || ''); }).catch(function(err) { showToast(err.message, 'error'); });
+        }
+        function closeModal() { if (modal) modal.style.display = 'none'; }
+        document.getElementById('aiSessionPromptBtn').onclick = openModal;
+        document.getElementById('aiSessionPromptClose').onclick = closeModal;
+        document.getElementById('aiSessionPromptCancel').onclick = closeModal;
+        (function() {
+            var editTab = document.getElementById('aiSessionPromptEditTab');
+            var previewTab = document.getElementById('aiSessionPromptPreviewTab');
+            var editWrap = document.getElementById('aiSessionPromptEditWrap');
+            var previewDiv = document.getElementById('aiSessionPromptPreview');
+            if (editTab) editTab.onclick = function() { if (editWrap) editWrap.style.display = ''; if (previewDiv) previewDiv.style.display = 'none'; editTab.classList.add('active'); if (previewTab) previewTab.classList.remove('active'); };
+            if (previewTab) previewTab.onclick = function() { if (textEl && previewDiv) previewDiv.innerHTML = (typeof formatMarkdown !== 'undefined' ? formatMarkdown(textEl.value) : esc(textEl.value)); if (previewDiv) previewDiv.style.display = 'block'; if (editWrap) editWrap.style.display = 'none'; previewTab.classList.add('active'); if (editTab) editTab.classList.remove('active'); };
+        })();
+        document.getElementById('aiSessionPromptSave').onclick = function() {
+            API.updateSessionPrompt(sessionId, textEl.value).then(function() { showToast(t('toast.saved')); closeModal(); loadSessions(); }).catch(function(err) { showToast(err.message, 'error'); });
+        };
+        document.getElementById('aiSessionPromptSummarize').onclick = function() {
+            var btn = this;
+            btn.disabled = true;
+            showToast(t('toast.summarizingSession'));
+            API.summarizeSessionPrompt(sessionId, 'replace').then(function(r) {
+                if (r.skipped) { showToast(t('toast.sessionPromptNoChange')); return; }
+                if (textEl) textEl.value = r.prompt || '';
+                showToast(modal.style.display !== 'none' ? t('toast.sessionReplacedByAi') : t('toast.sessionUpdatedShort'));
+            }).catch(function(err) { showToast(err.message || t('toast.summarizeFailed'), 'error'); }).finally(function() { btn.disabled = false; });
+        };
+        document.getElementById('aiSessionPromptAppend').onclick = function() {
+            var btn = this;
+            btn.disabled = true;
+            showToast(t('toast.summarizingSession'));
+            API.summarizeSessionPrompt(sessionId, 'append').then(function(r) {
+                if (r.skipped) { showToast(t('toast.sessionPromptNoAppend')); return; }
+                if (textEl) textEl.value = r.prompt || '';
+                showToast(modal.style.display !== 'none' ? t('toast.sessionAppendedByAi') : t('toast.sessionUpdatedShort'));
+            }).catch(function(err) { showToast(err.message || t('toast.summarizeFailed'), 'error');         }).finally(function() { btn.disabled = false; });
+        };
+    })();
+    document.getElementById('aiExportMd').onclick = function() { exportChatToMarkdown(sessionId); };
+    var aiInput = document.getElementById('aiInput');
+    edgeopsInitChatTextarea(aiInput);
+    edgeopsBindChatSubmit(aiInput, doSend);
+    // 页面缓存恢复时对全部控制台做 refit
+    (window._edgeopsRefitByPath = window._edgeopsRefitByPath || {})['/ai'] = function() {
+        aiConsoles.forEach(function(c) { if (c.refit) c.refit(); });
+    };
+}
+
+// ── 凭证管理 ──
+function renderCredentialsPage() {
+    renderLayout();
+    var el = getPageEl();
+    el.innerHTML = '<div class="topbar"><h2>' + esc(t('nav.credentials')) + '</h2><div class="topbar-actions"><button type="button" class="btn" id="credPageRefreshBtn">' + esc(t('common.refresh')) + '</button></div></div>'
+        + '<div class="page-content"><div class="tabs"><div class="tab active" data-tab="password">' + esc(t('pages.creds.tabPassword')) + '</div><div class="tab" data-tab="key">' + esc(t('pages.creds.tabKey')) + '</div></div>'
+        + '<div id="credPasswordPanel" class="cred-tab-panel"><div id="credPasswordList" class="table-container"></div><div id="credPasswordPagination"></div></div>'
+        + '<div id="credKeyPanel" class="cred-tab-panel" style="display:none"><div id="credKeyList" class="table-container"></div><div id="credKeyPagination"></div></div></div>';
+    var activeTab = 'password';
+    var paginationPw = appendPaginationBar(document.getElementById('credPasswordPagination'), 20);
+    var paginationKey = appendPaginationBar(document.getElementById('credKeyPagination'), 20);
+    function loadPasswordCreds() {
+        var params = { page: paginationPw.getPage(), page_size: paginationPw.getPageSize(), type: 'password' };
+        API.listCredentials(params).then(function(r) {
+            var list = r.credentials || [];
+            var total = r.total != null ? r.total : list.length;
+            paginationPw.update({ total: total, page: r.page, page_size: r.page_size });
+            var userCell = function(c) { return esc((c.created_by_display_name || c.created_by_username || '-')); };
+            var pwHtml = list.length ? '<table class="data-table sortable-table"><thead><tr><th data-sort data-filter>' + esc(t('pages.creds.thCode')) + '</th><th data-sort data-filter>' + esc(t('pages.creds.thName')) + '</th><th data-sort>' + esc(t('pages.creds.thUsername')) + '</th><th>' + esc(t('pages.creds.thDesc')) + '</th><th data-sort data-filter>' + esc(t('pages.creds.thUser')) + '</th><th>' + esc(t('pages.hosts.thAction')) + '</th></tr></thead><tbody>'
+                + list.map(function(c) { return '<tr><td>' + esc(c.code) + '</td><td>' + esc(c.name) + '</td><td>' + esc(c.username) + '</td><td>' + esc(c.description) + '</td><td>' + userCell(c) + '</td><td><button class="btn btn-sm btn-danger" onclick="deleteCredential(' + c.id + ')">' + esc(t('common.delete')) + '</button></td></tr>'; }).join('') + '</tbody></table>' : '<p class="empty-state">' + esc(t('pages.creds.emptyPassword')) + '</p>';
+            document.getElementById('credPasswordList').innerHTML = pwHtml;
+            initDataTableSortFilter(document.getElementById('credPasswordList'));
+        }).catch(function(err) { showToast(err.message, 'error'); });
+    }
+    function loadKeyCreds() {
+        var params = { page: paginationKey.getPage(), page_size: paginationKey.getPageSize(), type: 'key_pair' };
+        API.listCredentials(params).then(function(r) {
+            var list = r.credentials || [];
+            var total = r.total != null ? r.total : list.length;
+            paginationKey.update({ total: total, page: r.page, page_size: r.page_size });
+            var userCell = function(c) { return esc((c.created_by_display_name || c.created_by_username || '-')); };
+            var kyHtml = list.length ? '<table class="data-table sortable-table"><thead><tr><th data-sort data-filter>' + esc(t('pages.creds.thCode')) + '</th><th data-sort data-filter>' + esc(t('pages.creds.thName')) + '</th><th data-sort>' + esc(t('pages.creds.thUsername')) + '</th><th data-sort>' + esc(t('pages.creds.thKeyType')) + '</th><th>' + esc(t('pages.creds.thDesc')) + '</th><th data-sort data-filter>' + esc(t('pages.creds.thUser')) + '</th><th>' + esc(t('pages.hosts.thAction')) + '</th></tr></thead><tbody>'
+                + list.map(function(c) { return '<tr><td>' + esc(c.code) + '</td><td>' + esc(c.name) + '</td><td>' + esc(c.username) + '</td><td>' + esc(c.key_type || '') + '</td><td>' + esc(c.description) + '</td><td>' + userCell(c) + '</td><td><button class="btn btn-sm btn-danger" onclick="deleteCredential(' + c.id + ')">' + esc(t('common.delete')) + '</button></td></tr>'; }).join('') + '</tbody></table>' : '<p class="empty-state">' + esc(t('pages.creds.emptyKey')) + '</p>';
+            document.getElementById('credKeyList').innerHTML = kyHtml;
+            initDataTableSortFilter(document.getElementById('credKeyList'));
+        }).catch(function(err) { showToast(err.message, 'error'); });
+    }
+    paginationPw.onPrev(loadPasswordCreds);
+    paginationPw.onNext(loadPasswordCreds);
+    paginationPw.onPageSizeChange(loadPasswordCreds);
+    paginationKey.onPrev(loadKeyCreds);
+    paginationKey.onNext(loadKeyCreds);
+    paginationKey.onPageSizeChange(loadKeyCreds);
+    el.querySelectorAll('.tab').forEach(function(t) {
+        t.onclick = function() {
+            activeTab = this.getAttribute('data-tab');
+            el.querySelectorAll('.tab').forEach(function(x) { x.classList.remove('active'); });
+            this.classList.add('active');
+            document.getElementById('credPasswordPanel').style.display = activeTab === 'password' ? 'block' : 'none';
+            document.getElementById('credKeyPanel').style.display = activeTab === 'key' ? 'block' : 'none';
+        };
+    });
+    var credPageRefreshBtn = document.getElementById('credPageRefreshBtn');
+    if (credPageRefreshBtn) {
+        credPageRefreshBtn.onclick = function() {
+            if (activeTab === 'key') loadKeyCreds(); else loadPasswordCreds();
+            showToast(t('toast.refreshed'));
+        };
+    }
+    loadPasswordCreds();
+    loadKeyCreds();
+}
+
+function deleteCredential(id) {
+    showConfirm(t('confirm.deleteCredentialTitle'), t('confirm.deleteCredentialBody')).then(function(ok) {
+        if (!ok) return;
+        API.deleteCredential(id).then(function() { showToast(t('toast.deleted')); renderCredentialsPage(); }).catch(function(err) { showToast(err.message, 'error'); });
+    });
+}
+
+// ── 服务器树（分组 + 主机，右键菜单，拖放） ──
+var EDGEOPS_SERVER_TREE_EXPANDED_KEY = 'edgeops_server_tree_expanded_ids';
+var edgeopsServerTreeDragJustEndedAt = 0;
+
+function edgeopsGetServerTreeExpandedIds() {
+    try {
+        var raw = sessionStorage.getItem(EDGEOPS_SERVER_TREE_EXPANDED_KEY);
+        if (!raw) return null;
+        var arr = JSON.parse(raw);
+        if (!Array.isArray(arr)) return null;
+        return new Set(arr.map(function(id) { return String(id); }));
+    } catch (e) {}
+    return null;
+}
+
+function edgeopsSaveServerTreeExpandedIds(expandedIds) {
+    try {
+        sessionStorage.setItem(EDGEOPS_SERVER_TREE_EXPANDED_KEY, JSON.stringify(Array.from(expandedIds || [])));
+    } catch (e) {}
+}
+
+/** 合并展开若干分组 id（新建子分组后保证父级仍为展开） */
+function edgeopsExpandServerTreeGroupIds(ids) {
+    var s = edgeopsGetServerTreeExpandedIds();
+    if (!s) s = new Set();
+    (ids || []).forEach(function(id) {
+        if (id == null || id === '') return;
+        s.add(String(id));
+    });
+    edgeopsSaveServerTreeExpandedIds(s);
+}
+
+function edgeopsCollectServerTreeExpandedIds(container) {
+    var expandedIds = new Set();
+    if (!container) return expandedIds;
+    container.querySelectorAll('.server-tree-group').forEach(function(div) {
+        var ch = div.querySelector('.server-tree-children');
+        if (ch && ch.classList.contains('open')) {
+            var id = div.getAttribute('data-group-id');
+            if (id) expandedIds.add(id);
+        }
+    });
+    return expandedIds;
+}
+
+function edgeopsMarkServerTreeDragEnd() {
+    edgeopsServerTreeDragJustEndedAt = Date.now();
+}
+
+function edgeopsServerTreeDragJustEnded() {
+    return Date.now() - edgeopsServerTreeDragJustEndedAt < 220;
+}
+
+/** 用接口返回的数据填充 hostTreeContent，expandedIds 为已展开的分组 id 集合，保留树状态；null 表示默认全部展开 */
+function fillHostTreeContent(container, r, expandedIds) {
+    if (!container) return;
+    if (!expandedIds) expandedIds = edgeopsGetServerTreeExpandedIds();
+    var byUser = r.by_user || [];
+    var tree = r.tree || [];
+    var ungrouped = r.ungrouped_hosts || [];
+    container.innerHTML = '';
+    container.classList.add('server-tree-root');
+
+    function hostLabel(h) { return (h.name || h.host || '').trim() || h.host || ('ID ' + h.id); }
+    function ownerDragKey(ownerId) { return ownerId == null ? '__none__' : String(ownerId); }
+    function hostMeta(h) {
+        var host = (h.host || '').trim();
+        var port = h.port ? (':' + h.port) : '';
+        if (host) return host + port;
+        return h.id ? ('ID ' + h.id) : '';
+    }
+    function hostAliasesText(h) {
+        var aliasList = Array.isArray(h.aliases)
+            ? h.aliases.map(function(a) { return String(a || '').trim(); }).filter(Boolean)
+            : [];
+        return aliasList.length ? aliasList.join('、') : '';
+    }
+    function countTreeStats(nodes) {
+        var stats = { groups: 0, hosts: 0 };
+        (nodes || []).forEach(function(node) {
+            stats.groups += 1;
+            stats.hosts += ((node.hosts && node.hosts.length) || 0);
+            var childStats = countTreeStats(node.children || []);
+            stats.groups += childStats.groups;
+            stats.hosts += childStats.hosts;
+        });
+        return stats;
+    }
+    function appendCountBadge(parent, text) {
+        var badge = document.createElement('span');
+        badge.className = 'server-tree-badge';
+        badge.textContent = text;
+        parent.appendChild(badge);
+    }
+    function buildHostRow(h, groupId, userId, flatMode) {
+        var hostRow = document.createElement('div');
+        hostRow.className = 'server-tree-host' + (flatMode ? ' server-tree-host-flat' : '');
+        hostRow.setAttribute('data-host-id', h.id);
+        hostRow.setAttribute('data-group-id', groupId == null ? 'ungrouped' : groupId);
+        if (userId != null) hostRow.setAttribute('data-user-id', String(userId));
+        var aliasParts = Array.isArray(h.aliases) ? h.aliases.join(' ') : '';
+        var tagParts = Array.isArray(h.tag_names)
+            ? h.tag_names.join(' ')
+            : (Array.isArray(h.tags) ? h.tags.map(function(t) { return t && t.name ? t.name : ''; }).join(' ') : '');
+        var searchBlob = [hostLabel(h), hostMeta(h), String(h.id), aliasParts, tagParts, (h.remark || '')].join(' ').toLowerCase();
+        hostRow.setAttribute('data-host-search', searchBlob);
+        hostRow.draggable = !flatMode;
+        var icon = document.createElement('span');
+        icon.className = 'server-tree-host-icon';
+        icon.textContent = '●';
+        var body = document.createElement('span');
+        body.className = 'server-tree-host-body';
+        var title = document.createElement('span');
+        title.className = 'server-tree-host-title';
+        title.textContent = hostLabel(h);
+        body.appendChild(title);
+        var meta = hostMeta(h);
+        var aliasesText = hostAliasesText(h);
+        var tagsText = Array.isArray(h.tag_names)
+            ? h.tag_names.join('、')
+            : (Array.isArray(h.tags) ? h.tags.map(function(t) { return t && t.name ? t.name : ''; }).filter(Boolean).join('、') : '');
+        var metaParts = [];
+        if (meta) metaParts.push(meta);
+        metaParts.push('TAG：' + (tagsText || '-'));
+        metaParts.push('别名：' + (aliasesText || '-'));
+        var sub = document.createElement('span');
+        sub.className = 'server-tree-host-meta';
+        sub.textContent = metaParts.join(' | ');
+        body.appendChild(sub);
+        hostRow.appendChild(icon);
+        hostRow.appendChild(body);
+        hostRow.onclick = function(e) { e.stopPropagation(); Router.navigate('/hosts/' + h.id); };
+        hostRow.oncontextmenu = function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (edgeopsServerTreeDragJustEnded()) return;
+            showServerTreeContextMenu(e, { type: 'host', host: h, groupId: groupId });
+        };
+        if (!flatMode) {
+            hostRow.ondragstart = function(e) {
+                e.dataTransfer.setData('treeItemType', 'host');
+                e.dataTransfer.setData('hostId', h.id);
+                e.dataTransfer.setData('fromGroupId', groupId == null ? 'ungrouped' : String(groupId));
+                if (userId != null) e.dataTransfer.setData('fromUserId', String(userId));
+                e.dataTransfer.effectAllowed = 'move';
+            };
+            hostRow.ondragend = edgeopsMarkServerTreeDragEnd;
+        }
+        return hostRow;
+    }
+
+    function renderGroupNode(node, level, ownerId) {
+        var div = document.createElement('div');
+        div.className = 'server-tree-group';
+        div.setAttribute('data-group-id', node.id);
+        div.setAttribute('data-level', level);
+        if (ownerId != null) div.setAttribute('data-owner-id', String(ownerId));
+        div.style.paddingLeft = (level * 14 + 8) + 'px';
+        var row = document.createElement('div');
+        row.className = 'server-tree-group-row';
+        row.draggable = true;
+        row.ondragstart = function(e) {
+            e.stopPropagation();
+            e.dataTransfer.setData('treeItemType', 'group');
+            e.dataTransfer.setData('groupId', String(node.id));
+            e.dataTransfer.setData('groupOwnerId', ownerDragKey(ownerId));
+            e.dataTransfer.setData('fromParentGroupId', node.parent_id == null ? '' : String(node.parent_id));
+            e.dataTransfer.effectAllowed = 'move';
+        };
+        row.ondragend = edgeopsMarkServerTreeDragEnd;
+        var open = document.createElement('span');
+        open.className = 'server-tree-chevron';
+        var hasKids = (node.children && node.children.length) || (node.hosts && node.hosts.length);
+        var isOpen = !expandedIds || expandedIds.has(String(node.id));
+        open.textContent = hasKids ? (isOpen ? '▼' : '▶') : '';
+        open.onclick = function() {
+            var ch = div.querySelector('.server-tree-children');
+            if (ch) {
+                ch.classList.toggle('open');
+                open.textContent = ch.classList.contains('open') ? '▼' : '▶';
+                edgeopsSaveServerTreeExpandedIds(edgeopsCollectServerTreeExpandedIds(container));
+            }
+        };
+        var body = document.createElement('span');
+        body.className = 'server-tree-group-body';
+        var label = document.createElement('span');
+        label.className = 'server-tree-group-label';
+        label.textContent = node.name || ('分组 ' + node.id);
+        var meta = document.createElement('span');
+        meta.className = 'server-tree-group-meta';
+        appendCountBadge(meta, ((node.children && node.children.length) || 0) + ' 个子分组');
+        appendCountBadge(meta, ((node.hosts && node.hosts.length) || 0) + ' 台主机');
+        body.appendChild(label);
+        body.appendChild(meta);
+        body.onclick = function() {
+            var ch = div.querySelector('.server-tree-children');
+            if (ch) {
+                ch.classList.toggle('open');
+                open.textContent = ch.classList.contains('open') ? '▼' : '▶';
+                edgeopsSaveServerTreeExpandedIds(edgeopsCollectServerTreeExpandedIds(container));
+            }
+        };
+        row.appendChild(open);
+        row.appendChild(body);
+        div.appendChild(row);
+        var childrenWrap = document.createElement('div');
+        childrenWrap.className = 'server-tree-children' + (isOpen ? ' open' : '');
+        (node.hosts || []).forEach(function(h) { childrenWrap.appendChild(buildHostRow(h, node.id, null, false)); });
+        (node.children || []).forEach(function(c) { childrenWrap.appendChild(renderGroupNode(c, level + 1, ownerId)); });
+        div.appendChild(childrenWrap);
+        div.oncontextmenu = function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (edgeopsServerTreeDragJustEnded()) return false;
+            showServerTreeContextMenu(e, { type: 'group', group: node });
+            return false;
+        };
+        div.ondragover = function(e) {
+            var itemType = e.dataTransfer.getData('treeItemType');
+            if (itemType === 'group') {
+                var draggedGroupId = e.dataTransfer.getData('groupId');
+                var draggedOwnerId = e.dataTransfer.getData('groupOwnerId');
+                if (!draggedGroupId || String(node.id) === draggedGroupId) return;
+                if (draggedOwnerId && draggedOwnerId !== ownerDragKey(ownerId)) return;
+            }
+            e.preventDefault();
+            e.stopPropagation();
+            e.dataTransfer.dropEffect = 'move';
+            this.classList.add('server-tree-drag-over');
+        };
+        div.ondragleave = function() { this.classList.remove('server-tree-drag-over'); };
+        div.ondrop = function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            this.classList.remove('server-tree-drag-over');
+            edgeopsMarkServerTreeDragEnd();
+            var itemType = e.dataTransfer.getData('treeItemType');
+            if (itemType === 'group') {
+                var draggedGroupId = e.dataTransfer.getData('groupId');
+                var draggedOwnerId = e.dataTransfer.getData('groupOwnerId');
+                if (!draggedGroupId || String(node.id) === draggedGroupId) return;
+                if (draggedOwnerId && draggedOwnerId !== ownerDragKey(ownerId)) return;
+                moveGroupToParent(parseInt(draggedGroupId, 10), node.id);
+                return;
+            }
+            var hostId = e.dataTransfer.getData('hostId');
+            var fromGroupId = e.dataTransfer.getData('fromGroupId');
+            if (!hostId || String(node.id) === fromGroupId) return;
+            moveHostBetweenGroups(hostId, fromGroupId === 'ungrouped' ? null : parseInt(fromGroupId, 10), node.id);
+        };
+        return div;
+    }
+
+    function renderOneUser(usr) {
+        var userTree = usr.tree || [];
+        var userUngrouped = usr.ungrouped_hosts || [];
+        var userLabel = (usr.display_name || usr.username || '').trim() || ('用户 ' + usr.user_id);
+        if (userTree.length === 0 && userUngrouped.length === 0) return null;
+        var stats = countTreeStats(userTree);
+        stats.hosts += userUngrouped.length;
+        var userDiv = document.createElement('section');
+        userDiv.className = 'server-tree-user';
+        userDiv.setAttribute('data-user-id', usr.user_id);
+        var userHeader = document.createElement('div');
+        userHeader.className = 'server-tree-user-header';
+        var userTitleWrap = document.createElement('div');
+        userTitleWrap.className = 'server-tree-user-title-wrap';
+        var userTitle = document.createElement('div');
+        userTitle.className = 'server-tree-user-title';
+        userTitle.textContent = userLabel;
+        userTitleWrap.appendChild(userTitle);
+        if (usr.username && usr.username !== userLabel) {
+            var userSub = document.createElement('div');
+            userSub.className = 'server-tree-user-subtitle';
+            userSub.textContent = usr.username;
+            userTitleWrap.appendChild(userSub);
+        }
+        var userMeta = document.createElement('div');
+        userMeta.className = 'server-tree-user-meta';
+        appendCountBadge(userMeta, stats.groups + ' 个分组');
+        appendCountBadge(userMeta, stats.hosts + ' 台主机');
+        userHeader.appendChild(userTitleWrap);
+        userHeader.appendChild(userMeta);
+        userDiv.appendChild(userHeader);
+        var inner = document.createElement('div');
+        inner.className = 'server-tree-user-inner';
+        userTree.forEach(function(n) { inner.appendChild(renderGroupNode(n, 0, usr.user_id)); });
+        inner.oncontextmenu = function(e) {
+            if (e.target !== inner) return;
+            e.preventDefault();
+            if (edgeopsServerTreeDragJustEnded()) return;
+            showServerTreeContextMenu(e, { type: 'root' });
+        };
+        inner.ondragover = function(e) {
+            if (e.target !== inner) return;
+            var itemType = e.dataTransfer.getData('treeItemType');
+            if (itemType !== 'group') return;
+            var draggedOwnerId = e.dataTransfer.getData('groupOwnerId');
+            if (draggedOwnerId && draggedOwnerId !== ownerDragKey(usr.user_id)) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            inner.classList.add('server-tree-top-drop');
+        };
+        inner.ondragleave = function(e) {
+            if (!inner.contains(e.relatedTarget)) inner.classList.remove('server-tree-top-drop');
+        };
+        inner.ondrop = function(e) {
+            inner.classList.remove('server-tree-top-drop');
+            if (e.target !== inner) return;
+            edgeopsMarkServerTreeDragEnd();
+            var itemType = e.dataTransfer.getData('treeItemType');
+            if (itemType !== 'group') return;
+            var draggedGroupId = e.dataTransfer.getData('groupId');
+            var draggedOwnerId = e.dataTransfer.getData('groupOwnerId');
+            var fromParentGroupId = e.dataTransfer.getData('fromParentGroupId');
+            if (!draggedGroupId) return;
+            if (draggedOwnerId && draggedOwnerId !== ownerDragKey(usr.user_id)) return;
+            if (!fromParentGroupId) return;
+            e.preventDefault();
+            moveGroupToParent(parseInt(draggedGroupId, 10), null);
+        };
+        if (userUngrouped.length > 0) {
+            var ungroupWrap = document.createElement('div');
+            ungroupWrap.className = 'server-tree-ungrouped';
+            ungroupWrap.setAttribute('data-group-id', 'ungrouped');
+            ungroupWrap.setAttribute('data-user-id', String(usr.user_id));
+            var ungroupLabel = document.createElement('div');
+            ungroupLabel.className = 'server-tree-ungrouped-label';
+            ungroupLabel.textContent = t('pages.tree.ungrouped');
+            ungroupWrap.appendChild(ungroupLabel);
+            userUngrouped.forEach(function(h) { ungroupWrap.appendChild(buildHostRow(h, null, usr.user_id, false)); });
+            ungroupWrap.oncontextmenu = function(e) {
+                if (e.target.closest('.server-tree-host')) return;
+                e.preventDefault();
+                e.stopPropagation();
+                if (edgeopsServerTreeDragJustEnded()) return;
+                showServerTreeContextMenu(e, { type: 'ungrouped_area' });
+            };
+            ungroupWrap.ondragover = function(e) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; this.classList.add('server-tree-drag-over'); };
+            ungroupWrap.ondragleave = function() { this.classList.remove('server-tree-drag-over'); };
+            ungroupWrap.ondrop = function(e) {
+                e.preventDefault();
+                this.classList.remove('server-tree-drag-over');
+                edgeopsMarkServerTreeDragEnd();
+                var itemType = e.dataTransfer.getData('treeItemType');
+                if (itemType === 'group') {
+                    var draggedGroupId = e.dataTransfer.getData('groupId');
+                    var draggedOwnerId = e.dataTransfer.getData('groupOwnerId');
+                    var fromParentGroupId = e.dataTransfer.getData('fromParentGroupId');
+                    if (!draggedGroupId) return;
+                    if (draggedOwnerId && draggedOwnerId !== ownerDragKey(usr.user_id)) return;
+                    if (!fromParentGroupId) return;
+                    moveGroupToParent(parseInt(draggedGroupId, 10), null);
+                    return;
+                }
+                var hostId = e.dataTransfer.getData('hostId');
+                var fromGroupId = e.dataTransfer.getData('fromGroupId');
+                var fromUserId = e.dataTransfer.getData('fromUserId');
+                if (!hostId || fromUserId !== String(usr.user_id)) return;
+                moveHostBetweenGroups(hostId, fromGroupId === 'ungrouped' ? null : parseInt(fromGroupId, 10), null);
+            };
+            inner.appendChild(ungroupWrap);
+        }
+        userDiv.appendChild(inner);
+        return userDiv;
+    }
+
+        if (byUser.length === 0 && tree.length === 0 && ungrouped.length === 0) {
+            container.innerHTML = '<div class="empty-state"><p>' + esc(t('pages.tree.emptyAll')) + '</p></div>';
+            container.oncontextmenu = function(e) { e.preventDefault(); showServerTreeContextMenu(e, { type: 'root' }); };
+            return;
+        }
+
+        if (byUser.length > 0) {
+            byUser.forEach(function(usr) {
+                var ud = renderOneUser(usr);
+                if (ud) container.appendChild(ud);
+            });
+            container.oncontextmenu = function(e) {
+                if (e.target === container || e.target.closest('.server-tree-user-header')) {
+                    e.preventDefault();
+                    if (edgeopsServerTreeDragJustEnded()) return;
+                    showServerTreeContextMenu(e, { type: 'root' });
+                }
+            };
+            return;
+        }
+
+        if (tree.length === 0) {
+            var flatWrap = document.createElement('div');
+            flatWrap.className = 'server-tree-flat';
+            flatWrap.innerHTML = '<div class="server-tree-flat-hint">' + esc(t('pages.tree.flatHint')) + '</div>';
+            ungrouped.forEach(function(h) { flatWrap.appendChild(buildHostRow(h, null, null, true)); });
+            flatWrap.oncontextmenu = function(e) {
+                if (e.target.closest('.server-tree-host')) return;
+                e.preventDefault();
+                e.stopPropagation();
+                if (edgeopsServerTreeDragJustEnded()) return;
+                showServerTreeContextMenu(e, { type: 'root' });
+            };
+            container.appendChild(flatWrap);
+            container.oncontextmenu = function(e) {
+                if (e.target.closest('.server-tree-host') || e.target.closest('.server-tree-flat')) return;
+                if (e.target === container) {
+                    e.preventDefault();
+                    if (edgeopsServerTreeDragJustEnded()) return;
+                    showServerTreeContextMenu(e, { type: 'root' });
+                }
+            };
+            return;
+        }
+
+        tree.forEach(function(n) { container.appendChild(renderGroupNode(n, 0, n.created_by == null ? null : n.created_by)); });
+        if (ungrouped.length > 0) {
+            var ungroupWrap = document.createElement('div');
+            ungroupWrap.className = 'server-tree-ungrouped';
+            ungroupWrap.setAttribute('data-group-id', 'ungrouped');
+            var ungroupLabel = document.createElement('div');
+            ungroupLabel.className = 'server-tree-ungrouped-label';
+            ungroupLabel.textContent = t('pages.tree.ungrouped');
+            ungroupWrap.appendChild(ungroupLabel);
+            ungrouped.forEach(function(h) { ungroupWrap.appendChild(buildHostRow(h, null, null, false)); });
+            ungroupWrap.oncontextmenu = function(e) {
+                if (e.target.closest('.server-tree-host')) return;
+                e.preventDefault();
+                e.stopPropagation();
+                if (edgeopsServerTreeDragJustEnded()) return;
+                showServerTreeContextMenu(e, { type: 'ungrouped_area' });
+            };
+            ungroupWrap.ondragover = function(e) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; this.classList.add('server-tree-drag-over'); };
+            ungroupWrap.ondragleave = function() { this.classList.remove('server-tree-drag-over'); };
+            ungroupWrap.ondrop = function(e) {
+                e.preventDefault();
+                this.classList.remove('server-tree-drag-over');
+                edgeopsMarkServerTreeDragEnd();
+                var itemType = e.dataTransfer.getData('treeItemType');
+                if (itemType === 'group') {
+                    var draggedGroupId = e.dataTransfer.getData('groupId');
+                    var fromParentGroupId = e.dataTransfer.getData('fromParentGroupId');
+                    if (!draggedGroupId || !fromParentGroupId) return;
+                    moveGroupToParent(parseInt(draggedGroupId, 10), null);
+                    return;
+                }
+                var hostId = e.dataTransfer.getData('hostId');
+                var fromGroupId = e.dataTransfer.getData('fromGroupId');
+                if (!hostId || fromGroupId === 'ungrouped') return;
+                moveHostBetweenGroups(hostId, parseInt(fromGroupId, 10), null);
+            };
+            container.appendChild(ungroupWrap);
+        }
+        container.ondragover = function(e) {
+            if (e.target !== container) return;
+            var itemType = e.dataTransfer.getData('treeItemType');
+            if (itemType !== 'group') return;
+            var fromParentGroupId = e.dataTransfer.getData('fromParentGroupId');
+            if (!fromParentGroupId) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            container.classList.add('server-tree-top-drop');
+        };
+        container.ondragleave = function(e) {
+            if (!container.contains(e.relatedTarget)) container.classList.remove('server-tree-top-drop');
+        };
+        container.ondrop = function(e) {
+            container.classList.remove('server-tree-top-drop');
+            if (e.target !== container) return;
+            edgeopsMarkServerTreeDragEnd();
+            var itemType = e.dataTransfer.getData('treeItemType');
+            if (itemType !== 'group') return;
+            var draggedGroupId = e.dataTransfer.getData('groupId');
+            var fromParentGroupId = e.dataTransfer.getData('fromParentGroupId');
+            if (!draggedGroupId || !fromParentGroupId) return;
+            e.preventDefault();
+            moveGroupToParent(parseInt(draggedGroupId, 10), null);
+        };
+        container.oncontextmenu = function(e) {
+            if (e.target.closest('.server-tree-host') || e.target.closest('.server-tree-group') || e.target.closest('.server-tree-ungrouped')) return;
+            if (e.target === container || (e.target.classList && e.target.classList.contains('server-tree-root'))) {
+                e.preventDefault();
+                if (edgeopsServerTreeDragJustEnded()) return;
+                showServerTreeContextMenu(e, { type: 'root' });
+            }
+        };
+}
+
+/** 按主机名、IP、端口、ID 过滤服务器树并展开匹配路径 */
+function edgeopsApplyServerTreeSearch(container, rawQuery) {
+    if (!container) return;
+    var q = (rawQuery || '').trim().toLowerCase();
+    var prev = document.getElementById('serverTreeSearchNoResults');
+    if (prev) prev.remove();
+    container.querySelectorAll('.server-tree-search-hidden').forEach(function(el) {
+        el.classList.remove('server-tree-search-hidden');
+    });
+    if (!q) return;
+
+    container.querySelectorAll('.server-tree-host').forEach(function(row) {
+        var titleEl = row.querySelector('.server-tree-host-title');
+        var metaEl = row.querySelector('.server-tree-host-meta');
+        var id = row.getAttribute('data-host-id') || '';
+        var extra = row.getAttribute('data-host-search') || '';
+        var blob = ((titleEl && titleEl.textContent) || '') + ' ' + ((metaEl && metaEl.textContent) || '') + ' ' + id + ' ' + extra;
+        if (blob.toLowerCase().indexOf(q) >= 0) {
+            var p = row.parentElement;
+            while (p && p !== container) {
+                if (p.classList.contains('server-tree-children')) {
+                    p.classList.add('open');
+                    var grp = p.parentElement;
+                    if (grp && grp.classList.contains('server-tree-group')) {
+                        var ch = grp.querySelector(':scope > .server-tree-group-row > .server-tree-chevron');
+                        if (ch && ch.textContent === '▶') ch.textContent = '▼';
+                    }
+                }
+                p = p.parentElement;
+            }
+        } else {
+            row.classList.add('server-tree-search-hidden');
+        }
+    });
+
+    var groups = container.querySelectorAll('.server-tree-group');
+    for (var gi = groups.length - 1; gi >= 0; gi--) {
+        var g = groups[gi];
+        if (!g.querySelector('.server-tree-host:not(.server-tree-search-hidden)')) {
+            g.classList.add('server-tree-search-hidden');
+        }
+    }
+    container.querySelectorAll('.server-tree-ungrouped').forEach(function(u) {
+        if (!u.querySelector('.server-tree-host:not(.server-tree-search-hidden)')) {
+            u.classList.add('server-tree-search-hidden');
+        }
+    });
+    container.querySelectorAll('.server-tree-user').forEach(function(u) {
+        if (!u.querySelector('.server-tree-host:not(.server-tree-search-hidden)')) {
+            u.classList.add('server-tree-search-hidden');
+        }
+    });
+
+    var anyHost = container.querySelector('.server-tree-host');
+    if (anyHost && !container.querySelector('.server-tree-host:not(.server-tree-search-hidden)')) {
+        var d = document.createElement('div');
+        d.id = 'serverTreeSearchNoResults';
+        d.className = 'server-tree-search-empty';
+        d.textContent = t('pages.tree.searchNoResult');
+        container.insertBefore(d, container.firstChild);
+    }
+}
+
+var edgeopsHostTreeSearchTimer = null;
+function edgeopsHostTreeSearchSchedule() {
+    clearTimeout(edgeopsHostTreeSearchTimer);
+    edgeopsHostTreeSearchTimer = setTimeout(function() {
+        var inp = document.getElementById('hostTreeSearchInput');
+        var c = document.getElementById('hostTreeContent');
+        edgeopsApplyServerTreeSearch(c, inp ? inp.value : '');
+    }, 200);
+}
+
+/** 刷新服务器树节点并保持当前展开/折叠状态 */
+function refreshHostGroupsTree() {
+    var container = document.getElementById('hostTreeContent');
+    if (!container) { renderHostGroupsPage(); return; }
+    var expandedIds = edgeopsCollectServerTreeExpandedIds(container);
+    var searchVal = (document.getElementById('hostTreeSearchInput') || {}).value || '';
+    edgeopsSaveServerTreeExpandedIds(expandedIds);
+    container.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+    API.hostGroupsTree().then(function(r) {
+        fillHostTreeContent(container, r, expandedIds);
+        edgeopsApplyServerTreeSearch(container, searchVal);
+        showToast(t('toast.refreshed'));
+    }).catch(function(err) {
+        container.innerHTML = '<div class="empty-state"><h3>' + esc(t('ui.loadFailedH3')) + '</h3><p>' + esc(err.message) + '</p></div>';
+    });
+}
+
+function renderHostGroupsPage() {
+    renderLayout();
+    var el = getPageEl();
+    el.innerHTML = '<div class="topbar"><h2>' + esc(t('nav.hostGroups')) + '</h2><div class="topbar-actions"><input type="search" id="hostTreeSearchInput" class="form-control server-tree-search-input" placeholder="' + esc(t('pages.tree.searchPh')) + '" title="' + esc(t('pages.tree.searchTitle')) + '" aria-label="' + esc(t('pages.tree.searchAria')) + '"><button type="button" class="btn" id="hostGroupsRefreshBtn" style="margin-left:auto">' + esc(t('common.refresh')) + '</button></div></div>'
+        + '<div class="page-content server-tree-page"><div id="hostTreeContent" class="server-tree-root"><div class="loading-overlay"><div class="spinner"></div></div></div></div>'
+        + '<div id="serverTreeContextMenu" class="server-tree-context-menu"></div>';
+    var container = document.getElementById('hostTreeContent');
+    var refreshBtn = document.getElementById('hostGroupsRefreshBtn');
+    var searchInp = document.getElementById('hostTreeSearchInput');
+    if (refreshBtn) refreshBtn.onclick = function() { refreshHostGroupsTree(); };
+    if (searchInp) {
+        searchInp.oninput = edgeopsHostTreeSearchSchedule;
+        searchInp.onsearch = function() { edgeopsApplyServerTreeSearch(container, searchInp.value); };
+    }
+    API.hostGroupsTree().then(function(r) {
+        fillHostTreeContent(container, r, edgeopsGetServerTreeExpandedIds());
+        if (searchInp && searchInp.value) edgeopsApplyServerTreeSearch(container, searchInp.value);
+    }).catch(function(err) {
+        if (container) container.innerHTML = '<div class="empty-state"><h3>' + esc(t('ui.loadFailedH3')) + '</h3><p>' + esc(err.message) + '</p></div>';
+    });
+}
+
+function showServerTreeContextMenu(e, target) {
+    var menu = document.getElementById('serverTreeContextMenu');
+    if (!menu) return;
+    menu.innerHTML = '';
+    var x = e.clientX;
+    var y = e.clientY;
+    menu.style.left = '-9999px';
+    menu.style.top = '-9999px';
+    menu.classList.add('open');
+    requestAnimationFrame(function() {
+        var maxLeft = Math.max(8, window.innerWidth - menu.offsetWidth - 8);
+        var maxTop = Math.max(8, window.innerHeight - menu.offsetHeight - 8);
+        menu.style.left = Math.max(8, Math.min(x, maxLeft)) + 'px';
+        menu.style.top = Math.max(8, Math.min(y, maxTop)) + 'px';
+    });
+    function item(text, fn) {
+        var a = document.createElement('div');
+        a.className = 'server-tree-context-item';
+        a.textContent = text;
+        a.onmousedown = function(ev) { ev.stopPropagation(); };
+        a.onclick = function(ev) { ev.stopPropagation(); menu.classList.remove('open'); fn(); };
+        menu.appendChild(a);
+    }
+    if (target.type === 'root' || target.type === 'ungrouped_area') {
+        item(t('hostTree.addGroup'), function() { showAddGroupModal(null, null); });
+        item(t('common.refresh'), function() { refreshHostGroupsTree(); });
+    } else if (target.type === 'group') {
+        item(t('hostTree.addGroup'), function() { showAddGroupModal(target.group.id, target.group.name || ''); });
+        if (target.group.parent_id != null) item(t('hostTree.moveToTop'), function() { moveGroupToParent(target.group.id, null); });
+        item(t('hostTree.renameGroup'), function() { showRenameGroupModal(target.group); });
+        item(t('hostTree.deleteGroup'), function() { deleteGroup(target.group.id); });
+    } else if (target.type === 'host') {
+        item(t('hostTree.renameHost'), function() { showRenameHostModal(target.host); });
+        if (!target.host.is_shared) {
+            item(t('hostTree.shareHost'), function() {
+                showHostSharesModal(target.host.id, target.host.name || target.host.host);
+            });
+        }
+        item(t('hostTree.deleteHost'), function() { deleteHostInTree(target.host.id, target.host.name || target.host.host, !!target.host.is_shared); });
+    }
+    menu.oncontextmenu = function(ev) { ev.preventDefault(); ev.stopPropagation(); };
+    function close(ev) {
+        if (ev && menu.contains(ev.target)) return;
+        menu.classList.remove('open');
+    }
+    setTimeout(function() {
+        document.addEventListener('mousedown', close, { once: true });
+    }, 0);
+}
+
+function moveHostBetweenGroups(hostId, fromGroupId, toGroupId) {
+    var promise = fromGroupId
+        ? API.removeHostFromGroup(fromGroupId, hostId)
+        : Promise.resolve();
+    promise.then(function() {
+        if (toGroupId) return API.addHostsToGroup(toGroupId, [hostId]);
+        return Promise.resolve();
+    }).then(function() { showToast(t('toast.moved')); refreshHostGroupsTree(); }).catch(function(err) { showToast(err.message || t('toast.moveFailed'), 'error'); });
+}
+
+function moveGroupToParent(groupId, parentGroupId) {
+    if (!groupId) return;
+    API.updateHostGroup(groupId, { parent_id: parentGroupId == null ? null : parentGroupId })
+        .then(function() { showToast(parentGroupId == null ? t('toast.movedToTopLevel') : t('toast.movedToTargetGroup')); refreshHostGroupsTree(); })
+        .catch(function(err) { showToast(err.message || t('toast.moveFailed'), 'error'); });
+}
+
+function showAddGroupModal(parentId, parentName) {
+    var hint;
+    if (parentId == null) {
+        hint = '<p class="text-muted" style="font-size:12px;margin-bottom:10px">' + esc(t('modals.addGroupHintTop')) + '</p>';
+    } else {
+        hint = '<p class="text-muted" style="font-size:12px;margin-bottom:10px">' + esc(t('modals.addGroupHintChild', { name: (parentName || ('#' + parentId)) })) + '</p>';
+    }
+    var g = 'forms.group';
+    var content = '<input type="hidden" id="addGroupParentIdField" value="' + (parentId == null ? '' : String(parentId)) + '">' + hint
+        + '<div class="form-group"><label>' + t(g + '.name') + '</label><input class="form-control" id="addGroupNameInput" placeholder="' + esc(t(g + '.namePh')) + '"></div>';
+    showModal(t('modals.addGroupTitle'), content, edgeopsModalFooterCancelSave('submitAddGroupFromModal()'));
+    setTimeout(function() {
+        var el = document.getElementById('addGroupNameInput');
+        if (el) el.focus();
+    }, 80);
+}
+
+function submitAddGroupFromModal() {
+    var inp = document.getElementById('addGroupNameInput');
+    var hidden = document.getElementById('addGroupParentIdField');
+    if (!inp) return;
+    var name = inp.value.trim();
+    if (!name) { showToast(t('toast.nameRequired'), 'error'); return; }
+    var raw = hidden && hidden.value ? String(hidden.value).trim() : '';
+    var parentId = raw === '' ? null : parseInt(raw, 10);
+    if (raw !== '' && (isNaN(parentId) || parentId <= 0)) { showToast(t('toast.opFailed'), 'error'); return; }
+    var payload = { name: name, description: '' };
+    if (parentId != null) payload.parent_id = parentId;
+    API.createHostGroup(payload).then(function(res) {
+        closeModal();
+        if (parentId != null) edgeopsExpandServerTreeGroupIds([parentId]);
+        else if (res && res.id) edgeopsExpandServerTreeGroupIds([res.id]);
+        showToast(t('toast.saved'));
+        refreshHostGroupsTree();
+    }).catch(function(err) { showToast(err.message, 'error'); });
+}
+
+function showRenameGroupModal(group) {
+    var g = 'forms.group';
+    var content = '<div class="form-group"><label>' + t(g + '.name') + '</label><input class="form-control" id="renameGroupName" value="' + esc(group.name || '') + '" placeholder="' + esc(t(g + '.namePh')) + '"></div>';
+    showModal(t('modals.renameGroup'), content, edgeopsModalFooterCancelSave('submitRenameGroup(' + group.id + ')'));
+}
+
+function submitRenameGroup(id) {
+    var name = document.getElementById('renameGroupName').value.trim();
+    if (!name) { showToast(t('toast.nameRequired'), 'error'); return; }
+    API.updateHostGroup(id, { name: name }).then(function() { closeModal(); showToast(t('toast.saved')); refreshHostGroupsTree(); }).catch(function(err) { showToast(err.message, 'error'); });
+}
+
+function deleteGroup(id) {
+    showConfirm(t('confirm.deleteGroupTitle'), t('confirm.deleteGroupBody')).then(function(ok) {
+        if (!ok) return;
+        API.deleteHostGroup(id).then(function() { showToast(t('toast.deleted')); refreshHostGroupsTree(); }).catch(function(err) { showToast(err.message, 'error'); });
+    });
+}
+
+function showRenameHostModal(host) {
+    var content = '<div class="form-group"><label>' + t('forms.renameHost.name') + '</label><input class="form-control" id="renameHostName" value="' + esc(host.name || host.host || '') + '" placeholder="' + esc(t('forms.renameHost.namePh')) + '"></div>';
+    showModal(t('modals.renameHost'), content, edgeopsModalFooterCancelSave('submitRenameHost(' + host.id + ')'));
+}
+
+function submitRenameHost(id) {
+    var name = document.getElementById('renameHostName').value.trim();
+    if (!name) { showToast(t('toast.nameRequired'), 'error'); return; }
+    API.updateHost(id, { name: name }).then(function() { closeModal(); showToast(t('toast.saved')); refreshHostGroupsTree(); }).catch(function(err) { showToast(err.message, 'error'); });
+}
+
+function deleteHostInTree(id, name, isShared) {
+    var dn = (name != null && String(name).trim() !== '') ? String(name).trim() : (String(id) || ('#' + id));
+    var title = isShared ? t('confirm.ungroupShareTitle') : t('confirm.deletePathTitle');
+    var msg = isShared
+        ? t('confirm.ungroupShareBody', { name: dn })
+        : t('confirm.deleteHostNameBody', { name: dn });
+    showConfirm(title, msg).then(function(ok) {
+        if (!ok) return;
+        API.deleteHost(id).then(function(res) {
+            if (res && res.detached) showToast(t('toast.shareDetached'));
+            else showToast(t('toast.deleted'));
+            refreshHostGroupsTree();
+        }).catch(function(err) { showToast(err.message, 'error'); });
+    });
+}
+
+// ── 最佳实践 ──
+function renderBestPracticesPage() {
+    renderLayout();
+    var el = getPageEl();
+    el.innerHTML = '<div class="topbar"><h2>' + t('nav.bestPractices') + '</h2><div class="topbar-actions">'
+        + '<button class="btn btn-primary" onclick="showBestPracticeModal()">' + t('ui.page.bestPractices.newBtn') + '</button>'
+        + '<button type="button" class="btn" id="bestPracticesTopRefreshBtn">' + esc(t('common.refresh')) + '</button></div></div>'
+        + '<div class="page-content">'
+        + '<div class="filter-bar" style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+        + '<input class="form-control" id="bpKeyword" placeholder="' + esc(t('ui.page.bestPractices.keywordPh')) + '" style="width:160px">'
+        + '<select class="form-control" id="bpCategory" style="width:140px"><option value="">' + esc(t('ui.page.bestPractices.allCategories')) + '</option></select>'
+        + '<button class="btn btn-sm" onclick="if(window._bpPagination)window._bpPagination.setPage(1);loadBestPractices()">' + t('ui.page.bestPractices.query') + '</button>'
+        + '</div>'
+        + '<div id="bestPracticesList" class="table-container"><div class="loading-overlay"><div class="spinner"></div></div></div>'
+        + '<div id="bpPagination"></div></div>';
+    var bpPagination = appendPaginationBar(document.getElementById('bpPagination'), 20);
+    bpPagination.onPrev(loadBestPractices);
+    bpPagination.onNext(loadBestPractices);
+    bpPagination.onPageSizeChange(loadBestPractices);
+    window._bpPagination = bpPagination;
+    API.getBestPracticeCategories().then(function(r) {
+        var sel = document.getElementById('bpCategory');
+        if (!sel) return;
+        (r.categories || []).forEach(function(c) {
+            var o = document.createElement('option');
+            o.value = c;
+            o.textContent = c;
+            sel.appendChild(o);
+        });
+    }).catch(function() {});
+    var bestPracticesTopRefreshBtn = document.getElementById('bestPracticesTopRefreshBtn');
+    if (bestPracticesTopRefreshBtn) bestPracticesTopRefreshBtn.onclick = function() { loadBestPractices(); };
+    loadBestPractices();
+}
+
+function loadBestPractices() {
+    var keyword = document.getElementById('bpKeyword') && document.getElementById('bpKeyword').value.trim();
+    var category = document.getElementById('bpCategory') && document.getElementById('bpCategory').value;
+    var pagination = window._bpPagination;
+    var params = { page: pagination ? pagination.getPage() : 1, page_size: pagination ? pagination.getPageSize() : 20 };
+    if (keyword) params.keyword = keyword;
+    if (category) params.category = category;
+    var list = document.getElementById('bestPracticesList');
+    if (list) list.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+    API.listBestPractices(params).then(function(r) {
+        var list = document.getElementById('bestPracticesList');
+        if (!list) return;
+        if (pagination) pagination.update({ total: r.total, page: r.page, page_size: r.page_size });
+        var items = r.items || [];
+        if (items.length === 0) {
+            list.innerHTML = '<div class="empty-state"><p>' + t('ui.page.bestPractices.empty') + '</p></div>';
+            return;
+        }
+        list.innerHTML = '<table><thead><tr><th>' + t('ui.page.bestPractices.thTitle') + '</th><th>' + t('ui.page.bestPractices.thCategory') + '</th><th>' + t('ui.page.bestPractices.thSource') + '</th><th>' + t('ui.page.bestPractices.thUpdated') + '</th><th>' + t('ui.page.bestPractices.thActions') + '</th></tr></thead><tbody>'
+            + items.map(function(i) {
+                return '<tr><td>' + esc((i.title || '').substring(0, 50)) + '</td><td>' + esc(i.category || '') + '</td><td>' + esc(i.source || '') + '</td><td>' + formatTime(i.updated_at) + '</td>'
+                    + '<td><button class="btn btn-sm" onclick="editBestPractice(' + i.id + ')">' + t('common.edit') + '</button> '
+                    + '<button class="btn btn-sm btn-danger" onclick="deleteBestPractice(' + i.id + ')">' + t('common.delete') + '</button></td></tr>';
+            }).join('') + '</tbody></table>';
+    }).catch(function(err) {
+        var list = document.getElementById('bestPracticesList');
+        if (list) list.innerHTML = '<div class="empty-state"><h3>' + t('ui.loadFailedH3') + '</h3><p>' + esc(err.message) + '</p></div>';
+    });
+}
+
+function showBestPracticeModal(editId) {
+    var title = editId ? t('modals.editBestPractice') : t('modals.newBestPractice');
+    var b = 'forms.bestPractice';
+    var content = '<div class="form-group"><label>' + t(b + '.title') + '</label><input class="form-control" id="bpTitle" placeholder="' + esc(t(b + '.titlePh')) + '"></div>'
+        + '<div class="form-group"><label>' + t(b + '.category') + '</label><input class="form-control" id="bpCategoryInput" placeholder="' + esc(t(b + '.categoryPh')) + '"></div>'
+        + '<div class="form-group"><label>' + t(b + '.content') + '</label><textarea class="form-control" id="bpContent" rows="6" placeholder="' + esc(t(b + '.contentPh')) + '"></textarea></div>'
+        + '<div class="form-group"><label>' + t(b + '.source') + '</label><select class="form-control" id="bpSource"><option value="manual">' + t(b + '.sourceManual') + '</option><option value="user_request">' + t(b + '.sourceUser') + '</option><option value="ai_solved">' + t(b + '.sourceAi') + '</option></select></div>';
+    showModal(title, content, edgeopsModalFooterCancelSave('submitBestPractice(' + (editId || 0) + ')'));
+    var bpOverlay = document.querySelector('.modal-overlay:last-of-type');
+    if (bpOverlay) {
+        var bpModal = bpOverlay.querySelector('.modal');
+        if (bpModal) bpModal.classList.add('modal-best-practice');
+    }
+    if (editId) {
+        API.getBestPractice(editId).then(function(r) {
+            var i = r.item || {};
+            document.getElementById('bpTitle').value = i.title || '';
+            document.getElementById('bpCategoryInput').value = i.category || '';
+            document.getElementById('bpContent').value = i.content || '';
+            document.getElementById('bpSource').value = i.source || 'manual';
+        }).catch(function(err) { showToast(err.message, 'error'); });
+    } else {
+        document.getElementById('bpSource').value = 'manual';
+    }
+}
+
+function submitBestPractice(editId) {
+    var title = document.getElementById('bpTitle').value.trim();
+    var content = document.getElementById('bpContent').value.trim();
+    var category = document.getElementById('bpCategoryInput').value.trim();
+    var source = document.getElementById('bpSource').value;
+    if (!title || !content) { showToast(t('toast.titleAndContentRequired'), 'error'); return; }
+    if (editId) {
+        API.updateBestPractice(editId, { title: title, category: category, content: content }).then(function() {
+            closeModal(); showToast(t('toast.itemUpdated')); loadBestPractices();
+        }).catch(function(err) { showToast(err.message, 'error'); });
+    } else {
+        API.createBestPractice({ title: title, category: category, content: content, source: source }).then(function() {
+            closeModal(); showToast(t('toast.added')); loadBestPractices();
+        }).catch(function(err) { showToast(err.message, 'error'); });
+    }
+}
+
+function editBestPractice(id) {
+    showBestPracticeModal(id);
+}
+
+function deleteBestPractice(id) {
+    showConfirm(t('confirm.deleteBestPracticeTitle'), t('confirm.deleteBestPracticeBody')).then(function(ok) {
+        if (!ok) return;
+        API.deleteBestPractice(id).then(function() { showToast(t('toast.deleted')); loadBestPractices(); }).catch(function(err) { showToast(err.message, 'error'); });
+    });
+}
+
+// ── 文件系统（web/fs）──
+function renderFilesPage() {
+    renderLayout();
+    var el = getPageEl();
+    var currentPath = '';
+    var currentFile = null;
+    var currentContent = '';
+    var viewMode = 'edit'; // 'edit' | 'preview'
+    var fsClipboard = null; // { path: string, cut: boolean }
+    var imageObjectUrl = null; // 图片预览用，关闭时 revoke
+    var currentFileKind = ''; // 'image' | 'markdown' | 'script' | 'text'
+    var fsLayoutEl = null;
+    var fsBackStack = [];
+    var fsForwardStack = [];
+    el.innerHTML = '<div class="topbar"><h2>' + esc(t('nav.filesystem')) + '</h2><div class="topbar-actions"><button type="button" class="btn" id="fsTopRefreshBtn">' + esc(t('common.refresh')) + '</button></div></div>'
+        + '<div class="fs-layout">'
+        + '<div class="fs-tree-panel"><div class="fs-tree-header">' + esc(t('pages.fs.treeHeader')) + '</div><div class="fs-tree-wrap" id="fsTreeWrap"><div id="fsTree" class="fs-tree"></div><div id="fsTreeCtxMenu" class="remote-fs-ctxmenu"></div></div></div>'
+        + '<div class="fs-main">'
+        + '<div class="fs-toolbar">'
+        + '<input type="text" class="form-control fs-path-input" id="fsPathInput" placeholder="/" value="">'
+        + '<button type="button" class="btn btn-sm" id="fsNavBack" title="' + esc(t('pages.fs.navBack')) + '">' + esc(t('pages.fs.navBack')) + '</button>'
+        + '<button type="button" class="btn btn-sm" id="fsNavForward" title="' + esc(t('pages.fs.navForward')) + '">' + esc(t('pages.fs.navForward')) + '</button>'
+        + '<button type="button" class="btn btn-sm" id="fsNavUp" title="' + esc(t('pages.fs.navUp')) + '">' + esc(t('pages.fs.navUp')) + '</button>'
+        + '<button type="button" class="btn btn-sm" id="fsRefresh">' + esc(t('pages.fs.refresh')) + '</button>'
+        + '<button type="button" class="btn btn-sm" id="fsMkdir">' + esc(t('pages.fs.mkdir')) + '</button>'
+        + '<button type="button" class="btn btn-sm" id="fsNewFile">' + esc(t('pages.fs.newFile')) + '</button>'
+        + '<button type="button" class="btn btn-sm" id="fsUploadBtn">' + esc(t('pages.fs.upload')) + '</button>'
+        + '<button type="button" class="btn btn-sm" id="fsUploadFolderBtn">' + esc(t('pages.fs.uploadFolder')) + '</button>'
+        + '<input type="file" id="fsFileInput" multiple style="display:none">'
+        + '<input type="file" id="fsDirInput" webkitdirectory style="display:none">'
+        + '</div>'
+        + '<div id="fsUploadProgressWrap" class="fs-upload-progress-wrap" style="display:none">'
+        + '<div class="fs-upload-progress-text" id="fsUploadProgressText"></div>'
+        + '<div class="fs-upload-progress-bar"><div class="fs-upload-progress-fill" id="fsUploadProgressFill"></div></div></div>'
+        + '<div id="fsListPanel" class="fs-list-panel" title="' + esc(t('pages.fs.dropToUploadHint')) + '"><div class="fs-list-inner" id="fsListInner"></div></div>'
+        + '<div id="fsEditorPanel" class="fs-editor-panel" style="display:none">'
+        + '<div class="fs-editor-toolbar"><span id="fsEditorPath" class="fs-editor-path"></span>'
+        + '<span class="fs-editor-tabs"><button type="button" class="btn btn-sm fs-tab active" data-mode="edit">' + esc(t('pages.fs.edit')) + '</button><button type="button" class="btn btn-sm fs-tab" data-mode="preview">' + esc(t('pages.fs.preview')) + '</button></span>'
+        + '<button type="button" class="btn btn-sm" id="fsFullscreen" title="' + esc(t('pages.fs.fullscreenTitle')) + '">' + esc(t('pages.fs.fullscreen')) + '</button></div>'
+        + '<div class="fs-editor-area"><textarea id="fsEditorText" class="form-control" spellcheck="false" style="width:100%;height:100%;resize:none;font-family:monospace"></textarea>'
+        + '<div id="fsPreview" class="fs-preview" style="display:none"></div></div>'
+        + '<div class="fs-editor-actions"><button type="button" class="btn btn-primary" id="fsSave">' + esc(t('pages.fs.save')) + '</button>'
+        + '<button type="button" class="btn btn-sm" id="fsDownload">' + esc(t('pages.fs.download')) + '</button><button type="button" class="btn btn-sm" id="fsClose">' + esc(t('pages.fs.close')) + '</button></div></div>'
+        + '</div></div>';
+    var pathInput = document.getElementById('fsPathInput');
+    var listInner = document.getElementById('fsListInner');
+    var editorPanel = document.getElementById('fsEditorPanel');
+    var editorPath = document.getElementById('fsEditorPath');
+    var editorText = document.getElementById('fsEditorText');
+    var previewDiv = document.getElementById('fsPreview');
+    var treeEl = document.getElementById('fsTree');
+    fsLayoutEl = el.querySelector('.fs-layout');
+    var fsNavBackBtn = document.getElementById('fsNavBack');
+    var fsNavForwardBtn = document.getElementById('fsNavForward');
+    var fsNavUpBtn = document.getElementById('fsNavUp');
+
+    var imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp'];
+    function isImagePath(p) {
+        var lower = (p || '').toLowerCase();
+        return imageExts.some(function(ext) { return lower.endsWith(ext); });
+    }
+    function isHtmlPath(p) {
+        var lower = (p || '').toLowerCase();
+        return lower.endsWith('.html') || lower.endsWith('.htm');
+    }
+    function getScriptLanguage(p) {
+        var lower = (p || '').toLowerCase();
+        if (lower.endsWith('.py')) return 'python';
+        if (lower.endsWith('.js')) return 'javascript';
+        if (lower.endsWith('.sh') || lower.endsWith('.bash')) return 'bash';
+        return '';
+    }
+    function renderScriptPreview(text, lang) {
+        var code = document.createElement('code');
+        code.className = 'language-' + (lang || 'plain');
+        code.textContent = text || '';
+        var pre = document.createElement('pre');
+        pre.appendChild(code);
+        if (typeof Prism !== 'undefined' && Prism.highlightElement) Prism.highlightElement(code);
+        return pre;
+    }
+    function renderFsHtmlPreview(container, htmlContent, filePath) {
+        container.classList.add('fs-preview-html');
+        container.innerHTML = '';
+        var iframe = document.createElement('iframe');
+        iframe.className = 'fs-html-preview-iframe';
+        iframe.setAttribute('title', 'HTML preview');
+        iframe.setAttribute('sandbox', 'allow-scripts allow-popups allow-forms');
+        // srcdoc 没有 base URL → HTML 内 `./libs/x.js` 这类相对引用会全部 404。
+        // 把它们改写为 `/api/fs/file/<dir>/<rel>?token=...`，dir 是当前 HTML
+        // 所在目录（如 chats/2026/05/11/<bundle>/）。
+        var src = htmlContent != null ? String(htmlContent) : '';
+        if (filePath) src = edgeopsRewriteFsHtmlRefs(src, filePath);
+        iframe.srcdoc = src;
+        container.appendChild(iframe);
+    }
+
+    function edgeopsRewriteFsHtmlRefs(html, filePath) {
+        var tokenQuery = (API && API.token) ? ('?token=' + encodeURIComponent(API.token)) : '';
+        // 取当前 HTML 文件所在目录（相对 fs 根）。`chats/2026/05/11/<bundle>/index.html` → `chats/2026/05/11/<bundle>`
+        var dir = String(filePath || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+        var slash = dir.lastIndexOf('/');
+        dir = slash >= 0 ? dir.slice(0, slash) : '';
+        function rewriteOne(url) {
+            if (!url) return url;
+            var trimmed = String(url).trim();
+            if (!trimmed) return url;
+            if (/^(https?:|data:|blob:|mailto:|tel:|javascript:|#|\/\/)/i.test(trimmed)) return url;
+            if (trimmed.charAt(0) === '/') return url;
+            var hashIdx = trimmed.indexOf('#');
+            var hash = '';
+            if (hashIdx >= 0) { hash = trimmed.slice(hashIdx); trimmed = trimmed.slice(0, hashIdx); }
+            var queryIdx = trimmed.indexOf('?');
+            var query = '';
+            if (queryIdx >= 0) { query = trimmed.slice(queryIdx); trimmed = trimmed.slice(0, queryIdx); }
+            var normalized = trimmed.replace(/\\/g, '/').replace(/^\/+/, '');
+            while (normalized.indexOf('./') === 0) normalized = normalized.slice(2);
+            if (normalized.indexOf('../') === 0 || normalized.indexOf('/../') !== -1) return url;
+            if (!normalized) return url;
+            var combined = dir ? (dir + '/' + normalized) : normalized;
+            var encoded = combined.split('/').map(function(seg) { return encodeURIComponent(seg); }).join('/');
+            var out = '/api/fs/file/' + encoded + tokenQuery;
+            if (query) out += (tokenQuery ? '&' : '?') + '_q=' + encodeURIComponent(query.slice(1));
+            if (hash) out += hash;
+            return out;
+        }
+        return String(html || '').replace(/\b(src|href)\s*=\s*(['"])([^'"]*)\2/gi, function(_m, attr, q, v) {
+            return attr + '=' + q + rewriteOne(v) + q;
+        });
+    }
+
+    function pathNorm(p) { return (p || '').replace(/^\/+|\/+$/g, ''); }
+    function pathJoin(dir, name) { var d = pathNorm(dir); return d ? d + '/' + name : name; }
+    function pathParent(p) { return pathNorm(p).split('/').slice(0, -1).join('/'); }
+
+    var fsUploadProgressWrap = document.getElementById('fsUploadProgressWrap');
+    var fsUploadProgressText = document.getElementById('fsUploadProgressText');
+    var fsUploadProgressFill = document.getElementById('fsUploadProgressFill');
+    function setFsUploadProgressVisible(show) {
+        if (fsUploadProgressWrap) fsUploadProgressWrap.style.display = show ? 'block' : 'none';
+        if (!show && fsUploadProgressFill) fsUploadProgressFill.style.width = '0%';
+    }
+    function updateFsUploadProgress(fileIndex1, totalFiles, relPath, ev) {
+        var pct = 0;
+        if (ev && ev.total) pct = Math.round(100 * ev.loaded / ev.total);
+        if (fsUploadProgressFill) fsUploadProgressFill.style.width = pct + '%';
+        if (fsUploadProgressText) {
+            fsUploadProgressText.textContent = typeof t === 'function' ? t('pages.fs.uploadProgressLine', {
+                current: fileIndex1, total: totalFiles, name: relPath, pct: pct
+            }) : (fileIndex1 + '/' + totalFiles + ' ' + relPath + ' ' + pct + '%');
+        }
+    }
+    function normalizeFsUploadRel(f) {
+        var w = f.webkitRelativePath;
+        if (w && String(w).length) return String(w).replace(/\\/g, '/');
+        return String(f.name || 'unnamed').replace(/\\/g, '/');
+    }
+    function collectFsDropFiles(dataTransfer) {
+        return new Promise(function(resolve) {
+            if (dataTransfer.files && dataTransfer.files.length > 0) {
+                var arr = [];
+                for (var cfi = 0; cfi < dataTransfer.files.length; cfi++) {
+                    arr.push({ rel: normalizeFsUploadRel(dataTransfer.files[cfi]), file: dataTransfer.files[cfi] });
+                }
+                resolve(arr);
+                return;
+            }
+            resolve([]);
+        });
+    }
+    function filterUnsafeFsUploadItems(items) {
+        var out = [];
+        for (var fi = 0; fi < (items || []).length; fi++) {
+            if (!items[fi] || !items[fi].file) continue;
+            var r = String(items[fi].rel || '').replace(/\\/g, '/');
+            if (r.indexOf('..') >= 0 || r.charAt(0) === '/') continue;
+            out.push({ rel: r, file: items[fi].file });
+        }
+        return out;
+    }
+    function runFsUploadQueue(targetPath, items) {
+        var safe = filterUnsafeFsUploadItems(items);
+        if (!safe.length) {
+            if (items && items.length) showToast(typeof t === 'function' ? t('api.uploadFailed') : 'Upload failed', 'error');
+            return Promise.resolve();
+        }
+        var total = safe.length;
+        setFsUploadProgressVisible(true);
+        var chain = Promise.resolve();
+        for (var ui = 0; ui < safe.length; ui++) {
+            (function(it, idx) {
+                chain = chain.then(function() {
+                    return API.fsUploadWithProgress(targetPath, it.file, it.rel, function(ev) {
+                        updateFsUploadProgress(idx, total, it.rel, ev);
+                    });
+                });
+            })(safe[ui], ui + 1);
+        }
+        return chain.then(function() {
+            setFsUploadProgressVisible(false);
+            showToast(t('toast.uploaded'));
+            doFsTreeRefresh();
+        }).catch(function(err) {
+            setFsUploadProgressVisible(false);
+            showToast(err.message || String(err), 'error');
+        });
+    }
+    function handleFsPickedFiles(fileList) {
+        if (!fileList || !fileList.length) return;
+        var arr = [];
+        for (var pi = 0; pi < fileList.length; pi++) {
+            arr.push({ rel: normalizeFsUploadRel(fileList[pi]), file: fileList[pi] });
+        }
+        runFsUploadQueue(currentPath, arr);
+    }
+
+    function syncFsNavButtons() {
+        if (fsNavBackBtn) fsNavBackBtn.disabled = fsBackStack.length === 0;
+        if (fsNavForwardBtn) fsNavForwardBtn.disabled = fsForwardStack.length === 0;
+        if (fsNavUpBtn) fsNavUpBtn.disabled = !pathNorm(currentPath);
+    }
+
+    function navigateFsPath(path, options) {
+        options = options || {};
+        var nextPath = pathNorm(path);
+        var pushHistory = options.pushHistory !== false;
+        if (pushHistory && nextPath !== currentPath) {
+            fsBackStack.push(currentPath || '');
+            if (fsBackStack.length > 200) fsBackStack.shift();
+            fsForwardStack = [];
+        }
+        currentPath = nextPath;
+        currentFile = null;
+        pathInput.value = (currentPath ? '/' + currentPath : '/');
+        editorPanel.style.display = 'none';
+        document.getElementById('fsListPanel').style.display = 'block';
+        loadList(currentPath);
+        syncFsNavButtons();
+    }
+
+    var fsExpandedPaths = new Set();
+
+    function findLiByPath(container, path) {
+        if (!container) return null;
+        var lis = container.querySelectorAll('li[data-path]');
+        for (var i = 0; i < lis.length; i++) {
+            if (lis[i].dataset.path === path) return lis[i];
+        }
+        return null;
+    }
+
+    function restoreFsTreeExpanded(container, paths, loadTreeFn) {
+        if (!paths || paths.length === 0) return Promise.resolve();
+        var p = paths[0];
+        var rest = paths.slice(1);
+        var li = findLiByPath(container, p);
+        if (!li) return restoreFsTreeExpanded(container, rest, loadTreeFn);
+        return loadTreeFn(p, li).then(function() {
+            return restoreFsTreeExpanded(container, rest, loadTreeFn);
+        });
+    }
+
+    function doFsTreeRefresh() {
+        var expanded = Array.from(fsExpandedPaths).sort(function(a, b) { return a.split('/').length - b.split('/').length; });
+        loadTree('', null).then(function() { return restoreFsTreeExpanded(treeEl, expanded, loadTree); }).then(function() { loadList(currentPath); });
+    }
+
+    function loadTree(path, parentNode) {
+        path = pathNorm(path);
+        return API.fsList(path).then(function(r) {
+            if (!r.success || !r.items) return;
+            var items = r.items.filter(function(it) { return !!it.dir; }).sort(function(a, b) {
+                return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
+            });
+            var ul = document.createElement('ul');
+            ul.className = 'fs-tree-list';
+            items.forEach(function(it) {
+                var li = document.createElement('li');
+                li.className = 'fs-tree-item fs-dir';
+                li.dataset.path = it.path;
+                li.dataset.dir = '1';
+                var label = document.createElement('span');
+                label.className = 'fs-tree-label';
+                label.textContent = it.name;
+                var row = document.createElement('div');
+                row.className = 'fs-tree-row';
+                var arrow = document.createElement('span');
+                arrow.className = 'fs-tree-arrow';
+                arrow.textContent = '\u25b6';
+                row.appendChild(arrow);
+                row.appendChild(label);
+                li.appendChild(row);
+                li.appendChild(document.createElement('span')); // placeholder for children
+                arrow.onclick = function(e) { e.stopPropagation(); toggleDir(li); };
+                label.onclick = function(e) { e.stopPropagation(); selectPath(it.path, true); };
+                li.oncontextmenu = function(e) { e.preventDefault(); e.stopPropagation(); showFsTreeCtxMenu(e, it.path, !!it.dir, it.name); };
+                ul.appendChild(li);
+            });
+            if (parentNode) {
+                var placeholder = parentNode.querySelector('span:last-child');
+                if (placeholder && !placeholder.classList.contains('fs-tree-label')) {
+                    placeholder.replaceWith(ul);
+                } else {
+                    parentNode.appendChild(ul);
+                }
+                ul.classList.add('loaded');
+            } else {
+                treeEl.innerHTML = '';
+                treeEl.appendChild(ul);
+            }
+        }).catch(function(err) {
+            if (parentNode) { var ph = parentNode.querySelector('span:last-child'); if (ph && !ph.classList.contains('fs-tree-label')) ph.textContent = '?'; }
+            showToast(err.message || t('toast.loadFailed'), 'error');
+        });
+    }
+
+    function toggleDir(li) {
+        var path = li.dataset.path;
+        var ul = li.querySelector('ul');
+        var arrow = li.querySelector('.fs-tree-arrow');
+        if (ul && ul.classList.contains('loaded')) {
+            ul.style.display = ul.style.display === 'none' ? 'block' : 'none';
+            if (arrow) arrow.textContent = ul.style.display === 'none' ? '\u25b6' : '\u25bc';
+            fsExpandedPaths.delete(path);
+        } else {
+            fsExpandedPaths.add(path);
+            loadTree(path, li);
+            if (arrow) arrow.textContent = '\u25bc';
+        }
+    }
+
+    function selectPath(path, isDir) {
+        navigateFsPath(path, { pushHistory: true });
+    }
+
+    function formatFsBytes(bytes) {
+        var b = Number(bytes);
+        if (bytes == null || !isFinite(b) || b < 0) b = 0;
+        var units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        var i = 0;
+        var v = b;
+        while (v >= 1024 && i < units.length - 1) {
+            v /= 1024;
+            i++;
+        }
+        if (i === 0) return String(Math.round(v)) + ' ' + units[i];
+        var dec = v >= 100 ? 0 : (v >= 10 ? 1 : 2);
+        var f = Math.pow(10, dec);
+        return (Math.round(v * f) / f) + ' ' + units[i];
+    }
+    function formatFsMtime(ts) {
+        if (ts == null || ts === '') return '-';
+        var sec = Number(ts);
+        if (!isFinite(sec)) return '-';
+        var d = new Date(sec * 1000);
+        if (isNaN(d.getTime())) return '-';
+        var loc = (typeof I18n !== 'undefined' && I18n.locale === 'en') ? 'en-US' : 'zh-CN';
+        try {
+            return d.toLocaleString(loc, { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+        } catch (eM) {
+            return d.toLocaleString();
+        }
+    }
+
+    function loadList(path) {
+        path = pathNorm(path);
+        API.fsList(path).then(function(r) {
+            if (!r.success || !r.items) { listInner.innerHTML = '<div class="empty-state">' + esc(t('pages.fs.emptyDir')) + '</div>'; return; }
+            var html = '<table class="fs-table"><thead><tr><th>' + esc(t('pages.fs.thName')) + '</th><th class="fs-col-size">' + esc(t('pages.fs.thSize')) + '</th><th class="fs-col-mtime">' + esc(t('pages.fs.thModified')) + '</th><th>' + esc(t('pages.fs.thAction')) + '</th></tr></thead><tbody>';
+            r.items.forEach(function(it) {
+                var size = it.dir ? '-' : formatFsBytes(it.size);
+                var mtime = formatFsMtime(it.mtime);
+                var ops = '';
+                var pathEsc = (it.path || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+                if (it.dir) ops += '<button type="button" class="btn btn-sm" onclick="event.stopPropagation(); window._fsPack(\'' + pathEsc + '\')">' + esc(t('pages.fs.packTgz')) + '</button> ';
+                else if ((it.name || '').endsWith('.tgz') || (it.name || '').endsWith('.tar.gz')) ops += '<button type="button" class="btn btn-sm" onclick="event.stopPropagation(); window._fsUnpack(\'' + pathEsc + '\')">' + esc(t('pages.fs.unpack')) + '</button> ';
+                ops += '<button type="button" class="btn btn-sm btn-danger" onclick="event.stopPropagation(); window._fsDelete(\'' + pathEsc + '\', ' + (it.dir ? '1' : '0') + ')">' + esc(t('common.delete')) + '</button>';
+                // 「下载」按钮：仅文件可下载（目录请用「打包 tgz」）。用 <a download> 触发浏览器原生下载，
+                // 后端 file?download=1 会强制 Content-Disposition: attachment；不打断当前 SPA 视图。
+                if (!it.dir) {
+                    var dlUrl = (API && API.buildFsFileUrl) ? API.buildFsFileUrl(it.path, { download: 1 }) : '';
+                    if (dlUrl) {
+                        ops += ' <a class="btn btn-sm" href="' + esc(dlUrl) + '" onclick="event.stopPropagation();" download="' + esc(it.name || '') + '" target="_blank" rel="noopener">' + esc(t('pages.fs.download')) + '</a>';
+                    }
+                }
+                html += '<tr><td>' + (it.dir ? '&#128193; ' : '&#128196; ') + esc(it.name) + '</td><td class="fs-col-size">' + esc(size) + '</td><td class="fs-col-mtime">' + esc(mtime) + '</td><td>' + ops + '</td></tr>';
+            });
+            html += '</tbody></table>';
+            listInner.innerHTML = html;
+            listInner.querySelectorAll('tbody tr').forEach(function(tr, i) {
+                var it = r.items[i];
+                if (!it) return;
+                tr.onclick = function() {
+                    if (it.dir) selectPath(it.path, true);
+                    else openFile(it.path);
+                };
+                tr.oncontextmenu = function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    showFsTreeCtxMenu(e, it.path, !!it.dir, it.name);
+                };
+            });
+        }).catch(function(err) {
+            listInner.innerHTML = '<div class="empty-state">' + esc(err.message) + '</div>';
+        });
+    }
+
+    function openFile(path) {
+        if (imageObjectUrl) {
+            URL.revokeObjectURL(imageObjectUrl);
+            imageObjectUrl = null;
+        }
+        currentFile = path;
+        currentPath = pathNorm(path).split('/').slice(0, -1).join('/');
+        pathInput.value = (currentPath ? '/' + currentPath : '/');
+        syncFsNavButtons();
+        document.getElementById('fsListPanel').style.display = 'none';
+        editorPanel.style.display = 'flex';
+        editorPath.textContent = '/' + path;
+
+        if (isImagePath(path)) {
+            currentFileKind = 'image';
+            editorPanel.classList.add('fs-image-mode');
+            previewDiv.classList.remove('fs-preview-html');
+            editorText.style.display = 'none';
+            previewDiv.style.display = 'block';
+            previewDiv.innerHTML = '<div class="fs-preview-loading">' + esc(t('common.loading')) + '</div>';
+            var headers = {};
+            if (API.token) headers['Authorization'] = 'Bearer ' + API.token;
+            fetch('/api/fs/download?path=' + encodeURIComponent(path), { headers: headers })
+                .then(function(r) {
+                    if (!r.ok) throw new Error('加载失败');
+                    return r.blob();
+                })
+                .then(function(blob) {
+                    imageObjectUrl = URL.createObjectURL(blob);
+                    previewDiv.innerHTML = '<img src="' + imageObjectUrl + '" alt="预览">';
+                })
+                .catch(function(err) {
+                    showToast(err.message || t('toast.imageLoadFailed'), 'error');
+                    previewDiv.innerHTML = '<div class="fs-preview-loading">' + esc(err.message) + '</div>';
+                });
+            document.querySelectorAll('.fs-editor-tabs .fs-tab').forEach(function(t) { t.classList.toggle('active', false); });
+            return;
+        }
+
+        editorPanel.classList.remove('fs-image-mode');
+        currentFileKind = (path || '').toLowerCase().endsWith('.md') ? 'markdown' : (isHtmlPath(path) ? 'html' : (getScriptLanguage(path) ? 'script' : 'text'));
+        API.fsRead(path).then(function(r) {
+            if (r.success && r.content != null) {
+                currentContent = r.content;
+                editorText.value = r.content;
+                var lang = getScriptLanguage(path);
+                if (currentFileKind === 'markdown') {
+                    previewDiv.classList.remove('fs-preview-html');
+                    previewDiv.innerHTML = (typeof formatMarkdown !== 'undefined' ? formatMarkdown(r.content) : esc(r.content));
+                } else if (currentFileKind === 'html') {
+                    renderFsHtmlPreview(previewDiv, r.content, path);
+                } else if (lang) {
+                    previewDiv.classList.remove('fs-preview-html');
+                    var pre = renderScriptPreview(r.content, lang);
+                    previewDiv.innerHTML = '';
+                    previewDiv.appendChild(pre);
+                } else {
+                    previewDiv.classList.remove('fs-preview-html');
+                    previewDiv.textContent = r.content;
+                }
+            } else {
+                var msg = (r && (r.detail || r.message)) || '读取失败';
+                if (msg.indexOf('过大') !== -1 || msg.indexOf('非文本') !== -1) msg = '文本过大或非文本文件';
+                editorText.value = '';
+                previewDiv.classList.remove('fs-preview-html');
+                previewDiv.innerHTML = '<div class="fs-preview-loading text-warning">' + esc(msg) + '</div>';
+            }
+        }).catch(function(err) {
+            var msg = err.message || '读取失败';
+            if (msg.indexOf('过大') !== -1 || msg.indexOf('非文本') !== -1) msg = '文本过大或非文本文件';
+            showToast(msg, 'error');
+            editorText.value = '';
+            previewDiv.classList.remove('fs-preview-html');
+            previewDiv.innerHTML = '<div class="fs-preview-loading text-warning">' + esc(msg) + '</div>';
+        });
+        viewMode = (currentFileKind === 'markdown' || currentFileKind === 'script' || currentFileKind === 'html') ? 'preview' : 'edit';
+        editorText.style.display = viewMode === 'edit' ? 'block' : 'none';
+        previewDiv.style.display = viewMode === 'preview' ? 'block' : 'none';
+        document.querySelectorAll('.fs-editor-tabs .fs-tab').forEach(function(t) { t.classList.toggle('active', t.dataset.mode === viewMode); });
+    }
+
+    function doFsPageRefresh() {
+        doFsTreeRefresh();
+        showToast(t('toast.refreshed'));
+    }
+    document.getElementById('fsRefresh').onclick = doFsPageRefresh;
+    var fsTopRefreshBtn = document.getElementById('fsTopRefreshBtn');
+    if (fsTopRefreshBtn) fsTopRefreshBtn.onclick = doFsPageRefresh;
+    pathInput.onkeydown = function(e) { if (e.keyCode === 13) navigateFsPath(pathInput.value.replace(/^\//, ''), { pushHistory: true }); };
+    if (fsNavBackBtn) fsNavBackBtn.onclick = function() {
+        if (!fsBackStack.length) return;
+        var prev = fsBackStack.pop();
+        fsForwardStack.push(currentPath || '');
+        navigateFsPath(prev, { pushHistory: false });
+    };
+    if (fsNavForwardBtn) fsNavForwardBtn.onclick = function() {
+        if (!fsForwardStack.length) return;
+        var next = fsForwardStack.pop();
+        fsBackStack.push(currentPath || '');
+        navigateFsPath(next, { pushHistory: false });
+    };
+    if (fsNavUpBtn) fsNavUpBtn.onclick = function() {
+        if (!pathNorm(currentPath)) return;
+        navigateFsPath(pathParent(currentPath), { pushHistory: true });
+    };
+    document.getElementById('fsMkdir').onclick = function() {
+        var name = prompt('目录名');
+        if (!name || !name.trim()) return;
+        var p = pathJoin(currentPath, name.trim());
+        API.fsMkdir(p).then(function() { showToast(t('toast.fileCreated')); doFsTreeRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+    };
+    document.getElementById('fsNewFile').onclick = function() {
+        var name = prompt('文件名');
+        if (!name || !name.trim()) return;
+        var p = pathJoin(currentPath, name.trim());
+        API.fsWrite(p, '').then(function() { showToast(t('toast.fileCreated')); doFsTreeRefresh(); openFile(p); }).catch(function(err) { showToast(err.message, 'error'); });
+    };
+    document.getElementById('fsUploadBtn').onclick = function() { document.getElementById('fsFileInput').click(); };
+    var fsDirInputEl = document.getElementById('fsDirInput');
+    var fsUploadFolderBtnEl = document.getElementById('fsUploadFolderBtn');
+    if (fsUploadFolderBtnEl && fsDirInputEl) {
+        fsUploadFolderBtnEl.onclick = function() { fsDirInputEl.click(); };
+        fsDirInputEl.onchange = function() {
+            handleFsPickedFiles(this.files);
+            this.value = '';
+        };
+    }
+    document.getElementById('fsFileInput').onchange = function() {
+        handleFsPickedFiles(this.files);
+        this.value = '';
+    };
+    document.querySelectorAll('.fs-editor-tabs .fs-tab').forEach(function(t) {
+        t.onclick = function() {
+            viewMode = t.dataset.mode;
+            document.querySelectorAll('.fs-editor-tabs .fs-tab').forEach(function(x) { x.classList.toggle('active', x.dataset.mode === viewMode); });
+            if (viewMode === 'edit') { editorText.style.display = 'block'; previewDiv.style.display = 'none'; }
+            else {
+                editorText.style.display = 'none';
+                previewDiv.style.display = 'block';
+                if (currentFileKind === 'markdown') {
+                    previewDiv.classList.remove('fs-preview-html');
+                    previewDiv.innerHTML = (typeof formatMarkdown !== 'undefined' ? formatMarkdown(editorText.value) : esc(editorText.value));
+                } else if (currentFileKind === 'html') {
+                    renderFsHtmlPreview(previewDiv, editorText.value, currentFile);
+                } else if (currentFileKind === 'script') {
+                    previewDiv.classList.remove('fs-preview-html');
+                    var lang = getScriptLanguage(currentFile);
+                    var pre = renderScriptPreview(editorText.value, lang);
+                    previewDiv.innerHTML = '';
+                    previewDiv.appendChild(pre);
+                } else {
+                    previewDiv.classList.remove('fs-preview-html');
+                    previewDiv.textContent = editorText.value;
+                }
+            }
+        };
+    });
+    document.getElementById('fsSave').onclick = function() {
+        if (!currentFile) return;
+        API.fsWrite(currentFile, editorText.value).then(function() { showToast(t('toast.saved')); currentContent = editorText.value; }).catch(function(err) { showToast(err.message, 'error'); });
+    };
+    document.getElementById('fsDownload').onclick = function() {
+        if (!currentFile) return;
+        var filename = currentFile.split('/').pop() || 'download';
+        API.fsDownload(currentFile, filename).catch(function(err) { showToast(err.message, 'error'); });
+    };
+    document.getElementById('fsClose').onclick = function() {
+        if (imageObjectUrl) {
+            URL.revokeObjectURL(imageObjectUrl);
+            imageObjectUrl = null;
+        }
+        currentFile = null;
+        editorPanel.style.display = 'none';
+        document.getElementById('fsListPanel').style.display = 'block';
+        if (fsLayoutEl) fsLayoutEl.classList.remove('fs-fullscreen');
+        loadList(currentPath);
+        syncFsNavButtons();
+    };
+    document.getElementById('fsFullscreen').onclick = function() {
+        if (fsLayoutEl) fsLayoutEl.classList.toggle('fs-fullscreen');
+    };
+
+    window._fsPack = function(path) {
+        API.fsPackTgz(path).then(function(r) { showToast(t('toast.packedWithPath', { path: (r.path || path) })); doFsTreeRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+    };
+    window._fsUnpack = function(path) {
+        var dest = prompt('解压到目录（相对路径，留空解压到当前）', path.replace(/\.tgz$|\.tar\.gz$/i, ''));
+        if (dest === null) return;
+        API.fsUnpackTgz(path, dest.trim()).then(function(r) { showToast(t('toast.extracted')); doFsTreeRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+    };
+    document.getElementById('fsTreeWrap').oncontextmenu = function(e) {
+        if (e.target.closest('.fs-tree-item')) return;
+        e.preventDefault();
+        showFsTreeCtxMenu(e, null, false, null);
+    };
+    var listPanelEl = document.getElementById('fsListPanel');
+    if (listPanelEl) {
+        listPanelEl.oncontextmenu = function(e) {
+            if (e.target.closest('tbody tr')) return;
+            e.preventDefault();
+            showFsTreeCtxMenu(e, null, false, null);
+        };
+        listPanelEl.addEventListener('dragover', function(e) {
+            if (!e.dataTransfer || !e.dataTransfer.types) return;
+            var types = e.dataTransfer.types;
+            var hasFiles = false;
+            for (var dti = 0; dti < types.length; dti++) {
+                if (types[dti] === 'Files') { hasFiles = true; break; }
+            }
+            if (!hasFiles) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+            listPanelEl.classList.add('fs-drop-hover');
+        });
+        listPanelEl.addEventListener('dragleave', function(e) {
+            try {
+                var rt = e.relatedTarget;
+                if (rt && listPanelEl.contains(rt)) return;
+            } catch (eLe) {}
+            listPanelEl.classList.remove('fs-drop-hover');
+        });
+        listPanelEl.addEventListener('drop', function(e) {
+            e.preventDefault();
+            listPanelEl.classList.remove('fs-drop-hover');
+            if (!e.dataTransfer) return;
+            collectFsDropFiles(e.dataTransfer).then(function(raw) {
+                runFsUploadQueue(currentPath, raw);
+            });
+        });
+    }
+
+    window._fsDelete = function(path, isDir) {
+        var typeLabel = isDir ? t('confirm.dir') : t('confirm.file');
+        showConfirm(t('confirm.deletePathTitle'), t('confirm.deleteFileBody', { type: typeLabel, path: path })).then(function(ok) {
+            if (!ok) return;
+            API.fsDelete(path).then(function() { showToast(t('toast.deleted')); doFsTreeRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+        });
+    };
+
+    function showFsTreeCtxMenu(e, path, isDir, name) {
+        var menu = document.getElementById('fsTreeCtxMenu');
+        if (!menu) return;
+        if (!menu._ctxMenuParent) menu._ctxMenuParent = menu.parentNode;
+        document.body.appendChild(menu);
+        menu.style.left = e.clientX + 'px';
+        menu.style.top = e.clientY + 'px';
+        menu.innerHTML = '';
+        var close = function() {
+            menu.classList.remove('open');
+            document.removeEventListener('click', close);
+            if (menu._ctxMenuParent && menu._ctxMenuParent.appendChild) menu._ctxMenuParent.appendChild(menu);
+        };
+        function addItem(text, fn) {
+            var b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'remote-fs-ctxitem';
+            b.textContent = text;
+            b.onclick = function() { close(); fn(); };
+            menu.appendChild(b);
+        }
+        var basePath = path != null ? (isDir ? path : pathNorm(path).split('/').slice(0, -1).join('/')) : currentPath;
+        if (path == null) {
+            addItem('新建目录', function() {
+                var n = prompt('目录名');
+                if (!n || !n.trim()) return;
+                var p = pathJoin(basePath, n.trim());
+                API.fsMkdir(p).then(function() { showToast(t('toast.fileCreated')); doFsTreeRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+            });
+            addItem('新建文件', function() {
+                var n = prompt('文件名');
+                if (!n || !n.trim()) return;
+                var p = pathJoin(basePath, n.trim());
+                API.fsWrite(p, '').then(function() { showToast(t('toast.fileCreated')); doFsTreeRefresh(); openFile(p); }).catch(function(err) { showToast(err.message, 'error'); });
+            });
+            addItem('上传文件', function() { currentPath = pathNorm(basePath); pathInput.value = (currentPath ? '/' + currentPath : '/'); loadList(currentPath); document.getElementById('fsFileInput').click(); });
+            if (fsClipboard) addItem('粘贴', function() {
+                var dest = pathNorm(basePath);
+                API.fsCopy(fsClipboard.path, dest, fsClipboard.cut).then(function() {
+                    showToast(fsClipboard.cut ? t('toast.moved') : t('toast.pasted'));
+                    if (fsClipboard.cut) fsClipboard = null;
+                    doFsTreeRefresh();
+                }).catch(function(err) { showToast(err.message, 'error'); });
+            });
+            addItem('刷新', function() { doFsTreeRefresh(); });
+        } else {
+            if (isDir) {
+                addItem('新建目录', function() {
+                    var n = prompt('目录名');
+                    if (!n || !n.trim()) return;
+                    var p = pathJoin(basePath, n.trim());
+                    API.fsMkdir(p).then(function() { showToast(t('toast.fileCreated')); doFsTreeRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+                });
+                addItem('新建文件', function() {
+                    var n = prompt('文件名');
+                    if (!n || !n.trim()) return;
+                    var p = pathJoin(basePath, n.trim());
+                    API.fsWrite(p, '').then(function() { showToast(t('toast.fileCreated')); doFsTreeRefresh(); openFile(p); }).catch(function(err) { showToast(err.message, 'error'); });
+                });
+                addItem('上传文件', function() { currentPath = pathNorm(basePath); pathInput.value = (currentPath ? '/' + currentPath : '/'); loadList(currentPath); document.getElementById('fsFileInput').click(); });
+                addItem('复制', function() { fsClipboard = { path: path, cut: false }; showToast(t('toast.copiedToClipboard')); });
+                if (fsClipboard) addItem('粘贴', function() {
+                    API.fsCopy(fsClipboard.path, path, fsClipboard.cut).then(function() {
+                        showToast(fsClipboard.cut ? t('toast.moved') : t('toast.pasted'));
+                        if (fsClipboard.cut) fsClipboard = null;
+                        doFsTreeRefresh();
+                    }).catch(function(err) { showToast(err.message, 'error'); });
+                });
+                addItem('剪切', function() { fsClipboard = { path: path, cut: true }; showToast(t('toast.cut')); });
+                addItem('删除', function() { window._fsDelete(path, 1); });
+                addItem('打包 tgz', function() { window._fsPack(path); });
+                addItem('刷新', function() { doFsTreeRefresh(); });
+            } else {
+                addItem('复制', function() { fsClipboard = { path: path, cut: false }; showToast(t('toast.copiedToClipboard')); });
+                if (fsClipboard) addItem('粘贴', function() {
+                    API.fsCopy(fsClipboard.path, basePath, fsClipboard.cut).then(function() {
+                        showToast(fsClipboard.cut ? t('toast.moved') : t('toast.pasted'));
+                        if (fsClipboard.cut) fsClipboard = null;
+                        doFsTreeRefresh();
+                    }).catch(function(err) { showToast(err.message, 'error'); });
+                });
+                addItem('剪切', function() { fsClipboard = { path: path, cut: true }; showToast(t('toast.cut')); });
+                addItem('删除', function() { window._fsDelete(path, 0); });
+                if ((name || '').endsWith('.tgz') || (name || '').endsWith('.tar.gz')) addItem('解压', function() { window._fsUnpack(path); });
+                addItem('刷新', function() { doFsTreeRefresh(); });
+            }
+        }
+        menu.classList.add('open');
+        setTimeout(function() { document.addEventListener('click', close); }, 0);
+    }
+
+    doFsTreeRefresh();
+    syncFsNavButtons();
+}
+
+// ── 维护历史 ──
+function renderMaintenanceHistoryPage() {
+    renderLayout();
+    var el = getPageEl();
+    el.innerHTML = '<div class="topbar"><h2>' + esc(t('nav.maintenanceHistory')) + '</h2><div class="topbar-actions"><button type="button" class="btn" id="maintHistoryRefreshBtn">' + esc(t('common.refresh')) + '</button></div></div>'
+        + '<div class="page-content"><div class="form-group" style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">'
+        + '<label style="margin-right:4px">' + esc(t('pages.maint.filterHost')) + '</label><input class="form-control" id="maintHostFilter" placeholder="' + esc(t('pages.maint.hostPh')) + '" style="max-width:180px">'
+        + '<label style="margin-right:4px">' + esc(t('pages.maint.filterType')) + '</label><select class="form-control" id="maintCategoryFilter" style="max-width:140px"><option value="">' + esc(t('pages.maint.all')) + '</option><option value="主机AI对话">' + esc(t('pages.maint.catHostAi')) + '</option><option value="AI助手对话">' + esc(t('pages.maint.catAiAssistant')) + '</option><option value="install">' + esc(t('forms.maintenance.catInstall')) + '</option><option value="config">' + esc(t('forms.maintenance.catConfig')) + '</option><option value="operation">' + esc(t('forms.maintenance.catOp')) + '</option><option value="file">' + esc(t('forms.maintenance.catFile')) + '</option></select>'
+        + '</div><div id="maintList" class="table-container"></div><div id="maintPagination"></div></div>';
+    var listEl = document.getElementById('maintList');
+    var pagination = appendPaginationBar(document.getElementById('maintPagination'), 20);
+    function load() {
+        var host = document.getElementById('maintHostFilter') && document.getElementById('maintHostFilter').value.trim();
+        var category = document.getElementById('maintCategoryFilter') && document.getElementById('maintCategoryFilter').value;
+        var params = { page: pagination.getPage(), page_size: pagination.getPageSize() };
+        if (host) params.host = host;
+        if (category) params.category = category;
+        if (listEl) listEl.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+        API.listMaintenanceHistory(params).then(function(r) {
+            var items = r.items || [];
+            pagination.update({ total: r.total, page: r.page, page_size: r.page_size });
+            var html = items.length ? '<table><thead><tr><th>' + esc(t('pages.maint.thTime')) + '</th><th>' + esc(t('pages.maint.thHost')) + '</th><th>' + esc(t('pages.maint.thType')) + '</th><th>' + esc(t('pages.maint.thContent')) + '</th><th>' + esc(t('pages.maint.thBy')) + '</th><th>' + esc(t('pages.hosts.thAction')) + '</th></tr></thead><tbody>'
+                + items.map(function(i) { return '<tr><td>' + formatTime(i.created_at) + '</td><td>' + esc(i.host) + '</td><td>' + esc(i.category) + '</td><td>' + esc((i.content || '').substring(0, 80)) + '</td><td>' + esc(i.created_by_name || '-') + '</td><td><button class="btn btn-sm btn-danger" onclick="deleteMaintenance(' + i.id + ')">' + esc(t('common.delete')) + '</button></td></tr>'; }).join('') + '</tbody></table>' : '<div class="empty-state">' + esc(t('pages.maint.empty')) + '</div>';
+            listEl.innerHTML = html;
+        }).catch(function(err) {
+            if (listEl) listEl.innerHTML = '<div class="empty-state"><h3>' + esc(t('ui.loadFailedH3')) + '</h3><p>' + esc(err.message) + '</p></div>';
+            showToast(err.message, 'error');
+        });
+    }
+    pagination.onPrev(load);
+    pagination.onNext(load);
+    pagination.onPageSizeChange(load);
+    document.getElementById('maintHostFilter').onchange = function() { pagination.setPage(1); load(); };
+    document.getElementById('maintHostFilter').onkeyup = function(e) { if (e.key === 'Enter') { pagination.setPage(1); load(); } };
+    document.getElementById('maintCategoryFilter').onchange = function() { pagination.setPage(1); load(); };
+    var maintHistoryRefreshBtn = document.getElementById('maintHistoryRefreshBtn');
+    if (maintHistoryRefreshBtn) maintHistoryRefreshBtn.onclick = function() { load(); };
+    load();
+}
+
+function deleteMaintenance(id) {
+    showConfirm(t('confirm.deleteMaintenanceTitle'), t('confirm.deleteMaintenanceBody')).then(function(ok) {
+        if (!ok) return;
+        API.deleteMaintenance(id).then(function() { showToast(t('toast.deleted')); renderMaintenanceHistoryPage(); }).catch(function(err) { showToast(err.message, 'error'); });
+    });
+}
+
+// ── 用户 API 令牌（系统设置页）──
+function loadUserApiTokens() {
+    var host = document.getElementById('userApiTokensList');
+    if (!host) return;
+    API.listUserApiTokens().then(function(r) {
+        var tokens = (r && r.tokens) || [];
+        if (!tokens.length) {
+            host.innerHTML = '<p>' + esc(t('pages.apiTokens.empty')) + '</p>';
+            return;
+        }
+        var html = '<table class="chat-md-table settings-table"><thead><tr><th>' + esc(t('pages.apiTokens.thId')) + '</th><th>' + esc(t('pages.apiTokens.thName')) + '</th><th>' + esc(t('pages.apiTokens.thPrefix')) + '</th><th>' + esc(t('pages.apiTokens.thCreated')) + '</th><th>' + esc(t('pages.apiTokens.thLastUsed')) + '</th><th></th></tr></thead><tbody>';
+        tokens.forEach(function(tok) {
+            html += '<tr><td>' + tok.id + '</td><td>' + esc(tok.name || '') + '</td><td><code>' + esc(tok.token_prefix || '') + '</code></td><td>' + formatTime(tok.created_at) + '</td><td>' + (tok.last_used_at ? formatTime(tok.last_used_at) : '—') + '</td>'
+                + '<td><button type="button" class="btn btn-sm btn-outline-danger btn-revoke-api-token" data-id="' + tok.id + '">' + esc(t('pages.apiTokens.revoke')) + '</button></td></tr>';
+        });
+        html += '</tbody></table>';
+        host.innerHTML = html;
+        host.querySelectorAll('.btn-revoke-api-token').forEach(function(btn) {
+            btn.onclick = function() {
+                var id = parseInt(btn.getAttribute('data-id'), 10);
+                showConfirm(t('confirm.revokeTokenTitle'), t('confirm.revokeTokenBody')).then(function(ok) {
+                    if (!ok) return;
+                    API.deleteUserApiToken(id).then(function() { showToast(t('toast.revokedShort')); loadUserApiTokens(); }).catch(function(err) { showToast(err.message || t('toast.failGeneric'), 'error'); });
+                });
+            };
+        });
+    }).catch(function() { host.innerHTML = '<p class="text-danger">' + esc(t('pages.apiTokens.loadFailed')) + '</p>'; });
+}
+
+function loadUserMailSettings() {
+    var hintEl = document.getElementById('userMailStatusHint');
+    API.getUserMailConfig().then(function(r) {
+        var c = r.config || {};
+        if (hintEl) {
+            if (c.may_send_mail) {
+                hintEl.textContent = t('settings.mailStatus.ok');
+                hintEl.className = 'text-muted';
+            } else if (c.mail_enabled) {
+                hintEl.textContent = t('settings.mailStatus.incomplete');
+                hintEl.className = 'text-warning';
+            } else {
+                hintEl.textContent = t('settings.mailStatus.disabled');
+                hintEl.className = 'text-muted';
+            }
+        }
+        var en = document.getElementById('userMailEnabled');
+        if (en) en.checked = !!c.mail_enabled;
+        var h = document.getElementById('userMailHost'); if (h) h.value = c.smtp_host || '';
+        var p = document.getElementById('userMailPort'); if (p) p.value = (c.smtp_port != null && c.smtp_port !== '') ? c.smtp_port : 587;
+        var u = document.getElementById('userMailUser'); if (u) u.value = c.smtp_user || '';
+        var pw = document.getElementById('userMailPassword'); if (pw) pw.value = '';
+        var f = document.getElementById('userMailFrom'); if (f) f.value = c.smtp_from || '';
+        // STARTTLS 与 SSL 直连互斥；老库可能两者皆 true，按"SSL 优先"在前端再次归一化展示
+        var sslOn = !!c.smtp_use_ssl;
+        var tlsOn = sslOn ? false : (c.smtp_use_tls !== false);
+        var tls = document.getElementById('userMailTls');
+        var ssl = document.getElementById('userMailSsl');
+        if (ssl) ssl.checked = sslOn;
+        if (tls) {
+            tls.checked = tlsOn;
+            tls.disabled = sslOn;
+        }
+    }).catch(function() {
+        if (hintEl) {
+            hintEl.textContent = t('settings.mailStatus.loadFailed');
+            hintEl.className = 'text-danger';
+        }
+    });
+}
+
+// ── 搜索服务（GitHub / 阿里云 IQS / ...）按当前用户配置 ──
+function _escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+    });
+}
+
+function _renderSearchProviderRow(provider, config) {
+    var p = provider || {};
+    var c = config || {};
+    var metaBase = 'settings.searchProviderMeta.' + p.name;
+    var statusBadge = '';
+    if (!p.requires_key) {
+        statusBadge = c.api_key_set
+            ? '<span style="color:#9ef5b7">' + esc(t('settings.search.badgeKey5000')) + '</span>'
+            : '<span style="color:#9ec3ff">' + esc(t('settings.search.badgeNoKey60')) + '</span>';
+    } else {
+        statusBadge = c.api_key_set
+            ? '<span style="color:#9ef5b7">' + esc(t('settings.search.badgeKey')) + '</span>'
+            : '<span style="color:#ff9a3c">' + esc(t('settings.search.badgeNoKeyRequired')) + '</span>';
+    }
+    var fields = (p.config_schema || []).map(function(f) {
+        var fMeta = metaBase + '.fields.' + f.key;
+        var labelTxt = tOr(fMeta + '.label', f.label || '');
+        var inputId = 'srch_' + p.name + '_' + f.key;
+        var phRaw = tOr(fMeta + '.placeholder', f.placeholder || '');
+        var common = 'class="form-control" id="' + inputId + '" placeholder="' + _escapeHtml(phRaw) + '"';
+        var existingVal = '';
+        if (f.key === 'api_key') {
+            existingVal = c.api_key_set ? '' : '';  // 永不回显
+        } else {
+            existingVal = (c.extra && c.extra[f.key] != null) ? c.extra[f.key] : '';
+        }
+        var input;
+        if (f.type === 'select') {
+            input = '<select ' + common + '>'
+                + '<option value="">' + _escapeHtml(t('settings.search.optionDefault')) + '</option>'
+                + (f.options || []).map(function(o) {
+                    var sel = (String(existingVal) === String(o.value)) ? ' selected' : '';
+                    var optLabel = tOr(metaBase + '.engineTypes.' + o.value, o.label);
+                    return '<option value="' + _escapeHtml(o.value) + '"' + sel + '>' + _escapeHtml(optLabel) + '</option>';
+                }).join('')
+                + '</select>';
+        } else if (f.type === 'password') {
+            var pph = c.api_key_set ? t('settings.search.passwordLeaveBlank') : tOr(fMeta + '.placeholder', f.placeholder || '');
+            input = '<input type="password" class="form-control" id="' + inputId + '" value="" placeholder="' + _escapeHtml(pph) + '">';
+        } else if (f.type === 'number') {
+            input = '<input type="number" ' + common + ' value="' + _escapeHtml(existingVal) + '">';
+        } else {
+            input = '<input type="text" ' + common + ' value="' + _escapeHtml(existingVal) + '">';
+        }
+        var helpText = f.help ? tOr(fMeta + '.help', f.help) : '';
+        var help = helpText ? '<div class="text-muted" style="font-size:12px;margin-top:4px">' + _escapeHtml(helpText) + '</div>' : '';
+        return '<tr><td style="width:160px">' + _escapeHtml(labelTxt) + (f.required ? ' <span style="color:#ff9a3c">*</span>' : '') + '</td>'
+            + '<td>' + input + help + '</td></tr>';
+    }).join('');
+    var docs = p.docs_url ? ' · <a href="' + _escapeHtml(p.docs_url) + '" target="_blank" rel="noopener">' + _escapeHtml(t('settings.search.docs')) + '</a>' : '';
+    return ''
+        + '<div class="card" style="margin-bottom:12px;border:1px solid rgba(120,160,255,0.18)">'
+        + '<div class="card-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">'
+        + '<h4 style="margin:0">' + _escapeHtml(tOr(metaBase + '.displayName', p.display_name || p.name)) + '</h4>'
+        + '<span style="font-size:12px">' + statusBadge + docs + '</span>'
+        + '</div>'
+        + '<p class="text-muted" style="padding:8px 16px 0;font-size:12px;line-height:1.7">' + _escapeHtml(tOr(metaBase + '.description', p.description || '')) + '</p>'
+        + '<table class="chat-md-table settings-table" style="margin:8px 16px 16px"><tbody>'
+        + fields
+        + '<tr><td>' + _escapeHtml(t('settings.search.enableRow')) + '</td><td><label><input type="checkbox" id="srch_' + p.name + '_enabled"' + (c.enabled === false ? '' : ' checked') + '> ' + _escapeHtml(t('settings.search.enableLabel')) + '</label></td></tr>'
+        + '<tr><td></td><td>'
+        + '<button type="button" class="btn btn-primary" data-search-save="' + _escapeHtml(p.name) + '">' + _escapeHtml(t('settings.search.save')) + '</button> '
+        + '<button type="button" class="btn btn-secondary" data-search-test="' + _escapeHtml(p.name) + '" style="margin-left:8px">' + _escapeHtml(t('settings.search.test')) + '</button> '
+        + (c.api_key_set ? '<button type="button" class="btn btn-danger" data-search-delete="' + _escapeHtml(p.name) + '" style="margin-left:8px">' + _escapeHtml(t('settings.search.clear')) + '</button>' : '')
+        + '</td></tr>'
+        + '</tbody></table></div>';
+}
+
+function loadSearchServicesSettings() {
+    var wrap = document.getElementById('searchServicesWrap');
+    if (!wrap) return;
+    wrap.textContent = t('common.loading');
+    API.getMySearchConfigs().then(function(r) {
+        var providers = r.providers || [];
+        var configs = (r.configs || []).reduce(function(m, c) { m[c.provider] = c; return m; }, {});
+        if (!providers.length) {
+            wrap.innerHTML = '<div class="text-muted">' + esc(t('settings.search.noProviders')) + '</div>';
+            return;
+        }
+        wrap.innerHTML = providers.map(function(p) {
+            return _renderSearchProviderRow(p, configs[p.name] || {});
+        }).join('');
+        Array.prototype.forEach.call(wrap.querySelectorAll('[data-search-save]'), function(btn) {
+            btn.onclick = function() { _saveSearchProvider(btn.getAttribute('data-search-save'), providers); };
+        });
+        Array.prototype.forEach.call(wrap.querySelectorAll('[data-search-test]'), function(btn) {
+            btn.onclick = function() { _testSearchProvider(btn.getAttribute('data-search-test')); };
+        });
+        Array.prototype.forEach.call(wrap.querySelectorAll('[data-search-delete]'), function(btn) {
+            btn.onclick = function() { _deleteSearchProvider(btn.getAttribute('data-search-delete')); };
+        });
+    }).catch(function(e) {
+        wrap.innerHTML = '<div class="text-danger">' + esc(t('settings.search.loadFailed', { message: e.message || e })) + '</div>';
+    });
+}
+
+function _saveSearchProvider(name, providers) {
+    var meta = (providers || []).find(function(p) { return p.name === name; });
+    if (!meta) return;
+    var payload = { extra: {} };
+    var enabledEl = document.getElementById('srch_' + name + '_enabled');
+    payload.enabled = !!(enabledEl && enabledEl.checked);
+    (meta.config_schema || []).forEach(function(f) {
+        var el = document.getElementById('srch_' + name + '_' + f.key);
+        if (!el) return;
+        var v = (el.value || '').trim();
+        if (f.key === 'api_key') {
+            if (v) payload.api_key = v;  // 留空 = 不改
+        } else {
+            payload.extra[f.key] = v;
+        }
+    });
+    API.updateMySearchConfig(name, payload).then(function() {
+        showToast(t('toast.savedWithName', { name: (meta.display_name || name) }));
+        loadSearchServicesSettings();
+    }).catch(function(err) {
+        showToast(err.message || t('toast.saveFailed'), 'error');
+    });
+}
+
+function _testSearchProvider(name) {
+    showToast(t('toast.testingName', { name: name }));
+    API.testMySearchConfig(name).then(function(r) {
+        if (r.success) {
+            showToast(t('toast.searchConnectOk'));
+        } else {
+            var msg = (r.detail && r.detail.error) || t('toast.searchTestFailed');
+            showToast('❌ ' + msg, 'error');
+        }
+    }).catch(function(err) {
+        showToast(err.message || t('toast.searchTestFailed'), 'error');
+    });
+}
+
+function _deleteSearchProvider(name) {
+    if (!confirm(t('confirm.clearSearchConfig', { name: name }))) return;
+    API.deleteMySearchConfig(name).then(function() {
+        showToast(t('toast.clearedConfigFor', { name: name }));
+        loadSearchServicesSettings();
+    }).catch(function(err) {
+        showToast(err.message || t('toast.deleteFailed'), 'error');
+    });
+}
+
+// ── 系统设置（所有用户可配置自己的 AI；管理员另有全局设置项）──
+function loadMyTrialBanner() {
+    var banner = document.getElementById('aiTrialBanner');
+    if (!banner) return;
+    API.getTrialStatus().then(function(s) {
+        if (!s) return;
+        if (s.has_own_key) {
+            banner.innerHTML = '<div style="padding:10px 14px;border-radius:10px;border:1px solid rgba(74,222,128,0.35);background:rgba(74,222,128,0.10);color:#9ef5b7;font-size:13px;line-height:1.7">' + t('settings.trial.ownKey') + '</div>';
+            return;
+        }
+        var used = s.used || 0; var limit = s.limit || 0; var remaining = s.remaining || 0;
+        var pct = limit > 0 ? Math.min(100, Math.round(used * 100 / limit)) : 0;
+        var color = s.exhausted ? '#ff6b6b' : (pct >= 80 ? '#ff9a3c' : '#6fa8ff');
+        var tip = s.exhausted
+            ? t('settings.trial.sharedExhausted', { used: used, limit: limit })
+            : t('settings.trial.sharedOk', { used: used, limit: limit, remaining: remaining });
+        banner.innerHTML = ''
+            + '<div style="padding:10px 14px;border-radius:10px;border:1px solid rgba(111,168,255,0.35);background:rgba(111,168,255,0.08);font-size:13px;line-height:1.7">'
+            + '  <div style="margin-bottom:8px">' + tip + '</div>'
+            + '  <div style="height:8px;background:rgba(120,160,255,0.18);border-radius:5px;overflow:hidden">'
+            + '    <div style="height:100%;width:' + pct + '%;background:' + color + ';transition:width .3s ease"></div>'
+            + '  </div>'
+            + '</div>';
+    }).catch(function() { /* 静默失败：横幅只是辅助信息 */ });
+}
+
+function _parseKeyValueLines(text, sep) {
+    var out = {};
+    String(text || '').split('\n').forEach(function(line) {
+        line = line.trim();
+        if (!line) return;
+        var idx = line.indexOf(sep);
+        if (idx <= 0) return;
+        var k = line.slice(0, idx).trim();
+        var v = line.slice(idx + sep.length).trim();
+        if (k) out[k] = v;
+    });
+    return out;
+}
+
+function _linesFromArgs(args) {
+    return (args || []).join('\n');
+}
+
+function _renderMcpScopeBadges(s) {
+    if (!s.chat_enabled) return '—';
+    var parts = [];
+    if (s.chat_scope_web !== false) parts.push(t('mcp.scopeWebShort'));
+    if (s.chat_scope_host !== false) parts.push(t('mcp.scopeHostShort'));
+    if (s.chat_scope_integration !== false) parts.push(t('mcp.scopeIntegrationShort'));
+    return parts.length ? esc(parts.join(' · ')) : '—';
+}
+
+function _renderMcpServerRow(s) {
+    var st = s.last_test_ok === 1 || s.last_test_ok === true ? ('<span class="text-success">' + esc(t('mcp.testOk')) + '</span>')
+        : (s.last_test_ok === 0 || s.last_test_ok === false ? ('<span class="text-danger">' + esc(t('mcp.testFail')) + '</span>') : esc(t('mcp.neverTested')));
+    var err = s.last_error ? ('<div class="field-hint">' + esc(t('mcp.lastError')) + ': ' + esc(s.last_error) + '</div>') : '';
+    return ''
+        + '<tr>'
+        + '<td><code>' + esc(s.name) + '</code></td>'
+        + '<td>' + esc(s.display_name || s.name) + '</td>'
+        + '<td>' + esc(s.transport) + '</td>'
+        + '<td>' + esc(String(s.tool_count || 0)) + '</td>'
+        + '<td>' + st + err + '</td>'
+        + '<td>' + _renderMcpScopeBadges(s) + '</td>'
+        + '<td>'
+        + '<button type="button" class="btn btn-sm btn-secondary" data-mcp-test="' + s.id + '">' + esc(t('mcp.test')) + '</button> '
+        + '<button type="button" class="btn btn-sm btn-secondary" data-mcp-refresh="' + s.id + '">' + esc(t('mcp.refreshTools')) + '</button> '
+        + '<button type="button" class="btn btn-sm" data-mcp-edit="' + s.id + '">' + esc(t('mcp.edit')) + '</button> '
+        + '<button type="button" class="btn btn-sm btn-danger" data-mcp-del="' + s.id + '" data-mcp-name="' + esc(s.name) + '">' + esc(t('mcp.delete')) + '</button>'
+        + '</td></tr>';
+}
+
+var _mcpServersCache = [];
+
+function _showMcpForm(server) {
+    var isEdit = !!server;
+    var s = server || { transport: 'stdio', enabled: true, chat_enabled: true, config: {} };
+    var cfg = s.config || {};
+    var modal = document.getElementById('mcpFormModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'mcpFormModal';
+        modal.className = 'modal-overlay';
+        modal.style.display = 'none';
+        document.body.appendChild(modal);
+    }
+    modal.innerHTML = ''
+        + '<div class="modal" style="max-width:640px;width:95%;display:flex;flex-direction:column;overflow:hidden">'
+        + '<div class="modal-header"><h3 id="mcpFormTitle"></h3></div>'
+        + '<div class="modal-body" style="flex:1;min-height:0;overflow-y:auto">'
+        + '<div class="form-group"><label>' + esc(t('mcp.fieldName')) + '</label><input id="mcpFormName" class="form-control" ' + (isEdit ? 'readonly' : '') + '></div>'
+        + '<div class="form-group"><label>' + esc(t('mcp.fieldDisplay')) + '</label><input id="mcpFormDisplay" class="form-control"></div>'
+        + '<div class="form-group"><label>Transport</label><select id="mcpFormTransport" class="form-control">'
+        + '<option value="stdio">' + esc(t('mcp.transportStdio')) + '</option>'
+        + '<option value="sse">' + esc(t('mcp.transportSse')) + '</option>'
+        + '<option value="streamable_http">' + esc(t('mcp.transportHttp')) + '</option>'
+        + '</select></div>'
+        + '<div id="mcpStdioFields">'
+        + '<div class="form-group"><label>' + esc(t('mcp.fieldCommand')) + '</label><input id="mcpFormCommand" class="form-control" placeholder="npx"></div>'
+        + '<div class="form-group"><label>' + esc(t('mcp.fieldArgs')) + '</label><textarea id="mcpFormArgs" class="form-control" rows="4"></textarea>'
+        + '<div class="field-hint">' + esc(t('mcp.hintStdio')) + '</div></div>'
+        + '<div class="form-group"><label>' + esc(t('mcp.fieldEnv')) + '</label><textarea id="mcpFormEnv" class="form-control" rows="3"></textarea>'
+        + '<div class="field-hint">' + esc(t('mcp.secretMaskHint')) + '</div></div>'
+        + '</div>'
+        + '<div id="mcpHttpFields" style="display:none">'
+        + '<div class="form-group"><label>' + esc(t('mcp.fieldUrl')) + '</label><input id="mcpFormUrl" class="form-control" placeholder="https://..."></div>'
+        + '<div class="form-group"><label>' + esc(t('mcp.fieldHeaders')) + '</label><textarea id="mcpFormHeaders" class="form-control" rows="3"></textarea>'
+        + '<div class="field-hint">' + esc(t('mcp.hintHttp')) + '</div>'
+        + '<div class="field-hint">' + esc(t('mcp.secretMaskHint')) + '</div></div>'
+        + '</div>'
+        + '<div class="form-group"><label><input type="checkbox" id="mcpFormEnabled"> ' + esc(t('mcp.enabled')) + '</label></div>'
+        + '<div class="form-group"><label><input type="checkbox" id="mcpFormChat"> ' + esc(t('mcp.chatEnabled')) + '</label></div>'
+        + '<div class="form-group"><label style="font-weight:600">' + esc(t('mcp.scopeTitle')) + '</label>'
+        + '<div><label><input type="checkbox" id="mcpFormScopeWeb"> ' + esc(t('mcp.scopeWeb')) + '</label></div>'
+        + '<div><label><input type="checkbox" id="mcpFormScopeHost"> ' + esc(t('mcp.scopeHost')) + '</label></div>'
+        + '<div><label><input type="checkbox" id="mcpFormScopeIntegration"> ' + esc(t('mcp.scopeIntegration')) + '</label></div>'
+        + '<div class="field-hint">' + esc(t('mcp.scopeHint')) + '</div></div>'
+        + '</div>'
+        + '<div class="modal-footer">'
+        + '<button type="button" class="btn btn-secondary" id="mcpFormCancel">' + esc(t('mcp.cancel')) + '</button>'
+        + '<button type="button" class="btn btn-primary" id="mcpFormSave">' + esc(t('mcp.save')) + '</button>'
+        + '</div></div>';
+    document.getElementById('mcpFormTitle').textContent = isEdit ? t('mcp.editServer') : t('mcp.addServer');
+    document.getElementById('mcpFormName').value = s.name || '';
+    document.getElementById('mcpFormDisplay').value = s.display_name || '';
+    document.getElementById('mcpFormTransport').value = s.transport || 'stdio';
+    document.getElementById('mcpFormCommand').value = cfg.command || '';
+    document.getElementById('mcpFormArgs').value = _linesFromArgs(cfg.args);
+    document.getElementById('mcpFormUrl').value = cfg.url || '';
+    var envLines = Object.keys(cfg.env || {}).map(function(k) { return k + '=' + (cfg.env[k] || ''); });
+    document.getElementById('mcpFormEnv').value = envLines.join('\n');
+    var hdrLines = Object.keys(cfg.headers || {}).map(function(k) { return k + ': ' + (cfg.headers[k] || ''); });
+    document.getElementById('mcpFormHeaders').value = hdrLines.join('\n');
+    document.getElementById('mcpFormEnabled').checked = s.enabled !== false;
+    document.getElementById('mcpFormChat').checked = s.chat_enabled !== false;
+    document.getElementById('mcpFormScopeWeb').checked = s.chat_scope_web !== false;
+    document.getElementById('mcpFormScopeHost').checked = s.chat_scope_host !== false;
+    document.getElementById('mcpFormScopeIntegration').checked = s.chat_scope_integration !== false;
+    function syncTransportUi() {
+        var tr = document.getElementById('mcpFormTransport').value;
+        document.getElementById('mcpStdioFields').style.display = tr === 'stdio' ? '' : 'none';
+        document.getElementById('mcpHttpFields').style.display = tr === 'stdio' ? 'none' : '';
+    }
+    document.getElementById('mcpFormTransport').onchange = syncTransportUi;
+    syncTransportUi();
+    document.getElementById('mcpFormCancel').onclick = function() { modal.style.display = 'none'; };
+    document.getElementById('mcpFormSave').onclick = function() {
+        var tr = document.getElementById('mcpFormTransport').value;
+        var payload = {
+            name: (document.getElementById('mcpFormName').value || '').trim(),
+            display_name: (document.getElementById('mcpFormDisplay').value || '').trim(),
+            transport: tr,
+            enabled: document.getElementById('mcpFormEnabled').checked,
+            chat_enabled: document.getElementById('mcpFormChat').checked,
+            chat_scope_web: document.getElementById('mcpFormScopeWeb').checked,
+            chat_scope_host: document.getElementById('mcpFormScopeHost').checked,
+            chat_scope_integration: document.getElementById('mcpFormScopeIntegration').checked,
+            command: document.getElementById('mcpFormCommand').value.trim(),
+            args: (document.getElementById('mcpFormArgs').value || '').split('\n').map(function(x) { return x.trim(); }).filter(Boolean),
+            url: document.getElementById('mcpFormUrl').value.trim(),
+            env: _parseKeyValueLines(document.getElementById('mcpFormEnv').value, '='),
+            headers: _parseKeyValueLines(document.getElementById('mcpFormHeaders').value, ':')
+        };
+        var p = isEdit ? API.updateUserMcpServer(s.id, payload) : API.createUserMcpServer(payload);
+        p.then(function() {
+            modal.style.display = 'none';
+            showToast(t('toast.saved'));
+            loadMcpServersPage();
+        }).catch(function(err) {
+            showToast(err.message || t('toast.saveFailed'), 'error');
+        });
+    };
+    modal.style.display = 'flex';
+    modal.onclick = function(e) { if (e.target === modal) modal.style.display = 'none'; };
+}
+
+function loadMcpServersPage() {
+    var wrap = document.getElementById('mcpServersTableWrap');
+    if (!wrap) return;
+    wrap.textContent = t('common.loading');
+    API.listUserMcpServers().then(function(r) {
+        _mcpServersCache = r.servers || [];
+        if (!_mcpServersCache.length) {
+            wrap.innerHTML = '<div class="text-muted">' + esc(t('mcp.empty')) + '</div>';
+            return;
+        }
+        wrap.innerHTML = ''
+            + '<table class="data-table"><thead><tr>'
+            + '<th>' + esc(t('mcp.colName')) + '</th><th>' + esc(t('mcp.colDisplay')) + '</th><th>' + esc(t('mcp.colTransport')) + '</th>'
+            + '<th>' + esc(t('mcp.colTools')) + '</th><th>' + esc(t('mcp.colStatus')) + '</th><th>' + esc(t('mcp.colScopes')) + '</th><th>' + esc(t('mcp.colActions')) + '</th>'
+            + '</tr></thead><tbody>'
+            + _mcpServersCache.map(_renderMcpServerRow).join('')
+            + '</tbody></table>';
+        wrap.querySelectorAll('[data-mcp-test]').forEach(function(btn) {
+            btn.onclick = function() {
+                var id = parseInt(btn.getAttribute('data-mcp-test'), 10);
+                showToast(t('toast.testingName', { name: 'MCP' }));
+                API.testUserMcpServer(id).then(function(res) {
+                    if (res.success) showToast(t('mcp.testOk') + ' (' + ((res.detail && res.detail.tool_count) || 0) + ')');
+                    else showToast('❌ ' + (((res.detail && res.detail.error) || t('mcp.testFail'))), 'error');
+                    loadMcpServersPage();
+                }).catch(function(err) { showToast(err.message || t('mcp.testFail'), 'error'); });
+            };
+        });
+        wrap.querySelectorAll('[data-mcp-refresh]').forEach(function(btn) {
+            btn.onclick = function() {
+                var id = parseInt(btn.getAttribute('data-mcp-refresh'), 10);
+                API.refreshUserMcpServerTools(id).then(function(res) {
+                    if (res.success) showToast(t('mcp.refreshOk', { count: res.tool_count || 0 }));
+                    else showToast('❌ ' + (res.error || t('mcp.refreshFail')), 'error');
+                    loadMcpServersPage();
+                }).catch(function(err) { showToast(err.message || t('mcp.refreshFail'), 'error'); });
+            };
+        });
+        wrap.querySelectorAll('[data-mcp-edit]').forEach(function(btn) {
+            btn.onclick = function() {
+                var id = parseInt(btn.getAttribute('data-mcp-edit'), 10);
+                var s = _mcpServersCache.find(function(x) { return x.id === id; });
+                if (s) _showMcpForm(s);
+            };
+        });
+        wrap.querySelectorAll('[data-mcp-del]').forEach(function(btn) {
+            btn.onclick = function() {
+                var id = parseInt(btn.getAttribute('data-mcp-del'), 10);
+                var name = btn.getAttribute('data-mcp-name') || '';
+                if (!confirm(t('mcp.confirmDelete', { name: name }))) return;
+                API.deleteUserMcpServer(id).then(function() {
+                    showToast(t('toast.deleted'));
+                    loadMcpServersPage();
+                }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
+            };
+        });
+    }).catch(function(e) {
+        wrap.innerHTML = '<div class="text-danger">' + esc(t('mcp.loadFailed', { message: e.message || e })) + '</div>';
+    });
+}
+
+function renderMcpConfigPage() {
+    renderLayout();
+    var el = getPageEl();
+    el.innerHTML = '<div class="topbar"><h2>' + esc(t('mcp.title')) + '</h2><div class="topbar-actions">'
+        + '<button type="button" class="btn btn-primary" id="mcpAddBtn">' + esc(t('mcp.addServer')) + '</button>'
+        + '<button type="button" class="btn" id="mcpExportBtn">' + esc(t('mcp.exportBtn')) + '</button>'
+        + '<button type="button" class="btn" id="mcpRefreshBtn">' + esc(t('common.refresh')) + '</button></div></div>'
+        + '<div class="page-content">'
+        + edgeopsPageIntroHtml(t('mcp.subtitle'), true)
+        + '<div class="tabs">'
+        + '<div class="tab active" data-tab="list">' + esc(t('mcp.listTitle')) + '</div>'
+        + '<div class="tab" data-tab="import">' + esc(t('mcp.importExportTitle')) + '</div>'
+        + '</div>'
+        + '<div id="mcpListPanel" class="mcp-tab-panel">'
+        + '<div class="card"><div class="card-body" id="mcpServersTableWrap">' + esc(t('common.loading')) + '</div></div>'
+        + '</div>'
+        + '<div id="mcpImportPanel" class="mcp-tab-panel" style="display:none">'
+        + '<div class="card"><div class="card-body">'
+        + '<p class="form-hint">' + esc(t('mcp.importHint')) + '</p>'
+        + '<textarea id="mcpImportJson" class="form-control" rows="8" placeholder="{&quot;mcpServers&quot;: { ... }}"></textarea>'
+        + '<div style="margin-top:8px"><label><input type="checkbox" id="mcpImportOverwrite"> ' + esc(t('mcp.importOverwrite')) + '</label></div>'
+        + '<div style="margin-top:12px"><button type="button" class="btn btn-primary" id="mcpImportBtn">' + esc(t('mcp.importBtn')) + '</button></div>'
+        + '<div id="mcpImportResult" class="form-hint" style="margin-top:8px;margin-bottom:0"></div>'
+        + '<hr style="margin:20px 0;border-color:rgba(255,255,255,0.08)">'
+        + '<p class="form-hint">' + esc(t('mcp.exportHint')) + '</p>'
+        + '<div style="margin-top:8px"><label><input type="checkbox" id="mcpExportDisabled" checked> ' + esc(t('mcp.exportIncludeDisabled')) + '</label></div>'
+        + '<div style="margin-top:4px"><label><input type="checkbox" id="mcpExportEdgeopsMeta" checked> ' + esc(t('mcp.exportIncludeEdgeopsMeta')) + '</label></div>'
+        + '<div style="margin-top:12px"><button type="button" class="btn" id="mcpExportDownloadBtn">' + esc(t('mcp.exportBtn')) + '</button></div>'
+        + '</div></div>'
+        + '</div>'
+        + '</div>';
+    var activeTab = 'list';
+    function showMcpTab(tab) {
+        activeTab = tab || 'list';
+        el.querySelectorAll('.tabs .tab').forEach(function(x) {
+            x.classList.toggle('active', x.getAttribute('data-tab') === activeTab);
+        });
+        var listPanel = document.getElementById('mcpListPanel');
+        var importPanel = document.getElementById('mcpImportPanel');
+        if (listPanel) listPanel.style.display = activeTab === 'list' ? 'block' : 'none';
+        if (importPanel) importPanel.style.display = activeTab === 'import' ? 'block' : 'none';
+    }
+    el.querySelectorAll('.tabs .tab').forEach(function(tabEl) {
+        tabEl.onclick = function() { showMcpTab(this.getAttribute('data-tab')); };
+    });
+    document.getElementById('mcpAddBtn').onclick = function() { _showMcpForm(null); };
+    document.getElementById('mcpRefreshBtn').onclick = function() {
+        if (activeTab !== 'list') showMcpTab('list');
+        loadMcpServersPage();
+        showToast(t('toast.refreshed'));
+    };
+    function doMcpExportDownload() {
+        var includeDisabled = document.getElementById('mcpExportDisabled') ? document.getElementById('mcpExportDisabled').checked : true;
+        var includeMeta = document.getElementById('mcpExportEdgeopsMeta') ? document.getElementById('mcpExportEdgeopsMeta').checked : true;
+        API.exportUserMcpServers({
+            include_disabled: includeDisabled,
+            include_edgeops_meta: includeMeta
+        }).then(function(res) {
+            var cfg = res.config || {};
+            var n = res.count != null ? res.count : Object.keys(cfg.mcpServers || {}).length;
+            if (!n) { showToast(t('mcp.exportEmpty'), 'warning'); return; }
+            var uname = (API.user && API.user.username) ? API.user.username : 'user';
+            var fname = 'edgeops-mcp-' + uname + '.json';
+            downloadJsonFile(fname, res.json || cfg);
+            showToast(t('mcp.exportDone', { count: n }));
+        }).catch(function(err) {
+            showToast(err.message || t('mcp.exportFail'), 'error');
+        });
+    }
+    document.getElementById('mcpExportBtn').onclick = doMcpExportDownload;
+    document.getElementById('mcpExportDownloadBtn').onclick = doMcpExportDownload;
+    document.getElementById('mcpImportBtn').onclick = function() {
+        var raw = (document.getElementById('mcpImportJson').value || '').trim();
+        if (!raw) { showToast(t('mcp.importEmpty'), 'error'); return; }
+        var overwrite = document.getElementById('mcpImportOverwrite').checked;
+        API.importUserMcpServers({ config: raw, overwrite: overwrite }).then(function(res) {
+            var msg = t('mcp.importResult', {
+                created: (res.created || []).length,
+                updated: (res.updated || []).length,
+                skipped: (res.skipped || []).length
+            });
+            document.getElementById('mcpImportResult').textContent = msg;
+            showToast(t('mcp.importDone'));
+            showMcpTab('list');
+            loadMcpServersPage();
+        }).catch(function(err) {
+            showToast(err.message || t('mcp.importFail'), 'error');
+        });
+    };
+    loadMcpServersPage();
+}
+
+var _userSkillsCache = [];
+
+function _renderSkillScopeBadges(s) {
+    if (!s.chat_enabled) return '—';
+    var parts = [];
+    if (s.chat_scope_web !== false) parts.push(t('skills.scopeWebShort'));
+    if (s.chat_scope_host !== false) parts.push(t('skills.scopeHostShort'));
+    if (s.chat_scope_integration) parts.push(t('skills.scopeIntegrationShort'));
+    return parts.length ? esc(parts.join(' · ')) : '—';
+}
+
+function _renderUserSkillRow(s) {
+    var fs = s.file_exists === false
+        ? ('<span class="text-danger">' + esc(t('skills.fileMissing')) + '</span>')
+        : ('<span class="text-success">' + esc(t('skills.fileOk')) + '</span>');
+    var en = s.enabled ? esc(t('skills.enabled')) : '—';
+    return ''
+        + '<tr>'
+        + '<td><code>' + esc(s.name) + '</code></td>'
+        + '<td>' + esc(s.display_name || s.name) + '</td>'
+        + '<td>' + esc((s.description || '').slice(0, 80)) + '</td>'
+        + '<td>' + fs + '</td>'
+        + '<td>' + _renderSkillScopeBadges(s) + '</td>'
+        + '<td>'
+        + '<button type="button" class="btn btn-sm" data-skill-edit="' + s.id + '">' + esc(t('skills.edit')) + '</button> '
+        + '<button type="button" class="btn btn-sm btn-danger" data-skill-del="' + s.id + '" data-skill-name="' + esc(s.name) + '">' + esc(t('skills.delete')) + '</button>'
+        + '</td></tr>';
+}
+
+function _showUserSkillForm(skill) {
+    var isEdit = !!skill;
+    var s = skill || { enabled: true, chat_enabled: true, chat_scope_web: true, chat_scope_host: true, chat_scope_integration: false };
+    var modal = document.getElementById('skillFormModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'skillFormModal';
+        modal.className = 'modal-overlay';
+        modal.style.display = 'none';
+        document.body.appendChild(modal);
+    }
+    modal.innerHTML = ''
+        + '<div class="modal" style="max-width:720px;width:95%;display:flex;flex-direction:column;overflow:hidden">'
+        + '<div class="modal-header"><h3 id="skillFormTitle"></h3></div>'
+        + '<div class="modal-body" style="flex:1;min-height:0;overflow-y:auto">'
+        + '<div class="form-group"><label>' + esc(t('skills.fieldName')) + '</label><input id="skillFormName" class="form-control" ' + (isEdit ? 'readonly' : '') + '></div>'
+        + '<div class="form-group"><label>' + esc(t('skills.fieldDisplay')) + '</label><input id="skillFormDisplay" class="form-control"></div>'
+        + '<div class="form-group"><label>' + esc(t('skills.fieldDesc')) + '</label><input id="skillFormDesc" class="form-control"></div>'
+        + '<div class="form-group"><label>' + esc(t('skills.fieldContent')) + '</label><textarea id="skillFormContent" class="form-control" rows="14" style="font-family:monospace;font-size:12px"></textarea>'
+        + '<div class="field-hint">' + esc(t('skills.contentHint')) + '</div></div>'
+        + '<div class="form-group"><label><input type="checkbox" id="skillFormEnabled"> ' + esc(t('skills.enabled')) + '</label></div>'
+        + '<div class="form-group"><label><input type="checkbox" id="skillFormChat"> ' + esc(t('skills.chatEnabled')) + '</label></div>'
+        + '<div class="form-group"><label style="font-weight:600">' + esc(t('skills.scopeTitle')) + '</label>'
+        + '<div><label><input type="checkbox" id="skillFormScopeWeb"> ' + esc(t('skills.scopeWeb')) + '</label></div>'
+        + '<div><label><input type="checkbox" id="skillFormScopeHost"> ' + esc(t('skills.scopeHost')) + '</label></div>'
+        + '<div><label><input type="checkbox" id="skillFormScopeIntegration"> ' + esc(t('skills.scopeIntegration')) + '</label></div>'
+        + '<div class="field-hint">' + esc(t('skills.scopeHint')) + '</div></div>'
+        + '</div>'
+        + '<div class="modal-footer">'
+        + '<button type="button" class="btn btn-secondary" id="skillFormCancel">' + esc(t('skills.cancel')) + '</button>'
+        + '<button type="button" class="btn btn-primary" id="skillFormSave">' + esc(t('skills.save')) + '</button>'
+        + '</div></div>';
+    document.getElementById('skillFormTitle').textContent = isEdit ? t('skills.editSkill') : t('skills.addSkill');
+    document.getElementById('skillFormName').value = s.name || '';
+    document.getElementById('skillFormDisplay').value = s.display_name || '';
+    document.getElementById('skillFormDesc').value = s.description || '';
+    document.getElementById('skillFormContent').value = s.content || '';
+    document.getElementById('skillFormEnabled').checked = s.enabled !== false;
+    document.getElementById('skillFormChat').checked = s.chat_enabled !== false;
+    document.getElementById('skillFormScopeWeb').checked = s.chat_scope_web !== false;
+    document.getElementById('skillFormScopeHost').checked = s.chat_scope_host !== false;
+    document.getElementById('skillFormScopeIntegration').checked = !!s.chat_scope_integration;
+    document.getElementById('skillFormCancel').onclick = function() { modal.style.display = 'none'; };
+    document.getElementById('skillFormSave').onclick = function() {
+        var payload = {
+            name: (document.getElementById('skillFormName').value || '').trim(),
+            display_name: (document.getElementById('skillFormDisplay').value || '').trim(),
+            description: (document.getElementById('skillFormDesc').value || '').trim(),
+            content: document.getElementById('skillFormContent').value,
+            enabled: document.getElementById('skillFormEnabled').checked,
+            chat_enabled: document.getElementById('skillFormChat').checked,
+            chat_scope_web: document.getElementById('skillFormScopeWeb').checked,
+            chat_scope_host: document.getElementById('skillFormScopeHost').checked,
+            chat_scope_integration: document.getElementById('skillFormScopeIntegration').checked
+        };
+        var p = isEdit ? API.updateUserSkill(s.id, payload) : API.createUserSkill(payload);
+        p.then(function(res) {
+            modal.style.display = 'none';
+            var msg = t('toast.saved');
+            if (res && res.warnings && res.warnings.length) {
+                msg += ' — ' + res.warnings.join('；');
+            }
+            showToast(msg);
+            loadUserSkillsPage();
+        }).catch(function(err) {
+            showToast(err.message || t('toast.saveFailed'), 'error');
+        });
+    };
+    modal.style.display = 'flex';
+    modal.onclick = function(e) { if (e.target === modal) modal.style.display = 'none'; };
+    if (!isEdit && !s.content) {
+        API.getUserSkillsTemplate('my-skill', '').then(function(res) {
+            var ta = document.getElementById('skillFormContent');
+            if (ta && res && res.content && !ta.value.trim()) ta.value = res.content;
+        }).catch(function() {});
+    }
+}
+
+function loadUserSkillsPage() {
+    var wrap = document.getElementById('userSkillsTableWrap');
+    if (!wrap) return;
+    wrap.textContent = t('common.loading');
+    API.listUserSkills().then(function(r) {
+        _userSkillsCache = r.skills || [];
+        if (!_userSkillsCache.length) {
+            wrap.innerHTML = '<div class="text-muted">' + esc(t('skills.empty')) + '</div>';
+            return;
+        }
+        wrap.innerHTML = ''
+            + '<table class="data-table"><thead><tr>'
+            + '<th>' + esc(t('skills.colName')) + '</th><th>' + esc(t('skills.colDisplay')) + '</th><th>' + esc(t('skills.colDesc')) + '</th>'
+            + '<th>' + esc(t('skills.colFile')) + '</th><th>' + esc(t('skills.colScopes')) + '</th><th>' + esc(t('skills.colActions')) + '</th>'
+            + '</tr></thead><tbody>'
+            + _userSkillsCache.map(_renderUserSkillRow).join('')
+            + '</tbody></table>';
+        wrap.querySelectorAll('[data-skill-edit]').forEach(function(btn) {
+            btn.onclick = function() {
+                var id = parseInt(btn.getAttribute('data-skill-edit'), 10);
+                API.getUserSkill(id).then(function(res) {
+                    if (res && res.skill) _showUserSkillForm(res.skill);
+                }).catch(function(err) { showToast(err.message || t('toast.loadFailed'), 'error'); });
+            };
+        });
+        wrap.querySelectorAll('[data-skill-del]').forEach(function(btn) {
+            btn.onclick = function() {
+                var id = parseInt(btn.getAttribute('data-skill-del'), 10);
+                var name = btn.getAttribute('data-skill-name') || '';
+                var rm = confirm(t('skills.confirmDelete', { name: name }) + '\n' + t('skills.confirmDeleteFiles', { name: name }));
+                API.deleteUserSkill(id, rm).then(function() {
+                    showToast(t('toast.deleted'));
+                    loadUserSkillsPage();
+                }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
+            };
+        });
+    }).catch(function(e) {
+        wrap.innerHTML = '<div class="text-danger">' + esc(t('skills.loadFailed', { message: e.message || e })) + '</div>';
+    });
+}
+
+function renderUserSkillsPage() {
+    renderLayout();
+    var el = getPageEl();
+    if (!userSkillsEnabled()) {
+        el.innerHTML = '<div class="topbar"><h2>' + esc(t('skills.title')) + '</h2></div>'
+            + '<div class="page-content"><div class="empty-state"><h3>' + esc(t('skills.disabledTitle')) + '</h3>'
+            + '<p class="text-muted">' + esc(t('skills.disabledHint')) + '</p></div></div>';
+        return;
+    }
+    el.innerHTML = '<div class="topbar"><h2>' + esc(t('skills.title')) + '</h2><div class="topbar-actions">'
+        + '<button type="button" class="btn btn-primary" id="skillAddBtn">' + esc(t('skills.addSkill')) + '</button>'
+        + '<button type="button" class="btn" id="skillExportBtn">' + esc(t('skills.export')) + '</button>'
+        + '<button type="button" class="btn" id="skillImportBtn">' + esc(t('skills.import')) + '</button>'
+        + '<button type="button" class="btn" id="skillScanBtn">' + esc(t('skills.scanDisk')) + '</button>'
+        + '<button type="button" class="btn" id="skillRefreshBtn">' + esc(t('common.refresh')) + '</button></div></div>'
+        + '<div class="page-content">'
+        + edgeopsPageIntroHtml(t('skills.subtitle'), true)
+        + '<div class="card"><div class="card-header"><h3 style="margin:0">' + esc(t('skills.title')) + '</h3></div>'
+        + '<div class="card-body" id="userSkillsTableWrap">' + esc(t('common.loading')) + '</div></div>'
+        + '</div>';
+    document.getElementById('skillAddBtn').onclick = function() { _showUserSkillForm(null); };
+    document.getElementById('skillRefreshBtn').onclick = function() { loadUserSkillsPage(); };
+    document.getElementById('skillExportBtn').onclick = function() {
+        API.exportUserSkills({}).then(function(res) {
+            var uname = (API.user && API.user.username) ? API.user.username : 'user';
+            downloadJsonFile('edgeops-skills-' + uname + '.json', res);
+        }).catch(function(err) { showToast(err.message || t('toast.loadFailed'), 'error'); });
+    };
+    document.getElementById('skillImportBtn').onclick = function() {
+        var input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json,application/json';
+        input.onchange = function() {
+            var file = input.files && input.files[0];
+            if (!file) return;
+            var reader = new FileReader();
+            reader.onload = function() {
+                try {
+                    var data = JSON.parse(reader.result || '{}');
+                    var ow = window.confirm(t('skills.importOverwriteConfirm'));
+                    API.importUserSkills(data, ow).then(function(res) {
+                        var msg = t('skills.importDone', {
+                            created: (res.created || []).length,
+                            updated: (res.updated || []).length,
+                            skipped: (res.skipped || []).length
+                        });
+                        showToast(msg);
+                        loadUserSkillsPage();
+                    }).catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); });
+                } catch (e) {
+                    showToast(t('skills.importInvalidJson'), 'error');
+                }
+            };
+            reader.readAsText(file, 'utf-8');
+        };
+        input.click();
+    };
+    document.getElementById('skillScanBtn').onclick = function() {
+        API.scanUserSkills().then(function(res) {
+            var msg = t('skills.scanDone', {
+                imported: res.imported || 0,
+                updated: res.updated || 0,
+                skipped: res.skipped || 0
+            });
+            if (res.invalid) msg += '；' + t('skills.scanInvalid', { count: res.invalid });
+            if (res.warnings && res.warnings.length) msg += ' — ' + res.warnings.slice(0, 3).join('；');
+            showToast(msg);
+            loadUserSkillsPage();
+        }).catch(function(err) { showToast(err.message || t('toast.loadFailed'), 'error'); });
+    };
+    loadUserSkillsPage();
+}
+
+function renderSettings() {
+    renderLayout();
+    var el = getPageEl();
+    el.innerHTML = ''
+        + '<div class="card" style="margin-bottom:16px">'
+        + '<div class="card-header"><h3>' + t('settings.display.title') + '</h3></div>'
+        + '<p class="section-intro">' + t('settings.display.description') + '</p>'
+        + '<p class="section-meta">' + t('settings.display.systemDetected') + (typeof I18n.getBrowserLocale === 'function' ? I18n.getBrowserLocale() : '') + '</p>'
+        + '<div class="form-group" style="padding:0 16px 8px;max-width:400px">'
+        + '<label for="edgeopsUiLocale">' + t('settings.display.label') + '</label>'
+        + '<select class="form-control" id="edgeopsUiLocale" style="max-width:320px">'
+        + '<option value="">' + t('settings.display.browser') + '</option>'
+        + '<option value="zh-CN">' + t('common.langZhCN') + '</option>'
+        + '<option value="en">' + t('common.langEn') + '</option>'
+        + '</select></div>'
+        + '<div style="padding:0 16px 16px">'
+        + '<button type="button" class="btn btn-primary" id="edgeopsSaveUiLocale">' + t('settings.saveDisplay') + '</button>'
+        + '</div></div>'
+        + '<div class="topbar"><h2>' + t('settings.pageTitle') + '</h2><div class="topbar-actions"><button type="button" class="btn" id="settingsPageRefreshBtn">' + esc(t('common.refresh')) + '</button></div></div><div class="page-content">'
+        + '<div class="card" style="margin-bottom:16px"><div class="card-header"><h3>' + esc(t('settings.aiForm.title')) + '</h3></div>'
+        + '<p class="section-intro">' + t('settings.aiForm.intro') + '</p>'
+        + '<div id="aiTrialBanner" style="margin:0 16px 12px"></div>'
+        + '<table class="chat-md-table settings-table" style="margin:0 16px 16px"><tbody>'
+        + '<tr><td style="width:120px">' + esc(t('settings.aiForm.modelType')) + '</td><td><select class="form-control" id="aiCfgModelType" style="max-width:320px"><option value="">' + esc(t('settings.aiForm.modelTypeAuto')) + '</option></select></td></tr>'
+        + '<tr><td>' + esc(t('settings.aiForm.apiKey')) + '</td><td><input type="password" class="form-control" id="aiCfgApiKey" placeholder="' + esc(t('settings.aiForm.apiKeyPh')) + '"></td></tr>'
+        + '<tr><td>' + esc(t('settings.aiForm.baseUrl')) + '</td><td><input type="text" class="form-control" id="aiCfgBaseUrl" placeholder="' + esc(t('settings.aiForm.baseUrlPh')) + '"></td></tr>'
+        + '<tr><td>' + esc(t('settings.aiForm.model')) + '</td><td><input type="text" class="form-control" id="aiCfgModel" placeholder="' + esc(t('settings.aiForm.modelPh')) + '"></td></tr>'
+        + '<tr><td>' + esc(t('settings.aiForm.context')) + '</td><td><select class="form-control" id="aiCfgContextSize" style="max-width:180px"></select> <input type="number" class="form-control" id="aiCfgContextSizeManual" placeholder="' + esc(t('settings.aiForm.contextManualPh')) + '" min="0" max="8388608" step="1000" style="width:120px;display:inline-block;margin-left:4px"> <span class="inline-hint">' + t('settings.aiForm.contextHelp') + '</span></td></tr>'
+        + '<tr><td>' + esc(t('settings.aiForm.autoApprove')) + '</td><td><label><input type="checkbox" id="aiCfgAutoApprove"> ' + esc(t('settings.aiForm.autoApproveLabel')) + '</label></td></tr>'
+        + '<tr><td>' + esc(t('settings.aiForm.vision')) + '</td><td><label><input type="checkbox" id="aiCfgVisionEnabled" checked> ' + esc(t('settings.aiForm.visionLabel')) + '</label> <span class="inline-hint">' + t('settings.aiForm.visionHelp') + '</span></td></tr>'
+        + '<tr><td>' + esc(t('settings.aiForm.outputLocale')) + '</td><td><select class="form-control" id="aiCfgOutputLocale" style="max-width:220px"><option value="">' + esc(t('settings.aiForm.outputLocaleAuto')) + '</option><option value="zh-CN">' + esc(t('settings.aiForm.outputLocaleZh')) + '</option><option value="en">' + esc(t('settings.aiForm.outputLocaleEn')) + '</option></select> <span class="inline-hint">' + t('settings.aiForm.outputLocaleHelp') + '</span></td></tr>'
+        + '<tr><td>' + esc(t('settings.aiForm.agentMax')) + '</td><td><input type="number" class="form-control" id="aiCfgAgentMaxSteps" min="0" max="1000" step="1" placeholder="' + esc(t('settings.aiForm.agentPh')) + '" style="max-width:160px"> <span class="text-muted" id="aiCfgAgentMaxStepsHint" style="margin-left:8px;font-size:12px">' + t('settings.aiForm.agentHint', { def: 100, cap: 1000 }) + '</span></td></tr>'
+        + '<tr><td>' + esc(t('settings.aiForm.assistantMax')) + '</td><td><input type="number" class="form-control" id="aiCfgAssistantMaxRounds" min="0" max="1000" step="1" placeholder="' + esc(t('settings.aiForm.assistantPh')) + '" style="max-width:160px"> <span class="text-muted" id="aiCfgAssistantMaxRoundsHint" style="margin-left:8px;font-size:12px">' + t('settings.aiForm.assistantHint', { def: 100, cap: 1000 }) + '</span></td></tr>'
+        + '<tr><td></td><td><button type="button" class="btn btn-primary" id="aiCfgSave">' + esc(t('settings.aiForm.save')) + '</button></td></tr></tbody></table></div>'
+        + '<div class="card" style="margin-bottom:16px"><div class="card-header"><h3>' + esc(t('settings.mail.title')) + '</h3></div>'
+        + '<p class="section-intro">' + t('settings.mail.intro') + '</p>'
+        + '<p class="section-intro" id="userMailStatusHint"></p>'
+        + '<table class="chat-md-table settings-table" style="margin:0 16px 16px"><tbody>'
+        + '<tr><td style="width:140px">' + esc(t('settings.mail.enable')) + '</td><td><label><input type="checkbox" id="userMailEnabled"> ' + esc(t('settings.mail.enableLabel')) + '</label></td></tr>'
+        + '<tr><td>' + esc(t('settings.mail.smtpHost')) + '</td><td><input type="text" class="form-control" id="userMailHost" placeholder="' + esc(t('settings.mail.smtpHostPh')) + '"></td></tr>'
+        + '<tr><td>' + esc(t('settings.mail.port')) + '</td><td><input type="number" class="form-control" id="userMailPort" placeholder="' + esc(t('settings.mail.portPh')) + '" style="max-width:120px"></td></tr>'
+        + '<tr><td>' + esc(t('settings.mail.user')) + '</td><td><input type="text" class="form-control" id="userMailUser" placeholder="' + esc(t('settings.mail.userPh')) + '"></td></tr>'
+        + '<tr><td>' + esc(t('settings.mail.password')) + '</td><td><input type="password" class="form-control" id="userMailPassword" placeholder="' + esc(t('settings.mail.passwordPh')) + '"></td></tr>'
+        + '<tr><td>' + esc(t('settings.mail.from')) + '</td><td><input type="text" class="form-control" id="userMailFrom" placeholder="' + esc(t('settings.mail.fromPh')) + '"></td></tr>'
+        + '<tr><td>' + esc(t('settings.mail.tlsSsl')) + '</td><td>'
+        + '<label><input type="checkbox" id="userMailTls" checked onclick="if(this.checked){var s=document.getElementById(\'userMailSsl\');if(s)s.checked=false;}"> ' + esc(t('settings.mail.tlsLabel')) + '</label> '
+        + '<label style="margin-left:12px"><input type="checkbox" id="userMailSsl" onclick="var tlsEl=document.getElementById(\'userMailTls\');if(tlsEl){if(this.checked){tlsEl.checked=false;tlsEl.disabled=true;}else{tlsEl.disabled=false;tlsEl.checked=true;}}"> ' + esc(t('settings.mail.sslLabel')) + '</label>'
+        + '<div class="field-hint">' + t('settings.mail.tlsSslHelp') + '</div>'
+        + '</td></tr>'
+        + '<tr><td></td><td><button type="button" class="btn btn-primary" id="userMailSave">' + esc(t('settings.mail.save')) + '</button></td></tr>'
+        + '</tbody></table></div>'
+        + '<div class="card" style="margin-bottom:16px" id="searchServicesCard"><div class="card-header"><h3>' + esc(t('settings.search.title')) + '</h3></div>'
+        + '<p class="section-intro">' + t('settings.search.intro') + '</p>'
+        + '<div id="searchServicesWrap" style="padding:0 16px 16px;font-size:13px" class="text-muted">' + esc(t('common.loading')) + '</div></div>'
+        + '<div class="card" style="margin-bottom:16px" id="userApiTokensCard"><div class="card-header"><h3>' + esc(t('settings.apiAccess.title')) + '</h3></div>'
+        + '<p class="section-intro">' + t('settings.apiAccess.intro') + '</p>'
+        + '<div style="padding:0 16px 16px"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">'
+        + '<input type="text" class="form-control" id="newApiTokenName" placeholder="' + esc(t('settings.apiAccess.namePh')) + '" style="max-width:260px">'
+        + '<button type="button" class="btn btn-primary" id="btnCreateApiToken">' + esc(t('settings.apiAccess.newToken')) + '</button></div>'
+        + '<div id="userApiTokensList" class="form-hint" style="margin-bottom:0">' + esc(t('common.loading')) + '</div></div></div>'
+        + '<div id="settingsGlobalWrap"></div>'
+        + '<div class="card" id="dangerZoneCard" style="margin-bottom:16px;border:1px solid rgba(255,107,107,0.45)"><div class="card-header" style="color:#ff6b6b"><h3>' + esc(t('settings.danger.title')) + '</h3></div>'
+        + '<div style="padding:0 16px 16px">'
+        + '<p class="section-intro">' + t('settings.danger.intro') + '</p>'
+        + '<ul class="section-intro-list">'
+        + '<li>' + t('settings.danger.li1') + '</li>'
+        + '<li>' + t('settings.danger.li2') + '</li>'
+        + '<li>' + t('settings.danger.li3') + '</li>'
+        + '<li>' + t('settings.danger.li4') + '</li>'
+        + '<li>' + t('settings.danger.li5') + '</li>'
+        + '</ul>'
+        + '<p class="section-intro-warn">' + t('settings.danger.adminOnly') + '</p>'
+        + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">'
+        + '<button type="button" class="btn btn-danger" id="btnDeleteMyAccount">' + esc(t('settings.danger.btn')) + '</button>'
+        + '</div>'
+        + '</div></div>'
+        + '</div>';
+    var edgeopsLocaleSelect = document.getElementById('edgeopsUiLocale');
+    var edgeopsSaveLocaleBtn = document.getElementById('edgeopsSaveUiLocale');
+    if (edgeopsLocaleSelect) {
+        var _uiOv = (typeof I18n.getUserLocaleOverride === 'function' && I18n.getUserLocaleOverride()) || '';
+        edgeopsLocaleSelect.value = _uiOv || '';
+    }
+    if (edgeopsSaveLocaleBtn) {
+        edgeopsSaveLocaleBtn.onclick = function() {
+            var v = edgeopsLocaleSelect && edgeopsLocaleSelect.value;
+            if (!v) {
+                try { localStorage.removeItem(I18n.LOCALE_KEY); } catch (e) {}
+            } else {
+                I18n.setUserLocale(v);
+            }
+            location.reload();
+        };
+    }
+    API.getAIConfig().then(function(r) {
+        var c = r.config || {};
+        var modelTypes = r.model_types || [];
+        var contextOpts = r.context_size_options || [0, 4000, 8000, 16000, 32000, 64000, 128000, 8388608];
+        var contextMax = r.context_size_max || (8 * 1024 * 1024);
+        function fmtCtxSizeLabel(n) {
+            if (n === 0) return t('settings.context.unlimited');
+            return n >= 1024 * 1024 ? (n / (1024 * 1024)) + 'M' : (n >= 1000 ? (n / 1000) + 'k' : String(n));
+        }
+        var keyEl = document.getElementById('aiCfgApiKey');
+        var urlEl = document.getElementById('aiCfgBaseUrl');
+        var modelEl = document.getElementById('aiCfgModel');
+        var typeEl = document.getElementById('aiCfgModelType');
+        var ctxEl = document.getElementById('aiCfgContextSize');
+        var ctxManualEl = document.getElementById('aiCfgContextSizeManual');
+        var autoEl = document.getElementById('aiCfgAutoApprove');
+        if (keyEl) keyEl.value = c.api_key || '';
+        if (urlEl) urlEl.value = c.base_url || '';
+        if (modelEl) modelEl.value = c.model || '';
+        if (autoEl) autoEl.checked = !!c.auto_approve;
+        var visEl = document.getElementById('aiCfgVisionEnabled');
+        if (visEl) visEl.checked = (c.vision_enabled === undefined) ? true : !!c.vision_enabled;
+        var outLocEl = document.getElementById('aiCfgOutputLocale');
+        if (outLocEl) {
+            var _olv = c.output_locale || '';
+            if (_olv !== 'zh-CN' && _olv !== 'en') _olv = '';
+            outLocEl.value = _olv;
+        }
+        modelTypes.forEach(function(mt) {
+            var opt = document.createElement('option');
+            opt.value = mt.id || '';
+            opt.textContent = tOr('settings.aiModelType.' + (mt.id || ''), mt.name || mt.id || '');
+            if (typeEl) typeEl.appendChild(opt);
+        });
+        var ctxVal = parseInt(c.context_size, 10) || 0;
+        var ctxOptsSet = {};
+        contextOpts.forEach(function(n) { ctxOptsSet[n] = true; });
+        contextOpts.forEach(function(n) {
+            var opt = document.createElement('option');
+            opt.value = String(n);
+            opt.textContent = fmtCtxSizeLabel(n);
+            if (ctxEl) ctxEl.appendChild(opt);
+        });
+        if (ctxEl) {
+            if (!ctxOptsSet[ctxVal]) {
+                var curOpt = document.createElement('option');
+                curOpt.value = String(ctxVal);
+                curOpt.textContent = t('settings.context.current', { label: fmtCtxSizeLabel(ctxVal) });
+                ctxEl.appendChild(curOpt);
+            }
+            ctxEl.value = String(ctxVal);
+        }
+        if (ctxManualEl) { ctxManualEl.max = contextMax; ctxManualEl.placeholder = t('settings.context.manualOr', { m: (contextMax / (1024 * 1024)) }); }
+        if (typeEl) typeEl.value = (c.provider || '') === 'aliyun' || (c.provider || '') === 'ollama' || (c.provider || '') === 'openai' ? (c.provider || '') : '';
+        if (typeEl) typeEl.onchange = function() { /* 仅绑定调用方式，不填充 URL/模型 */ };
+        var amsEl = document.getElementById('aiCfgAgentMaxSteps');
+        var amrEl = document.getElementById('aiCfgAssistantMaxRounds');
+        var amsCap = parseInt(r.agent_max_steps_cap, 10) || 1000;
+        var amrCap = parseInt(r.assistant_max_rounds_cap, 10) || 1000;
+        var amsDef = parseInt(r.agent_max_steps_default, 10) || 100;
+        var amrDef = parseInt(r.assistant_max_rounds_default, 10) || 100;
+        if (amsEl) {
+            amsEl.max = amsCap;
+            amsEl.value = (c.agent_max_steps && c.agent_max_steps > 0) ? String(c.agent_max_steps) : '';
+            var amsHint = document.getElementById('aiCfgAgentMaxStepsHint');
+            if (amsHint) amsHint.textContent = t('settings.aiForm.agentHint', { def: amsDef, cap: amsCap });
+        }
+        if (amrEl) {
+            amrEl.max = amrCap;
+            amrEl.value = (c.assistant_max_rounds && c.assistant_max_rounds > 0) ? String(c.assistant_max_rounds) : '';
+            var amrHint = document.getElementById('aiCfgAssistantMaxRoundsHint');
+            if (amrHint) amrHint.textContent = t('settings.aiForm.assistantHint', { def: amrDef, cap: amrCap });
+        }
+    }).catch(function() {});
+    var btnTok = document.getElementById('btnCreateApiToken');
+    if (btnTok) {
+        btnTok.onclick = function() {
+            var nm = (document.getElementById('newApiTokenName') || {}).value || '';
+            var tipName = (nm || '').trim();
+            var msg = tipName
+                ? t('confirm.createApiTokenBodyNamed', { name: tipName })
+                : t('confirm.createApiTokenBody');
+            showConfirm(t('confirm.createApiTokenTitle'), msg).then(function(ok) {
+                if (!ok) return;
+                btnTok.disabled = true;
+                API.createUserApiToken(nm).then(function(r) {
+                    var tok = r && r.token;
+                    if (tok) {
+                        window.prompt(t('settings.prompts.newApiToken'), tok);
+                    }
+                    showToast(t('toast.newApiToken'));
+                    var nameEl = document.getElementById('newApiTokenName');
+                    if (nameEl) nameEl.value = '';
+                    loadUserApiTokens();
+                    btnTok.disabled = false;
+                }).catch(function(err) {
+                    showToast(err.message || t('toast.createFailed'), 'error');
+                    btnTok.disabled = false;
+                });
+            });
+        };
+    }
+    // 注销账户（仅非管理员）
+    if (isAdmin()) {
+        var dz = document.getElementById('dangerZoneCard');
+        if (dz) dz.style.display = 'none';
+    } else {
+        var btnDel = document.getElementById('btnDeleteMyAccount');
+        if (btnDel) {
+            btnDel.onclick = function() {
+                showConfirm(t('confirm.deleteAccountStep1Title'), t('confirm.deleteAccountStep1Body')).then(function(ok) {
+                    if (!ok) return;
+                    var pwd = window.prompt(t('settings.prompts.deleteAccountPassword'));
+                    if (pwd == null || !pwd) return;
+                    var c = window.prompt(t('settings.prompts.deleteAccountTypeDelete'), '');
+                    if (c == null) return;
+                    if ((c || '').trim() !== 'DELETE') { showToast(t('toast.mustTypeDelete'), 'error'); return; }
+                    btnDel.disabled = true;
+                    API.deleteMyAccount(pwd, 'DELETE').then(function(r) {
+                        showToast(r.message || t('toast.accountDeactivated'));
+                        setTimeout(function() {
+                            try { logout(); } catch (e) { window.location.href = '/login'; }
+                        }, 1500);
+                    }).catch(function(err) {
+                        showToast(err.message || t('toast.deactivateAccountFailed'), 'error');
+                        btnDel.disabled = false;
+                    });
+                });
+            };
+        }
+    }
+    loadUserApiTokens();
+    loadUserMailSettings();
+    loadSearchServicesSettings();
+    loadMyTrialBanner();
+    var umSave = document.getElementById('userMailSave');
+    if (umSave) {
+        umSave.onclick = function() {
+            var btn = this;
+            // STARTTLS 与 SSL 直连互斥：SSL 勾上时强制 STARTTLS=false，避免提交非法组合。
+            var sslChecked = !!(document.getElementById('userMailSsl') && document.getElementById('userMailSsl').checked);
+            var tlsChecked = !!(document.getElementById('userMailTls') && document.getElementById('userMailTls').checked);
+            if (sslChecked) tlsChecked = false;
+            var payload = {
+                mail_enabled: !!(document.getElementById('userMailEnabled') && document.getElementById('userMailEnabled').checked),
+                smtp_host: ((document.getElementById('userMailHost') || {}).value || '').trim(),
+                smtp_port: parseInt((document.getElementById('userMailPort') || {}).value, 10) || 587,
+                smtp_user: ((document.getElementById('userMailUser') || {}).value || '').trim(),
+                smtp_from: ((document.getElementById('userMailFrom') || {}).value || '').trim(),
+                smtp_use_tls: tlsChecked,
+                smtp_use_ssl: sslChecked
+            };
+            var pwe = ((document.getElementById('userMailPassword') || {}).value || '').trim();
+            if (pwe) payload.smtp_password = pwe;
+            btn.disabled = true;
+            API.updateUserMailConfig(payload).then(function() {
+                showToast(t('toast.mailSettingsSaved'));
+                loadUserMailSettings();
+            }).catch(function(err) {
+                showToast(err.message || t('toast.saveFailed'), 'error');
+            }).finally(function() { btn.disabled = false; });
+        };
+    }
+    document.getElementById('aiCfgSave').onclick = function() {
+        var btn = this;
+        var ctxEl = document.getElementById('aiCfgContextSize');
+        var ctxManualEl = document.getElementById('aiCfgContextSizeManual');
+        var ctxVal = 0;
+        if (ctxManualEl && ctxManualEl.value.trim() !== '') {
+            var v = parseInt(ctxManualEl.value, 10);
+            if (!isNaN(v) && v >= 0) ctxVal = Math.min(v, 8 * 1024 * 1024);
+        }
+        if (ctxVal === 0 && ctxEl) ctxVal = parseInt(ctxEl.value, 10) || 0;
+        var typeEl = document.getElementById('aiCfgModelType');
+        var providerVal = (typeEl && typeEl.value) ? typeEl.value : '';
+        if (providerVal !== 'aliyun' && providerVal !== 'ollama' && providerVal !== 'openai') providerVal = '';
+        var amsRaw = ((document.getElementById('aiCfgAgentMaxSteps') || {}).value || '').trim();
+        var amrRaw = ((document.getElementById('aiCfgAssistantMaxRounds') || {}).value || '').trim();
+        var amsVal = amsRaw === '' ? 0 : Math.max(0, Math.min(1000, parseInt(amsRaw, 10) || 0));
+        var amrVal = amrRaw === '' ? 0 : Math.max(0, Math.min(1000, parseInt(amrRaw, 10) || 0));
+        var visElSave = document.getElementById('aiCfgVisionEnabled');
+        var outLocSave = ((document.getElementById('aiCfgOutputLocale') || {}).value || '').trim();
+        if (outLocSave !== 'zh-CN' && outLocSave !== 'en') outLocSave = '';
+        var payload = {
+            api_key: (document.getElementById('aiCfgApiKey') || {}).value || '',
+            base_url: (document.getElementById('aiCfgBaseUrl') || {}).value || '',
+            model: (document.getElementById('aiCfgModel') || {}).value || '',
+            context_size: Math.max(0, ctxVal),
+            provider: providerVal,
+            auto_approve: !!(document.getElementById('aiCfgAutoApprove') && document.getElementById('aiCfgAutoApprove').checked),
+            vision_enabled: visElSave ? !!visElSave.checked : true,
+            agent_max_steps: amsVal,
+            assistant_max_rounds: amrVal,
+            output_locale: outLocSave
+        };
+        btn.disabled = true;
+        API.updateAIConfig(payload).then(function() {
+            showToast(t('toast.aiConfigSavedShort'));
+            btn.disabled = false;
+        }).catch(function(err) {
+            showToast(err.message || t('toast.saveFailed'), 'error');
+            btn.disabled = false;
+        });
+    };
+    if (isAdmin()) {
+        Promise.all([API.getSettings(), API.listUsers({ page: 1, page_size: 500 })]).then(function(results) {
+            var data = results[0];
+            var usersData = results[1];
+            var settings = data.settings || [];
+            var keyVal = {};
+            settings.forEach(function(s) { keyVal[s.key] = s.value || ''; });
+            var users = (usersData && usersData.users) || [];
+            var userOptions = users.map(function(u) { return '<option value="' + u.id + '">' + esc(u.username || ('#' + u.id)) + (u.display_name ? ' (' + esc(u.display_name) + ')' : '') + '</option>'; }).join('');
+            var emailKeys = ['email_notification_subject', 'email_template_lock_body', 'email_template_unlock_body', 'email_template_suspend_body', 'email_template_restore_body'];
+            var html = '<div class="card" style="margin-bottom:16px"><div class="card-header"><h3>' + esc(t('settings.admin.userAiTitle')) + '</h3></div>'
+                + '<p class="section-intro">' + t('settings.admin.userAiIntro') + '</p>'
+                + '<table class="chat-md-table settings-table" style="margin:0 16px 16px"><tbody>'
+                + '<tr><td style="width:120px">' + esc(t('settings.admin.selectUser')) + '</td><td><select class="form-control" id="aiCfgUserSelect" style="max-width:280px"><option value="">' + esc(t('settings.admin.pleaseSelectUser')) + '</option>' + userOptions + '</select>'
+                + ' <button type="button" class="btn btn-sm btn-secondary" id="aiCfgUserLoad">' + esc(t('settings.admin.loadUserCfg')) + '</button>'
+                + ' <button type="button" class="btn btn-sm btn-primary" id="aiCfgUserSave">' + esc(t('settings.admin.saveToUser')) + '</button>'
+                + ' <button type="button" class="btn btn-sm btn-outline-secondary" id="aiCfgUserApplySystem">' + esc(t('settings.admin.applySystem')) + '</button></td></tr>'
+                + '<tr><td>' + esc(t('settings.admin.modelType')) + '</td><td><select class="form-control" id="aiCfgUserModelType" style="max-width:320px"><option value="">' + esc(t('settings.admin.modelTypeAuto')) + '</option></select></td></tr>'
+                + '<tr><td>' + esc(t('settings.admin.apiKey')) + '</td><td><input type="password" class="form-control" id="aiCfgUserApiKey" placeholder="' + esc(t('settings.admin.apiKeyPh')) + '" style="max-width:400px"></td></tr>'
+                + '<tr><td>' + esc(t('settings.admin.baseUrl')) + '</td><td><input type="text" class="form-control" id="aiCfgUserBaseUrl" placeholder="' + esc(t('settings.admin.baseUrlPh')) + '" style="max-width:400px"></td></tr>'
+                + '<tr><td>' + esc(t('settings.admin.model')) + '</td><td><input type="text" class="form-control" id="aiCfgUserModel" placeholder="' + esc(t('settings.admin.modelPh')) + '" style="max-width:280px"></td></tr>'
+                + '<tr><td>' + esc(t('settings.admin.context')) + '</td><td><select class="form-control" id="aiCfgUserContextSize" style="max-width:180px"></select> <input type="number" class="form-control" id="aiCfgUserContextSizeManual" placeholder="' + esc(t('settings.admin.contextManualPh')) + '" min="0" max="8388608" step="1000" style="width:120px;display:inline-block;margin-left:4px"></td></tr>'
+                + '<tr><td>' + esc(t('settings.admin.autoApprove')) + '</td><td><label><input type="checkbox" id="aiCfgUserAutoApprove"> ' + esc(t('settings.admin.autoEnable')) + '</label></td></tr>'
+                + '<tr><td>' + esc(t('settings.admin.vision')) + '</td><td><label><input type="checkbox" id="aiCfgUserVisionEnabled" checked> ' + esc(t('settings.admin.visionLabel')) + '</label> <span class="inline-hint">' + t('settings.admin.visionHelp') + '</span></td></tr>'
+                + '<tr><td>' + esc(t('settings.aiForm.outputLocale')) + '</td><td><select class="form-control" id="aiCfgUserOutputLocale" style="max-width:220px"><option value="">' + esc(t('settings.aiForm.outputLocaleAuto')) + '</option><option value="zh-CN">' + esc(t('settings.aiForm.outputLocaleZh')) + '</option><option value="en">' + esc(t('settings.aiForm.outputLocaleEn')) + '</option></select> <span class="inline-hint">' + t('settings.aiForm.outputLocaleHelp') + '</span></td></tr>'
+                + '<tr><td>' + esc(t('settings.admin.agentMax')) + '</td><td><input type="number" class="form-control" id="aiCfgUserAgentMaxSteps" min="0" max="1000" step="1" placeholder="' + esc(t('settings.admin.agentPh')) + '" style="max-width:160px"> <span class="text-muted" id="aiCfgUserAgentMaxStepsHint" style="margin-left:8px;font-size:12px">' + t('settings.admin.agentHint', { def: 100, cap: 1000 }) + '</span></td></tr>'
+                + '<tr><td>' + esc(t('settings.admin.assistantMax')) + '</td><td><input type="number" class="form-control" id="aiCfgUserAssistantMaxRounds" min="0" max="1000" step="1" placeholder="' + esc(t('settings.admin.assistantPh')) + '" style="max-width:160px"> <span class="text-muted" id="aiCfgUserAssistantMaxRoundsHint" style="margin-left:8px;font-size:12px">' + t('settings.admin.assistantHint', { def: 100, cap: 1000 }) + '</span></td></tr>'
+                + '</tbody></table></div>';
+            var notifyOn = ((keyVal.notify_admin_on_user_feedback || 'false') + '').toLowerCase() === 'true';
+            html += '<div class="card" style="margin-bottom:16px"><div class="card-header"><h3>' + esc(t('settings.admin.notifyFeedbackTitle')) + '</h3></div>'
+                + '<div style="padding:0 16px 16px;font-size:13px">'
+                + '<p class="text-muted" style="margin:0 0 4px">' + t('settings.admin.notifyFeedbackIntro') + '</p>'
+                + '<p class="text-muted" style="margin:0 0 8px">' + t('settings.admin.notifyFeedbackCode') + '</p>'
+                + '<label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer">'
+                + '<input type="checkbox" id="settingNotifyAdminOnUserFeedback"' + (notifyOn ? ' checked' : '') + '>'
+                + ' <span>' + esc(t('settings.admin.notifyFeedbackCheck')) + '</span></label>'
+                + ' <button type="button" class="btn btn-sm btn-primary" id="settingNotifyAdminOnUserFeedbackSave" style="margin-left:12px">' + esc(t('settings.admin.save')) + '</button>'
+                + '</div></div>';
+            html += '<div class="card" style="margin-bottom:16px"><div class="card-header"><h3>' + esc(t('settings.admin.loginAnnouncementTitle')) + '</h3></div>'
+                + '<div style="padding:0 16px 16px;font-size:13px">'
+                + '<p class="text-muted" style="margin:0 0 8px">' + t('settings.admin.loginAnnouncementIntro') + '</p>'
+                + '<textarea class="form-control" id="settingLoginAnnouncementMd" rows="7" placeholder="' + esc(t('settings.admin.loginAnnouncementPh')) + '">' + esc(keyVal.login_announcement_md || '') + '</textarea>'
+                + '<div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">'
+                + '<button type="button" class="btn btn-sm btn-primary" id="settingLoginAnnouncementSave">' + esc(t('settings.admin.save')) + '</button>'
+                + '<button type="button" class="btn btn-sm" id="settingLoginAnnouncementPreviewBtn">' + esc(t('settings.admin.preview')) + '</button>'
+                + '<span class="text-muted" style="font-size:12px">' + t('settings.admin.loginAnnouncementAiHint') + '</span>'
+                + '</div>'
+                + '<div id="settingLoginAnnouncementPreview" class="chat-message-content" style="display:none;margin-top:10px;padding:12px;border:1px solid var(--border);border-radius:var(--radius);background:rgba(15,23,42,0.45)"></div>'
+                + '</div></div>';
+            html += '<div class="card" style="margin-bottom:16px"><div class="card-header"><h3>' + esc(t('settings.admin.emailTemplatesTitle')) + '</h3></div><p class="section-intro">' + t('settings.admin.emailTemplatesIntro') + '</p>'
+                + '<table class="chat-md-table settings-table" style="margin:0 16px 16px"><tbody>'
+                + '<tr><td style="width:160px">' + esc(t('settings.admin.emailSubject')) + '</td><td><input type="text" class="form-control" id="setting_email_subject" value="' + esc(keyVal.email_notification_subject || '') + '" placeholder="' + esc(t('settings.admin.emailSubjectPh')) + '"></td><td><button type="button" class="btn btn-sm btn-primary btn-save-email-setting" data-key="email_notification_subject" data-el="setting_email_subject">' + esc(t('settings.admin.save')) + '</button></td></tr>'
+                + '<tr><td>' + esc(t('settings.admin.bodyLock')) + '</td><td><textarea class="form-control" id="setting_lock_body" rows="3" placeholder="' + esc(t('settings.admin.lockBodyPh')) + '">' + esc(keyVal.email_template_lock_body || '') + '</textarea></td><td><button type="button" class="btn btn-sm btn-primary btn-save-email-setting" data-key="email_template_lock_body" data-el="setting_lock_body">' + esc(t('settings.admin.save')) + '</button></td></tr>'
+                + '<tr><td>' + esc(t('settings.admin.bodyUnlock')) + '</td><td><textarea class="form-control" id="setting_unlock_body" rows="3">' + esc(keyVal.email_template_unlock_body || '') + '</textarea></td><td><button type="button" class="btn btn-sm btn-primary btn-save-email-setting" data-key="email_template_unlock_body" data-el="setting_unlock_body">' + esc(t('settings.admin.save')) + '</button></td></tr>'
+                + '<tr><td>' + esc(t('settings.admin.bodySuspend')) + '</td><td><textarea class="form-control" id="setting_suspend_body" rows="3">' + esc(keyVal.email_template_suspend_body || '') + '</textarea></td><td><button type="button" class="btn btn-sm btn-primary btn-save-email-setting" data-key="email_template_suspend_body" data-el="setting_suspend_body">' + esc(t('settings.admin.save')) + '</button></td></tr>'
+                + '<tr><td>' + esc(t('settings.admin.bodyRestore')) + '</td><td><textarea class="form-control" id="setting_restore_body" rows="3">' + esc(keyVal.email_template_restore_body || '') + '</textarea></td><td><button type="button" class="btn btn-sm btn-primary btn-save-email-setting" data-key="email_template_restore_body" data-el="setting_restore_body">' + esc(t('settings.admin.save')) + '</button></td></tr>'
+                + '</tbody></table></div>';
+            var rest = settings.filter(function(s) {
+                if (emailKeys.indexOf(s.key) !== -1) return false;
+                if (s.key === 'notify_admin_on_user_feedback') return false;
+                if (s.key === 'login_announcement_md') return false;
+                return true;
+            });
+            html += '<div class="card"><div class="card-header"><h3>' + esc(t('settings.admin.globalTitle')) + '</h3></div><table class="chat-md-table settings-table"><thead><tr><th>' + esc(t('settings.admin.thKey')) + '</th><th>' + esc(t('settings.admin.thValue')) + '</th><th>' + esc(t('settings.admin.thAction')) + '</th></tr></thead><tbody>';
+            rest.forEach(function(s) {
+                var inputVal = s.value || '';
+                var lowerVal = String(inputVal).trim().toLowerCase();
+                var control = '';
+                if (lowerVal === 'true' || lowerVal === 'false') {
+                    control = '<select class="form-control setting-value" style="max-width:180px">'
+                        + '<option value="true"' + (lowerVal === 'true' ? ' selected' : '') + '>true</option>'
+                        + '<option value="false"' + (lowerVal === 'false' ? ' selected' : '') + '>false</option>'
+                        + '</select>';
+                } else {
+                    control = '<input type="text" class="form-control setting-value" value="' + esc(inputVal) + '">';
+                }
+                html += '<tr data-key="' + esc(s.key) + '"><td>' + esc(s.key) + '</td><td>' + control + '</td><td><button type="button" class="btn btn-sm btn-primary btn-save-setting">' + esc(t('settings.admin.save')) + '</button></td></tr>';
+            });
+            html += '</tbody></table></div>';
+            document.getElementById('settingsGlobalWrap').innerHTML = html;
+            var userModelTypeEl = document.getElementById('aiCfgUserModelType');
+            var userCtxEl = document.getElementById('aiCfgUserContextSize');
+            function fillUserFormFromResponse(r) {
+                var c = r.config || {};
+                var modelTypes = r.model_types || [];
+                var contextOpts = r.context_size_options || [0, 4000, 8000, 16000, 32000, 64000, 128000, 8388608];
+                function fmtUserCtx(n) {
+                    if (n === 0) return t('settings.context.unlimited');
+                    return n >= 1024 * 1024 ? (n / (1024 * 1024)) + 'M' : (n >= 1000 ? (n / 1000) + 'k' : String(n));
+                }
+                if (userModelTypeEl && modelTypes.length) {
+                    userModelTypeEl.innerHTML = '<option value="">' + esc(t('settings.admin.modelTypeAuto')) + '</option>';
+                    modelTypes.forEach(function(mt) {
+                        var opt = document.createElement('option');
+                        opt.value = mt.id || '';
+                        opt.textContent = tOr('settings.aiModelType.' + (mt.id || ''), mt.name || mt.id || '');
+                        userModelTypeEl.appendChild(opt);
+                    });
+                    userModelTypeEl.value = (c.provider || '') === 'aliyun' || (c.provider || '') === 'ollama' || (c.provider || '') === 'openai' ? (c.provider || '') : '';
+                }
+                if (userCtxEl && contextOpts.length) {
+                    userCtxEl.innerHTML = '';
+                    contextOpts.forEach(function(n) {
+                        var opt = document.createElement('option');
+                        opt.value = String(n);
+                        opt.textContent = fmtUserCtx(n);
+                        userCtxEl.appendChild(opt);
+                    });
+                    var ctxVal = parseInt(c.context_size, 10) || 0;
+                    userCtxEl.value = String(ctxVal);
+                }
+                var keyU = document.getElementById('aiCfgUserApiKey');
+                var urlU = document.getElementById('aiCfgUserBaseUrl');
+                var modelU = document.getElementById('aiCfgUserModel');
+                var autoU = document.getElementById('aiCfgUserAutoApprove');
+                if (keyU) keyU.value = c.api_key || '';
+                if (urlU) urlU.value = c.base_url || '';
+                if (modelU) modelU.value = c.model || '';
+                if (autoU) autoU.checked = !!c.auto_approve;
+                var visU = document.getElementById('aiCfgUserVisionEnabled');
+                if (visU) visU.checked = (c.vision_enabled === undefined) ? true : !!c.vision_enabled;
+                var outLocU = document.getElementById('aiCfgUserOutputLocale');
+                if (outLocU) {
+                    var _olvU = c.output_locale || '';
+                    if (_olvU !== 'zh-CN' && _olvU !== 'en') _olvU = '';
+                    outLocU.value = _olvU;
+                }
+                var amsU = document.getElementById('aiCfgUserAgentMaxSteps');
+                var amrU = document.getElementById('aiCfgUserAssistantMaxRounds');
+                var capS = parseInt(r.agent_max_steps_cap, 10) || 1000;
+                var capR = parseInt(r.assistant_max_rounds_cap, 10) || 1000;
+                var defS = parseInt(r.agent_max_steps_default, 10) || 100;
+                var defR = parseInt(r.assistant_max_rounds_default, 10) || 100;
+                if (amsU) {
+                    amsU.max = capS;
+                    amsU.value = (c.agent_max_steps && c.agent_max_steps > 0) ? String(c.agent_max_steps) : '';
+                    var amsUHint = document.getElementById('aiCfgUserAgentMaxStepsHint');
+                    if (amsUHint) amsUHint.textContent = t('settings.admin.agentHint', { def: defS, cap: capS });
+                }
+                if (amrU) {
+                    amrU.max = capR;
+                    amrU.value = (c.assistant_max_rounds && c.assistant_max_rounds > 0) ? String(c.assistant_max_rounds) : '';
+                    var amrUHint = document.getElementById('aiCfgUserAssistantMaxRoundsHint');
+                    if (amrUHint) amrUHint.textContent = t('settings.admin.assistantHint', { def: defR, cap: capR });
+                }
+            }
+            document.getElementById('aiCfgUserLoad').onclick = function() {
+                var uid = document.getElementById('aiCfgUserSelect').value;
+                if (!uid) { showToast(t('toast.selectUserFirst'), 'error'); return; }
+                API.getAIConfig(parseInt(uid, 10)).then(fillUserFormFromResponse).catch(function(err) { showToast(err.message || t('toast.loadFailed'), 'error'); });
+            };
+            document.getElementById('aiCfgUserSave').onclick = function() {
+                var uid = document.getElementById('aiCfgUserSelect').value;
+                if (!uid) { showToast(t('toast.selectUserFirst'), 'error'); return; }
+                var ctxEl = document.getElementById('aiCfgUserContextSize');
+                var ctxManualEl = document.getElementById('aiCfgUserContextSizeManual');
+                var ctxVal = 0;
+                if (ctxManualEl && ctxManualEl.value.trim() !== '') { var v = parseInt(ctxManualEl.value, 10); if (!isNaN(v) && v >= 0) ctxVal = Math.min(v, 8 * 1024 * 1024); }
+                if (ctxVal === 0 && ctxEl) ctxVal = parseInt(ctxEl.value, 10) || 0;
+                var typeEl = document.getElementById('aiCfgUserModelType');
+                var providerVal = (typeEl && typeEl.value) ? typeEl.value : '';
+                if (providerVal !== 'aliyun' && providerVal !== 'ollama' && providerVal !== 'openai') providerVal = '';
+                var amsURaw = ((document.getElementById('aiCfgUserAgentMaxSteps') || {}).value || '').trim();
+                var amrURaw = ((document.getElementById('aiCfgUserAssistantMaxRounds') || {}).value || '').trim();
+                var amsUVal = amsURaw === '' ? 0 : Math.max(0, Math.min(1000, parseInt(amsURaw, 10) || 0));
+                var amrUVal = amrURaw === '' ? 0 : Math.max(0, Math.min(1000, parseInt(amrURaw, 10) || 0));
+                var visUSave = document.getElementById('aiCfgUserVisionEnabled');
+                var outLocUSave = ((document.getElementById('aiCfgUserOutputLocale') || {}).value || '').trim();
+                if (outLocUSave !== 'zh-CN' && outLocUSave !== 'en') outLocUSave = '';
+                var payload = {
+                    user_id: parseInt(uid, 10),
+                    api_key: (document.getElementById('aiCfgUserApiKey') || {}).value || '',
+                    base_url: (document.getElementById('aiCfgUserBaseUrl') || {}).value || '',
+                    model: (document.getElementById('aiCfgUserModel') || {}).value || '',
+                    context_size: Math.max(0, ctxVal),
+                    provider: providerVal,
+                    auto_approve: !!(document.getElementById('aiCfgUserAutoApprove') && document.getElementById('aiCfgUserAutoApprove').checked),
+                    vision_enabled: visUSave ? !!visUSave.checked : true,
+                    agent_max_steps: amsUVal,
+                    assistant_max_rounds: amrUVal,
+                    output_locale: outLocUSave
+                };
+                API.updateAIConfig(payload).then(function() { showToast(t('toast.savedToThisUser')); }).catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); });
+            };
+            document.getElementById('aiCfgUserApplySystem').onclick = function() {
+                var uid = document.getElementById('aiCfgUserSelect').value;
+                if (!uid) { showToast(t('toast.selectUserFirst'), 'error'); return; }
+                API.applySystemAIConfigToUser(parseInt(uid, 10)).then(function() {
+                    showToast(t('toast.systemConfigApplied'));
+                    API.getAIConfig(parseInt(uid, 10)).then(fillUserFormFromResponse);
+                }).catch(function(err) { showToast(err.message || t('toast.opFailed'), 'error'); });
+            };
+            var notifySave = document.getElementById('settingNotifyAdminOnUserFeedbackSave');
+            if (notifySave) {
+                notifySave.onclick = function() {
+                    var on = !!(document.getElementById('settingNotifyAdminOnUserFeedback') || {}).checked;
+                    notifySave.disabled = true;
+                    API.updateSetting('notify_admin_on_user_feedback', on ? 'true' : 'false')
+                        .then(function() { showToast(t('toast.saved')); })
+                        .catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); })
+                        .finally(function() { notifySave.disabled = false; });
+                };
+            }
+            var annPreviewBtn = document.getElementById('settingLoginAnnouncementPreviewBtn');
+            var annPreview = document.getElementById('settingLoginAnnouncementPreview');
+            var annText = document.getElementById('settingLoginAnnouncementMd');
+            if (annPreviewBtn && annPreview && annText) {
+                annPreviewBtn.onclick = function() {
+                    var md = annText.value || '';
+                    annPreview.innerHTML = (typeof formatMarkdown === 'function') ? formatMarkdown(md) : esc(md).replace(/\n/g, '<br>');
+                    annPreview.style.display = annPreview.style.display === 'none' ? 'block' : 'none';
+                };
+            }
+            var annSave = document.getElementById('settingLoginAnnouncementSave');
+            if (annSave && annText) {
+                annSave.onclick = function() {
+                    annSave.disabled = true;
+                    API.updateSetting('login_announcement_md', annText.value || '')
+                        .then(function() { showToast(t('toast.saved')); })
+                        .catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); })
+                        .finally(function() { annSave.disabled = false; });
+                };
+            }
+            document.querySelectorAll('.btn-save-email-setting').forEach(function(btn) {
+                btn.onclick = function() {
+                    var key = btn.getAttribute('data-key');
+                    var elId = btn.getAttribute('data-el');
+                    var input = document.getElementById(elId);
+                    var val = input ? input.value : '';
+                    btn.disabled = true;
+                    API.updateSetting(key, val).then(function() { showToast(t('toast.saved')); btn.disabled = false; }).catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); btn.disabled = false; });
+                };
+            });
+            document.querySelectorAll('.btn-save-setting').forEach(function(btn) {
+                btn.onclick = function() {
+                    var row = btn.closest('tr');
+                    var key = row.getAttribute('data-key');
+                    var input = row.querySelector('.setting-value');
+                    var val = input ? input.value : '';
+                    btn.disabled = true;
+                    API.updateSetting(key, val).then(function() {
+                        showToast(t('toast.saved'));
+                        if (key === 'site_timezone' && API.refreshSiteTimezone) API.refreshSiteTimezone().catch(function() {});
+                        btn.disabled = false;
+                    }).catch(function(err) {
+                        showToast(err.message || t('toast.saveFailed'), 'error');
+                        btn.disabled = false;
+                    });
+                };
+            });
+        }).catch(function() {
+            document.getElementById('settingsGlobalWrap').innerHTML = '';
+        });
+    } else {
+        document.getElementById('settingsGlobalWrap').innerHTML = '';
+    }
+    var settingsPageRefreshBtn = document.getElementById('settingsPageRefreshBtn');
+    if (settingsPageRefreshBtn) {
+        settingsPageRefreshBtn.onclick = function() {
+            if (typeof Router !== 'undefined' && Router.clearPageCache) Router.clearPageCache('/settings');
+            renderSettings();
+            showToast(t('toast.refreshed'));
+        };
+    }
+}
+
+// ── 本机管理（仅管理员）──
+function renderLocalPage() {
+    renderLayout();
+    var el = getPageEl();
+    if (!isAdmin()) {
+        el.innerHTML = '<div class="topbar"><h2>' + esc(t('ai.local.pageTitle')) + '</h2></div><div class="page-content"><div class="empty-state"><h3>' + esc(t('ai.local.adminRequired')) + '</h3></div></div>';
+        return;
+    }
+    el.innerHTML = '<div class="topbar"><h2>' + esc(t('ai.local.pageTitle')) + '</h2></div>'
+        + '<div class="page-content ai-page-layout local-page-layout ai-terminal-hidden" id="localPageLayout">'
+        + '<div class="ai-left-sidebar local-left-sidebar" id="localLeftSidebar">'
+        + '<div class="ai-left-sidebar-tabs"><div class="ai-left-sidebar-tab" id="localSidebarTabSessions" data-tab="sessions" title="' + esc(t('hostAi.sessionTabTitle')) + '">' + esc(t('hostAi.sessionList')) + '</div></div>'
+        + '<div class="ai-left-sidebar-panel"><div class="chat-history-panel ai-layout-history" id="localLayoutHistory"><div class="chat-history-header"><span>' + esc(t('hostAi.sessionList')) + '</span><span class="chat-history-header-actions"><button type="button" class="btn btn-sm" id="localNewSession">' + esc(t('common.create')) + '</button><button type="button" class="btn btn-sm" id="localRefreshSessions">' + esc(t('hostAi.refresh')) + '</button></span></div><div class="chat-history-list-wrap open"><div class="chat-history-list" id="localSessionList"></div></div></div></div></div>'
+        + '<div class="card ai-terminal-card ai-layout-terminal" id="localLayoutTerminal">'
+        + '<div class="terminal-tabs ai-terminal-header"><button type="button" class="terminal-tab-btn active" data-tab="localTabConsole">' + esc(t('hostAi.tabConsole')) + '</button><button type="button" class="terminal-tab-btn" data-tab="localTabFs">' + esc(t('hostAi.tabFs')) + '</button><button type="button" class="terminal-tab-btn" data-tab="localTabLog">' + esc(t('hostAi.tabLog')) + '</button><span class="ai-terminal-header-meta"><span class="ai-terminal-header-title">' + esc(t('ai.local.terminalHeader')) + '</span></span></div>'
+        + '<div id="localTabConsole" class="terminal-tab-panel active"><div id="localConsoleTabsRow" class="ai-console-tabs-row"><label class="ai-console-auto-switch-label"><input type="checkbox" id="localConsoleNoAutoSwitch"> ' + esc(t('hostAi.noAutoSwitch')) + '</label></div><div id="localConsoleEmptyState" style="flex:1;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:13px;min-height:180px">' + esc(t('ai.localConsoleOpenHint')) + '</div><div id="localConsolePanels" class="ai-terminal-container" style="flex:1;min-height:220px;display:none;flex-direction:column"></div></div>'
+        + '<div id="localTabFs" class="terminal-tab-panel"><div class="remote-fs-layout"><div class="remote-fs-tree-wrap"><div class="remote-fs-tree-header">' + esc(t('hostAi.fsTreeHeader')) + '</div><div id="localFsTree" class="remote-fs-tree"></div><div id="localFsCtxMenu" class="remote-fs-ctxmenu"></div></div><div class="remote-fs-main"><div class="remote-fs-toolbar"><input type="text" class="form-control remote-fs-path" id="localFsPath" placeholder="' + esc(t('hostAi.fsPathPlaceholder')) + '" value="/" readonly><button type="button" class="btn btn-sm" id="localFsRefresh">' + esc(t('hostAi.fsRefresh')) + '</button><button type="button" class="btn btn-sm" id="localFsUpload">' + esc(t('hostAi.fsUpload')) + '</button><input type="file" id="localFsFileInput" style="display:none"><button type="button" class="btn btn-sm" id="localFsDownload">' + esc(t('hostAi.fsDownload')) + '</button><button type="button" class="btn btn-sm" id="localFsSave">' + esc(t('hostAi.fsSave')) + '</button></div><div id="localFsPreview" class="remote-fs-preview"><div class="remote-fs-preview-inner" id="localFsPreviewInner"><span class="text-muted">' + esc(t('hostAi.fsPreviewHint')) + '</span></div></div></div></div></div>'
+        + '<div id="localTabLog" class="terminal-tab-panel"><div class="ai-log-window"><div class="ai-log-toolbar"><span class="text-muted" style="font-size:12px">' + esc(t('ai.local.logHint')) + '</span><button type="button" class="btn btn-sm" id="localLogCopyAll">' + esc(t('hostAi.logCopyAll')) + '</button></div><div id="localLogEntries" class="ai-log-entries"></div></div></div>'
+        + '</div>'
+        + '<div class="layout-splitter-vertical" data-layout="local" data-split="terminal" title="' + esc(t('ai.local.splitterTitle')) + '"></div>'
+        + '<div class="chat-container ai-chat-container ai-layout-chat" id="localLayoutChat">'
+        + '<div class="host-ai-chat-bar"><button type="button" class="btn btn-sm" id="localAiSessionPromptBtn" title="' + esc(t('hostAi.barSessionPromptTitle')) + '">' + esc(t('ai.promptButtonShort')) + '</button><button type="button" class="btn btn-sm" id="localAiClearChat">' + esc(t('hostAi.clearChat')) + '</button><span class="host-ai-clear-n"><input type="number" id="localAiClearN" min="1" value="10" style="width:84px">' + esc(t('hostAi.clearN')) + '</span><button type="button" class="btn btn-sm" id="localAiClearLastN">' + esc(t('hostAi.clearGtN')) + '</button><button type="button" class="btn btn-sm" id="localAiExportMd">' + esc(t('hostAi.exportMd')) + '</button><button type="button" class="btn btn-sm" id="localAiToggleTerminalBtn">' + esc(t('hostAi.hideTerminal')) + '</button><button type="button" class="btn btn-sm btn-primary" id="localAiNewSession">' + esc(t('hostAi.newSession')) + '</button></div>'
+        + '<div id="localAiSessionPromptModal" class="modal-overlay" style="display:none"><div class="modal modal-session-prompt"><div class="modal-header"><span>' + esc(t('hostAi.sessionPromptTitle')) + '</span><button type="button" class="modal-close" id="localAiSessionPromptClose">&times;</button></div><div class="modal-body"><div class="session-prompt-toolbar"><button type="button" class="btn btn-sm active" id="localAiSessionPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm" id="localAiSessionPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button></div><div id="localAiSessionPromptEditWrap"><textarea id="localAiSessionPromptText" class="form-control" rows="6" placeholder="' + esc(t('hostAi.sessionPromptPlaceholder')) + '"></textarea></div><div id="localAiSessionPromptPreview" class="session-prompt-preview" style="display:none"></div><div class="modal-actions" style="margin-top:8px"><button type="button" class="btn btn-sm btn-primary" id="localAiSessionPromptSave">' + esc(t('hostAi.sessionPromptSave')) + '</button><button type="button" class="btn btn-sm" id="localAiSessionPromptCancel">' + esc(t('hostAi.sessionPromptClose')) + '</button></div></div></div></div>'
+        + '<div class="chat-messages" id="localMessages"></div>'
+        + '<div class="chat-input-area"><label class="chat-low-interaction-toggle" title="' + esc(t('hostAi.lowInteractionTitle')) + '"><input type="checkbox" id="localLowInteractionToggle"> ' + esc(t('hostAi.lowInteractionLabel')) + '</label><textarea class="form-control chat-input-multiline" id="localInput" rows="1" enterkeyhint="send" spellcheck="false"></textarea><button class="btn btn-primary" id="localSend">' + esc(t('hostAi.send')) + '</button><button type="button" class="btn btn-sm" id="localNewSessionBtn">' + esc(t('hostAi.newSession')) + '</button></div>'
+        + '</div></div>';
+    initAiLayoutSplitters('local');
+    (function() {
+        var _lm = document.getElementById('localMessages');
+        if (_lm) edgeopsBindChatStickToBottom(_lm);
+    })();
+    var currentSessionId = null;
+    var localAiFirstLoad = true;
+    var localAiLogBuffer = [];
+    var localConsoles = [];
+    var localActiveSlot = 0;
+    var localAutoSwitchConsole = true;
+    var localUserTookOverConsole = false;
+    function localConsoleIsAlive(rec) {
+        return !!(rec && rec.ws && (rec.ws.readyState === WebSocket.CONNECTING || rec.ws.readyState === WebSocket.OPEN));
+    }
+    function nextLocalConsoleSlot() {
+        var used = {};
+        localConsoles.forEach(function(c) {
+            if (localConsoleIsAlive(c)) used[c.slot] = true;
+        });
+        for (var i = 0; i < 32; i++) {
+            if (!used[i]) return i;
+        }
+        return localConsoles.length;
+    }
+    edgeopsBindTerminalToggle({
+        layoutId: 'local',
+        pageId: 'localPageLayout',
+        terminalId: 'localLayoutTerminal',
+        buttonIds: ['localAiToggleTerminalBtn'],
+        onShow: function() {
+            localConsoles.forEach(function(c) { if (c.refit) c.refit(); });
+        }
+    });
+    var fmtMdLocal = function(t) { return (typeof formatMarkdown !== 'undefined' && formatMarkdown ? formatMarkdown(t) : (esc(t || '').replace(/\n/g, '<br>'))); };
+    function loadLocalSessions() {
+        var listEl = document.getElementById('localSessionList');
+        if (!listEl) return;
+        API.listAISessions(null, 'local').then(function(r) {
+            var rawSessions = r.sessions || [];
+            var sessions = edgeopsSortSessionsPromptFirst(rawSessions.slice());
+            listEl.innerHTML = sessions.length ? sessions.map(function(s) {
+                return '<div class="chat-history-item' + (s.id === currentSessionId ? ' active' : '') + (edgeopsSessionHasPrompt(s) ? ' chat-history-item-session-prompt' : '') + '" data-id="' + s.id + '">'
+                    + '<span class="chat-history-item-title" title="' + esc(t('hostAi.doubleClickRename')) + '">' + esc(s.title || t('ai.local.sessionNew')) + '</span><span class="chat-history-item-time">' + formatTime(s.updated_at) + '</span>'
+                    + '<button type="button" class="chat-history-item-rename" title="' + esc(t('hostAi.renameTitle')) + '">' + esc(t('hostAi.rename')) + '</button>'
+                    + '<button type="button" class="chat-history-item-ai-title" title="' + esc(t('hostAi.aiNameTitle')) + '">AI</button>'
+                    + '<button type="button" class="chat-history-item-delete" title="' + esc(t('hostAi.deleteTitle')) + '" data-id="' + s.id + '">&times;</button></div>';
+            }).join('') : '<div class="chat-history-empty">' + esc(t('hostAi.noSessions')) + '</div>';
+            listEl.querySelectorAll('.chat-history-item').forEach(function(node) {
+                var id = parseInt(node.getAttribute('data-id'), 10);
+                if (!id || isNaN(id)) return;
+                var titleEl = node.querySelector('.chat-history-item-title');
+                function startRename() {
+                    var val = (titleEl.textContent || '').trim();
+                    var input = document.createElement('input');
+                    input.type = 'text';
+                    input.className = 'chat-history-item-title-edit';
+                    input.value = val;
+                    input.style.width = (node.offsetWidth - 90) + 'px';
+                    titleEl.replaceWith(input);
+                    input.focus();
+                    input.select();
+                    function done() {
+                        var newTitle = (input.value || '').trim();
+                        input.replaceWith(titleEl);
+                        titleEl.textContent = newTitle || val;
+                        if (newTitle !== val) API.updateAISession(id, { title: newTitle }).then(function() { showToast(t('toast.renamed')); }).catch(function(err) { showToast(err.message, 'error'); titleEl.textContent = val; });
+                    }
+                    input.onblur = done;
+                    input.onkeydown = function(ev) { if (ev.key === 'Enter') { ev.preventDefault(); done(); } if (ev.key === 'Escape') { input.value = val; done(); } };
+                }
+                titleEl.ondblclick = function(e) { e.stopPropagation(); startRename(); };
+                node.querySelector('.chat-history-item-rename').onclick = function(e) { e.stopPropagation(); startRename(); };
+                (function() {
+                    var aiBtn = node.querySelector('.chat-history-item-ai-title');
+                    aiBtn.onclick = function(e) {
+                        e.stopPropagation();
+                        var btn = this;
+                        var oldText = btn.textContent;
+                        btn.textContent = '\u2026';
+                        btn.disabled = true;
+                        showToast(t('toast.generatingTitle'));
+                        API.summarizeAISessionTitle(id).then(function(res) {
+                            btn.textContent = oldText;
+                            btn.disabled = false;
+                            if (res.title) { titleEl.textContent = res.title; showToast(t('toast.titleGenerated')); }
+                        }).catch(function(err) {
+                            btn.textContent = oldText;
+                            btn.disabled = false;
+                            showToast(err.message || t('toast.generateTitleFailed'), 'error');
+                        });
+                    };
+                })();
+                node.querySelector('.chat-history-item-delete').onclick = function(e) {
+                    e.stopPropagation();
+                    if (!confirm(t('confirm.deleteThisSession'))) return;
+                    API.deleteAISession(id).then(function() {
+                        if (currentSessionId === id) {
+                            currentSessionId = null;
+                            var lm = document.getElementById('localMessages');
+                            if (lm) lm.innerHTML = '';
+                        }
+                        loadLocalSessions();
+                        showToast(t('toast.deleted'));
+                    }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
+                };
+                node.onclick = function(ev) {
+                    if (ev.target.closest('button') || ev.target.classList.contains('chat-history-item-title-edit')) return;
+                    currentSessionId = id;
+                    listEl.querySelectorAll('.chat-history-item').forEach(function(n) { n.classList.remove('active'); });
+                    node.classList.add('active');
+                    loadLocalSession(id);
+                };
+            });
+            if (localAiFirstLoad && rawSessions.length) {
+                localAiFirstLoad = false;
+                var toSummarize = null;
+                if (currentSessionId) {
+                    var cur = rawSessions.filter(function(s) { return s.id === currentSessionId; })[0];
+                    if (cur && edgeopsIsTempSessionTitle(cur.title)) toSummarize = cur.id;
+                }
+                if (!toSummarize) {
+                    for (var si = 0; si < rawSessions.length; si++) {
+                        var srow = rawSessions[si];
+                        if (srow.title && edgeopsIsTempSessionTitle(srow.title)) { toSummarize = srow.id; break; }
+                    }
+                }
+                if (toSummarize) API.summarizeAISessionTitle(toSummarize).then(function(res) { if (res && res.title) loadLocalSessions(); }).catch(function() {});
+            }
+        }).catch(function(err) { showToast(err.message, 'error'); });
+    }
+    function loadLocalSession(id) {
+        currentSessionId = id;
+        API.getAISession(id).then(function(r) {
+            var msgs = (r.session && r.session.messages) || [];
+            var lowToggle = document.getElementById('localLowInteractionToggle');
+            if (lowToggle) lowToggle.checked = String((r.session && r.session.low_interaction_mode) || 'false').toLowerCase() === 'true';
+            var box = document.getElementById('localMessages');
+            if (!box) return;
+            edgeopsRenderSessionMessages(box, msgs, fmtMdLocal, id, {
+                onChoice: function(text) { edgeopsTriggerChatSend('localInput', 'localSend', text); }
+            });
+            edgeopsHydrateChatDiagrams(box);
+            edgeopsScrollChatMessagesToBottom(box);
+        }).catch(function(err) { showToast(err.message, 'error'); });
+    }
+    (function() {
+        var lowToggle = document.getElementById('localLowInteractionToggle');
+        if (!lowToggle) return;
+        lowToggle.checked = false;
+        lowToggle.onchange = function() {
+            if (!currentSessionId) { showToast(t('toast.selectOrCreateSession'), 'info'); lowToggle.checked = false; return; }
+            API.updateAISession(currentSessionId, { low_interaction_mode: !!lowToggle.checked })
+                .catch(function(err) { showToast((err && err.message) || t('toast.requestFailed'), 'error'); lowToggle.checked = !lowToggle.checked; });
+        };
+    })();
+    var localAiLogRenderRaf = null;
+    function clipLocalAiLogValue(value, maxLen) {
+        maxLen = maxLen || 2000;
+        if (value == null) return value;
+        if (typeof value === 'string') {
+            return value.length > maxLen ? value.slice(0, maxLen) + '…（已截断，长度 ' + value.length + ' 字符）' : value;
+        }
+        if (Array.isArray(value)) return value.slice(0, 20).map(function(v) { return clipLocalAiLogValue(v, maxLen); });
+        if (typeof value === 'object') {
+            var out = {};
+            Object.keys(value).forEach(function(k) {
+                var lk = String(k).toLowerCase();
+                var v = value[k];
+                if (['private_key', 'password', 'token', 'api_key', 'secret'].indexOf(lk) >= 0) {
+                    var len = typeof v === 'string' ? v.length : 0;
+                    out[k] = '（已隐藏' + (len ? '，长度 ' + len + ' 字符' : '') + '）';
+                } else {
+                    var subMax = (lk === 'code' || lk === 'content' || lk === 'content_b64') ? Math.max(maxLen, 64000) : maxLen;
+                    out[k] = clipLocalAiLogValue(v, subMax);
+                }
+            });
+            return out;
+        }
+        return value;
+    }
+    function localAiLogText(value, maxLen) {
+        var clipped = clipLocalAiLogValue(value, maxLen || 2000);
+        try {
+            return typeof clipped === 'object' ? JSON.stringify(clipped) : (clipped || '');
+        } catch (_e) {
+            return '（日志内容过大，已省略）';
+        }
+    }
+    function renderLocalAiLog() {
+        localAiLogRenderRaf = null;
+        var wrap = document.getElementById('localLogEntries');
+        if (!wrap) return;
+        var entries = localAiLogBuffer.slice(-AI_LOG_DISPLAY_ENTRIES).reverse();
+        if (!entries.length) { wrap.innerHTML = '<div class="ai-log-empty">' + esc(t('ai.localEmptyLog')) + '</div>'; return; }
+        wrap.innerHTML = entries.map(function(e) {
+            var argsStr = localAiLogText(e.args, 2000);
+            var resultShow = lastNLines(e.result || '', AI_LOG_DISPLAY_LINES);
+            var more = (e.result || '').split('\n').length > AI_LOG_DISPLAY_LINES ? t('hostAi.logLinesNote', { n: AI_LOG_DISPLAY_LINES }) : '';
+            return '<div class="ai-log-entry status-' + (e.status || '') + '">'
+                + '<div class="ai-log-entry-head"><span class="ai-log-entry-time">' + esc(e.time || '') + '</span><span class="ai-log-entry-tool">' + esc(e.tool || '') + '</span></div>'
+                + (argsStr ? '<div class="ai-log-entry-args">' + esc(argsStr) + '</div>' : '')
+                + '<div class="ai-log-entry-result">' + esc(resultShow) + esc(more) + '</div></div>';
+        }).join('');
+    }
+    function scheduleRenderLocalAiLog() {
+        if (localAiLogRenderRaf != null) return;
+        localAiLogRenderRaf = requestAnimationFrame(renderLocalAiLog);
+    }
+    function copyLocalAiLogFull() {
+        var lines = localAiLogBuffer.map(function(e) {
+            var argsStr = localAiLogText(e.args, 4000);
+            return '[' + (e.time || '') + '] ' + (e.tool || '') + '\n' + t('hostAi.logArgs') + argsStr + '\n' + t('hostAi.logResult') + (e.result || t('hostAi.logNone'));
+        });
+        var text = lines.join('\n\n');
+        if (!text) { showToast(t('toast.noCopyYet'), 'info'); return; }
+        try {
+            navigator.clipboard.writeText(text);
+            showToast(t('toast.copiedLogLines', {n: localAiLogBuffer.length}));
+        } catch (err) { showToast(t('toast.copyFailed'), 'error'); }
+    }
+    document.getElementById('localNewSession').onclick = function() {
+        API.createAISession('default', null, 'local').then(function(r) {
+            var id = r.session_id || (r.session && r.session.id);
+            if (id != null) {
+                currentSessionId = id;
+                document.getElementById('localMessages').innerHTML = '';
+                localAiLogBuffer = [];
+                renderLocalAiLog();
+                loadLocalSessions();
+                loadLocalSession(id);
+                showToast(t('toast.newSessionCreated'));
+            }
+        }).catch(function(err) { showToast(err.message || t('toast.createFailed'), 'error'); });
+    };
+    document.getElementById('localRefreshSessions').onclick = function() { loadLocalSessions(); showToast(t('toast.refreshed')); };
+    loadLocalSessions();
+    var localAbortController = null;
+    var localRuntimeCtl = edgeopsInstallRuntimeControlBar({
+        area: 'localInput',
+        onControl: function(action, message) {
+            if (!currentSessionId) { showToast(t('toast.selectOrCreateSession'), 'info'); return; }
+            if (action === 'stop' && localAbortController) localAbortController.abort();
+            API.pushAIRuntimeControl(currentSessionId, { action: action, message: message || '' })
+                .then(function() {
+                    if (action === 'stop' && localAbortController) localAbortController.abort();
+                })
+                .catch(function(err) { showToast((err && err.message) || t('toast.requestFailed'), 'error'); });
+        }
+    });
+    var setLocalStreamingUI = edgeopsMakeChatStreamingUISetter({
+        inputId: 'localInput', sendId: 'localSend', newSessionId: 'localNewSessionBtn', runtimeCtl: localRuntimeCtl
+    });
+    document.getElementById('localAiClearChat').onclick = function() {
+        if (!currentSessionId) { showToast(t('toast.selectOrCreateSession')); return; }
+        if (!confirm(t('confirm.clearSessionChat'))) return;
+        API.clearSessionMessages(currentSessionId, { clear: 'all' }).then(function() { loadLocalSession(currentSessionId); showToast(t('toast.chatCleared')); }).catch(function(err) { showToast(err.message || t('toast.clearFailed'), 'error'); });
+    };
+    document.getElementById('localAiClearLastN').onclick = function() {
+        if (!currentSessionId) { showToast(t('toast.selectOrCreateSession')); return; }
+        var n = parseInt(document.getElementById('localAiClearN').value, 10) || 10;
+        n = Math.max(1, Math.min(10000, n));
+        if (!confirm(t('confirm.keepNMessages', {n: n}))) return;
+        API.clearSessionMessages(currentSessionId, { clear: 'after', keep_n: n }).then(function() { loadLocalSession(currentSessionId); showToast(t('toast.clearedAfterN', {n: n})); }).catch(function(err) { showToast(err.message || t('toast.opFailed'), 'error'); });
+    };
+    document.getElementById('localAiExportMd').onclick = function() { exportChatToMarkdown(currentSessionId); };
+    document.getElementById('localAiNewSession').onclick = document.getElementById('localNewSession').onclick;
+    document.getElementById('localNewSessionBtn').onclick = document.getElementById('localNewSession').onclick;
+    (function() {
+        var sidebar = document.getElementById('localLeftSidebar');
+        var tab = document.getElementById('localSidebarTabSessions');
+        if (sidebar && tab) {
+            edgeopsBindAutoCollapseChatSidebar(sidebar, tab);
+            tab.onclick = function() {
+                var isOpen = sidebar.classList.toggle('open');
+                tab.classList.toggle('active', isOpen);
+            };
+        }
+    })();
+    (function() {
+        var modal = document.getElementById('localAiSessionPromptModal');
+        var textEl = document.getElementById('localAiSessionPromptText');
+        function openModal() {
+            if (!currentSessionId) { showToast(t('toast.selectOrCreateSession')); return; }
+            if (modal) modal.style.display = 'flex';
+            var editWrap = document.getElementById('localAiSessionPromptEditWrap');
+            var previewDiv = document.getElementById('localAiSessionPromptPreview');
+            if (editWrap) editWrap.style.display = '';
+            if (previewDiv) previewDiv.style.display = 'none';
+            var editTab = document.getElementById('localAiSessionPromptEditTab');
+            var previewTab = document.getElementById('localAiSessionPromptPreviewTab');
+            if (editTab) editTab.classList.add('active'); if (previewTab) previewTab.classList.remove('active');
+            if (textEl) API.getSessionPrompt(currentSessionId).then(function(r) { textEl.value = r.prompt || ''; }).catch(function(err) { showToast(err.message, 'error'); });
+        }
+        function closeModal() { if (modal) modal.style.display = 'none'; }
+        document.getElementById('localAiSessionPromptBtn').onclick = openModal;
+        document.getElementById('localAiSessionPromptClose').onclick = closeModal;
+        document.getElementById('localAiSessionPromptCancel').onclick = closeModal;
+        (function() {
+            var editTab = document.getElementById('localAiSessionPromptEditTab');
+            var previewTab = document.getElementById('localAiSessionPromptPreviewTab');
+            var editWrap = document.getElementById('localAiSessionPromptEditWrap');
+            var previewDiv = document.getElementById('localAiSessionPromptPreview');
+            if (editTab) editTab.onclick = function() { if (editWrap) editWrap.style.display = ''; if (previewDiv) previewDiv.style.display = 'none'; editTab.classList.add('active'); if (previewTab) previewTab.classList.remove('active'); };
+            if (previewTab) previewTab.onclick = function() { if (textEl && previewDiv) previewDiv.innerHTML = (typeof formatMarkdown !== 'undefined' ? formatMarkdown(textEl.value) : esc(textEl.value)); if (previewDiv) previewDiv.style.display = 'block'; if (editWrap) editWrap.style.display = 'none'; previewTab.classList.add('active'); if (editTab) editTab.classList.remove('active'); };
+        })();
+        document.getElementById('localAiSessionPromptSave').onclick = function() {
+            if (!currentSessionId) return;
+            API.updateSessionPrompt(currentSessionId, textEl.value).then(function() { showToast(t('toast.saved')); closeModal(); loadLocalSessions(); }).catch(function(err) { showToast(err.message, 'error'); });
+        };
+    })();
+    var localAiAttachCtl = edgeopsInstallChatAttachments({ input: 'localInput', getSessionId: function() { return currentSessionId; } });
+    function doLocalSend() {
+        var input = document.getElementById('localInput'); var msg = input && input.value.trim();
+        var attachments = localAiAttachCtl ? localAiAttachCtl.getReadyAttachments() : [];
+        var attachUuids = attachments.map(function(a) { return a.uuid; });
+        if (!msg && !attachUuids.length) return;
+        if (localAiAttachCtl && localAiAttachCtl.hasPending()) { showToast(t('toast.attachUploading'), 'warning'); return; }
+        if (!msg) msg = '（见下方附件）';
+        input.value = '';
+        if (input._edgeopsAutoResize) input._edgeopsAutoResize();
+        var box = document.getElementById('localMessages'); if (!box) return;
+        edgeopsBindChatStickToBottom(box);
+        box._edgeopsStickToBottom = edgeopsChatIsNearBottom(box);
+        setLocalStreamingUI(true);
+        var now = new Date();
+        var nowTs = edgeopsFormatChatTimestamp(now);
+        var userBubble = edgeopsRenderMessageBubble(fmtMdLocal(msg) + edgeopsRenderAttachmentsInline(attachments), now);
+        box.insertAdjacentHTML('beforeend', '<div class="chat-message user"><div class="avatar">U</div>' + userBubble + '</div>');
+        if (localAiAttachCtl) localAiAttachCtl.clear();
+        box.insertAdjacentHTML('beforeend', '<div class="chat-message assistant"><div class="avatar">A</div><div class="message-content"><div class="ai-reply-stream"><div class="ai-reply-tools"></div><div class="ai-reply-text"></div></div><div class="message-time">' + esc(nowTs) + '</div></div></div>');
+        edgeopsHydrateChatDiagrams(box);
+        edgeopsScrollChatToBottomStepIfPinned(box);
+        var replyWrap = edgeopsPeekLastAiReplyStreamWrap(box);
+        if (!replyWrap) return;
+        var toolsEl = replyWrap.querySelector('.ai-reply-tools');
+        var textEl = replyWrap.querySelector('.ai-reply-text');
+        var replyMsgEl = replyWrap.closest('.chat-message');
+        edgeopsInitStreamReplyState(replyWrap, msg);
+        edgeopsSetMessagePersistenceMeta(replyMsgEl, currentSessionId, null, '');
+        edgeopsCotEnsureThinkingPlaceholder(toolsEl);
+        edgeopsScrollChatToBottomStepIfPinned(box);
+        var streamedText = '';
+        var localStreamInputMode = 'idle';
+        function flushStreamReplyText() {
+            var clean = stripThinkTags(streamedText);
+            if (typeof edgeopsRenderStreamIncremental === 'function') edgeopsRenderStreamIncremental(textEl, clean, replyWrap);
+            else if (typeof edgeopsRenderStreamPlainText === 'function') edgeopsRenderStreamPlainText(textEl, clean);
+            else textEl.textContent = clean;
+            if (replyMsgEl) replyMsgEl._edgeopsPersistContent = clean;
+            edgeopsScrollChatToBottomStepIfPinned(box);
+        }
+        function finishStreamAndRender() {
+            localStreamInputMode = edgeopsFinishChatStreamRound({
+                replyWrap: replyWrap, toolsEl: toolsEl, textEl: textEl, replyMsgEl: replyMsgEl,
+                streamedText: streamedText, logBuffer: localAiLogBuffer, renderLogFn: renderLocalAiLog,
+                formatMd: fmtMdLocal, setStreamingUI: setLocalStreamingUI
+            });
+        }
+        localAbortController = new AbortController();
+        var localUntrackAbort = edgeopsTrackChatAbortController(localAbortController);
+        try { edgeopsClearUIActionCache(currentSessionId); } catch (_e) {}
+        API.chatStream(msg, currentSessionId, function(ev) {
+            if (ev.session_id != null) { currentSessionId = ev.session_id; edgeopsSetMessagePersistenceMeta(replyMsgEl, currentSessionId, null, replyMsgEl && replyMsgEl._edgeopsPersistContent); }
+            if (ev.ui_action && ev.ui_action.action === 'ask_user_choice') {
+                var _dupFp3 = edgeopsChoiceCardFingerprint(ev.ui_action);
+                if (_dupFp3 && replyMsgEl && replyMsgEl._edgeopsLastStreamChoiceFp === _dupFp3) {
+                    try { edgeopsSaveUIActionToCache(currentSessionId, ev.ui_action); } catch (_ed3) {}
+                } else {
+                    if (_dupFp3 && replyMsgEl) replyMsgEl._edgeopsLastStreamChoiceFp = _dupFp3;
+                    var card = edgeopsRenderChoiceCard(ev.ui_action, function(text) {
+                        try { edgeopsClearUIActionCache(currentSessionId); } catch (_e) {}
+                        if (currentSessionId && localAbortController) {
+                            API.pushAIRuntimeControl(currentSessionId, { action: 'choice', message: text || '' })
+                                .catch(function(err) { showToast((err && err.message) || t('toast.requestFailed'), 'error'); });
+                            return;
+                        }
+                        edgeopsTriggerChatSend('localInput', 'localSend', text);
+                    });
+                    if (card && replyMsgEl) {
+                        var mc = replyMsgEl.querySelector('.message-content');
+                        if (mc) {
+                            edgeopsRemoveStreamingChoiceCards(mc);
+                            mc.appendChild(card);
+                        }
+                        edgeopsScrollChatToBottomStepIfPinned(box);
+                    }
+                    try { edgeopsSaveUIActionToCache(currentSessionId, ev.ui_action); } catch (_e) {}
+                }
+            }
+            if (ev.ui_action && ev.ui_action.scope === 'local') {
+                if ((ev.ui_action.action === 'ensure_local_console' || ev.ui_action.action === 'create_local_console') && ev.ui_action.created_by === 'ai') {
+                    var aiCon;
+                    if (ev.ui_action.action === 'ensure_local_console') {
+                        aiCon = localConsoles.filter(function(c) { return c.createdBy === 'ai' && localConsoleIsAlive(c); })[0];
+                        if (!aiCon) addLocalConsole(ev.ui_action.slot != null ? parseInt(ev.ui_action.slot, 10) : nextLocalConsoleSlot(), 'ai');
+                        aiCon = localConsoles.filter(function(c) { return c.createdBy === 'ai' && localConsoleIsAlive(c); })[0] || localConsoles[localConsoles.length - 1];
+                    } else {
+                        var requestedSlot = ev.ui_action.slot != null ? parseInt(ev.ui_action.slot, 10) : nextLocalConsoleSlot();
+                        aiCon = localConsoles.filter(function(c) { return c.slot === requestedSlot && localConsoleIsAlive(c); })[0];
+                        if (!aiCon) {
+                            addLocalConsole(requestedSlot, 'ai');
+                            aiCon = localConsoles[localConsoles.length - 1];
+                        }
+                    }
+                    if (aiCon && localAutoSwitchConsole && !localUserTookOverConsole) {
+                        localActiveSlot = aiCon.slot;
+                        localConsoles.forEach(function(c) { c.panel.style.display = 'none'; if (c.tabEl) c.tabEl.classList.remove('active'); if (c.tabBtn) c.tabBtn.classList.remove('active'); });
+                        aiCon.panel.style.display = 'flex';
+                        if (aiCon.tabEl) aiCon.tabEl.classList.add('active');
+                        if (aiCon.tabBtn) aiCon.tabBtn.classList.add('active');
+                        if (aiCon.refit) aiCon.refit();
+                    }
+                } else if (ev.ui_action.action === 'close_local_console') {
+                    var s = ev.ui_action.slot != null ? parseInt(ev.ui_action.slot, 10) : 0;
+                    var con = localConsoles.filter(function(c) { return c.slot === s; })[0];
+                    if (con && con.createdBy === 'ai') {
+                        con.intentionalClose = true;
+                        if (con.ws) con.ws.close(1000, 'ai_close_local_console');
+                        con.tabEl.remove();
+                        con.panel.remove();
+                        localConsoles = localConsoles.filter(function(c) { return c.slot !== s; });
+                        if (localConsoles.length === 0) {
+                            if (localConsoleEmptyState) localConsoleEmptyState.style.display = 'flex';
+                            if (localConsolePanelsEl) localConsolePanelsEl.style.display = 'none';
+                        } else if (localActiveSlot === s) {
+                            localActiveSlot = localConsoles[0].slot;
+                            localConsoles.forEach(function(c) { c.panel.style.display = 'none'; if (c.tabEl) c.tabEl.classList.remove('active'); if (c.tabBtn) c.tabBtn.classList.remove('active'); });
+                            localConsoles[0].panel.style.display = 'flex';
+                            if (localConsoles[0].tabEl) localConsoles[0].tabEl.classList.add('active');
+                            if (localConsoles[0].tabBtn) localConsoles[0].tabBtn.classList.add('active');
+                            if (localConsoles[0].refit) localConsoles[0].refit();
+                        }
+                    }
+                } else if (ev.ui_action.action === 'switch_console' && localAutoSwitchConsole && !localUserTookOverConsole) {
+                    var s = ev.ui_action.slot != null ? parseInt(ev.ui_action.slot, 10) : 0;
+                    var con = localConsoles.filter(function(c) { return c.slot === s; })[0];
+                    if (con && localActiveSlot !== s) {
+                        localActiveSlot = s;
+                        localConsoles.forEach(function(c) { c.panel.style.display = 'none'; if (c.tabEl) c.tabEl.classList.remove('active'); if (c.tabBtn) c.tabBtn.classList.remove('active'); });
+                        con.panel.style.display = 'flex';
+                        if (con.tabEl) con.tabEl.classList.add('active');
+                        if (con.tabBtn) con.tabBtn.classList.add('active');
+                        if (con.refit) con.refit();
+                    }
+                }
+            }
+            if (ev.error) {
+                edgeopsMarkOpenToolRowsFailed(toolsEl, localAiLogBuffer, renderLocalAiLog);
+                streamedText += '\n' + t('hostAi.streamError') + ev.error;
+                flushStreamReplyText();
+                showToast(ev.error, 'error');
+            }
+            else if (ev.stream_status && ev.stream_status.phase) {
+                edgeopsApplyStreamStatus(replyWrap, setLocalStreamingUI, ev.stream_status.phase);
+            }
+            else if (ev.assistant_continue) {
+                streamedText += '\n\n' + t('hostAi.streamCont') + (ev.assistant_continue || t('hostAi.streamContDefault')) + '*\n\n';
+                flushStreamReplyText();
+                if (ev.requires_user_confirm && replyWrap) {
+                    replyWrap._edgeopsPausedForConfirm = true;
+                    replyWrap._edgeopsStreamPhase = 'awaiting_user_confirm';
+                }
+                if (ev.requires_user_confirm) setLocalStreamingUI('awaiting');
+                if (ev.requires_user_confirm && replyMsgEl) {
+                    var _mc3 = replyMsgEl.querySelector('.message-content');
+                    if (_mc3) {
+                        _mc3.appendChild(edgeopsRenderContinueConfirmCard(function(action, presetText) {
+                            if (action === 'continue') {
+                                edgeopsTriggerChatSend('localInput', 'localSend', presetText || t('hostAi.continueActionGoOnText'));
+                                return;
+                            }
+                            if (currentSessionId) API.pushAIRuntimeControl(currentSessionId, { action: action, message: '' }).catch(function() {});
+                        }));
+                    }
+                }
+                edgeopsScrollChatToBottomStepIfPinned(box);
+            }
+            else if (ev.cot) {
+                edgeopsCotDispatch(toolsEl, ev.cot);
+                edgeopsScrollChatToBottomStepIfPinned(box);
+            }
+            else if (ev.content_refresh) {
+                streamedText = String(ev.content_refresh || '');
+                flushStreamReplyText();
+            }
+            else if (ev.content) {
+                streamedText += ev.content;
+                flushStreamReplyText();
+            } else if (ev.tool_stream) {
+                renderToolStreamEvent(toolsEl, ev);
+                edgeopsScrollChatToBottomStepIfPinned(box);
+            } else if (ev.runtime_control) {
+                var rc3 = ev.runtime_control || {};
+                streamedText += '\n\n`' + t('hostAi.runtimeEventPrefix') + (rc3.action || 'supplement') + '`\n\n';
+                flushStreamReplyText();
+                edgeopsScrollChatToBottomStepIfPinned(box);
+            } else if (ev.action === 'waiting' || ev.action === 'waiting_aborted') {
+                edgeopsUpdateChatPollWait(toolsEl, ev, {
+                    runtimeCtl: localRuntimeCtl,
+                    onAbort: function() {
+                        if (localAbortController) localAbortController.abort();
+                        if (currentSessionId) {
+                            API.pushAIRuntimeControl(currentSessionId, { action: 'stop', message: '' })
+                                .catch(function(err) { showToast((err && err.message) || t('toast.requestFailed'), 'error'); });
+                        }
+                    }
+                });
+                edgeopsScrollChatToBottomStepIfPinned(box);
+            } else if (ev.action && ev.tool) {
+                if (ev.action === 'executing') edgeopsCotOnToolExecuting(toolsEl, ev);
+                else edgeopsCotOnToolFinished(toolsEl, ev);
+                if (replyWrap && ev.action && ev.action !== 'executing') {
+                    replyWrap._edgeopsToolFinishedCount = (replyWrap._edgeopsToolFinishedCount || 0) + 1;
+                }
+                if (ev.action === 'executing') {
+                    localAiLogBuffer.push({ time: new Date().toLocaleString(), tool: ev.tool, args: clipLocalAiLogValue(ev.args, 2000), result: null, status: 'executing' });
+                    if (localAiLogBuffer.length > 200) localAiLogBuffer = localAiLogBuffer.slice(-200);
+                } else if (localAiLogBuffer.length) {
+                    localAiLogBuffer[localAiLogBuffer.length - 1].result = clipLocalAiLogValue(ev.result_preview != null ? ev.result_preview : '', 12000);
+                    localAiLogBuffer[localAiLogBuffer.length - 1].status = ev.action;
+                }
+                scheduleRenderLocalAiLog();
+                edgeopsScrollChatToBottomStepIfPinned(box);
+            }
+        }, { scope: 'local', signal: localAbortController.signal, attachmentUuids: attachUuids }).then(function(sid) {
+            if (sid != null) currentSessionId = sid;
+            finishStreamAndRender();
+            loadLocalSessions();
+            requestAnimationFrame(function() {
+                var _bL = document.getElementById('localMessages');
+                if (_bL) edgeopsScrollChatMessagesToBottom(_bL);
+            });
+        }).catch(function(err) {
+            edgeopsMarkOpenToolRowsFailed(toolsEl, localAiLogBuffer, renderLocalAiLog);
+            if (err.name === 'AbortError') { streamedText += '\n\n' + t('hostAi.streamAborted'); showToast(t('toast.aborted'), 'info'); } else { streamedText += '\n' + t('hostAi.streamError') + (err && err.message ? err.message : t('toast.requestFailed')); showToast(err.message || t('toast.requestFailed'), 'error'); }
+            flushStreamReplyText();
+            finishStreamAndRender();
+            loadLocalSessions();
+        }).finally(function() {
+            if (localStreamInputMode !== 'awaiting') setLocalStreamingUI(false);
+            if (localUntrackAbort) localUntrackAbort();
+            localAbortController = null;
+        });
+    }
+    document.getElementById('localSend').onclick = doLocalSend;
+    (function() {
+        var localInput = document.getElementById('localInput');
+        edgeopsInitChatTextarea(localInput);
+        edgeopsBindChatSubmit(localInput, doLocalSend);
+    })();
+    var localLogCopyEl = document.getElementById('localLogCopyAll');
+    if (localLogCopyEl) localLogCopyEl.onclick = copyLocalAiLogFull;
+    document.querySelectorAll('.terminal-tab-btn[data-tab^=localTab]').forEach(function(btn) {
+        btn.onclick = function() {
+            var tab = btn.getAttribute('data-tab');
+            document.querySelectorAll('.terminal-tab-panel[id^=localTab]').forEach(function(p) { p.classList.remove('active'); });
+            document.getElementById(tab).classList.add('active');
+            document.querySelectorAll('.terminal-tab-btn[data-tab^=localTab]').forEach(function(b) { b.classList.remove('active'); });
+            btn.classList.add('active');
+            if (tab === 'localTabLog') renderLocalAiLog();
+            if (tab === 'localTabFs' && localFsTree && !localFsTree.querySelector('ul')) doLocalFsRefresh();
+            if (tab === 'localTabConsole' && localConsoles.length) {
+                var activeRec = localConsoles.find(function(c) { return c.tabEl && c.tabEl.classList.contains('active'); }) || localConsoles[0];
+                if (activeRec && activeRec.term) setTimeout(function() { try { activeRec.term.focus(); } catch (e) {} }, 100);
+            }
+        };
+    });
+    var localFsPath = document.getElementById('localFsPath');
+    var localFsTree = document.getElementById('localFsTree');
+    var localFsPreviewInner = document.getElementById('localFsPreviewInner');
+    var localFsCurrentPath = '/';
+    var localFsCurrentFile = null;
+    var localFsClipboard = null;
+    var localFsUploadTargetPath = null;
+    var localFsExpandedPaths = new Set();
+
+    function findLocalFsLiByPath(container, path) {
+        if (!container) return null;
+        var sel = container.querySelector('li[data-path="' + String(path).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]');
+        return sel || null;
+    }
+    function restoreLocalFsTreeExpanded(container, paths, loadTreeFn) {
+        if (!container || !paths.length) return Promise.resolve();
+        paths = paths.slice().sort(function(a, b) { return (a.split(/[/\\]/).filter(Boolean).length) - (b.split(/[/\\]/).filter(Boolean).length); });
+        var i = 0;
+        function next() {
+            if (i >= paths.length) return Promise.resolve();
+            var path = paths[i++];
+            var li = findLocalFsLiByPath(container, path);
+            if (!li || li.dataset.dir !== '1') return next();
+            return loadTreeFn(path, li).then(next);
+        }
+        return next();
+    }
+    function doLocalFsRefresh() {
+        var treeEl = document.getElementById('localFsTree');
+        var expanded = Array.from(localFsExpandedPaths).sort(function(a, b) { return (a.split(/[/\\]/).filter(Boolean).length) - (b.split(/[/\\]/).filter(Boolean).length); });
+        return loadLocalFsTree('', null).then(function() { return restoreLocalFsTreeExpanded(treeEl, expanded, loadLocalFsTree); }).then(function() {
+            if (localFsCurrentFile) loadLocalFsPreview(localFsCurrentFile);
+        });
+    }
+
+    function localFsNormPath(p) { return (p || '/').replace(/^\/+|\/+$/g, '') || ''; }
+    function localFsPathJoin(dir, name) { var d = (dir || '').replace(/\\/g, '/'); if (!d || d === '/') d = ''; return d ? d + '/' + name : name; }
+
+    function loadLocalFsTree(path, parentNode) {
+        var listPath = path;
+        if (listPath === '' || listPath === '/') listPath = '';
+        else listPath = (listPath || '').replace(/\\/g, '/');
+        return API.localFsList(listPath).then(function(r) {
+            if (!r.success || !r.items) return;
+            var treeEl = document.getElementById('localFsTree');
+            if (!treeEl) return;
+            var items = r.items.slice().sort(function(a, b) {
+                var aDir = a.dir !== undefined ? a.dir : a.is_dir;
+                var bDir = b.dir !== undefined ? b.dir : b.is_dir;
+                if (aDir !== bDir) return aDir ? -1 : 1;
+                return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
+            });
+            var ul = document.createElement('ul');
+            ul.className = 'remote-fs-tree-list';
+            items.forEach(function(it) {
+                var isDir = it.dir !== undefined ? it.dir : it.is_dir;
+                var itPath = it.path || '';
+                var li = document.createElement('li');
+                li.className = 'remote-fs-tree-item' + (isDir ? ' remote-fs-dir' : ' remote-fs-file');
+                li.dataset.path = itPath;
+                li.dataset.dir = isDir ? '1' : '0';
+                var label = document.createElement('span');
+                label.className = 'remote-fs-tree-label';
+                label.textContent = it.name + (isDir ? '/' : '');
+                if (isDir) {
+                    var arrow = document.createElement('span');
+                    arrow.className = 'remote-fs-tree-arrow';
+                    arrow.textContent = '\u25b6';
+                    li.insertBefore(arrow, li.firstChild);
+                    li.appendChild(label);
+                    li.appendChild(document.createElement('span'));
+                    arrow.onclick = function(e) { e.stopPropagation(); toggleLocalFsDir(li); };
+                    label.onclick = function(e) { e.stopPropagation(); localFsCurrentPath = itPath; if (localFsPath) localFsPath.value = itPath || '/'; loadLocalFsPreview(null); };
+                } else {
+                    li.appendChild(label);
+                    label.onclick = function(e) { e.stopPropagation(); localFsCurrentFile = itPath; localFsCurrentPath = itPath; if (localFsPath) localFsPath.value = itPath || '/'; loadLocalFsPreview(itPath); };
+                }
+                li.oncontextmenu = function(e) { e.preventDefault(); e.stopPropagation(); showLocalFsCtxMenu(e, itPath, !!isDir); };
+                ul.appendChild(li);
+            });
+            if (parentNode) {
+                var ph = parentNode.querySelector('span:last-child');
+                if (ph && !ph.classList.contains('remote-fs-tree-label')) ph.replaceWith(ul);
+                else parentNode.appendChild(ul);
+                ul.classList.add('loaded');
+            } else {
+                treeEl.innerHTML = '';
+                treeEl.appendChild(ul);
+            }
+        }
+        ).catch(function(err) {
+            if (parentNode) { var ph = parentNode.querySelector('span:last-child'); if (ph && !ph.classList.contains('remote-fs-tree-label')) ph.textContent = '?'; }
+            showToast(err.message || t('toast.loadFailed'), 'error');
+        });
+    }
+    function toggleLocalFsDir(li) {
+        var path = li.dataset.path;
+        var ul = li.querySelector('ul');
+        var arrow = li.querySelector('.remote-fs-tree-arrow');
+        if (ul && ul.classList.contains('loaded')) {
+            ul.style.display = ul.style.display === 'none' ? 'block' : 'none';
+            if (ul.style.display === 'none') localFsExpandedPaths.delete(path); else localFsExpandedPaths.add(path);
+            if (arrow) arrow.textContent = ul.style.display === 'none' ? '\u25b6' : '\u25bc';
+        } else {
+            localFsExpandedPaths.add(path);
+            loadLocalFsTree(path, li);
+            if (arrow) arrow.textContent = '\u25bc';
+        }
+    }
+    function getLocalScriptLanguage(p) {
+        var lower = (p || '').toLowerCase();
+        if (lower.endsWith('.py')) return 'python';
+        if (lower.endsWith('.js')) return 'javascript';
+        if (lower.endsWith('.sh') || lower.endsWith('.bash')) return 'bash';
+        if (lower.endsWith('.json')) return 'json';
+        return '';
+    }
+    function loadLocalFsPreview(filePath) {
+        if (!localFsPreviewInner) return;
+        if (!filePath) { localFsPreviewInner.innerHTML = '<span class="text-muted">' + esc(t('ai.fsPreviewPickFile')) + '</span>'; return; }
+        localFsPreviewInner.innerHTML = '<span class="text-muted">' + esc(t('common.loading')) + '</span>';
+        API.localFsRead(filePath).then(function(r) {
+            if (!r.success) {
+                var msg = (r.detail || r.message || '读取失败');
+                if (msg.indexOf('过大') !== -1 || msg.indexOf('非文本') !== -1) msg = '文本过大或非文本文件';
+                localFsPreviewInner.innerHTML = '<span class="text-warning">' + esc(msg) + '</span>';
+                return;
+            }
+            var content = r.content || '';
+            localFsPreviewInner.innerHTML = '';
+            var ta = document.createElement('textarea');
+            ta.className = 'remote-fs-edit';
+            ta.id = 'localFsEditArea';
+            ta.value = content;
+            ta.setAttribute('spellcheck', 'false');
+            localFsPreviewInner.appendChild(ta);
+            var lower = (filePath || '').toLowerCase();
+            var isMd = lower.endsWith('.md');
+            var lang = getLocalScriptLanguage(filePath);
+            if (isMd || lang) {
+                var wrap = document.createElement('div');
+                wrap.className = 'local-fs-preview-wrap';
+                wrap.style.cssText = 'display:flex;flex-direction:column;flex:1;min-height:0';
+                var tabRow = document.createElement('div');
+                tabRow.style.cssText = 'display:flex;gap:4px;margin-bottom:6px;flex-shrink:0';
+                var editBtn = document.createElement('button');
+                editBtn.type = 'button';
+                editBtn.className = 'btn btn-sm fs-tab active';
+                editBtn.textContent = '编辑';
+                var prevBtn = document.createElement('button');
+                prevBtn.type = 'button';
+                prevBtn.className = 'btn btn-sm fs-tab';
+                prevBtn.textContent = '预览';
+                var prevDiv = document.createElement('div');
+                prevDiv.id = 'localFsPreviewMode';
+                prevDiv.style.cssText = 'flex:1;min-height:0;overflow:auto;display:none;padding:8px;font-size:13px;line-height:1.5';
+                tabRow.appendChild(editBtn);
+                tabRow.appendChild(prevBtn);
+                wrap.appendChild(tabRow);
+                wrap.appendChild(ta);
+                wrap.appendChild(prevDiv);
+                localFsPreviewInner.innerHTML = '';
+                localFsPreviewInner.appendChild(wrap);
+                function showPreview() {
+                    ta.style.display = 'none';
+                    prevDiv.style.display = 'block';
+                    if (isMd) prevDiv.innerHTML = (typeof formatMarkdown !== 'undefined' ? formatMarkdown(ta.value) : esc(ta.value));
+                    else if (lang) {
+                        var code = document.createElement('code');
+                        code.className = 'language-' + lang;
+                        code.textContent = ta.value || '';
+                        var pre = document.createElement('pre');
+                        pre.appendChild(code);
+                        prevDiv.innerHTML = '';
+                        prevDiv.appendChild(pre);
+                        if (typeof Prism !== 'undefined' && Prism.highlightElement) Prism.highlightElement(code);
+                    } else prevDiv.textContent = ta.value;
+                }
+                function showEdit() {
+                    prevDiv.style.display = 'none';
+                    ta.style.display = 'block';
+                }
+                editBtn.onclick = function() { editBtn.classList.add('active'); prevBtn.classList.remove('active'); showEdit(); };
+                prevBtn.onclick = function() { prevBtn.classList.add('active'); editBtn.classList.remove('active'); showPreview(); };
+                showEdit();
+            }
+        }).catch(function(err) {
+            var msg = err.message || '读取失败';
+            if (msg.indexOf('过大') !== -1 || msg.indexOf('非文本') !== -1) msg = '文本过大或非文本文件';
+            localFsPreviewInner.innerHTML = '<span class="text-warning">' + esc(msg) + '</span>';
+        });
+    }
+    document.getElementById('localFsRefresh').onclick = function() {
+        doLocalFsRefresh();
+    };
+    document.getElementById('localFsUpload').onclick = function() {
+        localFsUploadTargetPath = localFsCurrentPath || '/';
+        document.getElementById('localFsFileInput').click();
+    };
+    document.getElementById('localFsFileInput').onchange = function() {
+        var file = this.files && this.files[0];
+        this.value = '';
+        if (!file) return;
+        var target = localFsUploadTargetPath != null ? localFsUploadTargetPath : (localFsCurrentPath || '/');
+        localFsUploadTargetPath = null;
+        API.localFsUpload(target, file).then(function() {
+            showToast(t('toast.uploaded'));
+            doLocalFsRefresh();
+        }).catch(function(err) { showToast(err.message || t('toast.uploadFailed'), 'error'); });
+    };
+    document.getElementById('localFsDownload').onclick = function() {
+        if (!localFsCurrentFile) { showToast(t('toast.selectDownloadFile'), 'error'); return; }
+        API.localFsDownload(localFsCurrentFile).catch(function(err) { showToast(err.message, 'error'); });
+    };
+    document.getElementById('localFsSave').onclick = function() {
+        if (!localFsCurrentFile) { showToast(t('toast.selectSaveFile'), 'error'); return; }
+        var ta = document.getElementById('localFsEditArea');
+        if (!ta) { showToast(t('toast.nothingToEdit'), 'error'); return; }
+        API.localFsWrite(localFsCurrentFile, ta.value).then(function() { showToast(t('toast.saved')); }).catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); });
+    };
+    function showLocalFsCtxMenu(e, path, isDir) {
+        var menu = document.getElementById('localFsCtxMenu');
+        if (!menu) return;
+        if (!menu._ctxMenuParent) menu._ctxMenuParent = menu.parentNode;
+        document.body.appendChild(menu);
+        menu.style.left = e.clientX + 'px';
+        menu.style.top = e.clientY + 'px';
+        menu.innerHTML = '';
+        var close = function() {
+            menu.classList.remove('open');
+            document.removeEventListener('click', close);
+            if (menu._ctxMenuParent && menu._ctxMenuParent.appendChild) menu._ctxMenuParent.appendChild(menu);
+        };
+        function addItem(text, fn) {
+            var b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'remote-fs-ctxitem';
+            b.textContent = text;
+            b.onclick = function() { close(); fn(); };
+            menu.appendChild(b);
+        }
+        var destDir = isDir ? path : (path.replace(/\/[^/]+$/, '') || path.replace(/\\[^\\]+$/, '') || '');
+        if (destDir && destDir.length >= 2 && destDir[1] === ':') destDir = destDir.replace(/\\/g, '/');
+        else destDir = (destDir || '').replace(/\\/g, '/');
+        var baseDir = !destDir || destDir === '/' ? '' : destDir;
+        addItem('新建目录', function() {
+            var name = prompt('目录名');
+            if (!name || !name.trim()) return;
+            var newPath = localFsPathJoin(baseDir || '/', name.trim());
+            API.localFsMkdir(newPath).then(function() {
+                showToast(t('toast.fileCreated'));
+                doLocalFsRefresh();
+            }).catch(function(err) { showToast(err.message, 'error'); });
+        });
+        addItem('新建文件', function() {
+            var name = prompt('文件名');
+            if (!name || !name.trim()) return;
+            var newPath = localFsPathJoin(baseDir || '/', name.trim());
+            API.localFsWrite(newPath, '').then(function() {
+                showToast(t('toast.fileCreated'));
+                doLocalFsRefresh();
+            }).catch(function(err) { showToast(err.message, 'error'); });
+        });
+        addItem('复制', function() { localFsClipboard = { path: path, cut: false }; showToast(t('toast.copiedToClipboard')); });
+        addItem('粘贴', function() {
+            if (!localFsClipboard) { showToast(t('toast.noPasteShort'), 'error'); return; }
+            var dest = isDir ? path : destDir;
+            var srcPath = localFsClipboard.path;
+            var baseName = srcPath.split(/[/\\]/).filter(Boolean).pop() || 'file';
+            var newPath = localFsPathJoin(dest === '/' ? '' : dest, baseName);
+            API.localFsRead(srcPath).then(function(r) {
+                if (!r.success || r.content == null) { showToast(t('toast.readSourceFailed'), 'error'); return; }
+                return API.localFsWrite(newPath, r.content);
+            }).then(function() {
+                if (localFsClipboard.cut) return API.localFsDelete(srcPath);
+            }).then(function() {
+                showToast(localFsClipboard.cut ? t('toast.moved') : t('toast.pasted'));
+                localFsClipboard = null;
+                doLocalFsRefresh();
+            }).catch(function(err) { showToast(err.message, 'error'); });
+        });
+        addItem('剪切', function() { localFsClipboard = { path: path, cut: true }; showToast(t('toast.cut')); });
+        if (isDir) addItem('上传到此处', function() { localFsUploadTargetPath = path; document.getElementById('localFsFileInput').click(); });
+        if (!isDir) addItem('下载', function() { API.localFsDownload(path).catch(function(err) { showToast(err.message, 'error'); }); });
+        addItem('删除', function() {
+            showConfirm(t('confirm.deletePathTitle'), t('confirm.deleteFileBody', { type: isDir ? t('confirm.dir') : t('confirm.file'), path: path })).then(function(ok) {
+                if (!ok) return;
+                API.localFsDelete(path).then(function() {
+                    showToast(t('toast.deleted'));
+                    if (localFsCurrentFile === path) localFsCurrentFile = null;
+                    doLocalFsRefresh();
+                }).catch(function(err) { showToast(err.message, 'error'); });
+            });
+        });
+        addItem('改名', function() {
+            var name = path.split(/[/\\]/).filter(Boolean).pop() || path;
+            var newName = prompt('新名称', name);
+            if (newName == null || newName.trim() === '') return;
+            var parent = path.replace(/\/[^/]+$/, '').replace(/\\[^\\]+$/, '') || '';
+            if (parent.length >= 2 && parent[1] === ':') parent = parent.replace(/\\/g, '/');
+            var newPath = localFsPathJoin(parent || '/', newName.trim());
+            if (newPath === path) return;
+            API.localFsRename(path, newPath).then(function() {
+                showToast(t('toast.renamed'));
+                doLocalFsRefresh();
+                if (localFsCurrentFile === path) { localFsCurrentFile = newPath; loadLocalFsPreview(newPath); }
+            }).catch(function(err) { showToast(err.message, 'error'); });
+        });
+        addItem('刷新', function() { doLocalFsRefresh(); });
+        menu.classList.add('open');
+        setTimeout(function() { document.addEventListener('click', close); }, 0);
+    }
+    doLocalFsRefresh();
+    var localConsoleEmptyState = document.getElementById('localConsoleEmptyState');
+    var localConsolePanelsEl = document.getElementById('localConsolePanels');
+    function addLocalConsole(slot, createdBy, reconnectAttempts) {
+        createdBy = createdBy || 'user';
+        reconnectAttempts = reconnectAttempts || 0;
+        var tabsRow = document.getElementById('localConsoleTabsRow');
+        var panels = document.getElementById('localConsolePanels');
+        if (!tabsRow || !panels) return;
+        var existingAlive = localConsoles.filter(function(c) { return c.slot === slot && localConsoleIsAlive(c); })[0];
+        if (existingAlive) {
+            if (existingAlive.tabBtn) existingAlive.tabBtn.click();
+            return existingAlive;
+        }
+        localConsoles.filter(function(c) { return c.slot === slot && !localConsoleIsAlive(c); }).forEach(function(c) {
+            if (c.writeRafId != null) { try { cancelAnimationFrame(c.writeRafId); } catch (e) {} c.writeRafId = null; }
+            if (c.fitDispose) { try { c.fitDispose(); } catch (e) {} c.fitDispose = null; c.refit = null; }
+            if (c.term) { try { c.term.dispose(); } catch (e) {} c.term = null; }
+            if (c.tabEl) { try { c.tabEl.remove(); } catch (e) {} }
+            if (c.panel) { try { c.panel.remove(); } catch (e) {} }
+        });
+        localConsoles = localConsoles.filter(function(c) { return !(c.slot === slot && !localConsoleIsAlive(c)); });
+        if (localConsoleEmptyState) localConsoleEmptyState.style.display = 'none';
+        if (panels) panels.style.display = 'flex';
+        var tabBtn = document.createElement('button');
+        tabBtn.type = 'button';
+        tabBtn.className = 'terminal-tab-btn' + (localConsoles.length === 0 ? ' active' : '');
+        tabBtn.textContent = '控制台 ' + slot + ' (' + (createdBy === 'ai' ? 'AI' : '用户') + ')';
+        var panel = document.createElement('div');
+        panel.className = 'terminal-tab-panel' + (localConsoles.length === 0 ? ' active' : '');
+        panel.style.cssText = 'display:' + (localConsoles.length === 0 ? 'flex' : 'none') + ';flex-direction:column;min-height:180px';
+        var placeholder = document.createElement('div');
+        placeholder.className = 'ai-terminal-placeholder';
+        placeholder.style.cssText = 'padding:12px;color:var(--text-muted);font-size:12px';
+        placeholder.textContent = '连接中…';
+        var mount = document.createElement('div');
+        mount.className = 'ai-terminal-mount';
+        mount.style.cssText = 'flex:1;min-height:180px;display:none';
+        var tabWrap = document.createElement('div');
+        tabWrap.className = 'ai-console-tab-wrap' + (localConsoles.length === 0 ? ' active' : '');
+        tabWrap.style.cssText = 'display:inline-flex;align-items:center;margin-right:4px;';
+        tabWrap.appendChild(tabBtn);
+        var closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'ai-console-tab-close';
+        closeBtn.innerHTML = '&times;';
+        closeBtn.title = '关闭此控制台';
+        closeBtn.style.marginLeft = '2px';
+        tabWrap.appendChild(closeBtn);
+        var rec = { slot: slot, createdBy: createdBy, ws: null, tabEl: tabWrap, tabBtn: tabBtn, panel: panel, term: null, fitDispose: null, refit: null, placeholderEl: placeholder, mountEl: mount, writeBuf: null, writeRafId: null, closed: false, intentionalClose: false, reconnectAttempts: reconnectAttempts, lastCloseReason: '', receivedChars: 0, lastHydratedBufferLen: 0, lastDataAt: 0, lastKeepaliveAt: 0, statusEl: null, statusTimer: null, hydrateTimer: null, ready: false, backend: '' };
+        var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        var wsUrl = protocol + '//' + location.host + '/api/local/ws?token=' + encodeURIComponent(API.token || '');
+        var ws = new WebSocket(wsUrl);
+        rec.ws = ws;
+        var connectTimer = setTimeout(function() {
+            if (rec.ws && rec.ws.readyState === WebSocket.CONNECTING) {
+                placeholder.textContent = 'WebSocket 仍在连接中，可能是后端事件循环繁忙或浏览器主线程被占用…';
+            }
+        }, 3000);
+        var readyTimer = setTimeout(function() {
+            if (!rec.term && rec.ws && rec.ws.readyState === WebSocket.OPEN) {
+                placeholder.textContent = 'WebSocket 已连接，等待后端终端 ready…';
+            }
+        }, 5000);
+        var readyFailTimer = setTimeout(function() {
+            if (!rec.ready && rec.ws && rec.ws.readyState === WebSocket.OPEN) {
+                rec.lastCloseReason = 'ready_timeout';
+                placeholder.textContent = '后端终端初始化超时，正在断开此连接…';
+                try { rec.ws.close(4000, 'ready_timeout'); } catch (e) {}
+            }
+        }, 15000);
+        ws.onopen = function() {
+            if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
+            rec.closed = false;
+            placeholder.textContent = 'WebSocket 已连接，正在初始化本机终端…';
+            ws.send(JSON.stringify({ type: 'init', slot: slot, created_by: createdBy }));
+        };
+        function hydrateLocalConsoleBuffer(reason, opts) {
+            opts = opts || {};
+            if (!rec.term || !API.getLocalBuffer) return;
+            // 只有手动按钮、或 WS 还完全没收到任何数据时，才允许 hydrate。
+            // 否则与 WS 异步交付混合会造成重复输出（无法可靠定位 WS 已读到的位置）。
+            if (!opts.manual && rec.receivedChars > 0) return;
+            API.getLocalBuffer(slot).then(function(r) {
+                if (!r || !r.success || !r.buffer || !rec.term) return;
+                if (!opts.manual && rec.receivedChars > 0) return;
+                var text = String(r.buffer || '');
+                if (text.length <= rec.lastHydratedBufferLen) return;
+                var delta = text.slice(rec.lastHydratedBufferLen);
+                rec.lastHydratedBufferLen = text.length;
+                rec.receivedChars += delta.length;
+                rec.lastDataAt = Date.now();
+                edgeopsWriteConsoleChunk(rec, delta);
+            }).catch(function() {});
+        }
+        // 自动兜底轮询：WS 在事件循环繁忙时可能根本送不出第一帧数据。仅当 receivedChars === 0
+        // 时才走 HTTP 兜底（避免与 WS 异步流叠加导致重复），最长 30s。
+        var hydratePollAttempts = 0;
+        rec.hydrateTimer = setInterval(function() {
+            if (rec.closed || !rec.term) {
+                if (rec.hydrateTimer) { clearInterval(rec.hydrateTimer); rec.hydrateTimer = null; }
+                return;
+            }
+            hydratePollAttempts += 1;
+            if (hydratePollAttempts > 15 || rec.receivedChars > 0) {
+                clearInterval(rec.hydrateTimer); rec.hydrateTimer = null; return;
+            }
+            if (rec.ready) hydrateLocalConsoleBuffer('auto_poll');
+        }, 2000);
+        ws.onmessage = function(ev) {
+            try {
+                var j = JSON.parse(ev.data);
+                if (j.type === 'ready') {
+                    if (readyTimer) { clearTimeout(readyTimer); readyTimer = null; }
+                    if (readyFailTimer) { clearTimeout(readyFailTimer); readyFailTimer = null; }
+                    var usePty = j.pty === true;
+                    rec.pty = usePty;
+                    rec.backend = j.backend || (usePty ? 'pty' : 'pipe');
+                    rec.ready = true;
+                    placeholder.style.display = 'none';
+                    mount.style.display = 'block';
+                    mount.innerHTML = '';
+                    if (typeof window.Terminal !== 'undefined') {
+                        var term = new window.Terminal({
+                            theme: { background: '#0b1020', foreground: '#e2e8f0' },
+                            fontSize: 12,
+                            cols: 80,
+                            rows: 14,
+                            cursorBlink: true,
+                            cursorStyle: 'block'
+                        });
+                        term.open(mount);
+                        term.onData(function(d) {
+                            var toSend = d;
+                            if (d === '\x7f') toSend = '\x08';
+                            var isCsi = (d.length > 1 && d.charAt(0) === '\x1b' && d.charAt(1) === '[');
+                            if (!usePty && !isCsi) term.write(toSend);
+                            if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input', data: toSend }));
+                        });
+                        var fitAddon = null;
+                        if (window.FitAddon) try { fitAddon = new window.FitAddon(); term.loadAddon(fitAddon); } catch (e) {}
+                        var fitResult = edgeopsTerminalFitAfterOpen(term, mount, fitAddon, function(cols, rows) {
+                            if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'resize', cols: cols, rows: rows }));
+                        });
+                        rec.term = term;
+                        rec.writeBuf = [];
+                        rec.writeRafId = null;
+                        rec.fitDispose = fitResult.dispose;
+                        rec.refit = fitResult.refit;
+                        function focusTerm() { try { term.focus(); } catch (e) {} }
+                        setTimeout(function() { try { term.focus(); } catch (e) {} }, 100);
+                        mount.addEventListener('click', function(ev) { focusTerm(); });
+                        if (term.element) term.element.addEventListener('click', function(ev) { focusTerm(); });
+                        setTimeout(function() { hydrateLocalConsoleBuffer('ready'); }, 800);
+                        setTimeout(function() { hydrateLocalConsoleBuffer('no_initial_output'); }, 3000);
+                    } else {
+                        mount.innerHTML = '<div style="padding:8px;color:var(--text-muted)">需要 xterm.js</div>';
+                    }
+                    return;
+                }
+                if (j.type === 'error') {
+                    if (readyTimer) { clearTimeout(readyTimer); readyTimer = null; }
+                    if (rec.term) rec.term.write('\r\n[错误] ' + (j.message || '') + '\r\n');
+                    else { placeholder.textContent = '[错误] ' + (j.message || ''); placeholder.style.display = 'block'; mount.style.display = 'none'; }
+                    return;
+                }
+                if (j.type === 'closed') {
+                    rec.lastCloseReason = j.reason || '';
+                    return;
+                }
+                if (j.type === 'keepalive') {
+                    rec.lastKeepaliveAt = Date.now();
+                    return;
+                }
+            } catch (e) {}
+            if (rec.term) {
+                rec.receivedChars += (ev.data || '').length;
+                rec.lastDataAt = Date.now();
+                edgeopsWriteConsoleChunk(rec, ev.data);
+            }
+        };
+        ws.onclose = function() {
+            if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
+            if (readyTimer) { clearTimeout(readyTimer); readyTimer = null; }
+            if (readyFailTimer) { clearTimeout(readyFailTimer); readyFailTimer = null; }
+            if (rec.hydrateTimer) { clearInterval(rec.hydrateTimer); rec.hydrateTimer = null; }
+            rec.closed = true;
+            rec.ws = null;
+            if (rec.writeRafId != null) { cancelAnimationFrame(rec.writeRafId); rec.writeRafId = null; }
+            if (rec.writeBuf && rec.writeBuf.length && rec.term) { try { rec.term.write(rec.writeBuf.join('')); } catch (e) {} }
+            rec.writeBuf = null;
+            if (rec.term) { try { rec.term.write('\r\n[连接已关闭]\r\n'); } catch (e) {} }
+            if (rec.fitDispose) { try { rec.fitDispose(); } catch (e) {} rec.fitDispose = null; rec.refit = null; }
+            if (rec.term) { try { rec.term.dispose(); } catch (e) {} rec.term = null; }
+            placeholder.textContent = '连接已关闭，可新建控制台重连';
+            placeholder.style.display = 'block';
+            mount.style.display = 'none';
+            if (rec.tabBtn) rec.tabBtn.textContent = '控制台 ' + slot + ' (' + (createdBy === 'ai' ? 'AI' : '用户') + ', 已断开)';
+            if (createdBy === 'ai' && !rec.intentionalClose && rec.reconnectAttempts < 3) {
+                var nextAttempt = rec.reconnectAttempts + 1;
+                placeholder.textContent = 'AI 控制台意外断开，正在重连第 ' + nextAttempt + ' 次' + (rec.lastCloseReason ? '（' + rec.lastCloseReason + '）' : '') + '…';
+                setTimeout(function() {
+                    if (localConsoles.indexOf(rec) !== -1 && !localConsoleIsAlive(rec)) {
+                        addLocalConsole(slot, 'ai', nextAttempt);
+                    }
+                }, Math.min(1000 * nextAttempt, 3000));
+            }
+        };
+        panel.appendChild(placeholder);
+        panel.appendChild(mount);
+        // 终端实时状态条：显示 ws 状态/接收字符数/最近一次数据/心跳间隔，并提供「重连」按钮。
+        var statusEl = document.createElement('div');
+        statusEl.className = 'ai-terminal-status';
+        statusEl.style.cssText = 'padding:4px 10px;font-size:11px;color:var(--text-muted);border-top:1px solid rgba(255,255,255,0.06);display:flex;gap:14px;align-items:center;flex-wrap:wrap;background:rgba(0,0,0,0.18)';
+        var statusText = document.createElement('span');
+        statusText.style.cssText = 'flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+        statusText.textContent = t('ui.local.status.initializing');
+        var hydrateBtn = document.createElement('button');
+        hydrateBtn.type = 'button';
+        hydrateBtn.className = 'btn btn-xs btn-ghost';
+        hydrateBtn.textContent = t('ui.local.status.pullBuffer');
+        hydrateBtn.title = t('ui.local.status.pullBufferTitle');
+        hydrateBtn.onclick = function(e) { e.preventDefault(); e.stopPropagation(); hydrateLocalConsoleBuffer('manual', { manual: true }); };
+        var reconnectBtn = document.createElement('button');
+        reconnectBtn.type = 'button';
+        reconnectBtn.className = 'btn btn-xs btn-ghost';
+        reconnectBtn.textContent = t('ui.local.status.reconnect');
+        reconnectBtn.title = t('ui.local.status.reconnectTitle');
+        reconnectBtn.onclick = function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            try { rec.intentionalClose = true; if (rec.ws) rec.ws.close(1000, 'manual_reconnect'); } catch (err) {}
+            setTimeout(function() {
+                rec.intentionalClose = false;
+                addLocalConsole(slot, createdBy, 0);
+            }, 200);
+        };
+        statusEl.appendChild(statusText);
+        statusEl.appendChild(hydrateBtn);
+        statusEl.appendChild(reconnectBtn);
+        panel.appendChild(statusEl);
+        rec.statusEl = statusEl;
+        rec.statusText = statusText;
+        function fmtAgo(ts) {
+            if (!ts) return t('ui.local.status.notAvailable');
+            var s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+            if (s < 60) return t('ui.local.status.secondsAgo', { s: s });
+            return t('ui.local.status.minutesAgo', { m: Math.round(s / 60) });
+        }
+        function wsStateLabel() {
+            var w = rec.ws;
+            if (!w) return t('ui.local.status.wsClosed');
+            switch (w.readyState) {
+                case 0: return t('ui.local.status.wsConnecting');
+                case 1: return rec.ready ? t('ui.local.status.wsReady') : t('ui.local.status.wsOpen');
+                case 2: return t('ui.local.status.wsClosing');
+                default: return t('ui.local.status.wsClosed');
+            }
+        }
+        rec.statusTimer = setInterval(function() {
+            if (!rec.statusText) return;
+            var parts = [
+                t('ui.local.status.wsPrefix') + wsStateLabel(),
+                t('ui.local.status.backendPrefix') + (rec.backend || '?'),
+                t('ui.local.status.receivedPrefix') + (rec.receivedChars || 0),
+                t('ui.local.status.lastDataPrefix') + fmtAgo(rec.lastDataAt),
+                t('ui.local.status.heartbeatPrefix') + fmtAgo(rec.lastKeepaliveAt),
+            ];
+            if (rec.lastCloseReason) parts.push(t('ui.local.status.lastClosePrefix') + rec.lastCloseReason);
+            rec.statusText.textContent = parts.join(' · ');
+        }, 1000);
+        tabsRow.insertBefore(tabWrap, tabsRow.lastElementChild);
+        panels.appendChild(panel);
+        localConsoles.push(rec);
+        function closeLocalConsoleByRec(r) {
+            r.intentionalClose = true;
+            if (r.ws) { try { r.ws.onclose = null; } catch (e) {} try { r.ws.close(1000, 'user_closed_local_console'); } catch (e) {} r.ws = null; }
+            if (r.statusTimer) { clearInterval(r.statusTimer); r.statusTimer = null; }
+            if (r.hydrateTimer) { clearInterval(r.hydrateTimer); r.hydrateTimer = null; }
+            if (r.writeRafId != null) { cancelAnimationFrame(r.writeRafId); r.writeRafId = null; }
+            if (r.writeBuf && r.writeBuf.length && r.term) { try { r.term.write(r.writeBuf.join('')); } catch (e) {} }
+            r.writeBuf = null;
+            if (r.term) { try { r.term.write('\r\n[连接已关闭]\r\n'); } catch (e) {} }
+            if (r.fitDispose) { try { r.fitDispose(); } catch (e) {} r.fitDispose = null; r.refit = null; }
+            if (r.term) { try { r.term.dispose(); } catch (e) {} r.term = null; }
+            else if (r.placeholderEl) { r.placeholderEl.textContent = '连接已关闭'; r.placeholderEl.style.display = 'block'; if (r.mountEl) r.mountEl.style.display = 'none'; }
+            r.tabEl.remove();
+            r.panel.remove();
+            localConsoles = localConsoles.filter(function(c) { return c.slot !== r.slot; });
+            if (localConsoles.length === 0) {
+                if (localConsoleEmptyState) localConsoleEmptyState.style.display = 'flex';
+                if (panels) panels.style.display = 'none';
+            } else if (localActiveSlot === r.slot) {
+                localActiveSlot = localConsoles[0].slot;
+                localConsoles.forEach(function(c) { c.panel.style.display = 'none'; c.tabEl.classList.remove('active'); if (c.tabBtn) c.tabBtn.classList.remove('active'); });
+                localConsoles[0].panel.style.display = 'flex';
+                localConsoles[0].tabEl.classList.add('active');
+                if (localConsoles[0].tabBtn) localConsoles[0].tabBtn.classList.add('active');
+                if (localConsoles[0].refit) localConsoles[0].refit();
+            }
+        }
+        tabBtn.onclick = function() {
+            localActiveSlot = slot;
+            localUserTookOverConsole = (createdBy === 'user');
+            localConsoles.forEach(function(c) { c.panel.style.display = 'none'; c.tabEl.classList.remove('active'); if (c.tabBtn) c.tabBtn.classList.remove('active'); });
+            panel.style.display = 'flex';
+            tabWrap.classList.add('active');
+            tabBtn.classList.add('active');
+            if (rec.refit) rec.refit();
+            if (rec.term) setTimeout(function() { try { rec.term.focus(); } catch (e) {} }, 80);
+        };
+        closeBtn.onclick = function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            closeLocalConsoleByRec(rec);
+        };
+        return rec;
+    }
+    var newConsoleBtn = document.createElement('button');
+    newConsoleBtn.type = 'button';
+    newConsoleBtn.className = 'btn btn-sm';
+    newConsoleBtn.textContent = t('ui.local.newConsole');
+    newConsoleBtn.onclick = function() {
+        var nextSlot = nextLocalConsoleSlot();
+        addLocalConsole(nextSlot, 'user');
+    };
+    document.getElementById('localConsoleTabsRow').appendChild(newConsoleBtn);
+    var localNoAutoSwitchEl = document.getElementById('localConsoleNoAutoSwitch');
+    if (localNoAutoSwitchEl) { localNoAutoSwitchEl.onchange = function() { localAutoSwitchConsole = !this.checked; if (localAutoSwitchConsole) localUserTookOverConsole = false; }; localNoAutoSwitchEl.checked = !localAutoSwitchConsole; }
+    (window._edgeopsRefitByPath = window._edgeopsRefitByPath || {})['/local'] = function() {
+        localConsoles.forEach(function(c) { if (c.refit) c.refit(); });
+    };
+}
+
+// ── 用户共享 Key 配额弹窗 ──
+function openUserTrialDialog(userId, username, onChanged) {
+    var bodyId = 'userTrialBody_' + userId;
+    var html = '<div id="' + bodyId + '">'
+        + '<div class="loading-overlay" style="position:relative;height:80px"><div class="spinner"></div></div>'
+        + '</div>';
+    showModal(t('modals.aiKeyQuota', { user: (username && String(username).trim() !== '' ? String(username) : t('common.userPound', { id: userId })) }), html, edgeopsModalFooterClose());
+    function render(status) {
+        var has_own = !!status.has_own_key;
+        var used = status.used || 0;
+        var limit = status.limit || 0;
+        var remaining = status.remaining || 0;
+        var exhausted = !!status.exhausted;
+        var sys_ok = !!status.system_key_available;
+        var pct = limit > 0 ? Math.min(100, Math.round(used * 100 / limit)) : 0;
+        var stateHtml;
+        if (has_own) {
+            stateHtml = '<span class="status-badge" style="background:#4ade80;color:#0c2a12">' + t('ui.trial.badgeOwn') + '</span>';
+        } else if (exhausted) {
+            stateHtml = '<span class="status-badge" style="background:#ff6b6b;color:#3a0a0a">' + t('ui.trial.badgeExhausted') + '</span>';
+        } else {
+            stateHtml = '<span class="status-badge" style="background:#6fa8ff;color:#061426">' + t('ui.trial.badgeShared') + '</span>';
+        }
+        var barColor = exhausted ? '#ff6b6b' : (pct >= 80 ? '#ff9a3c' : '#6fa8ff');
+        var uDisp = esc(username != null && String(username).trim() !== '' ? String(username) : ('#' + userId));
+        var body = ''
+            + '<div style="display:flex;flex-direction:column;gap:14px">'
+            + '  <div>' + t('ui.trial.userLine', { u: uDisp, id: userId }) + '&nbsp;&nbsp;' + stateHtml + '</div>'
+            + '  <div><strong>' + t('ui.trial.hasOwn') + '</strong>' + (has_own ? t('ui.trial.yesUnlimited') : t('ui.trial.noQuota')) + '</div>'
+            + '  <div>'
+            + '    <div style="margin-bottom:6px">' + t('ui.trial.quotaLine', { used: used, limit: limit, remaining: remaining }) + '</div>'
+            + '    <div style="height:10px;background:rgba(120,160,255,0.15);border-radius:6px;overflow:hidden">'
+            + '      <div style="height:100%;width:' + pct + '%;background:' + barColor + ';transition:width .3s ease"></div>'
+            + '    </div>'
+            + '  </div>'
+            + (sys_ok ? '' : '  <div style="padding:10px 12px;border-radius:8px;border:1px solid rgba(255,154,60,0.45);background:rgba(255,154,60,0.08);color:#ffd9a8">⚠️ ' + t('ui.trial.sysWarn') + '</div>')
+            + '  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:4px">'
+            + '    <button type="button" class="btn btn-primary" id="trialResetBtn_' + userId + '" title="' + esc(t('ui.trial.btnResetTitle')) + '">' + t('ui.trial.btnReset') + '</button>'
+            + '    <button type="button" class="btn" id="trialUnlockBtn_' + userId + '" ' + (sys_ok ? '' : 'disabled ') + 'title="' + esc(t('ui.trial.btnUnlockTitle')) + '">' + t('ui.trial.btnUnlock') + '</button>'
+            + '  </div>'
+            + '  <div style="font-size:.85rem;color:var(--text-muted);line-height:1.7">'
+            + '    <div><b>' + t('ui.trial.boldReset') + '</b>' + t('ui.trial.helpResetAfter') + ' <code>reset_user_system_ai_usage</code>。</div>'
+            + '    <div><b>' + t('ui.trial.boldUnlock') + '</b>' + t('ui.trial.helpUnlockAfter') + ' <code>apply_system_ai_config_to_user</code>。 ' + t('ui.trial.helpUnlockSuffix') + '</div>'
+            + '  </div>'
+            + '</div>';
+        document.getElementById(bodyId).innerHTML = body;
+        var resetBtn = document.getElementById('trialResetBtn_' + userId);
+        var unlockBtn = document.getElementById('trialUnlockBtn_' + userId);
+        if (resetBtn) resetBtn.onclick = function() {
+            var ulabel = username || ('#' + userId);
+            showConfirm(t('confirm.trialResetTitle'), t('confirm.trialResetBody', { user: ulabel, limit: limit })).then(function(ok) {
+                if (!ok) return;
+                resetBtn.disabled = true;
+                API.resetTrialUsage(userId).then(function(r) {
+                    showToast(r.message || t('toast.resetDone'));
+                    if (typeof onChanged === 'function') onChanged();
+                    load();
+                }).catch(function(err) {
+                    showToast(err.message || t('toast.resetOpFailed'), 'error');
+                    resetBtn.disabled = false;
+                });
+            });
+        };
+        if (unlockBtn) unlockBtn.onclick = function() {
+            if (unlockBtn.disabled) return;
+            var ulabel = username || ('#' + userId);
+            showConfirm(t('confirm.trialUnlockTitle'), t('confirm.trialUnlockBody', { user: ulabel })).then(function(ok) {
+                if (!ok) return;
+                unlockBtn.disabled = true;
+                API.unlockTrialMode(userId).then(function(r) {
+                    showToast(r.message || t('toast.configWritten'));
+                    if (typeof onChanged === 'function') onChanged();
+                    load();
+                }).catch(function(err) {
+                    showToast(err.message || t('toast.unrestrictFailed'), 'error');
+                    unlockBtn.disabled = false;
+                });
+            });
+        };
+    }
+    function load() {
+        var box = document.getElementById(bodyId);
+        if (box) box.innerHTML = '<div class="loading-overlay" style="position:relative;height:80px"><div class="spinner"></div></div>';
+        API.getTrialStatus(userId).then(function(r) { render(r); }).catch(function(err) {
+            if (box) box.innerHTML = '<div class="empty-state"><h3>' + t('ui.loadFailedH3') + '</h3><p>' + esc(err.message || '') + '</p></div>';
+        });
+    }
+    load();
+}
+
+// ── 用户管理 ──
+function renderUsers() {
+    renderLayout();
+    var el = getPageEl();
+    el.innerHTML = '<div class="topbar"><h2>' + esc(t('pages.users.title')) + '</h2><div class="topbar-actions"><button type="button" class="btn" id="usersPageRefreshBtn">' + esc(t('common.refresh')) + '</button></div></div><div class="page-content"><div id="usersTableWrap" class="table-container"></div><div id="usersPagination"></div></div>';
+    if (!isAdmin()) {
+        el.querySelector('.page-content').innerHTML = '<div class="empty-state"><h3>' + esc(t('pages.users.adminRequired')) + '</h3></div>';
+        return;
+    }
+    var tableWrap = document.getElementById('usersTableWrap');
+    var pagination = appendPaginationBar(document.getElementById('usersPagination'), 20);
+    function loadUsers() {
+        tableWrap.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+        API.listUsers({ page: pagination.getPage(), page_size: pagination.getPageSize() }).then(function(data) {
+            var users = data.users || [];
+            pagination.update({ total: data.total, page: data.page, page_size: data.page_size });
+            var tableHtml = '<table><thead><tr><th>' + esc(t('pages.users.thUsername')) + '</th><th>' + esc(t('pages.users.thDisplayName')) + '</th><th>' + esc(t('pages.users.thEmail')) + '</th><th>' + esc(t('pages.users.thRole')) + '</th><th>' + esc(t('pages.users.thStatus')) + '</th><th>' + esc(t('pages.users.thSkills')) + '</th><th>' + esc(t('pages.users.thLastLogin')) + '</th><th>' + esc(t('pages.users.thActions')) + '</th></tr></thead><tbody>';
+            var currentUserId = (API.user && API.user.id) ? API.user.id : 0;
+            var isAdminRole = function(r) { return r === 'admin' || r === 'manager' || r === '管理员'; };
+            var adminCount = users.filter(function(u) { return isAdminRole(u.role); }).length;
+            users.forEach(function(u) {
+                var st = (u.status || '').toLowerCase();
+                var isTargetAdmin = isAdminRole(u.role);
+                var canModify = u.id !== currentUserId && !isTargetAdmin;
+                var canDelete = u.id !== currentUserId && (!isTargetAdmin || adminCount > 1);
+                var actions = '<button type="button" class="btn btn-sm btn-edit-user" data-id="' + u.id + '" data-username="' + esc(u.username) + '" data-display="' + esc(u.display_name || '') + '" data-email="' + esc(u.email || '') + '" data-role="' + esc(u.role || '') + '" data-status="' + esc(u.status || '') + '">' + esc(t('pages.users.btnEdit')) + '</button> '
+                    + '<button type="button" class="btn btn-sm btn-unlock-user" data-id="' + u.id + '" data-username="' + esc(u.username) + '"' + (st === 'locked' ? '' : ' style="display:none"') + '>' + esc(t('pages.users.btnUnlock')) + '</button> '
+                    + (canModify && st === 'active' ? '<button type="button" class="btn btn-sm btn-suspend-user" data-id="' + u.id + '" data-username="' + esc(u.username) + '">' + esc(t('pages.users.btnSuspend')) + '</button> ' : '')
+                    + (canModify && st === 'suspended' ? '<button type="button" class="btn btn-sm btn-resume-user" data-id="' + u.id + '" data-username="' + esc(u.username) + '">' + esc(t('pages.users.btnResume')) + '</button> ' : '')
+                    + '<button type="button" class="btn btn-sm btn-reset-pwd-user" data-id="' + u.id + '" data-username="' + esc(u.username) + '">' + esc(t('pages.users.btnResetPwd')) + '</button>'
+                    + ' <button type="button" class="btn btn-sm btn-trial-user" data-id="' + u.id + '" data-username="' + esc(u.username) + '" title="' + esc(t('pages.users.aiQuotaTitle')) + '">' + esc(t('pages.users.btnAiQuota')) + '</button>'
+                    + (canDelete ? ' <button type="button" class="btn btn-sm btn-danger btn-delete-user" data-id="' + u.id + '" data-username="' + esc(u.username) + '">' + esc(t('pages.users.btnDelete')) + '</button>' : '');
+                var skillsBadge = u.skills_enabled
+                    ? ('<span class="text-success">' + esc(t('pages.users.skillsOn')) + '</span>')
+                    : ('<span class="text-muted">' + esc(t('pages.users.skillsOff')) + '</span>');
+                var skillsBtn = '<button type="button" class="btn btn-sm btn-toggle-skills" data-id="' + u.id + '" data-username="' + esc(u.username) + '" data-skills="' + (u.skills_enabled ? '1' : '0') + '">' + esc(t('pages.users.btnToggleSkills')) + '</button>';
+                tableHtml += '<tr><td>' + esc(u.username) + '</td><td>' + esc(u.display_name) + '</td><td>' + esc(u.email || '') + '</td><td>' + statusBadge(u.role) + '</td><td>' + statusBadge(u.status) + '</td><td>' + skillsBadge + ' ' + skillsBtn + '</td><td>' + formatTime(u.last_login) + '</td><td>' + actions + '</td></tr>';
+            });
+            tableHtml += '</tbody></table>';
+            tableWrap.innerHTML = tableHtml;
+            tableWrap.querySelectorAll('.btn-toggle-skills').forEach(function(btn) {
+                btn.onclick = function() {
+                    var id = parseInt(btn.getAttribute('data-id'), 10);
+                    var username = btn.getAttribute('data-username') || '';
+                    var cur = btn.getAttribute('data-skills') === '1';
+                    var next = !cur;
+                    API.updateUser(id, { skills_enabled: next }).then(function() {
+                        showToast(username + ': Skills ' + (next ? t('pages.users.skillsOn') : t('pages.users.skillsOff')));
+                        if (id === currentUserId && typeof API.refreshUserProfile === 'function') {
+                            API.refreshUserProfile().then(function() { loadUsers(); });
+                        } else {
+                            loadUsers();
+                        }
+                    }).catch(function(err) { showToast(err.message, 'error'); });
+                };
+            });
+            tableWrap.querySelectorAll('.btn-edit-user').forEach(function(btn) {
+                btn.onclick = function() {
+                    var id = parseInt(btn.getAttribute('data-id'), 10);
+                    var username = btn.getAttribute('data-username') || '';
+                    var display = btn.getAttribute('data-display') || '';
+                    var email = btn.getAttribute('data-email') || '';
+                    var role = btn.getAttribute('data-role') || 'user';
+                    var status = btn.getAttribute('data-status') || 'active';
+                    var newDisplay = prompt(t('pages.users.promptDisplayName'), display);
+                    if (newDisplay == null) return;
+                    var newEmail = prompt(t('pages.users.promptEmail'), email);
+                    if (newEmail == null) return;
+                    var payload = { display_name: newDisplay, email: newEmail };
+                    API.updateUser(id, payload).then(function() { showToast(t('toast.saved')); loadUsers(); }).catch(function(err) { showToast(err.message, 'error'); });
+                };
+            });
+            tableWrap.querySelectorAll('.btn-unlock-user').forEach(function(btn) {
+                btn.onclick = function() {
+                    var id = parseInt(btn.getAttribute('data-id'), 10);
+                    API.unlockUser(id).then(function() { showToast(t('toast.unlocked')); loadUsers(); }).catch(function(err) { showToast(err.message, 'error'); });
+                };
+            });
+            tableWrap.querySelectorAll('.btn-reset-pwd-user').forEach(function(btn) {
+                btn.onclick = function() {
+                    var id = parseInt(btn.getAttribute('data-id'), 10);
+                    var username = btn.getAttribute('data-username') || '';
+                    var pwd = prompt(t('pages.users.promptNewPassword', { name: username }));
+                    if (pwd == null) return;
+                    if ((pwd || '').length < 6) { showToast(t('toast.passMin6'), 'error'); return; }
+                    API.resetPassword(id, pwd).then(function() { showToast(t('toast.pwdResetOk')); loadUsers(); }).catch(function(err) { showToast(err.message, 'error'); });
+                };
+            });
+            tableWrap.querySelectorAll('.btn-suspend-user').forEach(function(btn) {
+                btn.onclick = function() {
+                    var id = parseInt(btn.getAttribute('data-id'), 10);
+                    var username = btn.getAttribute('data-username') || '';
+                    if (!confirm(t('confirm.suspendUser', { name: username }))) return;
+                    API.updateUser(id, { status: 'suspended' }).then(function() { showToast(t('toast.userPaused')); loadUsers(); }).catch(function(err) { showToast(err.message, 'error'); });
+                };
+            });
+            tableWrap.querySelectorAll('.btn-resume-user').forEach(function(btn) {
+                btn.onclick = function() {
+                    var id = parseInt(btn.getAttribute('data-id'), 10);
+                    var username = btn.getAttribute('data-username') || '';
+                    API.updateUser(id, { status: 'active' }).then(function() { showToast(t('toast.userResumed')); loadUsers(); }).catch(function(err) { showToast(err.message, 'error'); });
+                };
+            });
+            tableWrap.querySelectorAll('.btn-trial-user').forEach(function(btn) {
+                btn.onclick = function() {
+                    var id = parseInt(btn.getAttribute('data-id'), 10);
+                    var username = btn.getAttribute('data-username') || '';
+                    openUserTrialDialog(id, username, loadUsers);
+                };
+            });
+            tableWrap.querySelectorAll('.btn-delete-user').forEach(function(btn) {
+                btn.onclick = function() {
+                    var id = parseInt(btn.getAttribute('data-id'), 10);
+                    var username = btn.getAttribute('data-username') || '';
+                    if (!confirm(t('confirm.deleteUser', { name: username }))) return;
+                    API.deleteUser(id).then(function() { showToast(t('toast.deleted')); loadUsers(); }).catch(function(err) { showToast(err.message, 'error'); });
+                };
+            });
+        }).catch(function(err) {
+            tableWrap.innerHTML = '<div class="empty-state"><h3>' + esc(t('pages.users.loadFailedTitle')) + '</h3><p>' + esc(err.message) + '</p></div>';
+        });
+    }
+    pagination.onPrev(loadUsers);
+    pagination.onNext(loadUsers);
+    pagination.onPageSizeChange(loadUsers);
+    var usersPageRefreshBtn = document.getElementById('usersPageRefreshBtn');
+    if (usersPageRefreshBtn) {
+        usersPageRefreshBtn.onclick = function() {
+            if (!isAdmin()) return;
+            loadUsers();
+            showToast(t('toast.refreshed'));
+        };
+    }
+    loadUsers();
+}
+
+// ── 操作日志 ──
+function renderLogs() {
+    renderLayout();
+    var el = getPageEl();
+    el.innerHTML = '<div class="topbar"><h2>' + esc(t('pages.logs.title')) + '</h2><div class="topbar-actions">'
+        + '<button type="button" class="btn btn-sm" id="logsRefreshBtn">' + esc(t('common.refresh')) + '</button>'
+        + '<button type="button" class="btn btn-sm" id="logsExportBtn">' + esc(t('pages.logs.export')) + '</button>'
+        + '<button type="button" class="btn btn-sm btn-danger" id="logsClearBtn">' + esc(t('pages.logs.clear')) + '</button></div></div>'
+        + '<div class="page-content"><div id="logsTableWrap" class="table-container"></div><div id="logsPagination"></div></div>';
+    var tableWrap = document.getElementById('logsTableWrap');
+    var pagination = appendPaginationBar(document.getElementById('logsPagination'), 20);
+    function loadLogs() {
+        tableWrap.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+        API.listLogs({ page: pagination.getPage(), page_size: pagination.getPageSize() }).then(function(data) {
+            var logs = data.logs || [];
+            pagination.update({ total: data.total, page: data.page, page_size: data.page_size });
+            var logsTableHtml = '<table class="data-table list-table"><thead><tr><th>' + esc(t('pages.logs.thTime')) + '</th><th>' + esc(t('pages.logs.thUser')) + '</th><th>' + esc(t('pages.logs.thOp')) + '</th><th>' + esc(t('pages.logs.thParams')) + '</th></tr></thead><tbody>';
+            logs.forEach(function(l) {
+                logsTableHtml += '<tr><td>' + formatTime(l.created_at) + '</td><td>' + esc(l.username) + '</td><td>' + esc(l.operation) + '</td><td>' + esc((l.params || '') + ' ' + (l.result || '')) + '</td></tr>';
+            });
+            logsTableHtml += '</tbody></table>';
+            tableWrap.innerHTML = logsTableHtml;
+        }).catch(function(err) {
+            tableWrap.innerHTML = '<div class="empty-state"><h3>' + esc(t('ui.loadFailedH3')) + '</h3><p>' + esc(err.message) + '</p></div>';
+        });
+    }
+    document.getElementById('logsExportBtn').onclick = function() {
+        API.getLogsExport(5000).then(function(data) {
+            var logs = data.logs || [];
+            downloadCSV(t('pages.logs.exportName') + '_' + new Date().toISOString().slice(0, 10) + '.csv', logs, [
+                { key: 'created_at', title: t('pages.logs.csvTime') },
+                { key: 'username', title: t('pages.logs.csvUser') },
+                { key: 'operation', title: t('pages.logs.csvOp') },
+                { key: 'params', title: t('pages.logs.csvParams') },
+                { key: 'result', title: t('pages.logs.csvResult') },
+            ]);
+            showToast(t('toast.exportedNItems', { n: logs.length }));
+        }).catch(function(err) { showToast(err.message, 'error'); });
+    };
+    document.getElementById('logsClearBtn').onclick = function() {
+        showConfirm(t('confirm.clearTableTitle'), t('confirm.clearOpLogsBody')).then(function(ok) {
+            if (!ok) return;
+            API.clearLogs().then(function() { showToast(t('toast.cleared')); loadLogs(); }).catch(function(err) { showToast(err.message, 'error'); });
+        });
+    };
+    var logsRefreshBtn = document.getElementById('logsRefreshBtn');
+    if (logsRefreshBtn) logsRefreshBtn.onclick = function() { loadLogs(); showToast(t('toast.refreshed')); };
+    pagination.onPrev(loadLogs);
+    pagination.onNext(loadLogs);
+    pagination.onPageSizeChange(loadLogs);
+    loadLogs();
+}
+
+// ── 触发任务 ──
+function renderTriggeredTasksPage() {
+    renderLayout();
+    var el = getPageEl();
+    el.innerHTML = '<div class="topbar"><h2>' + t('pages.triggered.title') + '</h2><div class="topbar-actions"><button class="btn" id="triggeredTaskAllRunsBtn">' + t('pages.triggered.allRuns') + '</button> <button class="btn btn-primary" id="triggeredTaskAddBtn">' + t('pages.triggered.newTask') + '</button></div></div>'
+        + '<div class="page-content">' + edgeopsPageIntroHtml(t('pages.triggered.intro'))
+        + '<div id="triggeredTaskList" class="table-container"></div></div>';
+    var listEl = document.getElementById('triggeredTaskList');
+    function load() {
+        listEl.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+        API.listTriggeredTasks().then(function(r) {
+            var tasks = r.tasks || [];
+            if (!tasks.length) {
+                listEl.innerHTML = '<div class="empty-state"><p>' + esc(t('pages.triggered.emptyList')) + '</p></div>';
+                return;
+            }
+            listEl.innerHTML = '<table class="data-table list-table"><thead><tr>'
+                + '<th>' + esc(t('pages.triggered.thId')) + '</th>'
+                + '<th>' + esc(t('pages.triggered.thName')) + '</th>'
+                + '<th>' + esc(t('pages.triggered.thContentSummary')) + '</th>'
+                + '<th>' + esc(t('pages.triggered.thIntro')) + '</th>'
+                + '<th>' + esc(t('pages.triggered.thTriggerConditions')) + '</th>'
+                + '<th>' + esc(t('pages.triggered.thCreatedAt')) + '</th>'
+                + '<th>' + esc(t('pages.triggered.thLastRun')) + '</th>'
+                + '<th>' + esc(t('pages.triggered.thStatus')) + '</th>'
+                + '<th>' + esc(t('pages.triggered.thRunning')) + '</th>'
+                + '<th>' + esc(t('pages.triggered.thActions')) + '</th>'
+                + '</tr></thead><tbody>'
+                + tasks.map(function(task) {
+                    return '<tr><td>' + task.id + '</td><td>' + esc(task.name) + '</td><td title="' + esc((task.content || '').substring(0, 200)) + '">' + esc((task.content || '').substring(0, 80)) + ((task.content || '').length > 80 ? '…' : '') + '</td><td title="' + esc((task.intro || '').substring(0, 200)) + '">' + esc((task.intro || '').substring(0, 60)) + ((task.intro || '').length > 60 ? '…' : '') + '</td><td title="' + esc((task.trigger_conditions || '').substring(0, 150)) + '">' + esc((task.trigger_conditions || '-').substring(0, 50)) + ((task.trigger_conditions || '').length > 50 ? '…' : '') + '</td><td>' + formatTime(task.created_at) + '</td><td>' + formatTime(task.last_run_at) + '</td><td>' + esc(task.last_run_status || '-') + '</td><td>' + (task.is_running ? esc(t('pages.triggered.yes')) : esc(t('pages.triggered.no'))) + '</td>'
+                        + '<td><button class="btn btn-sm" onclick="window._triggeredTaskEdit(' + task.id + ')">' + esc(t('pages.triggered.btnEdit')) + '</button> <button class="btn btn-sm" onclick="window._triggeredTaskExpose(' + task.id + ')">' + esc(t('pages.triggered.btnExpose')) + '</button> <button class="btn btn-sm" onclick="window._triggeredTaskViewRuns(' + task.id + ')">' + esc(t('pages.triggered.btnHistory')) + '</button></td></tr>';
+                }).join('') + '</tbody></table>';
+        }).catch(function(err) {
+            listEl.innerHTML = '<div class="empty-state"><h3>' + esc(t('ui.loadFailedH3')) + '</h3><p>' + esc(err.message) + '</p></div>';
+        });
+    }
+    document.getElementById('triggeredTaskAllRunsBtn').onclick = function() {
+        var filterHtml = '<div class="form-inline" style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:12px;align-items:center">'
+            + '<label>' + esc(t('pages.triggered.filterTaskId')) + '</label><input class="form-control" id="triggeredAllRunsTaskId" placeholder="' + esc(t('pages.triggered.phOptional')) + '" style="width:80px">'
+            + '<label>' + esc(t('pages.triggered.filterTaskName')) + '</label><input class="form-control" id="triggeredAllRunsTaskName" placeholder="' + esc(t('pages.triggered.phFuzzy')) + '" style="width:120px">'
+            + '<label>' + esc(t('pages.triggered.filterStatus')) + '</label><select class="form-control" id="triggeredAllRunsStatus" style="width:100px"><option value="">' + esc(t('pages.triggered.filterAll')) + '</option><option value="pending">pending</option><option value="running">running</option><option value="completed">completed</option><option value="failed">failed</option></select>'
+            + '<label>' + esc(t('pages.triggered.filterFrom')) + '</label><input class="form-control" id="triggeredAllRunsFrom" type="datetime-local" style="width:180px">'
+            + '<label>' + esc(t('pages.triggered.filterTo')) + '</label><input class="form-control" id="triggeredAllRunsTo" type="datetime-local" style="width:180px">'
+            + '<button type="button" class="btn btn-primary" id="triggeredAllRunsQuery">' + esc(t('pages.triggered.filterQuery')) + '</button>'
+            + '</div><div id="triggeredAllRunsTableWrap"><div class="loading-overlay"><div class="spinner"></div></div></div>';
+        showModal(t('modals.triggeredAllHistory'), filterHtml, edgeopsModalFooterClose());
+        function doQuery() {
+            var taskId = (document.getElementById('triggeredAllRunsTaskId') && document.getElementById('triggeredAllRunsTaskId').value || '').trim();
+            var taskName = (document.getElementById('triggeredAllRunsTaskName') && document.getElementById('triggeredAllRunsTaskName').value || '').trim();
+            var status = (document.getElementById('triggeredAllRunsStatus') && document.getElementById('triggeredAllRunsStatus').value || '').trim();
+            var fromTime = (document.getElementById('triggeredAllRunsFrom') && document.getElementById('triggeredAllRunsFrom').value || '').trim();
+            var toTime = (document.getElementById('triggeredAllRunsTo') && document.getElementById('triggeredAllRunsTo').value || '').trim();
+            var params = { limit: 200 };
+            if (taskId) params.task_id = parseInt(taskId, 10);
+            if (taskName) params.task_name = taskName;
+            if (status) params.status = status;
+            if (fromTime) params.from_time = fromTime.replace('T', ' ');
+            if (toTime) params.to_time = toTime.replace('T', ' ');
+            document.getElementById('triggeredAllRunsTableWrap').innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+            API.listTriggeredTaskAllRuns(params).then(function(r) {
+                var runs = r.runs || [];
+                var html = runs.length ? '<table class="data-table task-run-history-table"><thead><tr>'
+                    + '<th>' + esc(t('pages.triggered.filterTaskId')) + '</th>'
+                    + '<th>' + esc(t('pages.triggered.thName')) + '</th>'
+                    + '<th>' + esc(t('pages.triggered.thRunTime')) + '</th>'
+                    + '<th>' + esc(t('pages.triggered.thTriggerSource')) + '</th>'
+                    + '<th>' + esc(t('pages.triggered.thCallerTask')) + '</th>'
+                    + '<th>' + esc(t('pages.triggered.thStatus')) + '</th>'
+                    + '<th>' + esc(t('pages.triggered.thLogSummary')) + '</th>'
+                    + '<th>' + esc(t('pages.triggered.thActions')) + '</th>'
+                    + '</tr></thead><tbody>'
+                    + runs.map(function(x) {
+                        var sumRaw = (x.log_summary != null && String(x.log_summary) !== '') ? x.log_summary : (x.instruction || '');
+                        var sumCell = sumRaw ? edgeopsMdPreview(sumRaw) : '<span class="text-muted">—</span>';
+                        return '<tr><td>' + x.task_id + '</td><td>' + esc(x.task_name || '') + '</td><td>' + formatTime(x.triggered_at) + '</td><td>' + esc(x.triggered_by_type + ' ' + (x.triggered_by_id || '')) + '</td><td>' + esc(x.caller_task_name || '-') + '</td><td>' + esc(x.status) + '</td>'
+                            + '<td class="task-run-log-summary edgeops-chat-md" style="max-height:220px;overflow:auto;font-size:12px;vertical-align:top">' + sumCell + '</td>'
+                            + '<td><button type="button" class="btn btn-sm" onclick="window._showTriggeredTaskRunMessages(' + x.task_id + ',' + x.id + ')">' + esc(t('pages.triggered.btnViewSession')) + '</button></td></tr>';
+                    }).join('') + '</tbody></table>'
+                    : '<p class="text-muted">' + esc(t('ui.emptyStates.table')) + '</p>';
+                document.getElementById('triggeredAllRunsTableWrap').innerHTML = '<div class="table-container">' + html + '</div>';
+                try {
+                    var wrapEl = document.getElementById('triggeredAllRunsTableWrap');
+                    if (wrapEl && typeof edgeopsHydrateChatDiagrams === 'function') edgeopsHydrateChatDiagrams(wrapEl);
+                } catch (_eh) {}
+            }).catch(function(err) {
+                document.getElementById('triggeredAllRunsTableWrap').innerHTML = '<p class="text-danger">' + esc(err.message) + '</p>';
+            });
+        }
+        document.getElementById('triggeredAllRunsQuery').onclick = doQuery;
+        doQuery();
+    };
+    document.getElementById('triggeredTaskAddBtn').onclick = function() {
+        var content = '<div class="form-group"><label>' + esc(t('pages.triggered.formName')) + '</label><input class="form-control" id="triggeredTaskName" placeholder="' + esc(t('pages.triggered.phRequired')) + '"></div>'
+            + '<div class="form-group"><label>' + esc(t('pages.triggered.formContent')) + '</label><textarea class="form-control" id="triggeredTaskContent" rows="4" placeholder="' + esc(t('pages.triggered.phRequired')) + '"></textarea></div>'
+            + '<div class="form-group"><label>' + esc(t('pages.triggered.formIntro')) + '</label><textarea class="form-control" id="triggeredTaskIntro" rows="2" placeholder="' + esc(t('pages.triggered.phOptional')) + '"></textarea></div>'
+            + '<div class="form-group"><label>' + esc(t('pages.triggered.formConditions')) + '</label><input class="form-control" id="triggeredTaskConditions" placeholder="' + esc(t('pages.triggered.phOptional')) + '"></div>';
+        showModal(t('modals.newTriggered'), content, '<button class="btn" onclick="closeModal()">' + t('common.cancel') + '</button><button class="btn btn-primary" onclick="window._triggeredTaskSubmitCreate()">' + t('common.create') + '</button>');
+    };
+    window._triggeredTaskLoad = load;
+    window._triggeredTaskSubmitCreate = function() {
+        var name = (document.getElementById('triggeredTaskName') && document.getElementById('triggeredTaskName').value || '').trim();
+        var content = (document.getElementById('triggeredTaskContent') && document.getElementById('triggeredTaskContent').value || '').trim();
+        if (!name) { showToast(t('toast.taskNameRequired'), 'error'); return; }
+        if (!content) { showToast(t('toast.taskContentRequired'), 'error'); return; }
+        API.createTriggeredTask({ name: name, content: content, intro: (document.getElementById('triggeredTaskIntro') && document.getElementById('triggeredTaskIntro').value || '').trim(), trigger_conditions: (document.getElementById('triggeredTaskConditions') && document.getElementById('triggeredTaskConditions').value || '').trim() }).then(function() { closeModal(); showToast(t('toast.fileCreated')); if (window._triggeredTaskLoad) window._triggeredTaskLoad(); }).catch(function(err) { showToast(err.message, 'error'); });
+    };
+    window._triggeredTaskSubmitEdit = function(id) {
+        var name = (document.getElementById('triggeredTaskName') && document.getElementById('triggeredTaskName').value || '').trim();
+        var content = (document.getElementById('triggeredTaskContent') && document.getElementById('triggeredTaskContent').value || '').trim();
+        if (!name) { showToast(t('toast.taskNameRequired'), 'error'); return; }
+        if (!content) { showToast(t('toast.taskContentRequired'), 'error'); return; }
+        API.updateTriggeredTask(id, { name: name, content: content, intro: (document.getElementById('triggeredTaskIntro') && document.getElementById('triggeredTaskIntro').value || '').trim(), trigger_conditions: (document.getElementById('triggeredTaskConditions') && document.getElementById('triggeredTaskConditions').value || '').trim() }).then(function() { closeModal(); showToast(t('toast.saved')); if (window._triggeredTaskLoad) window._triggeredTaskLoad(); }).catch(function(err) { showToast(err.message, 'error'); });
+    };
+    window._triggeredTaskEdit = function(id) {
+        API.getTriggeredTask(id).then(function(r) {
+            var task = r.task || {};
+            var content = '<div class="form-group"><label>' + esc(t('pages.triggered.formName')) + '</label><input class="form-control" id="triggeredTaskName" value="' + esc(task.name || '') + '"></div>'
+                + '<div class="form-group"><label>' + esc(t('pages.triggered.formContent')) + '</label><textarea class="form-control" id="triggeredTaskContent" rows="4">' + esc(task.content || '') + '</textarea></div>'
+                + '<div class="form-group"><label>' + esc(t('pages.triggered.formIntro')) + '</label><textarea class="form-control" id="triggeredTaskIntro" rows="2">' + esc(task.intro || '') + '</textarea></div>'
+                + '<div class="form-group"><label>' + esc(t('pages.triggered.formConditions')) + '</label><input class="form-control" id="triggeredTaskConditions" value="' + esc(task.trigger_conditions || '') + '" placeholder="' + esc(t('pages.triggered.phOptional')) + '"></div>';
+            showModal(t('modals.editTriggered'), content, edgeopsModalFooterCancelSave('window._triggeredTaskSubmitEdit(' + id + ')'));
+        }).catch(function(err) { showToast(err.message, 'error'); });
+    };
+    window._triggeredTaskExpose = function(id) {
+        API.listTriggeredTaskExposed().then(function(r) {
+            var task = (r.tasks || []).find(function(x) { return x.id === id; });
+            if (!task) { showToast(t('toast.taskNotFound'), 'error'); return; }
+            window._triggeredExposeCodes = (task.expose || []).map(function(e) { return e.code; });
+            var listHtml = (task.expose || []).length ? '<table class="data-table" style="margin-bottom:12px"><thead><tr>'
+                + '<th>' + esc(t('pages.triggered.exposeThCode')) + '</th>'
+                + '<th>' + esc(t('pages.triggered.exposeThDesc')) + '</th>'
+                + '<th>' + esc(t('pages.triggered.thActions')) + '</th>'
+                + '</tr></thead><tbody>'
+                + task.expose.map(function(e, i) { return '<tr><td>' + esc(e.code) + '</td><td>' + esc(e.description || '') + '</td><td><button type="button" class="btn btn-sm btn-danger" onclick="window._triggeredTaskRemoveExpose(' + id + ', window._triggeredExposeCodes[' + i + '])">' + esc(t('pages.triggered.exposeDelete')) + '</button></td></tr>'; }).join('') + '</tbody></table>' : '<p class="text-muted">' + esc(t('pages.triggered.exposeEmpty')) + '</p>';
+            var content = '<p class="form-hint" style="margin-bottom:8px">' + esc(t('pages.triggered.exposeHint')) + '</p><div id="triggeredExposeListWrap">' + listHtml + '</div>'
+                + '<div class="form-group" style="margin-top:12px"><label>' + esc(t('pages.triggered.exposeAddLabel')) + '</label><div style="display:flex;gap:8px;align-items:center"><input class="form-control" id="triggeredExposeCode" placeholder="' + esc(t('pages.triggered.exposePhCode')) + '" style="width:160px"><input class="form-control" id="triggeredExposeDesc" placeholder="' + esc(t('pages.triggered.exposePhDesc')) + '" style="flex:1"><button type="button" class="btn btn-primary" onclick="window._triggeredTaskAddExpose(' + id + ')">' + esc(t('pages.triggered.exposeAddBtn')) + '</button></div></div>';
+            showModal(t('modals.exposedApi', { name: esc((task.name != null && String(task.name) !== '' ? String(task.name) : '') || '-') }), content, edgeopsModalFooterClose());
+        }).catch(function(err) { showToast(err.message, 'error'); });
+    };
+    window._triggeredTaskAddExpose = function(id) {
+        var code = (document.getElementById('triggeredExposeCode') && document.getElementById('triggeredExposeCode').value || '').trim();
+        var desc = (document.getElementById('triggeredExposeDesc') && document.getElementById('triggeredExposeDesc').value || '').trim();
+        if (!code) { showToast(t('toast.apiCodeRequired'), 'error'); return; }
+        API.addTriggeredTaskExpose(id, { expose_code: code, description: desc }).then(function() {
+            document.getElementById('triggeredExposeCode').value = ''; document.getElementById('triggeredExposeDesc').value = '';
+            window._triggeredTaskExpose(id);
+        }).catch(function(err) { showToast(err.message, 'error'); });
+    };
+    window._triggeredTaskRemoveExpose = function(id, code) {
+        API.removeTriggeredTaskExpose(id, code).then(function() { window._triggeredTaskExpose(id); }).catch(function(err) { showToast(err.message, 'error'); });
+    };
+    window._showTriggeredTaskRunMessages = function(taskId, runId) {
+        API.getTriggeredTaskRunMessages(taskId, runId).then(function(r) {
+            var messages = r.messages || [];
+            var body = messages.length ? messages.map(function(m) {
+                var roleLabel = (m.role === 'user' ? t('pages.triggered.roleUser') : m.role === 'assistant' ? t('pages.triggered.roleAi') : m.role);
+                return '<div class="run-msg run-msg-' + esc(m.role) + '" style="margin-bottom:12px;border-bottom:1px solid var(--border-color, #333);padding-bottom:8px"><strong>' + esc(roleLabel) + '</strong><div class="run-msg-md edgeops-chat-md" style="margin:6px 0 0;padding:12px;background:var(--bg-secondary,#222);border-radius:4px;font-size:13px;max-height:65vh;overflow:auto">' + edgeopsMdPreview(m.content || '') + '</div></div>';
+            }).join('') : '<p class="text-muted">' + esc(t('ui.emptyStates.runSessionMessages')) + '</p>';
+            showModal(t('modals.runSession', { id: runId }), '<div class="run-messages" style="max-height:70vh;overflow:auto">' + body + '</div>', edgeopsModalFooterClose());
+            try { if (typeof edgeopsHydrateChatDiagrams === 'function') edgeopsHydrateChatDiagrams(document.querySelector('.modal .run-messages')); } catch (_e) {}
+        }).catch(function(err) { showToast(err.message || t('toast.loadFailed'), 'error'); });
+    };
+    window._triggeredTaskViewRuns = function(taskId) {
+        var body = '<div id="triggeredRunHistWrap" style="min-width:min(920px,92vw)">'
+            + '<div class="triggered-run-hist-toolbar" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;align-items:center">'
+            + '<button type="button" class="btn btn-sm" id="triggeredRunHistExport">' + esc(t('pages.triggered.exportRunHistory')) + '</button>'
+            + '<button type="button" class="btn btn-sm btn-danger" id="triggeredRunHistClear">' + esc(t('pages.triggered.clearRunHistory')) + '</button>'
+            + '</div>'
+            + '<div class="table-container" id="triggeredRunHistTable"><div class="loading-overlay"><div class="spinner"></div></div></div><div id="triggeredRunHistPagination"></div></div>';
+        showModal(t('modals.triggeredRunHistory', { id: taskId }), body, edgeopsModalFooterClose());
+        var tableEl = document.getElementById('triggeredRunHistTable');
+        var pagHost = document.getElementById('triggeredRunHistPagination');
+        var pagination = appendPaginationBar(pagHost, 10);
+        function exportCsv() {
+            API.exportTriggeredTaskRuns(taskId, {}).then(function(r) {
+                var runs = r.runs || [];
+                if (!runs.length) { showToast(t('toast.noDataExport'), 'warning'); return; }
+                var rows = runs.map(function(x) {
+                    return {
+                        id: x.id,
+                        task_id: x.task_id,
+                        triggered_at: x.triggered_at,
+                        triggered_by_type: x.triggered_by_type || '',
+                        triggered_by_id: x.triggered_by_id || '',
+                        caller_task_name: x.caller_task_name || '',
+                        status: x.status,
+                        instruction: x.instruction || '',
+                        log_summary: x.log_summary || '',
+                        created_at: x.created_at || ''
+                    };
+                });
+                downloadCSV(
+                    'triggered_task_' + taskId + '_runs_' + new Date().toISOString().slice(0, 10) + '.csv',
+                    rows,
+                    [
+                        { key: 'id', title: 'run_id' },
+                        { key: 'task_id', title: 'task_id' },
+                        { key: 'triggered_at', title: 'triggered_at' },
+                        { key: 'triggered_by_type', title: 'triggered_by_type' },
+                        { key: 'triggered_by_id', title: 'triggered_by_id' },
+                        { key: 'caller_task_name', title: 'caller_task_name' },
+                        { key: 'status', title: 'status' },
+                        { key: 'instruction', title: 'instruction' },
+                        { key: 'log_summary', title: 'log_summary' },
+                        { key: 'created_at', title: 'created_at' }
+                    ]
+                );
+                showToast(t('toast.exportedNItems', { n: runs.length }));
+            }).catch(function(err) { showToast(err.message || t('toast.requestFailed'), 'error'); });
+        }
+        function clearHist() {
+            if (!confirm(t('confirm.clearTriggeredRunHistory'))) return;
+            API.clearTriggeredTaskRuns(taskId).then(function() {
+                showToast(t('toast.triggeredRunsCleared'));
+                pagination.setPage(1);
+                loadRuns();
+            }).catch(function(err) { showToast(err.message || t('toast.opFailed'), 'error'); });
+        }
+        var expBtn = document.getElementById('triggeredRunHistExport');
+        var clrBtn = document.getElementById('triggeredRunHistClear');
+        if (expBtn) expBtn.onclick = exportCsv;
+        if (clrBtn) clrBtn.onclick = clearHist;
+        function loadRuns() {
+            tableEl.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+            API.listTriggeredTaskRuns(taskId, { page: pagination.getPage(), page_size: pagination.getPageSize() }).then(function(r) {
+                pagination.update({ total: r.total || 0, page: r.page || 1, page_size: r.page_size || 10 });
+                var runs = r.runs || [];
+                if (!runs.length) {
+                    tableEl.innerHTML = '<p class="text-muted">' + esc(t('ui.emptyStates.runHistory')) + '</p>';
+                    return;
+                }
+                tableEl.innerHTML = '<table class="data-table task-run-history-table"><thead><tr>'
+                    + '<th>' + esc(t('pages.triggered.thRunTime')) + '</th>'
+                    + '<th>' + esc(t('pages.triggered.thTriggerSource')) + '</th>'
+                    + '<th>' + esc(t('pages.triggered.thCallerTask')) + '</th>'
+                    + '<th>' + esc(t('pages.triggered.thStatus')) + '</th>'
+                    + '<th>' + esc(t('pages.triggered.thLogSummary')) + '</th>'
+                    + '<th>' + esc(t('pages.triggered.thActions')) + '</th>'
+                    + '</tr></thead><tbody>'
+                    + runs.map(function(x) {
+                        var sumRaw = (x.log_summary != null && String(x.log_summary) !== '') ? x.log_summary : (x.instruction || '');
+                        var sumCell = sumRaw ? edgeopsMdPreview(sumRaw) : '<span class="text-muted">—</span>';
+                        return '<tr><td>' + formatTime(x.triggered_at) + '</td><td>' + esc(x.triggered_by_type + ' ' + (x.triggered_by_id || '')) + '</td><td>' + esc(x.caller_task_name || '-') + '</td><td>' + esc(x.status) + '</td>'
+                            + '<td class="task-run-log-summary edgeops-chat-md" style="max-height:200px;overflow:auto;font-size:12px;vertical-align:top">' + sumCell + '</td>'
+                            + '<td><button type="button" class="btn btn-sm" onclick="window._showTriggeredTaskRunMessages(' + taskId + ',' + x.id + ')">' + esc(t('pages.triggered.btnViewSession')) + '</button></td></tr>';
+                    }).join('') + '</tbody></table>';
+                try { if (typeof edgeopsHydrateChatDiagrams === 'function') edgeopsHydrateChatDiagrams(tableEl); } catch (_e2) {}
+            }).catch(function(err) { tableEl.innerHTML = '<p class="text-danger">' + esc(err.message) + '</p>'; });
+        }
+        pagination.onPrev(loadRuns);
+        pagination.onNext(loadRuns);
+        pagination.onPageSizeChange(loadRuns);
+        loadRuns();
+    };
+    load();
+}
+
+// ── 定时任务 ──
+function renderScheduledTasksPage() {
+    renderLayout();
+    var el = getPageEl();
+    el.innerHTML = '<div class="topbar"><h2>' + t('pages.scheduled.title') + '</h2><div class="topbar-actions"><button class="btn" id="scheduledTaskAllRunsBtn">' + t('pages.scheduled.allRuns') + '</button> <button class="btn btn-primary" id="scheduledTaskAddBtn">' + t('pages.scheduled.newTask') + '</button> <button type="button" class="btn" id="scheduledTaskRefreshBtn">' + esc(t('common.refresh')) + '</button></div></div>'
+        + '<div class="page-content">' + edgeopsPageIntroHtml(t('pages.scheduled.intro'))
+        + '<div id="scheduledTaskList" class="table-container"></div></div>';
+    var listEl = document.getElementById('scheduledTaskList');
+    function load() {
+        listEl.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+        API.listScheduledTasks().then(function(r) {
+            var tasks = r.tasks || [];
+            if (!tasks.length) {
+                listEl.innerHTML = '<div class="empty-state"><p>' + esc(t('pages.scheduled.emptyList')) + '</p></div>';
+                return;
+            }
+            listEl.innerHTML = '<table class="data-table list-table"><thead><tr>'
+                + '<th>' + esc(t('pages.scheduled.thId')) + '</th>'
+                + '<th>' + esc(t('pages.scheduled.thName')) + '</th>'
+                + '<th>' + esc(t('pages.scheduled.thCron')) + '</th>'
+                + '<th>' + esc(t('pages.scheduled.thNotifyEmail')) + '</th>'
+                + '<th>' + esc(t('pages.scheduled.thEnabled')) + '</th>'
+                + '<th>' + esc(t('pages.scheduled.thNextRun')) + '</th>'
+                + '<th>' + esc(t('pages.scheduled.thLastRun')) + '</th>'
+                + '<th>' + esc(t('pages.scheduled.thStatus')) + '</th>'
+                + '<th>' + esc(t('pages.scheduled.thRunning')) + '</th>'
+                + '<th>' + esc(t('pages.scheduled.thActions')) + '</th>'
+                + '</tr></thead><tbody>'
+                + tasks.map(function(task) {
+                    var en = (task.enabled === 1 || task.enabled === true);
+                    var enLabel = en ? '<span class="text-success">' + esc(t('pages.scheduled.yes')) + '</span>' : '<span class="text-muted">' + esc(t('pages.scheduled.no')) + '</span>';
+                    var notify = (task.notify_email_display || task.notify_email_to || '').trim();
+                    var notifyTitle = notify ? esc(notify + (task.notify_email_inferred ? t('pages.scheduled.notifyInferredTitle') : '')) : '';
+                    var notifyCell = notify
+                        ? '<span title="' + notifyTitle + '">' + esc(notify.length > 48 ? notify.substring(0, 48) + '…' : notify) + (task.notify_email_inferred ? ' <span class="text-muted inline-hint" style="margin-left:4px;font-size:11px">' + esc(t('pages.scheduled.notifyInferredBadge')) + '</span>' : '') + '</span>'
+                        : '<span class="text-muted">—</span>';
+                    var toggleBtn = en
+                        ? '<button type="button" class="btn btn-sm" onclick="window._scheduledTaskSetEnabled(' + task.id + ',false)">' + esc(t('pages.scheduled.btnDisable')) + '</button>'
+                        : '<button type="button" class="btn btn-sm btn-primary" onclick="window._scheduledTaskSetEnabled(' + task.id + ',true)">' + esc(t('pages.scheduled.btnEnable')) + '</button>';
+                    return '<tr><td>' + task.id + '</td><td>' + esc(task.name) + '</td><td>' + esc(task.cron_expr || '-') + '</td><td>' + notifyCell + '</td><td>' + enLabel + '</td><td>' + formatTime(task.next_run_at) + '</td><td>' + formatTime(task.last_run_at) + '</td><td>' + esc(task.last_run_status || '-') + '</td><td>' + (task.is_running ? esc(t('pages.scheduled.yes')) : esc(t('pages.scheduled.no'))) + '</td>'
+                        + '<td style="white-space:normal;max-width:280px"><button class="btn btn-sm btn-primary" onclick="window._scheduledTaskRunNow(' + task.id + ')">' + esc(t('pages.scheduled.btnRunNow')) + '</button> ' + toggleBtn
+                        + ' <button class="btn btn-sm" onclick="window._scheduledTaskEdit(' + task.id + ')">' + esc(t('pages.scheduled.btnEdit')) + '</button> <button class="btn btn-sm" onclick="window._scheduledTaskViewRuns(' + task.id + ')">' + esc(t('pages.scheduled.btnHistory')) + '</button>'
+                        + ' <button type="button" class="btn btn-sm btn-danger" onclick="window._scheduledTaskDelete(' + task.id + ')">' + esc(t('pages.scheduled.btnDelete')) + '</button></td></tr>';
+                }).join('') + '</tbody></table>';
+        }).catch(function(err) {
+            listEl.innerHTML = '<div class="empty-state"><h3>' + esc(t('ui.loadFailedH3')) + '</h3><p>' + esc(err.message) + '</p></div>';
+        });
+    }
+    document.getElementById('scheduledTaskAllRunsBtn').onclick = function() {
+        var filterHtml = '<div class="form-inline" style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:12px;align-items:center">'
+            + '<label>' + esc(t('pages.scheduled.filterTaskId')) + '</label><input class="form-control" id="scheduledAllRunsTaskId" placeholder="' + esc(t('pages.scheduled.phOptional')) + '" style="width:80px">'
+            + '<label>' + esc(t('pages.scheduled.filterTaskName')) + '</label><input class="form-control" id="scheduledAllRunsTaskName" placeholder="' + esc(t('pages.scheduled.phFuzzy')) + '" style="width:120px">'
+            + '<label>' + esc(t('pages.scheduled.filterStatus')) + '</label><select class="form-control" id="scheduledAllRunsStatus" style="width:100px"><option value="">' + esc(t('pages.scheduled.filterAll')) + '</option><option value="running">running</option><option value="completed">completed</option><option value="failed">failed</option></select>'
+            + '<label>' + esc(t('pages.scheduled.filterFrom')) + '</label><input class="form-control" id="scheduledAllRunsFrom" type="datetime-local" style="width:180px">'
+            + '<label>' + esc(t('pages.scheduled.filterTo')) + '</label><input class="form-control" id="scheduledAllRunsTo" type="datetime-local" style="width:180px">'
+            + '<button type="button" class="btn btn-primary" id="scheduledAllRunsQuery">' + esc(t('pages.scheduled.filterQuery')) + '</button>'
+            + '</div><div id="scheduledAllRunsTableWrap"><div class="loading-overlay"><div class="spinner"></div></div></div>';
+        showModal(t('modals.scheduledAllHistory'), filterHtml, edgeopsModalFooterClose());
+        function doQuery() {
+            var taskId = (document.getElementById('scheduledAllRunsTaskId') && document.getElementById('scheduledAllRunsTaskId').value || '').trim();
+            var taskName = (document.getElementById('scheduledAllRunsTaskName') && document.getElementById('scheduledAllRunsTaskName').value || '').trim();
+            var status = (document.getElementById('scheduledAllRunsStatus') && document.getElementById('scheduledAllRunsStatus').value || '').trim();
+            var fromTime = (document.getElementById('scheduledAllRunsFrom') && document.getElementById('scheduledAllRunsFrom').value || '').trim();
+            var toTime = (document.getElementById('scheduledAllRunsTo') && document.getElementById('scheduledAllRunsTo').value || '').trim();
+            var params = { limit: 200 };
+            if (taskId) params.task_id = parseInt(taskId, 10);
+            if (taskName) params.task_name = taskName;
+            if (status) params.status = status;
+            if (fromTime) params.from_time = fromTime.replace('T', ' ');
+            if (toTime) params.to_time = toTime.replace('T', ' ');
+            document.getElementById('scheduledAllRunsTableWrap').innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+            API.listScheduledTaskAllRuns(params).then(function(r) {
+                var runs = r.runs || [];
+                var html = runs.length ? '<table class="data-table task-run-history-table"><thead><tr>'
+                    + '<th>' + esc(t('pages.scheduled.filterTaskId')) + '</th>'
+                    + '<th>' + esc(t('pages.scheduled.thName')) + '</th>'
+                    + '<th>' + esc(t('pages.scheduled.thRunTime')) + '</th>'
+                    + '<th>' + esc(t('pages.scheduled.thStatus')) + '</th>'
+                    + '<th>' + esc(t('pages.scheduled.thActions')) + '</th>'
+                    + '</tr></thead><tbody>'
+                    + runs.map(function(x) {
+                        return '<tr><td>' + x.task_id + '</td><td>' + esc(x.task_name || '') + '</td><td>' + formatTime(x.run_at) + '</td><td>' + esc(x.status) + '</td>'
+                            + '<td><button type="button" class="btn btn-sm" onclick="window._showScheduledTaskRunMessages(' + x.task_id + ',' + x.id + ')">' + esc(t('pages.scheduled.btnViewSession')) + '</button></td></tr>';
+                    }).join('') + '</tbody></table>'
+                    : '<p class="text-muted">' + esc(t('ui.emptyStates.table')) + '</p>';
+                document.getElementById('scheduledAllRunsTableWrap').innerHTML = '<div class="table-container">' + html + '</div>';
+                try {
+                    var _sw = document.getElementById('scheduledAllRunsTableWrap');
+                    if (_sw && typeof edgeopsHydrateChatDiagrams === 'function') edgeopsHydrateChatDiagrams(_sw);
+                } catch (_ehs) {}
+            }).catch(function(err) {
+                document.getElementById('scheduledAllRunsTableWrap').innerHTML = '<p class="text-danger">' + esc(err.message) + '</p>';
+            });
+        }
+        document.getElementById('scheduledAllRunsQuery').onclick = doQuery;
+        doQuery();
+    };
+    var scheduledTaskRefreshBtn = document.getElementById('scheduledTaskRefreshBtn');
+    if (scheduledTaskRefreshBtn) scheduledTaskRefreshBtn.onclick = function() { load(); };
+    document.getElementById('scheduledTaskAddBtn').onclick = function() {
+        var content = '<div class="form-group"><label>' + esc(t('pages.scheduled.formName')) + '</label><input class="form-control" id="scheduledTaskName" placeholder="' + esc(t('pages.scheduled.phRequired')) + '"></div>'
+            + '<div class="form-group"><label>' + esc(t('pages.scheduled.formContent')) + '</label><textarea class="form-control" id="scheduledTaskContent" rows="4" placeholder="' + esc(t('pages.scheduled.phRequired')) + '"></textarea></div>'
+            + '<div class="form-group"><label>' + esc(t('pages.scheduled.formCron')) + '</label><input class="form-control" id="scheduledTaskCron" placeholder="' + esc(t('pages.scheduled.formCronPh')) + '" title="' + esc(t('pages.scheduled.formCronTitle')) + '"></div>'
+            + '<div class="form-group"><label>' + esc(t('pages.scheduled.formNotify')) + '</label><input class="form-control" id="scheduledTaskNotify" placeholder="' + esc(t('pages.scheduled.formNotifyPh')) + '"></div>'
+            + '<div class="form-group"><label><input type="checkbox" id="scheduledTaskEnabled" checked> ' + esc(t('pages.scheduled.formEnabledOnCreate')) + '</label></div>';
+        showModal(t('modals.newScheduled'), content, '<button class="btn" onclick="closeModal()">' + t('common.cancel') + '</button><button class="btn btn-primary" onclick="window._scheduledTaskSubmitCreate()">' + t('common.create') + '</button>');
+    };
+    window._scheduledTaskLoad = load;
+    window._scheduledTaskSubmitCreate = function() {
+        var name = (document.getElementById('scheduledTaskName') && document.getElementById('scheduledTaskName').value || '').trim();
+        var content = (document.getElementById('scheduledTaskContent') && document.getElementById('scheduledTaskContent').value || '').trim();
+        if (!name) { showToast(t('toast.taskNameRequired'), 'error'); return; }
+        if (!content) { showToast(t('toast.taskContentRequired'), 'error'); return; }
+        API.createScheduledTask({
+            name: name,
+            content: content,
+            cron_expr: (document.getElementById('scheduledTaskCron') && document.getElementById('scheduledTaskCron').value || '').trim(),
+            enabled: !!(document.getElementById('scheduledTaskEnabled') && document.getElementById('scheduledTaskEnabled').checked),
+            notify_email_to: (document.getElementById('scheduledTaskNotify') && document.getElementById('scheduledTaskNotify').value || '').trim()
+        }).then(function() { closeModal(); showToast(t('toast.fileCreated')); if (window._scheduledTaskLoad) window._scheduledTaskLoad(); }).catch(function(err) { showToast(err.message, 'error'); });
+    };
+    window._scheduledTaskSubmitEdit = function(id) {
+        var name = (document.getElementById('scheduledTaskName') && document.getElementById('scheduledTaskName').value || '').trim();
+        var content = (document.getElementById('scheduledTaskContent') && document.getElementById('scheduledTaskContent').value || '').trim();
+        if (!name) { showToast(t('toast.taskNameRequired'), 'error'); return; }
+        if (!content) { showToast(t('toast.taskContentRequired'), 'error'); return; }
+        API.updateScheduledTask(id, {
+            name: name,
+            content: content,
+            cron_expr: (document.getElementById('scheduledTaskCron') && document.getElementById('scheduledTaskCron').value || '').trim(),
+            notify_email_to: (document.getElementById('scheduledTaskNotify') && document.getElementById('scheduledTaskNotify').value || '').trim()
+        }).then(function() { closeModal(); showToast(t('toast.saved')); if (window._scheduledTaskLoad) window._scheduledTaskLoad(); }).catch(function(err) { showToast(err.message, 'error'); });
+    };
+    window._scheduledTaskSetEnabled = function(id, enabled) {
+        API.updateScheduledTask(id, { enabled: !!enabled }).then(function() {
+            showToast(enabled ? t('toast.schedulerOn') : t('toast.schedulerOff'));
+            if (window._scheduledTaskLoad) window._scheduledTaskLoad();
+        }).catch(function(err) { showToast(err.message || t('toast.opFailed'), 'error'); });
+    };
+    window._scheduledTaskDelete = function(id) {
+        if (!confirm(t('confirm.deleteCron'))) return;
+        API.deleteScheduledTask(id).then(function() {
+            showToast(t('toast.deleted'));
+            if (window._scheduledTaskLoad) window._scheduledTaskLoad();
+        }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
+    };
+    window._scheduledTaskRunNow = function(id) {
+        API.runScheduledTaskNow(id).then(function(r) {
+            showToast(t('toast.queuedWithRun', { id: (r.run_id || '') }));
+            if (window._scheduledTaskLoad) window._scheduledTaskLoad();
+        }).catch(function(err) { showToast(err.message || t('toast.executeFailed'), 'error'); });
+    };
+    window._scheduledTaskEdit = function(id) {
+        API.getScheduledTask(id).then(function(r) {
+            var task = r.task || {};
+            var content = '<div class="form-group"><label>' + esc(t('pages.scheduled.formName')) + '</label><input class="form-control" id="scheduledTaskName" value="' + esc(task.name || '') + '"></div>'
+                + '<div class="form-group"><label>' + esc(t('pages.scheduled.formContent')) + '</label><textarea class="form-control" id="scheduledTaskContent" rows="4">' + esc(task.content || '') + '</textarea></div>'
+                + '<div class="form-group"><label>' + esc(t('pages.scheduled.formCron')) + '</label><input class="form-control" id="scheduledTaskCron" value="' + esc(task.cron_expr || '') + '" placeholder="' + esc(t('pages.scheduled.formCronPhShort')) + '" title="' + esc(t('pages.scheduled.formCronTitle')) + '"></div>'
+                + '<div class="form-group"><label>' + esc(t('pages.scheduled.formNotify')) + '</label><input class="form-control" id="scheduledTaskNotify" value="' + esc((task.notify_email_to || task.notify_email_display || '').trim()) + '" placeholder="' + esc(t('pages.scheduled.formNotifyPhShort')) + '"></div>';
+            showModal(t('modals.editScheduled'), content, edgeopsModalFooterCancelSave('window._scheduledTaskSubmitEdit(' + id + ')'));
+        }).catch(function(err) { showToast(err.message, 'error'); });
+    };
+    window._showScheduledTaskRunMessages = function(taskId, runId) {
+        API.getScheduledTaskRunMessages(taskId, runId).then(function(r) {
+            var messages = r.messages || [];
+            var body = messages.length ? messages.map(function(m) {
+                var roleLabel = (m.role === 'user' ? t('pages.scheduled.roleTaskUser') : m.role === 'assistant' ? t('pages.scheduled.roleAi') : m.role);
+                return '<div class="run-msg run-msg-' + esc(m.role) + '" style="margin-bottom:12px;border-bottom:1px solid var(--border-color, #333);padding-bottom:8px"><strong>' + esc(roleLabel) + '</strong><div class="run-msg-md edgeops-chat-md" style="margin:6px 0 0;padding:12px;background:var(--bg-secondary,#222);border-radius:4px;font-size:13px;max-height:65vh;overflow:auto">' + edgeopsMdPreview(m.content || '') + '</div></div>';
+            }).join('') : '<p class="text-muted">' + esc(t('ui.emptyStates.runSessionMessages')) + '</p>';
+            showModal(t('modals.runSession', { id: runId }), '<div class="run-messages" style="max-height:70vh;overflow:auto">' + body + '</div>', edgeopsModalFooterClose());
+            try { if (typeof edgeopsHydrateChatDiagrams === 'function') edgeopsHydrateChatDiagrams(document.querySelector('.modal .run-messages')); } catch (_e) {}
+        }).catch(function(err) { showToast(err.message || t('toast.loadFailed'), 'error'); });
+    };
+    window._scheduledTaskViewRuns = function(taskId) {
+        var modalBody = '<div id="scheduledRunHistWrap" style="min-width:min(920px,92vw)">'
+            + '<div class="scheduled-run-hist-toolbar" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;align-items:center">'
+            + '<button type="button" class="btn btn-sm" id="scheduledRunHistExport">' + esc(t('pages.scheduled.exportRunHistory')) + '</button>'
+            + '<button type="button" class="btn btn-sm btn-danger" id="scheduledRunHistClear">' + esc(t('pages.scheduled.clearRunHistory')) + '</button>'
+            + '</div>'
+            + '<div class="table-container" id="scheduledRunHistTable"><div class="loading-overlay"><div class="spinner"></div></div></div><div id="scheduledRunHistPagination"></div></div>';
+        showModal(t('modals.scheduledRunHistory', { id: taskId }), modalBody, edgeopsModalFooterClose());
+        var tableEl = document.getElementById('scheduledRunHistTable');
+        var pagHost = document.getElementById('scheduledRunHistPagination');
+        var pagination = appendPaginationBar(pagHost, 10);
+        function exportCsv() {
+            API.exportScheduledTaskRuns(taskId, {}).then(function(r) {
+                var runs = r.runs || [];
+                if (!runs.length) { showToast(t('toast.noDataExport'), 'warning'); return; }
+                var rows = runs.map(function(x) {
+                    return {
+                        id: x.id,
+                        task_id: x.task_id,
+                        run_at: x.run_at,
+                        status: x.status,
+                        log_summary: x.log_summary || '',
+                        session_snapshot_id: x.session_snapshot_id != null ? x.session_snapshot_id : '',
+                        created_at: x.created_at || ''
+                    };
+                });
+                downloadCSV(
+                    'scheduled_task_' + taskId + '_runs_' + new Date().toISOString().slice(0, 10) + '.csv',
+                    rows,
+                    [
+                        { key: 'id', title: 'run_id' },
+                        { key: 'task_id', title: 'task_id' },
+                        { key: 'run_at', title: 'run_at' },
+                        { key: 'status', title: 'status' },
+                        { key: 'log_summary', title: 'log_summary' },
+                        { key: 'session_snapshot_id', title: 'session_snapshot_id' },
+                        { key: 'created_at', title: 'created_at' }
+                    ]
+                );
+                showToast(t('toast.exportedNItems', { n: runs.length }));
+            }).catch(function(err) { showToast(err.message || t('toast.requestFailed'), 'error'); });
+        }
+        function clearHist() {
+            if (!confirm(t('confirm.clearScheduledRunHistory'))) return;
+            API.clearScheduledTaskRuns(taskId).then(function() {
+                showToast(t('toast.scheduledRunsCleared'));
+                pagination.setPage(1);
+                loadRuns();
+            }).catch(function(err) { showToast(err.message || t('toast.opFailed'), 'error'); });
+        }
+        var expBtn = document.getElementById('scheduledRunHistExport');
+        var clrBtn = document.getElementById('scheduledRunHistClear');
+        if (expBtn) expBtn.onclick = exportCsv;
+        if (clrBtn) clrBtn.onclick = clearHist;
+        function loadRuns() {
+            tableEl.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+            API.listScheduledTaskRuns(taskId, { page: pagination.getPage(), page_size: pagination.getPageSize() }).then(function(r) {
+                pagination.update({ total: r.total || 0, page: r.page || 1, page_size: r.page_size || 10 });
+                var runs = r.runs || [];
+                if (!runs.length) {
+                    tableEl.innerHTML = '<p class="text-muted">' + esc(t('ui.emptyStates.runHistory')) + '</p>';
+                    return;
+                }
+                tableEl.innerHTML = '<table class="data-table task-run-history-table"><thead><tr>'
+                    + '<th>' + esc(t('pages.scheduled.thRunTime')) + '</th>'
+                    + '<th>' + esc(t('pages.scheduled.thStatus')) + '</th>'
+                    + '<th>' + esc(t('pages.scheduled.thActions')) + '</th>'
+                    + '</tr></thead><tbody>'
+                    + runs.map(function(x) {
+                        return '<tr><td>' + formatTime(x.run_at) + '</td><td>' + esc(x.status) + '</td>'
+                            + '<td><button type="button" class="btn btn-sm" onclick="window._showScheduledTaskRunMessages(' + taskId + ',' + x.id + ')">' + esc(t('pages.scheduled.btnViewSession')) + '</button></td></tr>';
+                    }).join('') + '</tbody></table>';
+                try { if (typeof edgeopsHydrateChatDiagrams === 'function') edgeopsHydrateChatDiagrams(tableEl); } catch (_e2) {}
+            }).catch(function(err) { tableEl.innerHTML = '<p class="text-danger">' + esc(err.message) + '</p>'; });
+        }
+        pagination.onPrev(loadRuns);
+        pagination.onNext(loadRuns);
+        pagination.onPageSizeChange(loadRuns);
+        loadRuns();
+    };
+    load();
+}
+
+// ── 批量操作 ──
+function _batchOpTypeLabel(op) {
+    var m = { run_command: t('pages.batch.opRunCommand'), scp_push: t('pages.batch.opScpPush'), run_script: t('pages.batch.opRunScript'), restart: t('pages.batch.opRestart') };
+    return m[op] || (op || '');
+}
+function renderBatchPage() {
+    renderLayout();
+    var el = getPageEl();
+    el.innerHTML = '<div class="topbar"><h2>' + t('pages.batch.title') + '</h2><div class="topbar-actions"><button type="button" class="btn" id="batchPageRefreshBtn">' + esc(t('common.refresh')) + '</button></div></div>'
+        + '<div class="page-content"><div class="card"><div class="card-header"><h3>' + t('pages.batch.recentTasks') + '</h3>'
+        + '<span style="margin-left:12px">' + esc(t('pages.batch.filterType')) + ' <select class="form-control" id="batchFilterType" style="display:inline-block;width:auto;margin-right:8px"><option value="">' + esc(t('pages.batch.optionAll')) + '</option><option value="run_command">' + esc(t('pages.batch.opRunCommand')) + '</option><option value="scp_push">' + esc(t('pages.batch.opScpPush')) + '</option><option value="run_script">' + esc(t('pages.batch.opRunScript')) + '</option><option value="restart">' + esc(t('pages.batch.opRestart')) + '</option></select>'
+        + esc(t('pages.batch.filterStatus')) + ' <select class="form-control" id="batchFilterStatus" style="display:inline-block;width:auto"><option value="">' + esc(t('pages.batch.optionAll')) + '</option><option value="running">' + esc(t('pages.batch.stFilterRunning')) + '</option><option value="completed">' + esc(t('pages.batch.stFilterCompleted')) + '</option><option value="cancelled">' + esc(t('pages.batch.stFilterCancelled')) + '</option></select></span>'
+        + '<span style="margin-left:12px"><button type="button" class="btn btn-sm" id="batchExportBtn">' + t('pages.batch.export') + '</button> <button type="button" class="btn btn-sm btn-danger" id="batchClearBtn">' + t('pages.batch.clear') + '</button></span></div>'
+        + '<div id="batchListWrap"><div class="loading-overlay"><div class="spinner"></div></div></div>'
+        + '<div id="batchPagination"></div></div>'
+        + '<div id="batchDetailWrap" class="card" style="display:none;margin-top:16px"><div class="card-header"><h3>' + t('pages.batch.taskDetail') + '</h3><button type="button" class="btn btn-sm" id="batchDetailClose">' + t('common.close') + '</button></div>'
+        + '<div id="batchDetailContent"></div></div></div>';
+    var listWrap = document.getElementById('batchListWrap');
+    var pagination = appendPaginationBar(document.getElementById('batchPagination'), 20);
+    var detailWrap = document.getElementById('batchDetailWrap');
+    var detailContent = document.getElementById('batchDetailContent');
+
+    function loadList() {
+        var typeFilter = document.getElementById('batchFilterType') && document.getElementById('batchFilterType').value;
+        var statusFilter = document.getElementById('batchFilterStatus') && document.getElementById('batchFilterStatus').value;
+        var params = { page: pagination.getPage(), page_size: pagination.getPageSize() };
+        if (typeFilter) params.operation_type = typeFilter;
+        if (statusFilter) params.status = statusFilter;
+        listWrap.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+        API.listBatches(params).then(function(r) {
+            pagination.update({ total: r.total || 0, page: r.page, page_size: r.page_size });
+            if (!r.batches || r.batches.length === 0) {
+                listWrap.innerHTML = '<div class="empty-state"><p>' + esc(t('pages.batch.emptyList')) + '</p></div>';
+                return;
+            }
+            listWrap.innerHTML = '<table class="table-container"><thead><tr><th>' + esc(t('pages.batch.thId')) + '</th><th>' + esc(t('pages.batch.thType')) + '</th><th>' + esc(t('pages.batch.thScope')) + '</th><th>' + esc(t('pages.batch.thTotal')) + '</th><th>' + esc(t('pages.batch.thSuccessFail')) + '</th><th>' + esc(t('pages.batch.thStatus')) + '</th><th>' + esc(t('pages.batch.thCreatedAt')) + '</th><th>' + esc(t('pages.batch.thCreatedBy')) + '</th><th>' + esc(t('pages.batch.thActions')) + '</th></tr></thead><tbody>'
+                + r.batches.map(function(b) {
+                    var statusCls = b.status === 'completed' ? 'success' : (b.status === 'running' ? 'info' : (b.status === 'cancelled' ? 'muted' : 'warning'));
+                    var scopeLabel = b.scope_label || b.scope_type || '';
+                    return '<tr class="batch-row" data-id="' + b.id + '">'
+                        + '<td>' + b.id + '</td>'
+                        + '<td>' + esc(_batchOpTypeLabel(b.operation_type)) + '</td>'
+                        + '<td>' + esc(scopeLabel) + '</td>'
+                        + '<td>' + (b.total_count || 0) + '</td>'
+                        + '<td>' + (b.success_count || 0) + ' / ' + (b.fail_count || 0) + '</td>'
+                        + '<td><span class="badge badge-' + statusCls + '">' + esc(b.status || '') + '</span></td>'
+                        + '<td>' + formatTime(b.created_at) + '</td>'
+                        + '<td>' + esc(b.created_by_name || '-') + '</td>'
+                        + '<td><button type="button" class="btn btn-sm" onclick="event.stopPropagation(); window._batchViewDetail(' + b.id + ')">' + esc(t('pages.batch.btnDetail')) + '</button>'
+                        + (b.status === 'running' ? ' <button type="button" class="btn btn-sm btn-danger" onclick="event.stopPropagation(); window._batchCancel(' + b.id + ')">' + esc(t('pages.batch.btnCancel')) + '</button>' : '')
+                        + (b.status === 'completed' && (b.fail_count || 0) > 0 ? ' <button type="button" class="btn btn-sm" onclick="event.stopPropagation(); window._batchRetry(' + b.id + ')">' + esc(t('pages.batch.btnRetryFailed')) + '</button>' : '')
+                        + '</td></tr>';
+                }).join('') + '</tbody></table>';
+            listWrap.querySelectorAll('.batch-row').forEach(function(tr) {
+                tr.onclick = function() { window._batchViewDetail(parseInt(tr.getAttribute('data-id'), 10)); };
+            });
+        }).catch(function(err) {
+            listWrap.innerHTML = '<div class="empty-state"><h3>' + esc(t('pages.batch.loadFailedTitle')) + '</h3><p>' + esc(err.message) + '</p></div>';
+        });
+    }
+    var batchPageRefreshBtn = document.getElementById('batchPageRefreshBtn');
+    if (batchPageRefreshBtn) batchPageRefreshBtn.onclick = function() { loadList(); };
+    document.getElementById('batchFilterType').onchange = function() { pagination.setPage(1); loadList(); };
+    document.getElementById('batchFilterStatus').onchange = function() { pagination.setPage(1); loadList(); };
+    pagination.onPrev(loadList);
+    pagination.onNext(loadList);
+    pagination.onPageSizeChange(loadList);
+
+    window._batchViewDetail = function(id) {
+        API.getBatch(id).then(function(r) {
+            var b = r.batch;
+            detailWrap.style.display = 'block';
+            var scopeLabel = b.scope_label || b.scope_type || '';
+            var scopeValueText = Array.isArray(b.scope_value) && b.scope_value.length ? b.scope_value.join(', ') : '-';
+            detailContent.innerHTML = '<p><strong>' + esc(t('pages.batch.lblType')) + '</strong> ' + esc(_batchOpTypeLabel(b.operation_type)) + ' &nbsp; <strong>' + esc(t('pages.batch.lblScope')) + '</strong> ' + esc(scopeLabel) + ' &nbsp; <strong>' + esc(t('pages.batch.lblScopeValue')) + '</strong> ' + esc(scopeValueText) + ' &nbsp; <strong>' + esc(t('pages.batch.lblStatus')) + '</strong> ' + esc(b.status) + ' &nbsp; <strong>' + esc(t('pages.batch.lblTotal')) + '</strong> ' + (b.total_count || 0) + ' &nbsp; <strong>' + esc(t('pages.batch.lblSuccess')) + '</strong> ' + (b.success_count || 0) + ' &nbsp; <strong>' + esc(t('pages.batch.lblFail')) + '</strong> ' + (b.fail_count || 0) + '</p>'
+                + (b.params && Object.keys(b.params).length ? '<pre style="font-size:11px;max-height:120px;overflow:auto">' + esc(JSON.stringify(b.params, null, 2)) + '</pre>' : '')
+                + '<table class="table-container"><thead><tr><th>' + esc(t('pages.batch.thHost')) + '</th><th>' + esc(t('pages.batch.thAddress')) + '</th><th>' + esc(t('pages.batch.thStatus')) + '</th><th>' + esc(t('pages.batch.thResult')) + '</th></tr></thead><tbody>'
+                + (b.details || []).map(function(d) {
+                    var res = (d.result && d.result.length > 200) ? d.result.substring(0, 200) + '...' : (d.result || '');
+                    return '<tr><td>' + esc(d.host_name || d.host_id) + '</td><td>' + esc(d.host) + '</td><td>' + esc(d.status) + '</td><td><pre style="white-space:pre-wrap;font-size:11px;max-height:80px;overflow:auto">' + esc(res) + '</pre></td></tr>';
+                }).join('') + '</tbody></table>';
+        }).catch(function(err) { showToast(err.message, 'error'); });
+    };
+    window._batchCancel = function(id) {
+        if (!confirm(t('confirm.cancelBatch'))) return;
+        API.cancelBatch(id).then(function() { showToast(t('toast.actionCancelled')); loadList(); detailWrap.style.display = 'none'; }).catch(function(err) { showToast(err.message, 'error'); });
+    };
+    window._batchRetry = function(id) {
+        API.retryBatch(id).then(function() { showToast(t('toast.retrySubmitted')); loadList(); }).catch(function(err) { showToast(err.message, 'error'); });
+    };
+
+    document.getElementById('batchDetailClose').onclick = function() { detailWrap.style.display = 'none'; };
+
+    document.getElementById('batchExportBtn').onclick = function() {
+        API.getBatchExport(5000).then(function(data) {
+            var batches = data.batches || [];
+            downloadCSV(t('pages.batch.exportBaseName') + '_' + new Date().toISOString().slice(0, 10) + '.csv', batches, [
+                { key: 'id', title: t('pages.batch.thId') },
+                { key: 'operation_type', title: t('pages.batch.thType') },
+                { key: 'scope_type', title: t('pages.batch.thScope') },
+                { key: 'scope_label', title: t('pages.batch.csvScopeLabel') },
+                { key: 'tag_match_mode', title: t('pages.batch.csvTagMatch') },
+                { key: 'total_count', title: t('pages.batch.thTotal') },
+                { key: 'success_count', title: t('pages.batch.csvSuccess') },
+                { key: 'fail_count', title: t('pages.batch.csvFail') },
+                { key: 'status', title: t('pages.batch.thStatus') },
+                { key: 'created_at', title: t('pages.batch.thCreatedAt') },
+                { key: 'created_by_name', title: t('pages.batch.thCreatedBy') },
+            ]);
+            showToast(t('toast.exportedNItems', { n: batches.length }));
+        }).catch(function(err) { showToast(err.message, 'error'); });
+    };
+    document.getElementById('batchClearBtn').onclick = function() {
+        showConfirm(t('confirm.clearTableTitle'), t('confirm.clearAllBatchBody')).then(function(ok) {
+            if (!ok) return;
+            API.clearBatches().then(function() { showToast(t('toast.cleared')); loadList(); detailWrap.style.display = 'none'; }).catch(function(err) { showToast(err.message, 'error'); });
+        });
+    };
+
+    loadList();
+}
+
+function renderAIMobilePage() {
+    renderAIPage();
+    activateAIMobileLayout();
+}
+
+// ── 反馈页（用户视图） ──
+function _fbEsc(s) { return _lbEsc(s); }
+function _fbMd(s) { return _lbMd(s); }
+function _fbCatLabel(c) {
+    var m = { bug: 'feedback.cat.bug', feature: 'feedback.cat.feature', tech: 'feedback.cat.tech', general: 'feedback.cat.general' };
+    return m[c] ? t(m[c]) : esc(String(c == null ? '' : c));
+}
+function _fbStatusLabel(s) {
+    var o = t('feedback.st.open');
+    var rp = t('feedback.st.replied');
+    var ig = t('feedback.st.ignored');
+    return ({ open: '<span style="color:#fbbf24">' + o + '</span>', replied: '<span style="color:#9ef5b7">' + rp + '</span>', ignored: '<span style="color:#94a3b8">' + ig + '</span>' })[s] || esc(String(s == null ? '' : s));
+}
+
+function renderFeedbackPage() {
+    renderLayout();
+    var el = getPageEl();
+    var isAdminUser = isAdmin();
+    var adminLink = isAdminUser
+        ? '<button type="button" class="btn btn-sm" data-href="/feedback/admin" style="margin-left:8px">' + esc(t('feedback.btnAdmin')) + '</button>'
+            + '<button type="button" class="btn btn-sm" data-href="/feedback/admin/login-board" style="margin-left:8px">' + esc(t('feedback.btnLoginBoard')) + '</button>'
+        : '';
+    el.innerHTML = '<div class="topbar"><h2>' + esc(isAdminUser ? t('feedback.pageTitleAdminOnly') : t('feedback.pageTitle')) + '</h2><div class="topbar-actions">'
+        + '<button type="button" class="btn btn-primary" id="btnNewFeedback">' + esc(t('feedback.newFeedback')) + '</button>'
+        + adminLink + '</div></div>'
+        + '<div class="page-content">'
+        + '<p class="text-muted" style="margin-bottom:12px">' + t('feedback.intro') + '</p>'
+        + '<div id="feedbackNewWrap" style="display:none"></div>'
+        + '<div id="feedbackList" class="text-muted">' + esc(t('common.loading')) + '</div>'
+        + '</div>';
+    var btn = document.getElementById('btnNewFeedback');
+    if (btn) btn.onclick = function() { _toggleFeedbackForm(null); };
+    // 注：[data-href] 点击由 router.js 的 document 级事件委托统一处理，无需在此重复绑定
+    // （重复绑定会让侧栏 nav-item 每次进入页面都新增一份 handler，触发两次 navigate，导致路由抖动）
+    loadMyFeedback();
+}
+
+function _toggleFeedbackForm(editing) {
+    var wrap = document.getElementById('feedbackNewWrap');
+    if (!wrap) return;
+    var isEdit = !!editing;
+    wrap.style.display = '';
+    wrap.innerHTML = '<div class="card" style="margin-bottom:14px"><div class="card-header"><h3>' + esc(isEdit ? t('feedback.formEdit', { id: editing.id }) : t('feedback.formNew')) + '</h3></div>'
+        + '<div style="padding:0 16px 16px">'
+        + '<div class="form-group"><label>' + esc(t('feedback.labelTitle')) + '</label><input class="form-control" id="fbTitle" placeholder="' + esc(t('feedback.titlePh')) + '" maxlength="200"></div>'
+        + '<div class="form-group"><label>' + esc(t('feedback.labelCategory')) + '</label><select class="form-control" id="fbCategory" style="max-width:200px">'
+        + '<option value="general">' + esc(t('feedback.cat.general')) + '</option><option value="bug">' + esc(t('feedback.cat.bug')) + '</option><option value="feature">' + esc(t('feedback.cat.feature')) + '</option><option value="tech">' + esc(t('feedback.cat.tech')) + '</option>'
+        + '</select></div>'
+        + '<div class="form-group"><label>' + esc(t('feedback.labelContent')) + '</label><textarea class="form-control" id="fbContent" rows="8" placeholder="' + esc(t('feedback.contentPh')) + '"></textarea></div>'
+        + '<div style="display:flex;gap:8px"><button type="button" class="btn btn-primary" id="fbSubmit">' + esc(isEdit ? t('feedback.saveEdit') : t('feedback.submit')) + '</button>'
+        + '<button type="button" class="btn btn-secondary" id="fbCancel">' + esc(t('feedback.cancel')) + '</button></div>'
+        + '</div></div>';
+    if (editing) {
+        document.getElementById('fbTitle').value = editing.title || '';
+        document.getElementById('fbCategory').value = editing.category || 'general';
+        document.getElementById('fbContent').value = editing.content || '';
+    }
+    document.getElementById('fbCancel').onclick = function() { wrap.style.display = 'none'; wrap.innerHTML = ''; };
+    document.getElementById('fbSubmit').onclick = function() {
+        var payload = {
+            title: document.getElementById('fbTitle').value || '',
+            content: (document.getElementById('fbContent').value || '').trim(),
+            category: document.getElementById('fbCategory').value || 'general',
+        };
+        if (!payload.content) { showToast(t('toast.fillContent'), 'error'); return; }
+        this.disabled = true;
+        var p = isEdit ? API.patchFeedback(editing.id, payload) : API.submitFeedback(payload);
+        var self = this;
+        p.then(function() {
+            showToast(isEdit ? t('toast.saved') : t('toast.submitted'));
+            wrap.style.display = 'none'; wrap.innerHTML = '';
+            loadMyFeedback();
+        }).catch(function(err) {
+            showToast(err.message || t('toast.failGeneric'), 'error');
+        }).finally(function() { self.disabled = false; });
+    };
+}
+
+function loadMyFeedback() {
+    var listEl = document.getElementById('feedbackList');
+    if (!listEl) return;
+    listEl.textContent = t('common.loading');
+    API.listMyFeedback().then(function(r) {
+        var items = r.items || [];
+        if (!items.length) {
+            listEl.innerHTML = '<div class="card" style="padding:24px;text-align:center;color:#94a3b8">' + t('feedback.myEmpty') + '</div>';
+            return;
+        }
+        listEl.innerHTML = items.map(function(it) {
+            var canEdit = it.status === 'open' && (!it.replies || !it.replies.length);
+            var actions = '';
+            if (canEdit) {
+                actions = '<button type="button" class="btn btn-sm" data-fb-edit="' + it.id + '">' + esc(t('feedback.edit')) + '</button> '
+                    + '<button type="button" class="btn btn-sm btn-danger" data-fb-withdraw="' + it.id + '">' + esc(t('feedback.withdraw')) + '</button>';
+            }
+            var replies = (it.replies || []).map(function(rp) {
+                var who = rp.admin_display || rp.admin_username || t('feedback.adminRef', { id: rp.admin_user_id });
+                return '<div class="card" style="margin:8px 0 0;padding:10px 14px;background:rgba(99,102,241,0.10);border-left:3px solid #6366f1">'
+                    + '<div class="text-muted" style="font-size:12px;margin-bottom:6px">' + t('feedback.replyByAdmin', { who: _fbEsc(who), time: _fbEsc(formatTimeShort(rp.created_at)) })
+                    + (rp.is_ai_drafted ? ' · <span style="color:#a5b4fc">' + esc(t('feedback.aiDrafted')) + '</span>' : '') + '</div>'
+                    + '<div class="md-body">' + _fbMd(rp.content) + '</div></div>';
+            }).join('');
+            return '<div class="card" style="margin-bottom:12px"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">'
+                + '<h4 style="margin:0">#' + it.id + ' ' + _fbEsc(it.title || t('feedback.noTitle')) + '</h4>'
+                + '<span style="font-size:12px">' + _fbCatLabel(it.category) + ' · ' + _fbStatusLabel(it.status) + '</span>'
+                + '</div>'
+                + '<div style="padding:10px 16px 12px">'
+                + '<div class="text-muted" style="font-size:12px;margin-bottom:8px">' + esc(t('feedback.submittedAt')) + _fbEsc(formatTimeShort(it.created_at))
+                + (it.is_ai_submitted ? ' · <span style="color:#a5b4fc">' + esc(t('feedback.aiSubmitted')) + '</span>' : '') + '</div>'
+                + '<div class="md-body">' + _fbMd(it.content) + '</div>'
+                + replies
+                + (actions ? '<div style="margin-top:10px">' + actions + '</div>' : '')
+                + '</div></div>';
+        }).join('');
+        listEl.querySelectorAll('[data-fb-edit]').forEach(function(b) {
+            b.onclick = function() {
+                var id = parseInt(b.getAttribute('data-fb-edit'), 10);
+                var item = items.find(function(x) { return x.id === id; });
+                if (item) _toggleFeedbackForm(item);
+            };
+        });
+        listEl.querySelectorAll('[data-fb-withdraw]').forEach(function(b) {
+            b.onclick = function() {
+                var id = parseInt(b.getAttribute('data-fb-withdraw'), 10);
+                if (!confirm(t('confirm.recallFeedback', { id: id }))) return;
+                API.withdrawFeedback(id).then(function() {
+                    showToast(t('toast.feedbackRecalled'));
+                    loadMyFeedback();
+                }).catch(function(err) { showToast(err.message || t('toast.retreatFailed'), 'error'); });
+            };
+        });
+    }).catch(function(e) {
+        listEl.innerHTML = '<div class="text-danger">' + esc(t('feedback.loadFailed', { message: e.message || e })) + '</div>';
+    });
+}
+
+// ── 反馈管理员后台 ──
+function renderFeedbackAdminPage() {
+    if (!isAdmin()) { Router.navigate('/feedback'); return; }
+    renderLayout();
+    var el = getPageEl();
+    el.innerHTML = '<div class="topbar"><h2>' + esc(t('nav.feedbackAdmin')) + '</h2><div class="topbar-actions">'
+        + '<button type="button" class="btn btn-sm" id="fbAdminMarkAll">' + esc(t('feedback.markAllRead')) + '</button>'
+        + '<button type="button" class="btn btn-sm" data-href="/feedback">' + esc(t('feedback.backToMine')) + '</button>'
+        + '<button type="button" class="btn btn-sm" data-href="/feedback/admin/login-board">' + esc(t('nav.loginBoard')) + '</button>'
+        + '</div></div>'
+        + '<div class="page-content">'
+        + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center">'
+        + '<span class="text-muted">' + esc(t('feedback.filter')) + '</span>'
+        + '<select class="form-control" id="fbAdminFilter" style="max-width:160px">'
+        + '<option value="unread">' + esc(t('feedback.filterUnread')) + '</option><option value="all">' + esc(t('feedback.filterAll')) + '</option>'
+        + '<option value="open">' + esc(t('feedback.filterOpen')) + '</option><option value="replied">' + esc(t('feedback.filterReplied')) + '</option><option value="ignored">' + esc(t('feedback.filterIgnored')) + '</option>'
+        + '</select>'
+        + '<span class="text-muted" id="fbAdminTotalLabel"></span>'
+        + '</div>'
+        + '<div id="fbAdminList" class="text-muted">' + esc(t('common.loading')) + '</div>'
+        + '</div>';
+    // 注：[data-href] 点击由 router.js 的 document 级事件委托统一处理，无需在此重复绑定
+    document.getElementById('fbAdminFilter').onchange = loadAdminFeedback;
+    document.getElementById('fbAdminMarkAll').onclick = function() {
+        if (!confirm(t('confirm.markAllFeedbackRead'))) return;
+        API.adminMarkAllReadFeedback().then(function(r) {
+            showToast(t('toast.markedNRead', { n: (r.marked || 0) }));
+            loadAdminFeedback();
+            refreshFeedbackUnreadBadge();
+        }).catch(function(err) { showToast(err.message || t('toast.failGeneric'), 'error'); });
+    };
+    loadAdminFeedback();
+}
+
+function loadAdminFeedback() {
+    var listEl = document.getElementById('fbAdminList');
+    var label = document.getElementById('fbAdminTotalLabel');
+    if (!listEl) return;
+    var filter = (document.getElementById('fbAdminFilter') || {}).value || 'unread';
+    listEl.textContent = t('common.loading');
+    API.adminListFeedback({ filter: filter, limit: 200, offset: 0 }).then(function(r) {
+        var items = r.items || [];
+        if (label) label.textContent = t('feedback.adminTotal', { total: (r.total || 0), unread: (r.unread_total || 0) });
+        refreshFeedbackUnreadBadge(r.unread_total || 0);
+        if (!items.length) {
+            listEl.innerHTML = '<div class="card" style="padding:24px;text-align:center;color:#94a3b8">' + t('feedback.adminEmpty') + '</div>';
+            return;
+        }
+        listEl.innerHTML = items.map(function(it) {
+            var who = it.submitter_display || it.submitter_username || t('feedback.userRef', { id: it.user_id });
+            var unread = it.admin_read_at ? '' : '<span style="color:#fbbf24;margin-left:6px">' + esc(t('feedback.unreadMarker')) + '</span>';
+            var actions = ''
+                + '<button type="button" class="btn btn-sm btn-primary" data-fb-reply="' + it.id + '">' + esc(t('feedback.reply')) + '</button> '
+                + (it.status === 'ignored'
+                    ? '<button type="button" class="btn btn-sm" data-fb-reopen="' + it.id + '">' + esc(t('feedback.restore')) + '</button>'
+                    : '<button type="button" class="btn btn-sm" data-fb-ignore="' + it.id + '">' + esc(t('feedback.ignore')) + '</button>');
+            var replies = (it.replies || []).map(function(rp) {
+                var rwho = rp.admin_display || rp.admin_username || t('feedback.adminRef', { id: rp.admin_user_id });
+                return '<div class="card" style="margin:8px 0 0;padding:10px 14px;background:rgba(99,102,241,0.10);border-left:3px solid #6366f1">'
+                    + '<div class="text-muted" style="font-size:12px;margin-bottom:6px">' + _fbEsc(rwho) + ' · ' + _fbEsc(formatTimeShort(rp.created_at))
+                    + ' <button type="button" class="btn btn-xs btn-danger" data-fb-rdel="' + rp.id + '" style="margin-left:8px;padding:2px 8px;font-size:11px">' + esc(t('feedback.recallReplyBtn')) + '</button>'
+                    + '</div>'
+                    + '<div class="md-body">' + _fbMd(rp.content) + '</div></div>';
+            }).join('');
+            return '<div class="card" style="margin-bottom:12px"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">'
+                + '<h4 style="margin:0">#' + it.id + ' ' + _fbEsc(it.title || t('feedback.noTitle')) + unread + '</h4>'
+                + '<span style="font-size:12px">' + _fbCatLabel(it.category) + ' · ' + _fbStatusLabel(it.status) + '</span>'
+                + '</div>'
+                + '<div style="padding:10px 16px 12px">'
+                + '<div class="text-muted" style="font-size:12px;margin-bottom:8px">' + esc(t('feedback.from')) + ' <strong>' + _fbEsc(who) + '</strong>'
+                + (it.submitter_email ? ' &lt;' + _fbEsc(it.submitter_email) + '&gt;' : '')
+                + ' · ' + _fbEsc(formatTimeShort(it.created_at))
+                + (it.is_ai_submitted ? ' · <span style="color:#a5b4fc">' + esc(t('feedback.aiSubmitted')) + '</span>' : '') + '</div>'
+                + '<div class="md-body">' + _fbMd(it.content) + '</div>'
+                + replies
+                + '<div style="margin-top:10px">' + actions + '</div>'
+                + '<div id="fbReplyWrap_' + it.id + '" style="display:none;margin-top:10px"></div>'
+                + '</div></div>';
+        }).join('');
+        listEl.querySelectorAll('[data-fb-reply]').forEach(function(b) {
+            b.onclick = function() { _showAdminReplyForm(parseInt(b.getAttribute('data-fb-reply'), 10)); };
+        });
+        listEl.querySelectorAll('[data-fb-ignore]').forEach(function(b) {
+            b.onclick = function() {
+                var id = parseInt(b.getAttribute('data-fb-ignore'), 10);
+                API.adminIgnoreFeedback(id).then(function() { showToast(t('toast.ignoredN', { id: id })); loadAdminFeedback(); })
+                    .catch(function(err) { showToast(err.message || t('toast.failGeneric'), 'error'); });
+            };
+        });
+        listEl.querySelectorAll('[data-fb-reopen]').forEach(function(b) {
+            b.onclick = function() {
+                var id = parseInt(b.getAttribute('data-fb-reopen'), 10);
+                API.adminReopenFeedback(id).then(function() { showToast(t('toast.reopenedN', { id: id })); loadAdminFeedback(); })
+                    .catch(function(err) { showToast(err.message || t('toast.failGeneric'), 'error'); });
+            };
+        });
+        listEl.querySelectorAll('[data-fb-rdel]').forEach(function(b) {
+            b.onclick = function() {
+                var rid = parseInt(b.getAttribute('data-fb-rdel'), 10);
+                if (!confirm(t('confirm.recallReplyPhysical'))) return;
+                API.adminDeleteFeedbackReply(rid).then(function() { showToast(t('toast.replyRecalled')); loadAdminFeedback(); })
+                    .catch(function(err) { showToast(err.message || t('toast.failGeneric'), 'error'); });
+            };
+        });
+    }).catch(function(e) {
+        listEl.innerHTML = '<div class="text-danger">' + esc(t('feedback.loadFailed', { message: e.message || e })) + '</div>';
+    });
+}
+
+function _showAdminReplyForm(fbId) {
+    var wrap = document.getElementById('fbReplyWrap_' + fbId);
+    if (!wrap) return;
+    wrap.style.display = '';
+    wrap.innerHTML = '<textarea class="form-control" id="fbReplyContent_' + fbId + '" rows="4" placeholder="' + esc(t('feedback.replyPlaceholder')) + '"></textarea>'
+        + '<div style="margin-top:6px;display:flex;gap:8px"><button type="button" class="btn btn-primary btn-sm" id="fbReplySubmit_' + fbId + '">' + esc(t('feedback.sendReply')) + '</button>'
+        + '<button type="button" class="btn btn-sm" id="fbReplyCancel_' + fbId + '">' + esc(t('feedback.cancel')) + '</button></div>';
+    document.getElementById('fbReplyCancel_' + fbId).onclick = function() { wrap.style.display = 'none'; wrap.innerHTML = ''; };
+    document.getElementById('fbReplySubmit_' + fbId).onclick = function() {
+        var c = (document.getElementById('fbReplyContent_' + fbId).value || '').trim();
+        if (!c) { showToast(t('toast.fillReplyContent'), 'error'); return; }
+        this.disabled = true;
+        var self = this;
+        API.adminReplyFeedback(fbId, { content: c }).then(function() {
+            showToast(t('toast.repliedToN', { id: fbId }));
+            loadAdminFeedback();
+        }).catch(function(err) {
+            showToast(err.message || t('toast.failGeneric'), 'error');
+        }).finally(function() { self.disabled = false; });
+    };
+}
+
+function refreshFeedbackUnreadBadge(count) {
+    var badge = document.getElementById('feedbackUnreadBadge');
+    if (!badge) return;
+    if (typeof count !== 'number') {
+        if (!isAdmin()) { badge.style.display = 'none'; return; }
+        API.adminListFeedback({ filter: 'unread', limit: 1, offset: 0 }).then(function(r) {
+            refreshFeedbackUnreadBadge(r.unread_total || 0);
+        }).catch(function() { badge.style.display = 'none'; });
+        return;
+    }
+    if (count > 0) {
+        badge.textContent = count > 99 ? '99+' : String(count);
+        badge.style.display = '';
+        badge.style.cssText += ';background:#ef4444;color:#fff;border-radius:10px;padding:1px 6px;font-size:11px;margin-left:6px;line-height:1.4';
+    } else {
+        badge.style.display = 'none';
+    }
+}
+
+// ── 登录页留言板（管理员后台） ──
+function renderLoginBoardAdminPage() {
+    if (!isAdmin()) { Router.navigate('/feedback'); return; }
+    renderLayout();
+    var el = getPageEl();
+    el.innerHTML = '<div class="topbar"><h2>' + esc(t('nav.loginBoard')) + '</h2><div class="topbar-actions">'
+        + '<button type="button" class="btn btn-sm" data-href="/feedback/admin">' + esc(t('nav.feedbackAdmin')) + '</button>'
+        + '<button type="button" class="btn btn-sm" data-href="/feedback">' + esc(t('nav.feedback')) + '</button>'
+        + '</div></div>'
+        + '<div class="page-content">'
+        + _renderLoginWidgetSettingsCard()
+        + '<p class="text-muted" style="margin-bottom:12px">' + t('feedback.loginBoardIntro') + '</p>'
+        + '<div style="display:flex;gap:8px;margin-bottom:12px;align-items:center">'
+        + '<span class="text-muted">' + esc(t('feedback.statusField')) + '</span>'
+        + '<select class="form-control" id="lbAdminStatus" style="max-width:160px">'
+        + '<option value="">' + esc(t('feedback.statusAll')) + '</option><option value="pending">' + esc(t('feedback.lbStatus.pending')) + '</option><option value="approved">' + esc(t('feedback.lbStatus.approved')) + '</option><option value="hidden">' + esc(t('feedback.lbStatus.hidden')) + '</option>'
+        + '</select>'
+        + '</div>'
+        + '<div id="lbAdminList" class="text-muted">' + esc(t('common.loading')) + '</div>'
+        + '</div>';
+    // 注：[data-href] 点击由 router.js 的 document 级事件委托统一处理，无需在此重复绑定
+    document.getElementById('lbAdminStatus').onchange = loadAdminLoginBoard;
+    _loadLoginWidgetSettings();
+    _bindLoginWidgetSettings();
+    loadAdminLoginBoard();
+}
+
+// ── 登录页公开浮窗 / 公开留言区显示开关（管理员配置） ──
+var LOGIN_WIDGET_SETTING_KEYS = [
+    { key: 'login_widget_message_board_enabled', labelKey: 'feedback.loginWidget.messageBoard' },
+    { key: 'login_widget_public_messages_enabled', labelKey: 'feedback.loginWidget.publicMessages' },
+];
+
+function _renderLoginWidgetSettingsCard() {
+    var rows = LOGIN_WIDGET_SETTING_KEYS.map(function(it) {
+        return ''
+            + '<label class="lw-toggle-row" style="display:flex;align-items:center;gap:10px;padding:6px 0;font-size:13px;cursor:pointer">'
+            +   '<input type="checkbox" data-lw-key="' + it.key + '" disabled>'
+            +   '<span>' + esc(t(it.labelKey)) + '</span>'
+            +   '<span class="text-muted" style="font-size:11.5px;margin-left:auto">' + it.key + '</span>'
+            + '</label>';
+    }).join('');
+    return ''
+        + '<div class="card" style="margin-bottom:16px">'
+        +   '<div class="card-header" style="display:flex;align-items:center;justify-content:space-between">'
+        +     '<h4 style="margin:0">' + esc(t('feedback.loginWidget.cardTitle')) + '</h4>'
+        +     '<span id="lwSettingsStatus" class="text-muted" style="font-size:12px">' + esc(t('feedback.loginWidget.readLoading')) + '</span>'
+        +   '</div>'
+        +   '<div style="padding:8px 16px 14px">'
+        +     '<p class="text-muted" style="margin:4px 0 8px;font-size:12.5px">' + t('feedback.loginWidget.cardDesc') + '</p>'
+        +     rows
+        +   '</div>'
+        + '</div>';
+}
+
+function _loadLoginWidgetSettings() {
+    var status = document.getElementById('lwSettingsStatus');
+    if (status) status.textContent = t('feedback.loginWidget.readLoading');
+    API.getSettings().then(function(r) {
+        var map = {};
+        ((r && r.settings) || []).forEach(function(s) { map[s.key] = s.value; });
+        LOGIN_WIDGET_SETTING_KEYS.forEach(function(it) {
+            var cb = document.querySelector('[data-lw-key="' + it.key + '"]');
+            if (!cb) return;
+            // 默认开启：缺值或非"假值"都视为 true，与公开端点的解析保持一致
+            var raw = map[it.key];
+            var truthy = (raw == null || String(raw).trim() === '')
+                ? true
+                : ['1', 'true', 'yes', 'on', 'y', 't'].indexOf(String(raw).trim().toLowerCase()) !== -1;
+            cb.checked = !!truthy;
+            cb.disabled = false;
+        });
+        if (status) status.textContent = t('feedback.loginWidget.readReady');
+    }).catch(function(err) {
+        if (status) status.textContent = t('feedback.loginWidget.readFailed', { message: (err && err.message) || err });
+    });
+}
+
+function _bindLoginWidgetSettings() {
+    LOGIN_WIDGET_SETTING_KEYS.forEach(function(it) {
+        var cb = document.querySelector('[data-lw-key="' + it.key + '"]');
+        if (!cb) return;
+        cb.onchange = function() {
+            var prev = !cb.checked;
+            cb.disabled = true;
+            API.updateSetting(it.key, cb.checked ? 'true' : 'false').then(function() {
+                showToast(t('toast.loginWidgetSaved', { label: t(it.labelKey), on: cb.checked ? t('toast.shown') : t('toast.hidden') }));
+            }).catch(function(err) {
+                cb.checked = prev;
+                showToast(err.message || t('toast.saveFailed'), 'error');
+            }).finally(function() { cb.disabled = false; });
+        };
+    });
+}
+
+function loadAdminLoginBoard() {
+    var listEl = document.getElementById('lbAdminList');
+    if (!listEl) return;
+    var st = (document.getElementById('lbAdminStatus') || {}).value || '';
+    listEl.textContent = t('common.loading');
+    API.adminListLoginBoard({ status: st || undefined, limit: 200, offset: 0 }).then(function(r) {
+        var items = r.items || [];
+        if (!items.length) { listEl.innerHTML = '<div class="card" style="padding:24px;text-align:center;color:#94a3b8">' + t('feedback.lbEmpty') + '</div>'; return; }
+        listEl.innerHTML = items.map(function(m) {
+            return _renderAdminLoginBoardItem(m);
+        }).join('');
+        _bindAdminLoginBoardEvents(listEl);
+    }).catch(function(e) {
+        listEl.innerHTML = '<div class="text-danger">' + esc(t('feedback.loadFailed', { message: e.message || e })) + '</div>';
+    });
+}
+
+function _renderAdminLoginBoardItem(m) {
+    var nick = m.nickname || t('feedback.anonymous');
+    var time = formatTimeShort(m.created_at);
+    var ip = m.ip_address ? t('feedback.ipPart', { ip: _fbEsc(m.ip_address) }) : '';
+    var stLab = { pending: t('feedback.lbStatus.pending'), approved: t('feedback.lbStatus.approved'), hidden: t('feedback.lbStatus.hidden') };
+    var statusOpts = ['pending', 'approved', 'hidden'].map(function(s) {
+        return '<option value="' + s + '"' + (m.status === s ? ' selected' : '') + '>' + _fbEsc(stLab[s] || s) + '</option>';
+    }).join('');
+    var replies = (m.replies || []).map(function(rp) {
+        return '<div class="card" style="margin:8px 0 0;padding:10px 14px;background:rgba(99,102,241,0.10);border-left:3px solid #6366f1">'
+            + '<div class="text-muted" style="font-size:12px;margin-bottom:6px">' + t('feedback.adminReplyLine', { time: _fbEsc(formatTimeShort(rp.created_at)) })
+            + ' · ' + esc(t('feedback.showOnLoginPage')) + '：<input type="checkbox" data-lb-show="' + rp.id + '"' + (rp.show_on_login ? ' checked' : '') + '>'
+            + ' <button type="button" class="btn btn-xs btn-danger" data-lb-del="' + rp.id + '" style="margin-left:8px;padding:2px 8px;font-size:11px">' + esc(t('feedback.delete')) + '</button>'
+            + '</div>'
+            + '<div class="md-body">' + _fbMd(rp.content) + '</div></div>';
+    }).join('');
+    return '<div class="card" style="margin-bottom:12px"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">'
+        + '<h4 style="margin:0">#' + m.id + ' ' + _fbEsc(nick) + '</h4>'
+        + '<span style="font-size:12px">' + _fbEsc(time) + ip + '</span>'
+        + '</div>'
+        + '<div style="padding:10px 16px 12px">'
+        + '<div class="md-body">' + _fbMd(m.content) + '</div>'
+        + replies
+        + '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+        + '<label style="font-size:12.5px"><input type="checkbox" data-lb-show="' + m.id + '"' + (m.show_on_login ? ' checked' : '') + '> ' + esc(t('feedback.showOnLoginChk')) + '</label>'
+        + '<label style="font-size:12.5px">' + esc(t('feedback.statusLabel')) + '<select class="form-control" data-lb-status="' + m.id + '" style="display:inline-block;width:auto;margin-left:4px">' + statusOpts + '</select></label>'
+        + '<button type="button" class="btn btn-sm btn-primary" data-lb-reply="' + m.id + '">' + esc(t('feedback.lbReply')) + '</button>'
+        + '<button type="button" class="btn btn-sm btn-danger" data-lb-del-msg="' + m.id + '">' + esc(t('feedback.deleteMessage')) + '</button>'
+        + '</div>'
+        + '<div id="lbReplyWrap_' + m.id + '" style="display:none;margin-top:10px"></div>'
+        + '</div></div>';
+}
+
+function _bindAdminLoginBoardEvents(listEl) {
+    listEl.querySelectorAll('[data-lb-show]').forEach(function(cb) {
+        cb.onchange = function() {
+            var id = parseInt(cb.getAttribute('data-lb-show'), 10);
+            API.adminPatchLoginBoardRaw(id, { show_on_login: cb.checked }).catch(function(err) {
+                showToast(err.message || t('toast.failGeneric'), 'error'); cb.checked = !cb.checked;
+            });
+        };
+    });
+    listEl.querySelectorAll('[data-lb-status]').forEach(function(sel) {
+        sel.onchange = function() {
+            var id = parseInt(sel.getAttribute('data-lb-status'), 10);
+            API.adminPatchLoginBoardRaw(id, { status: sel.value }).then(function() {
+                showToast(t('toast.statusUpdated'));
+            }).catch(function(err) { showToast(err.message || t('toast.failGeneric'), 'error'); });
+        };
+    });
+    listEl.querySelectorAll('[data-lb-reply]').forEach(function(b) {
+        b.onclick = function() {
+            var id = parseInt(b.getAttribute('data-lb-reply'), 10);
+            var wrap = document.getElementById('lbReplyWrap_' + id);
+            wrap.style.display = '';
+            wrap.innerHTML = '<textarea class="form-control" id="lbReplyContent_' + id + '" rows="3" placeholder="' + esc(t('feedback.lbReplyPlaceholder')) + '"></textarea>'
+                + '<div style="margin-top:6px;display:flex;gap:8px;align-items:center">'
+                + '<label style="font-size:12.5px"><input type="checkbox" id="lbReplyShow_' + id + '" checked> ' + esc(t('feedback.showOnLoginAlso')) + '</label>'
+                + '<button type="button" class="btn btn-primary btn-sm" id="lbReplySubmit_' + id + '">' + esc(t('feedback.sendShort')) + '</button>'
+                + '<button type="button" class="btn btn-sm" id="lbReplyCancel_' + id + '">' + esc(t('feedback.cancel')) + '</button></div>';
+            document.getElementById('lbReplyCancel_' + id).onclick = function() { wrap.style.display = 'none'; wrap.innerHTML = ''; };
+            document.getElementById('lbReplySubmit_' + id).onclick = function() {
+                var c = (document.getElementById('lbReplyContent_' + id).value || '').trim();
+                if (!c) { showToast(t('toast.fillReplyShort'), 'error'); return; }
+                var show = document.getElementById('lbReplyShow_' + id).checked;
+                API.adminReplyLoginBoard(id, { content: c, show_on_login: show }).then(function() {
+                    showToast(t('toast.replied')); loadAdminLoginBoard();
+                }).catch(function(err) { showToast(err.message || t('toast.failGeneric'), 'error'); });
+            };
+        };
+    });
+    listEl.querySelectorAll('[data-lb-del]').forEach(function(b) {
+        b.onclick = function() {
+            var id = parseInt(b.getAttribute('data-lb-del'), 10);
+            if (!confirm(t('confirm.deleteThisReply'))) return;
+            API.adminDeleteLoginBoard(id).then(function() { showToast(t('toast.deleted')); loadAdminLoginBoard(); })
+                .catch(function(err) { showToast(err.message || t('toast.failGeneric'), 'error'); });
+        };
+    });
+    listEl.querySelectorAll('[data-lb-del-msg]').forEach(function(b) {
+        b.onclick = function() {
+            var id = parseInt(b.getAttribute('data-lb-del-msg'), 10);
+            if (!confirm(t('confirm.deleteMessageThread', { id: id }))) return;
+            API.adminDeleteLoginBoard(id).then(function() { showToast(t('toast.deleted')); loadAdminLoginBoard(); })
+                .catch(function(err) { showToast(err.message || t('toast.failGeneric'), 'error'); });
+        };
+    });
+}
+
+// ── 路由注册与启动 ──
+Router.register('/login', renderLoginPage);
+Router.register('/register', renderRegisterPage);
+Router.register('/forgot-password', renderForgotPasswordPage);
+Router.register('/reset-password', renderResetPasswordPage);
+Router.register('/unlock', renderUnlockPage);
+Router.register('/dashboard', renderDashboard);
+Router.register('/hosts', renderHostsList);
+Router.register('/hosts/:id', function(id) { renderHostDetail(parseInt(id, 10)); });
+Router.register('/credentials', renderCredentialsPage);
+Router.register('/host-groups', renderHostGroupsPage);
+Router.register('/batch', renderBatchPage);
+Router.register('/best-practices', renderBestPracticesPage);
+Router.register('/maintenance-history', renderMaintenanceHistoryPage);
+Router.register('/files', renderFilesPage);
+Router.register('/ai', renderAIPage);
+Router.register('/ai-mobile', renderAIMobilePage);
+Router.register('/mcp-servers', renderMcpConfigPage);
+Router.register('/skills', renderUserSkillsPage);
+Router.register('/settings', renderSettings);
+Router.register('/feedback', renderFeedbackPage);
+Router.register('/feedback/admin', renderFeedbackAdminPage);
+Router.register('/feedback/admin/login-board', renderLoginBoardAdminPage);
+Router.register('/local', renderLocalPage);
+Router.register('/users', renderUsers);
+Router.register('/logs', renderLogs);
+Router.register('/triggered-tasks', renderTriggeredTasksPage);
+Router.register('/scheduled-tasks', renderScheduledTasksPage);
+
+document.addEventListener('edgeops-page-restored', function(e) {
+    var path = e.detail && e.detail.path;
+    if (path === '/ai-mobile') activateAIMobileLayout();
+    else setEdgeopsMobileMode(false);
+    if (path === '/hosts' && typeof refreshActiveHostsListDOM === 'function') refreshActiveHostsListDOM();
+    if (path === '/host-groups' && typeof refreshHostGroupsTree === 'function') refreshHostGroupsTree();
+    if (path && path.indexOf('/hosts/') === 0 && path !== '/hosts') {
+        var match = path.match(/^\/hosts\/(\d+)$/);
+        if (match) {
+            var hostId = parseInt(match[1], 10);
+            var panel = document.getElementById('hostAiPanel');
+            if (panel && !panel.querySelector('#hostAiSessionPromptModal')) {
+                API.getHost(hostId).then(function(data) {
+                    var h = data.host || {};
+                    var hn = (h.name || h.host || '').trim() || t('hostDetail.defaultName', { id: hostId });
+                    if (typeof initHostAIPanel === 'function') initHostAIPanel(hostId, hn, panel, h);
+                }).catch(function() {});
+            }
+        }
+    }
+    if (path && window._edgeopsRefitByPath && window._edgeopsRefitByPath[path]) window._edgeopsRefitByPath[path]();
+    if (typeof edgeopsScrollRestoredAiChatToBottom === 'function') edgeopsScrollRestoredAiChatToBottom(path);
+});
+edgeopsSyncMobileViewportHeight();
+window.addEventListener('resize', edgeopsSyncMobileViewportHeight);
+window.addEventListener('orientationchange', edgeopsSyncMobileViewportHeight);
+document.addEventListener('focusin', function() {
+    edgeopsRefreshMobileChatFocusState();
+});
+document.addEventListener('focusout', function() {
+    setTimeout(edgeopsRefreshMobileChatFocusState, 80);
+});
+if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', function() {
+        edgeopsSyncMobileViewportHeight();
+        edgeopsRefreshMobileChatFocusState();
+    });
+    window.visualViewport.addEventListener('scroll', function() {
+        edgeopsSyncMobileViewportHeight();
+        edgeopsRefreshMobileChatFocusState();
+    });
+}
+function edgeopsStopBackgroundPollsForPath(path) {
+    if (!path) return;
+    if (path === '/ai' && typeof aiPendingPollTimer !== 'undefined' && aiPendingPollTimer) {
+        clearInterval(aiPendingPollTimer);
+        aiPendingPollTimer = null;
+    }
+    if (path.indexOf('/hosts/') === 0 && window._hostAiPendingPollTimer) {
+        clearInterval(window._hostAiPendingPollTimer);
+        window._hostAiPendingPollTimer = null;
+    }
+}
+document.addEventListener('edgeops-page-leave', function(e) {
+    if (e.detail && e.detail.path) edgeopsStopBackgroundPollsForPath(e.detail.path);
+});
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function() { Router.init(); });
+} else {
+    Router.init();
+}

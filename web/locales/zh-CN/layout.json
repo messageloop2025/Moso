@@ -1,0 +1,14 @@
+{
+  "layout": {
+    "enterMobileTitle": "进入手机版",
+    "enterMobileMessage": "检测到当前是手机尺寸界面，是否进入 AI 助手手机版？之后仍可切回桌面版。",
+    "expandTerminal": "展开终端",
+    "hideTerminal": "隐藏终端",
+    "collapseTerminal": "收起终端",
+    "aiMobilePageTitle": "AI 助手 · 手机版",
+    "aiMobileSessionBtn": "会话",
+    "aiMobileTerminalToggle": "收起终端",
+    "aiMobileDesktop": "桌面版",
+    "aiMobileSignOut": "退出登录"
+  }
+}

@@ -1,0 +1,4 @@
+edgeops.config.json
+edgeops.env
+.env
+*.local.json

@@ -1,0 +1,109 @@
+{
+  "id": "claw-ops",
+  "name": "Moso",
+  "description": "Moso (claw-ops)：OpenClaw 侧 Moso 运维。核心工具内置；P1/P2 扩展由服务端 manifest 启动时动态 registerTool，提示词后台可更新。注意：下方 contracts.tools 仅为 baseline 快照（离线静态校验用），运行期以服务端 /api/integration/claw-ops/manifest 的 extended_tools 为权威源，Moso 新增扩展工具后该列表可能滞后，无需逐项同步。",
+  "version": "1.1.0",
+  "contracts": {
+    "tools": [
+      "edgeops_gateway_ping",
+      "edgeops_list_hosts",
+      "edgeops_search_hosts",
+      "edgeops_search_hosts_by_prompt",
+      "edgeops_get_host",
+      "edgeops_get_host_prompt",
+      "edgeops_list_host_tags",
+      "edgeops_host_alive",
+      "edgeops_host_stats",
+      "edgeops_search_best_practices",
+      "edgeops_ops_chat",
+      "edgeops_ssh_channel_create",
+      "edgeops_ssh_channel_list",
+      "edgeops_ssh_channel_info",
+      "edgeops_ssh_channel_send",
+      "edgeops_ssh_channel_read_lines",
+      "edgeops_ssh_channel_read",
+      "edgeops_ssh_channel_has_new",
+      "edgeops_ssh_channel_close",
+      "edgeops_ssh_channel_dump",
+      "edgeops_ssh_channel_close_batch",
+      "edgeops_read_chat_data",
+      "edgeops_invoke",
+      "edgeops_ssh_execute",
+      "edgeops_list_host_groups",
+      "edgeops_get_host_groups_tree",
+      "edgeops_get_group_hosts",
+      "edgeops_probe_host_capabilities",
+      "edgeops_get_host_capabilities",
+      "edgeops_update_host_prompt",
+      "edgeops_append_host_prompt",
+      "edgeops_list_maintenance_history",
+      "edgeops_list_operation_logs",
+      "edgeops_remote_fs_list",
+      "edgeops_remote_fs_read",
+      "edgeops_remote_fs_write",
+      "edgeops_list_batch_jobs",
+      "edgeops_get_batch_job",
+      "edgeops_list_scheduled_tasks",
+      "edgeops_get_scheduled_task",
+      "edgeops_list_triggered_tasks",
+      "edgeops_get_triggered_task",
+      "edgeops_list_session_messages"
+    ]
+  },
+  "uiHints": {
+    "openclawConfigRequired": {
+      "label": "openclaw.json 必配（否则无法工作）",
+      "help": "本插件须在 OpenClaw 配置文件（通常为 ~/.openclaw/openclaw.json）中完整登记后才能使用 edgeops_*：① plugins.allow 为可选；若已设置非空白名单则必须含 \"claw-ops\"，否则本插件不可加载（未设或为空时仍可能被自动发现，官方建议显式列出可信 id）；② plugins.entries.claw-ops 含 enabled: true、hooks.allowPromptInjection（强烈建议 true，false 会阻止 before_prompt_build 等注入类钩子）、以及 config；③ config.accessToken 为必填，填 Moso 登录 JWT 或个人 API Token（eop_…），无令牌则工具调用会失败；④ config.baseUrl 可修改为自建 Moso 根地址（无尾斜杠），省略时插件内默认 https://ops.pinglan.cc；⑤ appendOpenClawUiHints、blockLocalMosoExec 只写在 plugins.entries.claw-ops.config 下，不要写在 hooks 里；⑥ 若 agents/tools 使用 tools.profile: coding（或等价精简集），须在 tools.alsoAllow 中加入 \"claw-ops\"，否则模型看不到插件工具。完整可合并示例见包内 openclaw.claw-ops.example.json。"
+    },
+    "baseUrl": {
+      "label": "Moso base URL",
+      "help": "可选。省略时默认 https://ops.pinglan.cc；自建/其它环境请填写完整根地址，勿带末尾斜杠。",
+      "placeholder": "https://ops.pinglan.cc（可留空使用默认）"
+    },
+    "accessToken": {
+      "label": "Bearer token",
+      "help": "Login JWT or personal API token (eop_...) from Moso system settings",
+      "sensitive": true,
+      "placeholder": "eop_..."
+    },
+    "appendOpenClawUiHints": {
+      "label": "Append OpenClaw display hints",
+      "help": "默认开启：每次 ops-chat 会在消息末尾附加「禁用 Mermaid/ECharts 等、仅用受限 Markdown」的说明，便于与 OpenClaw 展示能力对齐。若下游可渲染高级图表可关闭。"
+    },
+    "blockLocalMosoExec": {
+      "label": "Block local shell → Moso",
+      "help": "默认开启：在 before_tool_call 拦截本机 exec/PowerShell/curl 等对已配置 Moso 的 HTTP，迫使使用 edgeops_* 工具。调试 Moso HTTP 时可关闭。"
+    },
+    "allowPromptInjection": {
+      "label": "Allow prompt hooks (OpenClaw)",
+      "help": "写在 hooks 下（非 config）。建议 true：系统提示中强调须走 edgeops_*。路径：plugins.entries.claw-ops.hooks.allowPromptInjection。另：appendOpenClawUiHints / blockLocalMosoExec 必须写在 plugins.entries.claw-ops.config 下。"
+    },
+    "execApprovalsNote": {
+      "label": "Exec 审批弹窗（说明）",
+      "help": "插件**不能**在安装时自动关闭 OpenClaw 的 exec 安全策略。模型若用 bash/PowerShell 调 HTTP 而非 edgeops_list_hosts / edgeops_ops_chat，会触发 allowlist + on-miss 弹窗。若 agents/tools 使用 tools.profile: coding（或等价精简资料），须在 openclaw.json 的 tools.alsoAllow（或对应 agent 的 tools.alsoAllow）中加入插件 id「claw-ops」或具体工具名，否则 edgeops_* 不会出现在模型工具列表中。其余做法：(1) 让模型优先用本插件工具；(2) 在本机 ~/.openclaw/exec-approvals.json 为 agents.main 配置 security=full、ask=off（仅可信环境）；(3) 在弹窗中选 Always allow 写入白名单。"
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "baseUrl": {
+        "type": "string",
+        "minLength": 1,
+        "description": "可修改。Moso HTTP 根地址（无尾斜杠）；自建请填实际域名。省略时默认 https://ops.pinglan.cc。"
+      },
+      "accessToken": {
+        "type": "string",
+        "description": "必填。Moso Bearer：JWT 或 eop_ API token。未配置则 edgeops_* 无法调用。勿提交到公共仓库。"
+      },
+      "appendOpenClawUiHints": {
+        "type": "boolean",
+        "description": "默认 true：edgeops_ops_chat 自动附加 OpenClaw 展示约束（禁用高级图表、收敛为普通 Markdown）。设为 false 则不加后缀。"
+      },
+      "blockLocalMosoExec": {
+        "type": "boolean",
+        "description": "默认 true：拦截本机 exec 类工具中对 Moso 的 HTTP 客户端调用，强制走 edgeops_* 插件。"
+      }
+    }
+  }
+}

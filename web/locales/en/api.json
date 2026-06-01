@@ -1,0 +1,19 @@
+{
+  "api": {
+    "sessionExpired": "Your session has expired. Please sign in again.",
+    "notLoggedIn": "Not signed in, or the session has expired",
+    "unauthenticated": "Not signed in",
+    "requestFailed": "Request failed",
+    "requestFailedWithStatus": "Request failed ({{status}})",
+    "badJson": "The server response was not valid JSON. Please try again later.",
+    "deleteFailed": "Delete failed",
+    "uploadFailed": "Upload failed",
+    "uploadFailedWithStatus": "Upload failed ({{status}})",
+    "downloadFailed": "Download failed",
+    "saveFailed": "Save failed",
+    "renameFailed": "Rename failed",
+    "operationFailed": "Operation failed",
+    "invalidSession": "Invalid session",
+    "streamEndedUnexpectedly": "AI stream ended before completion. Please try again."
+  }
+}

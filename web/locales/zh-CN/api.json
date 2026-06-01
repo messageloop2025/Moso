@@ -1,0 +1,19 @@
+{
+  "api": {
+    "sessionExpired": "登录已过期，请重新登录",
+    "notLoggedIn": "未登录或登录已过期",
+    "unauthenticated": "未登录",
+    "requestFailed": "请求失败",
+    "requestFailedWithStatus": "请求失败 ({{status}})",
+    "badJson": "服务器返回格式错误，请稍后重试",
+    "deleteFailed": "删除失败",
+    "uploadFailed": "上传失败",
+    "uploadFailedWithStatus": "上传失败 ({{status}})",
+    "downloadFailed": "下载失败",
+    "saveFailed": "保存失败",
+    "renameFailed": "改名失败",
+    "operationFailed": "操作失败",
+    "invalidSession": "无效的会话",
+    "streamEndedUnexpectedly": "AI 流式响应未正常结束，请重试"
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "baseUrl": "https://ops.pinglan.cc",
+  "accessToken": "REPLACE_WITH_EDGEOPS_JWT_OR_eop_TOKEN"
+}

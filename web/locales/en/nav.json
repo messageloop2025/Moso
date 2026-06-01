@@ -1,0 +1,32 @@
+{
+  "nav": {
+    "subtitle": "AI Resource Operations",
+    "dashboard": "Dashboard",
+    "aiAssistant": "AI Assistant",
+    "hosts": "Host Management",
+    "credentials": "Credentials",
+    "hostGroups": "Service Tree",
+    "maintenanceHistory": "Maintenance History",
+    "bestPractices": "Best Practices",
+    "filesystem": "File System",
+    "batch": "Batch Jobs",
+    "triggeredTasks": "Trigger Tasks",
+    "scheduledTasks": "Scheduled Jobs",
+    "localAdmin": "This Host",
+    "userMgmt": "User Management",
+    "feedback": "Feedback",
+    "feedbackAdmin": "Feedback (Admin)",
+    "loginBoard": "Message Moderation",
+    "settings": "Settings",
+    "mcpConfig": "MCP Servers",
+    "skills": "SKILLS Config",
+    "logs": "Audit Log",
+    "productIntro": "Product Tour",
+    "productIntroTitle": "Product tour (new window, no login required)",
+    "sidebarToggle": "Collapse / expand menu",
+    "changePassword": "Change password",
+    "logout": "Log out",
+    "menu": "Menu",
+    "aiMobile": "AI (Mobile)"
+  }
+}

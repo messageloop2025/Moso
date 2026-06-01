@@ -1,0 +1,47 @@
+{
+  "_comment": "毛竹 HTML artifact 自包含资源清单。后端在创建 artifact 时根据 packages.<name>.files 把文件复制到 artifact 的 libs_subdir/ 下；AI 在生成 HTML 时按 snippet 引用即可。新增包：在 packages 下加一项，并把对应 .js/.css 放进同名子目录。",
+  "version": 1,
+  "default_libs_subdir": "libs",
+  "packages": {
+    "echarts": {
+      "title": "Apache ECharts",
+      "version": "5.6.x",
+      "global": "echarts",
+      "description": "通用图表库（折线 / 柱状 / 饼 / 雷达 / 散点 / 热力 / 桑基 / 树图 / 关系图 / 地图 / 3D 等）。建议 init 时传 `{renderer:'svg'}` 以便导出。",
+      "files": ["echarts.min.js"],
+      "snippet": "<script src=\"./libs/echarts.min.js\"></script>"
+    },
+    "mermaid": {
+      "title": "Mermaid",
+      "version": "11.x",
+      "global": "mermaid",
+      "description": "用文本声明图：流程图 (flowchart)、时序图 (sequenceDiagram)、类图 (classDiagram)、状态图 (stateDiagram)、ER (erDiagram)、甘特 (gantt)、git graph、思维导图 (mindmap)。先 `mermaid.initialize({startOnLoad:false})` 再 `mermaid.render(id, source)`。",
+      "files": ["mermaid.min.js"],
+      "snippet": "<script src=\"./libs/mermaid.min.js\"></script>"
+    },
+    "markmap": {
+      "title": "Markmap",
+      "version": "2.3.x",
+      "global": "markmap",
+      "description": "Markdown 大纲 → 可交互思维导图。自带 d3.min.js（必须按列出顺序加载）。用法：`new markmap.Transformer().transform(md)` → `markmap.Markmap.create(svgEl, opts, root)`。",
+      "files": ["d3.min.js", "markmap-lib.iife.js", "markmap-view.js"],
+      "snippet": "<script src=\"./libs/d3.min.js\"></script>\n<script src=\"./libs/markmap-lib.iife.js\"></script>\n<script src=\"./libs/markmap-view.js\"></script>"
+    },
+    "d3": {
+      "title": "D3",
+      "version": "7.9.0",
+      "global": "d3",
+      "description": "底层 SVG/数据可视化原语。自定义图表、力导向图、地图等场景用。已被 markmap 内含一份；如果同时引 markmap 就不用单独引。",
+      "files": ["d3.min.js"],
+      "snippet": "<script src=\"./libs/d3.min.js\"></script>"
+    },
+    "html-to-image": {
+      "title": "html-to-image",
+      "version": "latest",
+      "global": "htmlToImage",
+      "description": "把 DOM 节点导出为 PNG / JPEG / SVG。常用 `htmlToImage.toPng(node).then(dataUrl => ...)`。需要导出按钮时引这个。",
+      "files": ["html-to-image.js"],
+      "snippet": "<script src=\"./libs/html-to-image.js\"></script>"
+    }
+  }
+}

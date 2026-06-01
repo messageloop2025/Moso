@@ -1,0 +1,90 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging（含发行生成物）
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+ENV/
+
+# Environment variables (secrets)
+.env
+.env.local
+.env.*.local
+
+# SQLite database（本地开发数据，不提交）
+edgeops.db
+edgeops.db-journal
+*.db-journal
+*.db-wal
+*.db-shm
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and temp
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local config overrides (如有)
+config.local.py
+local_config.py
+
+# 文件系统目录（用户上传、缓存等，不纳入版本库）
+web/fs/*
+!web/fs/.gitkeep
+!web/fs/README.md
+
+# 本地 / 临时目录
+aicd/

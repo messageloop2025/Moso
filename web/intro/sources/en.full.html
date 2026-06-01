@@ -1,0 +1,896 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Moso — Remote AI operations over SSH</title>
+    <meta name="description" content="Moso is an SSH-based remote AI operations system: host tree, AI sessions, terminal collaboration, batch jobs, scheduled and triggered tasks, and per-host AI prompts—so AI can work the way a real operations engineer would.">
+    <link rel="icon" type="image/png" href="/static/favicon.png">
+    <link rel="stylesheet" href="../style.css">
+    <link rel="alternate" hreflang="zh-CN" href="../">
+    <link rel="alternate" hreflang="en" href="./">
+</head>
+<body>
+    <!-- Nav -->
+    <nav class="nav">
+        <div class="container nav-inner">
+            <a href="/intro/en/" class="logo">
+                <span class="logo-dot"></span>
+                <span>Moso</span>
+            </a>
+            <div class="nav-links">
+                <a href="/intro/" style="color:#a8c8ff" title="中文">中文</a>
+                <a href="#start-here" style="color:#ffd9a8">Read me first</a>
+                <a href="#features">Features</a>
+                <a href="#ai">AI</a>
+                <a href="#multihost" style="color:#a8f0ff">Multi-host</a>
+                <a href="#architecture">Architecture</a>
+                <a href="#security">Security</a>
+                <a href="#tasks">Schedule / trigger</a>
+                <a href="#faq">FAQ</a>
+            </div>
+            <a href="/login" class="nav-cta">Sign in →</a>
+        </div>
+    </nav>
+
+    <!-- Hero -->
+    <section class="hero" id="hero">
+        <canvas id="heroCanvas"></canvas>
+        <div class="hero-glow g1"></div>
+        <div class="hero-glow g2"></div>
+        <div class="container hero-inner">
+            <span class="hero-badge">
+                <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#4ade80;box-shadow:0 0 8px #4ade80"></span>
+                SSH + AI Agent + function calling · works out of the box
+            </span>
+            <h1 class="hero-title">Let AI stand watch on your servers<br>the way a real operations engineer would</h1>
+            <p class="hero-sub">
+                Moso brings together the host tree, credential management, SSH terminals, the AI assistant, per-host and per-session prompts, batch jobs, and scheduled and triggered tasks in one lightweight web platform.
+                <strong style="color:#ffd9a8">AI chat is the main entry point for all operations</strong>—
+                once a model is configured, adding and removing hosts, running batches, troubleshooting, approvals, and scheduling all start in conversation. With 100+ tools (function calling), the model reads and writes terminals, hosts, files, and jobs directly, turning “natural language” into auditable operations.
+                <strong style="color:#a8f0ff">The same AI session can drive multiple machines at once</strong>—code on dev, build artifacts, test integration, deploy to prod, read signals from monitoring—one conversation can string the whole flow together. That is normal multi-host work here.
+            </p>
+            <div class="hero-actions">
+                <a class="btn btn-primary" href="/login">
+                    Get started
+                    <span style="font-size:1.2em">→</span>
+                </a>
+                <a class="btn btn-ghost" href="#start-here" style="border-color:rgba(255,217,168,0.55);color:#ffd9a8">⚡ Read me first: configure the AI model</a>
+                <a class="btn btn-ghost" href="#ai">See how AI works</a>
+            </div>
+            <div class="hero-stats">
+                <div class="stat"><div class="stat-num">100+</div><div class="stat-label">AI-callable tools</div></div>
+                <div class="stat"><div class="stat-num">N × hosts</div><div class="stat-label">one message, cross-host coordination</div></div>
+                <div class="stat"><div class="stat-num">3 types</div><div class="stat-label">compatible model interfaces</div></div>
+                <div class="stat"><div class="stat-num">SQLite</div><div class="stat-label">single file to deploy</div></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Start here: model is required -->
+    <section class="block start-here" id="start-here">
+        <div class="container">
+            <div class="section-head reveal">
+                <span class="section-tag" style="background:linear-gradient(135deg,#ff9a3c,#ffd9a8);color:#2a1a05">On first setup · read this</span>
+                <h2>Configure an AI model first—<br>the one and only required first step in Moso</h2>
+                <p style="max-width:780px;margin-left:auto;margin-right:auto">
+                    <strong style="color:#ffd9a8">Without an AI model, Moso does not deliver real operations capabilities.</strong>
+                    After the model is set up, <strong>all actions</strong>—adding hosts, managing credentials, running batches, troubleshooting, creating tasks, writing prompts, auditing logs—
+                    can be done in AI chat in natural language. <strong style="color:#ffd9a8">AI assistance is the core control surface of this system; you start all operations from here.</strong>
+                </p>
+            </div>
+
+            <div class="grid grid-3 reveal" style="margin-top:40px">
+                <div class="card start-step">
+                    <div class="step-badge must">Step 1 · required</div>
+                    <div class="icon">🤖</div>
+                    <h3>Choose and configure a large language model</h3>
+                    <p style="color:var(--text-muted);font-size:.93rem">
+                        One of the following is enough:<br>
+                        · <strong>Alibaba Cloud DashScope</strong> (Qwen family—common in China)<br>
+                        · <strong>Ollama on your network</strong> (data does not leave the intranet)<br>
+                        · <strong>OpenAI or any compatible API</strong><br>
+                        Admins can write defaults in <strong>global settings</strong>; each user can set Base URL + API key + model in <strong>My AI config</strong>. <strong>Until you add your own key, a shared system key is used (default 2000 calls, configurable)</strong>; after you configure your own key, <strong>the usage cap is removed</strong> and counting stops.
+                    </p>
+                </div>
+                <div class="card start-step">
+                    <div class="step-badge ready">Step 2 · start from here</div>
+                    <div class="icon">💬</div>
+                    <h3>Open the AI assistant—everything starts in the conversation</h3>
+                    <p style="color:var(--text-muted);font-size:.93rem">
+                        After login, the <strong>AI assistant</strong> is in the header. You do not need to learn the UI first—just say, for example:<br>
+                        · “Add a host 10.0.0.12 and save the SSH private key”<br>
+                        · “Batch-upgrade nginx on machines with the online tag”<br>
+                        · “Every day at 3:00 a.m. delete /tmp files older than 7 days”<br>
+                        The model automatically uses 100+ internal tools, and every step is written to the operation log.
+                    </p>
+                </div>
+                <div class="card start-step">
+                    <div class="step-badge smart">Step 3 · gets smarter with use</div>
+                    <div class="icon">🧠</div>
+                    <h3>Let the AI keep “this machine’s rules”</h3>
+                    <p style="color:var(--text-muted);font-size:.93rem">
+                        As you work, tell the AI: “This machine uses zsh + Homebrew, data is under /data, do not restart nginx during business hours”—
+                        the AI will write that into the <strong>per-host prompt</strong> (saved per user × host),
+                        and later sessions on that host load the rules so it does not ask the same things again.
+                        Together with <strong>clickable choice cards</strong>, the model can show confirm / cancel / danger-style buttons you answer in one click.
+                    </p>
+                </div>
+            </div>
+
+            <div class="start-cta reveal">
+                <div class="start-cta-text">
+                    <strong style="color:#ffd9a8">⚠️ No model configured = nothing to do.</strong>
+                    Set up the model, open the AI assistant, and you can run day-to-day operations entirely from chat.
+                </div>
+                <div class="hero-actions" style="margin:0">
+                    <a class="btn btn-primary" href="/login">Go configure the AI model →</a>
+                    <a class="btn btn-ghost" href="#ai">See how AI works first</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- At a glance -->
+    <section class="block highlight" id="positioning">
+        <div class="container">
+            <div class="section-head reveal">
+                <span class="section-tag">What it is</span>
+                <h2>More than a web SSH client—an AI-native way to run ops with your team</h2>
+                <p>Turn “on that host, for me, …” into work the AI, terminals, and job engine can carry out—while you keep full operation logs and session history to fall back on.</p>
+            </div>
+            <div class="grid grid-3">
+                <div class="card reveal">
+                    <div class="icon">🖥️</div>
+                    <h3>Host tree + separate credentials</h3>
+                    <p>Nested groups, tags, and sharing; credentials (password / key) are decoupled from hosts; one-click RSA/ECC key-pair generation.</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">💬</div>
+                    <h3>AI operations assistant</h3>
+                    <p>AI chat on the right and SSH terminal on the left; the AI can read the terminal buffer and inject commands; multiple console tabs in parallel.</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🧠</div>
+                    <h3>Per-host AI prompt</h3>
+                    <p>Markdown rules, capabilities, and toolchains, saved per user × host, loaded when you enter a host; global search for hosts by capability.</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">⚡</div>
+                    <h3>Batch actions &amp; multi-host</h3>
+                    <p>Run commands, scripts, file push, or restarts; target by group, tag, or selection; the AI can <code>create_console</code> to open many consoles in parallel.</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">⏱️</div>
+                    <h3>Scheduled / triggered jobs</h3>
+                    <p>Cron for schedules and event-driven triggers; tasks can call other triggers for branches; you can email summaries via your SMTP when a run ends.</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🔒</div>
+                    <h3>Per-user fine-grained isolation</h3>
+                    <p>Each user has separate AI, SMTP, local file area, and operation logs; when a host is shared, prompts and knowledge are not shared; admins can audit everything.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- AI capabilities (deep) -->
+    <section class="block" id="ai">
+        <div class="container">
+            <div class="section-head reveal">
+                <span class="section-tag">AI</span>
+                <h2>Not “I’ll generate a script for you to copy and run”—an agent that acts directly</h2>
+                <p>The Moso AI assistant uses function calling to touch real resources: SSH commands, SFTP push, host knowledge, session prompts, batch jobs, SMTP mail, local shell and process management … all audited.</p>
+            </div>
+            <div class="two-col">
+                <div class="reveal">
+                    <h2>“Find a host with the gh CLI installed, and pull the PR list”</h2>
+                    <p class="lead">
+                        The AI first calls <code>search_hosts_by_prompt</code> to search the <strong>per-host prompt</strong> with keyword + regex,
+                        then <code>connect_terminal</code> to a matching host, runs <code>gh pr list</code>, and shows the result in chat.
+                    </p>
+                    <ul class="feature-list">
+                        <li><strong>Per-host prompt</strong>: each host can list toolchain, path conventions, rules, and taboos in Markdown; scoped to the current user and not affected by host sharing.</li>
+                        <li><strong>Session prompt</strong>: applies to this chat only, so the model can follow a given flow or preference temporarily.</li>
+                        <li><strong>Host knowledge base</strong>: stores accounts, passwords, tokens, etc.; isolated from the prompt, only retrieved per host when the AI really needs it.</li>
+                        <li><strong>Cross-host search</strong>: <code>search_hosts_by_prompt(query, group_id?, tag_ids?, regex?)</code> does keyword/regex search over the hosts you can access, by capability text.</li>
+                        <li><strong>Multi-round agent</strong>: after a tool result returns, the model keeps deciding; auto-approve, max steps, and context compression to protect limits.</li>
+                        <li><strong>Personal MCP</strong> (<code>/mcp-servers</code>): attach third-party MCP tools to web/host/integration AI; JSON import/export.</li>
+                        <li><strong>Personal Agent Skills</strong> (<code>/skills</code>, admin toggle): Cursor-style <code>SKILL.md</code>, progressive disclosure by default; create/import/export in chat or UI.</li>
+                    </ul>
+                </div>
+                <div class="chat-mock reveal">
+                    <div class="chat-msg user">On the host that has the gh CLI, list merged PRs for the Moso project from last month</div>
+                    <div class="chat-msg ai">
+                        <span class="tag">🔧 search_hosts_by_prompt</span>
+                        query="gh cli" regex="gh\\s*cli|github-cli"
+                    </div>
+                    <div class="chat-msg tool">
+                        ✓ 2 matches:
+                        host_id=7 dev-ops-01 (group=R&amp;D)
+                        host_id=12 ci-runner (group=CI)
+                    </div>
+                    <div class="chat-msg ai">
+                        Two candidates; choosing <code>dev-ops-01</code> (prompt says gh is already logged in).
+                        <span class="tag">🔧 connect_terminal</span> host_id=7
+                    </div>
+                    <div class="chat-msg ai">
+                        <span class="tag">🔧 ssh_execute</span> gh pr list --search "merged:&gt;=2026-03-01"
+                    </div>
+                    <div class="chat-msg tool">
+                        #142 fix batch job concurrency deadlock  merged
+                        #139 per-host AI prompts            merged
+                        #137 trigger-task run history      merged
+                    </div>
+                    <div class="chat-msg ai">
+                        ✅ Three PRs were merged on dev-ops-01 last month, including per-host AI prompts. Should I add this list to maintenance history or export it?
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tool list (labels mirror zh categories) -->
+            <div class="two-col reverse" style="margin-top:80px">
+                <div class="visual-mock reveal">
+                    <div class="visual-mock-head"><span></span><span></span><span></span></div>
+                    <pre><code><span class="cm"># 100+ tools the AI can call (grouped by type)</span>
+<span class="k">Hosts &amp; terminals</span>  list_hosts / search_hosts / get_host_detail
+              ssh_execute / send_to_terminal / connect_terminal
+              create_console / close_console / list_terminals
+              detect_host_os / create_host / update_host / delete_host
+
+<span class="k">Host knowledge / prompts</span>  get_host_knowledge   update_host_knowledge
+              get_host_prompt      update_host_prompt
+              append_host_prompt   search_hosts_by_prompt
+
+<span class="k">Groups / tags / credentials</span>  list_host_groups / get_host_groups_tree
+              list_host_tags / create_host_tag / set_host_tags
+              list_credentials / create_credential / generate_key
+
+<span class="k">Files &amp; SCP</span>       scp_push / fs_list / fs_write_file
+              transfer_file_between_hosts / relay_file_between_hosts
+
+<span class="k">Batch</span>            batch_create / list_batch_operations
+              batch_cancel / batch_retry / clear_batches
+
+<span class="k">SSH Channel</span>    ssh_channel_create / ssh_channel_send
+              ssh_channel_read_lines / ssh_channel_has_new
+
+<span class="k">Trigger / schedule</span>  triggered_task_* (8) / scheduled_task_* (9)
+
+<span class="k">Local host (admin)</span>  local_exec / local_run_script
+              local_fs_* / process_* / create_local_console
+
+<span class="k">Maintenance / best practices</span>  list_maintenance_history / add_best_practice
+<span class="k">User / session / settings</span>  get_me / list_ai_sessions / update_session_prompt
+              get_session_operations / get_session_chat_detail
+              get_ai_config / update_ai_config / apply_system_ai_config_to_user
+
+<span class="k">Email</span>            send_email / update_user_mail_settings / ...
+
+<span class="k">User feedback</span>        submit_feedback / list_my_feedback
+              list_user_feedback_admin / get_user_feedback_detail
+              reply_user_feedback_admin / ignore_user_feedback_admin
+              mark_all_user_feedback_read
+
+</code></pre>
+                </div>
+                <div class="reveal">
+                    <h2>100+ tools—one set covers roughly 90% of day-to-day operations</h2>
+                    <p class="lead">The model does not just “suggest what to do”—it calls the underlying tools with least privilege to finish the job; every call is in the operation log.</p>
+                    <ul class="feature-list">
+                        <li><strong>Terminal in sync</strong>: the model reads and writes the current user’s SSH terminal buffer and can switch between consoles (host screen / AI assistant).</li>
+                        <li><strong>SSH channel</strong>: a long-lived TTY channel, isolated by session or task; read by line/character count, suited to interactive commands.</li>
+                        <li><strong>Local host</strong>: administrators can have the model run shell, Python scripts, child processes, and file access on the Moso host.</li>
+                        <li><strong>Multi-host relay</strong>: relay files directly between machines—no “pull to local then push” hop.</li>
+                        <li><strong>System shared key quota + your own key</strong>: if you have not configured a personal key, a system shared key is used (default <strong>2000</strong> uses); when it runs out, the model prompts; your own key <strong>lifts the cap</strong>. Admins can clear shared-key counts for any user or apply system default config.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Multi-host: dev / release / ops / feedback -->
+    <section class="block" id="multihost">
+        <div class="container">
+            <div class="section-head reveal">
+                <span class="section-tag" style="background:linear-gradient(135deg,#6fa8ff,#c084ff);color:#0b1020">Multi-host</span>
+                <h2>From develop → release → operate → feedback<br>in one message, across many machines</h2>
+                <p style="max-width:820px;margin-left:auto;margin-right:auto">
+                    Moso is built for many hosts—<strong style="color:#a8f0ff">one AI session can drive N machines at once</strong>.
+                    Dev, build, test, production, and monitoring each do their part; the model can build a <code>delegate_chain</code> in one go, check access per host, stream progress for each step, and—when a run looks good—save a <code>workflow_template</code> to re-use.
+                    No more “SSH to A, do X, then SSH to B, do Y” by hand—<strong style="color:#ffd9a8">one request, one chain, the whole environment stays in step.</strong>
+                </p>
+            </div>
+
+            <div class="lifecycle reveal">
+                <div class="lifecycle-step ph-dev">
+                    <div class="phase-tag">① Dev · develop</div>
+                    <h4>Let a code agent change code on the dev machine</h4>
+                    <span class="host-chip">@dev-01</span><span class="host-chip">cursor-agent / aider</span>
+                    <ul class="tiny">
+                        <li>Use host profile to confirm cursor-agent / aider is installed</li>
+                        <li>Sub-agent delegated to change code, capture git diff</li>
+                        <li>On failure, self-heal once from <code>{prev_stderr}</code></li>
+                    </ul>
+                </div>
+                <div class="lifecycle-step ph-release">
+                    <div class="phase-tag">② Release · ship</div>
+                    <h4>Switch to the build host for artifacts, push to production</h4>
+                    <span class="host-chip">@build-02</span><span class="host-chip">@prod-03</span>
+                    <ul class="tiny">
+                        <li><code>docker build</code> + tag on build</li>
+                        <li>rsync / scp relay to prod</li>
+                        <li><code>systemctl restart</code> on prod</li>
+                    </ul>
+                </div>
+                <div class="lifecycle-step ph-ops">
+                    <div class="phase-tag">③ Ops · operate</div>
+                    <h4>Monitoring host watches health; if things break, self-heal</h4>
+                    <span class="host-chip">@monitor-04</span><span class="host-chip">@prod-03</span>
+                    <ul class="tiny">
+                        <li>Pull P99 / error rate on monitor</li>
+                        <li><code>when=on_failure</code> rollback or scale</li>
+                        <li>Per-host task logs for audit</li>
+                    </ul>
+                </div>
+                <div class="lifecycle-step ph-feedback">
+                    <div class="phase-tag">④ Feedback</div>
+                    <h4>Inner sub-AI rolls up logs; email the oncall</h4>
+                    <span class="host-chip">delegate_to_edgeops_ai</span><span class="host-chip">send_email</span>
+                    <ul class="tiny">
+                        <li>Sub-AI with its own context, Markdown report</li>
+                        <li>Send a summary to oncall with personal SMTP</li>
+                        <li>Optionally file under maintenance / best practices</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="lifecycle-msg reveal">
+                The user only needs to say something like:<br>
+                <code>"On dev-01 have cursor-agent implement jwt-login as in SPEC.md; if it passes, on build-02 tag v2.3.0, rsync to prod-03 and hot-reload; after 5 minutes monitor-04 pulls P99—if it looks bad, roll back and have a sub-AI write a Chinese weekly to oncall@company.com"</code><br>
+                The model profiles four hosts → builds one 8-step <code>delegate_chain</code> → shows a button to confirm the whole chain at once → streams progress with SSE as it runs → at the end it asks, “Do you want to save this as a <code>release-v2</code> template?”
+            </div>
+
+            <div class="two-col" style="margin-top:60px">
+                <div class="visual-mock reveal">
+                    <div class="visual-mock-head"><span></span><span></span><span></span></div>
+                    <pre><code><span class="cm"># Model-generated delegate_chain (across 4 hosts)</span>
+<span class="k">tool_call</span>: delegate_chain
+  <span class="k">confirmed</span>: true
+  <span class="k">steps</span>:
+    <span class="s">#1</span> delegate  @dev-01     agent=cursor-agent
+        task=Implement jwt-login per SPEC.md
+    <span class="s">#2</span> ssh       @dev-01
+        cmd=pytest -q                        <span class="cm"># dev self-test</span>
+    <span class="s">#3</span> ssh       @build-02   when=on_success
+        cmd=docker build -t app:v2.3.0 .
+    <span class="s">#4</span> ssh       @build-02   when=on_success
+        cmd=docker save app:v2.3.0 | \
+             ssh prod-03 'docker load'       <span class="cm"># host relay</span>
+    <span class="s">#5</span> ssh       @prod-03    when=on_success
+        cmd=systemctl restart app
+    <span class="s">#6</span> sleep     5s                              <span class="cm"># let service settle</span>
+    <span class="s">#7</span> ssh       @monitor-04
+        cmd=curl -s prom/api/query?p99
+    <span class="s">#8</span> delegate_to_edgeops_ai   when=always
+        system_prompt="You are the ops weekly writer..."
+        task="From {prev_stdout} write a Chinese-language weekly for ops"
+    <span class="s">#9</span> tool      send_email  to=oncall@co.com</code></pre>
+                </div>
+                <div class="visual-mock reveal">
+                    <div class="visual-mock-head"><span></span><span></span><span></span></div>
+                    <pre><code><span class="cm"># Front end: SSE live timeline (scrolls as it runs)</span>
+<span class="n">▶ [1] code-edit</span>       delegate @<span class="k">dev-01</span>
+  <span class="s">[stdout]</span> Editing auth.py ...
+  <span class="s">[stdout]</span> +38 -12 lines
+<span class="s">✓ [1] code-edit</span>       18.2s
+<span class="n">▶ [2] self-test</span>       ssh      @<span class="k">dev-01</span>
+  <span class="s">[stdout]</span> 42 passed in 3.1s
+<span class="s">✓ [2] self-test</span>        3.4s
+<span class="n">▶ [3] build</span>           ssh      @<span class="k">build-02</span>
+  <span class="s">[stdout]</span> Step 12/20 : COPY . .
+  <span class="s">[stdout]</span> Successfully tagged app:v2.3.0
+<span class="s">✓ [3] build</span>          76.8s
+<span class="n">▶ [4] ship-to-prod</span>    ssh      @<span class="k">build-02</span>
+  <span class="s">[stdout]</span> Loaded image: app:v2.3.0
+<span class="s">✓ [4] ship-to-prod</span>    11.2s
+<span class="n">▶ [5] restart</span>         ssh      @<span class="k">prod-03</span>
+<span class="s">✓ [5] restart</span>         1.6s
+<span class="n">▶ [6] settle</span>          sleep    5s
+<span class="n">▶ [7] healthcheck</span>     ssh      @<span class="k">monitor-04</span>
+  <span class="s">[stdout]</span> p99=187ms  error_rate=0.03%
+<span class="s">✓ [7] healthcheck</span>     0.8s
+<span class="n">▶ [8] weekly-report</span>   delegate_to_edgeops_ai
+<span class="s">✓ [8] weekly-report</span>   9.1s
+<span class="n">▶ [9] mail-oncall</span>     send_email
+<span class="s">✓ [9] mail-oncall</span>     0.4s
+<span class="cm"># Entire chain 136s; one audit line per host</span></code></pre>
+                </div>
+            </div>
+
+            <div class="grid grid-4" style="margin-top:60px">
+                <div class="card reveal">
+                    <div class="icon">🧭</div>
+                    <h3>Choose from host profile</h3>
+                    <p>Before ordering work, the AI runs <code>probe_host_capabilities</code> and picks tools from each host’s real OS, hardware, and CLIs—nmap on Kali, training on GPU machines, k8s where kubectl exists.</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🧩</div>
+                    <h3>Auth every step on its own</h3>
+                    <p>Each <code>delegate_chain</code> step can have its own <code>host_id</code>; before run, we preflight access, credentials, and skills; while running, audit per host; if permissions fail, the whole chain is rejected.</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">📡</div>
+                    <h3>Streamed progress on one screen</h3>
+                    <p>With ten machines and long steps you are not stuck in a black box—each step’s stdout, stderr, and sub-AI output is pushed with SSE under the tool card, so you always see the bottleneck.</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🧱</div>
+                    <h3>Run once, then save and re-run</h3>
+                    <p>A cross-host chain you like → <code>save_workflow_template</code> with <code>${var}</code> variables; next time <code>run_workflow_template("release-v2", branch="v2.4")</code> in one line—sharable inside the org.</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🕰️</div>
+                    <h3>Drop it into a schedule as-is</h3>
+                    <p>Put a full <code>delegate_chain</code> or template into a scheduled or triggered job—the task scope is treated as pre-authorized; at night with nobody online, a self-heal chain can run dozens of steps across the hall.</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🧠</div>
+                    <h3>Sub-AI to summarize and review</h3>
+                    <p><code>delegate_to_edgeops_ai</code> spawns an inner sub-AI for reports, script review, or bringing many analyses together—its own context and system prompt, max recursion depth 2 so it does not “nest out of control.”</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">📮</div>
+                    <h3>Cross-host relay &amp; closed feedback</h3>
+                    <p>Files: <code>transfer_file_between_hosts</code> / <code>relay_file_between_hosts</code> are machine to machine, no detour through your laptop; <code>send_email</code> to oncall closes the feedback loop.</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🧾</div>
+                    <h3>Full operation log</h3>
+                    <p>Each step on N hosts writes one line in that host’s <code>audit_log</code> and task log under <code>.edgeops/task/</code>—who, when, on which host, what ran, exit code—fully traceable.</p>
+                </div>
+            </div>
+
+            <div class="section-head reveal" style="margin-top:60px">
+                <h3 style="font-size:1.1rem;color:#a8f0ff">Typical cross-host collaboration scenarios</h3>
+            </div>
+            <div class="grid grid-3">
+                <div class="card reveal">
+                    <div class="icon">🚀</div>
+                    <h3>CI/CD pipeline</h3>
+                    <p>Dev machine agent changes code → build host produces a Docker image → test host runs pytest → production hot-reload → monitor checks P99. One chain, automatic rollback on failure.</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🛡️</div>
+                    <h3>Security testing and review</h3>
+                    <p>Kali host runs nmap / nikto → target host pulls logs → Moso sub-AI composes a Chinese vulnerability report, emailed to the security team.</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🗄️</div>
+                    <h3>Cross-host DB backup</h3>
+                    <p>Primary <code>mysqldump</code> → rsync to backup host → backup host checks SHA256 → monitor registers this backup’s metadata → SMTP summary.</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🧯</div>
+                    <h3>On-call self-heal</h3>
+                    <p>Monitor host sees a surge in 5xx → a triggered job calls <code>run_workflow_template("hotfix")</code> → build host makes a patch → production canary → sub-AI writes the incident report.</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🏭</div>
+                    <h3>Datacenter scale-out</h3>
+                    <p>Control host with terraform, ansible host for baseline, new nodes self-report capabilities, load balancer reweights—no need to log into a jump host.</p>
+                </div>
+                <div class="card reveal">
+                    <div class="icon">🧪</div>
+                    <h3>AI hands off to AI</h3>
+                    <p>cursor-agent on dev-01 changes code → aider on test-02 adds unit tests → opencode on review-03 does PR review → if it all fails, an Moso inner sub-AI takes over for human follow-up.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Feature matrix -->
+    <section class="block highlight" id="features">
+        <div class="container">
+            <div class="section-head reveal">
+                <span class="section-tag">Product capabilities</span>
+                <h2>See what Moso can do in one view</h2>
+                <p>Capability list by area—each item can be invoked by the model when needed, and is exposed in the web UI and the REST API.</p>
+            </div>
+            <div class="grid grid-3">
+
+                <div class="card reveal"><div class="icon">🌳</div><h3>Server tree &amp; groups</h3>
+                    <p>Parent–child groups, drag to move hosts, filter by group; a shared host can be placed in the receiver’s own tree without changing the sender’s.</p></div>
+
+                <div class="card reveal"><div class="icon">🏷️</div><h3>Host tags</h3>
+                    <p>Private tag namespace per user; filter hosts and run batches by tag; the AI can maintain tags and search with them.</p></div>
+
+                <div class="card reveal"><div class="icon">🔑</div><h3>Credentials</h3>
+                    <p>Password, key, or key generation in one place; masked in the UI; hosts only store credential ids; you can add a new credential to the list on the fly.</p></div>
+
+                <div class="card reveal"><div class="icon">🖲️</div><h3>AI assistant UI</h3>
+                    <p>Multi-tab chat, history, and auto-titled sessions; Markdown with <strong>incremental streaming layout</strong> (closed code blocks and tables render as they complete); Mermaid, Markmap, and ECharts; <strong>clickable choice cards</strong> (persisted after refresh). <strong>My AI config</strong> toggles <strong>image understanding</strong> (multimodal inline).</p></div>
+
+                <div class="card reveal"><div class="icon">📎</div><h3>Chat attachments</h3>
+                    <p>The input supports <strong>multi-file</strong> paste and drag-and-drop: text, images, and <strong>PDF / Office</strong> (docx, pptx, xlsx, pdf, …) under <code>web/fs/&lt;you&gt;/chats/YYYY/MM/DD/&lt;uuid&gt;.&lt;ext&gt;</code>. Office/PDF is converted to Markdown via <strong>MarkItDown</strong> on the server; the model reads it with <code>read_chat_attachment</code>. Images can use <code>save_image_description</code> for multi-turn summaries.</p></div>
+
+                <div class="card reveal"><div class="icon">📊</div><h3>AI deliverables (generate + download)</h3>
+                    <p>The model can write under <code>web/fs/&lt;you&gt;/chats/YYYY/MM/DD/&lt;short-id&gt;/</code> (shared <code>chats/</code> root; attachments are files, artifacts are subfolders): <strong>single files</strong> (csv, md, txt, json, html, svg) or a <strong>multi-file bundle</strong> (HTML + images, js, css, downloaded as <code>.tgz</code>). A download card is rendered in chat, one click to pull down.</p></div>
+
+                <div class="card reveal"><div class="icon">👁️</div><h3>In-app modal preview</h3>
+                    <p>Click a deliverable’s <strong>Preview</strong> to open a modal: HTML in a sandboxed iframe, live Markdown, CSV with sticky header row, beautified JSON, raw TXT/YAML, embedded image/PDF. Bundle-relative URLs are token-rewritten—no new tab, no forced download.</p></div>
+
+                <div class="card reveal"><div class="icon">💻</div><h3>Per-host AI operations</h3>
+                    <p>On the host detail page, a dedicated AI tab: session and terminals are limited to the current host; multiple consoles, remote filesystem, and edit.</p></div>
+
+                <div class="card reveal"><div class="icon">📜</div><h3>Session &amp; prompts</h3>
+                    <p>Session-level, host-level, and system prompts layer together; the AI can auto-summarize, replace, or append.</p></div>
+
+                <div class="card reveal"><div class="icon">📦</div><h3>Batch operations</h3>
+                    <p>run_command / run_script / scp_push / restart; target all, group, selected hosts, or tag; failed runs can be retried.</p></div>
+
+                <div class="card reveal"><div class="icon">📁</div><h3>Filesystem</h3>
+                    <p>Per-user <code>web/fs</code> private space; tree and right-click; remote SFTP tree, upload/download, pack, tgz extract.</p></div>
+
+                <div class="card reveal"><div class="icon">🕓</div><h3>Maintenance history</h3>
+                    <p>Aggregated by host IP; a row is auto-added when a session is titled; filter by type and who acted.</p></div>
+
+                <div class="card reveal"><div class="icon">🧪</div><h3>Best practices library</h3>
+                    <p>Tips, commands, and script bits curated by the user or the AI; search by type or keyword; the AI can list them as references.</p></div>
+
+                <div class="card reveal"><div class="icon">🔄</div><h3>SSH TTY channel</h3>
+                    <p>Persistent TTY, created on session or task boundaries; read by line number or char count, suited to interactive work.</p></div>
+
+                <div class="card reveal"><div class="icon">⏳</div><h3>Triggered / scheduled tasks</h3>
+                    <p>Cron and event-driven triggers; jobs can call each other; full chat-style run history; you can use SMTP to mail when a run ends.</p></div>
+
+                <div class="card reveal"><div class="icon">🛡️</div><h3>API tokens</h3>
+                    <p>Each user can mint API tokens for program access, calling the Moso REST API from automation.</p></div>
+
+                <div class="card reveal"><div class="icon">📮</div><h3>Personal SMTP</h3>
+                    <p>Per-user SMTP; once configured, the model can <code>send_email</code> for you, and scheduled jobs can send summary mail.</p></div>
+
+                <div class="card reveal"><div class="icon">🌐</div><h3>Integration / ClawOps</h3>
+                    <p>A separate “integration” chat so long runs are not over-compressed—good for other systems to coordinate here.</p></div>
+
+                <div class="card reveal"><div class="icon">🧰</div><h3>Local host (admin)</h3>
+                    <p>Run shell, Python scripts, child processes, and read/write files on the Moso host—Windows and Linux.</p></div>
+
+                <div class="card reveal"><div class="icon">📊</div><h3>Dashboard</h3>
+                    <p>Host counts, execution stats, and recent activity at a glance—an operations overview for the team.</p></div>
+
+                <div class="card reveal"><div class="icon">📝</div><h3>Operation log</h3>
+                    <p>Every key action, including model tool calls, is recorded with who, when, which action, args, and results; filter by <code>user_id</code> or <code>host_id</code>.</p></div>
+
+                <div class="card reveal"><div class="icon">💬</div><h3>Feedback &amp; login message board</h3>
+                    <p>Floating on the sign-in page: any visitor can post anonymous Markdown; admins can approve and make it public (with a reply). After login, the sidebar <strong>Feedback</strong> lets users talk to admins both ways; the model can file items, read in batch, mark read, reply, or ignore; optional email to admins, 30s debounce against spam.</p></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Architecture -->
+    <section class="block" id="architecture">
+        <div class="container">
+            <div class="section-head reveal">
+                <span class="section-tag">System architecture</span>
+                <h2>Four clear layers: web, API, AI/ops, and the data that backs it</h2>
+                <p>FastAPI + aiosqlite + Paramiko + OpenAI-compatible model APIs; the front end is static JS and CSS (no bundler) with xterm, ECharts, Mermaid, and Markmap.</p>
+            </div>
+            <div class="arch reveal">
+                <div class="arch-layer l-frontend">
+                    <h4>Front-end · Web UI <small>HTML + plain JS + xterm.js</small></h4>
+                    <ul>
+                        <li>Sign in / sign up / password reset</li><li>Dashboard</li><li>Host tree / groups / tags</li>
+                        <li>Credentials</li><li>AI assistant (desktop and mobile)</li><li>Host detail (SSH + AI + files)</li>
+                        <li>Batch</li><li>Scheduled / triggered tasks</li><li>Maintenance history</li><li>Best practices</li>
+                        <li>Filesystem</li><li>Local host</li><li>Operation log</li><li>System settings</li>
+                    </ul>
+                </div>
+                <div class="arch-arrow">↕ JSON / WebSocket</div>
+                <div class="arch-layer l-api">
+                    <h4>API · FastAPI router <small>36 route modules</small></h4>
+                    <ul>
+                        <li>auth</li><li>users</li><li>api_tokens</li><li>credentials</li>
+                        <li>hosts</li><li>host_groups</li><li>host_tags</li>
+                        <li>maintenance_history</li><li>best_practices</li>
+                        <li>skills</li><li>terminal</li><li>ssh_channel</li>
+                        <li>batch</li><li>filesystem</li><li>remote_fs</li>
+                        <li>ai_agent</li><li>integration_ops</li>
+                        <li>triggered_tasks</li><li>scheduled_tasks</li>
+                        <li>dashboard</li><li>local_host</li><li>settings</li>
+                        <li>user_mail</li><li>login_board</li><li>feedback</li>
+                    </ul>
+                </div>
+                <div class="arch-arrow">↕ Function call / service</div>
+                <div class="arch-layer l-ai">
+                    <h4>AI &amp; ops · services/ <small>LLM adapter + 100+ skills</small></h4>
+                    <ul>
+                        <li>llm_adapter (Alibaba Cloud / Ollama / OpenAI)</li>
+                        <li>ai_skills (tool definitions and implementations)</li>
+                        <li>ssh_client / ssh_shell / ssh_channel_manager</li>
+                        <li>scheduler</li>
+                        <li>task_runner</li>
+                        <li>batch_executor</li>
+                        <li>chat_utils (messages / summary / compress)</li>
+                        <li>email_sender / user_mail</li>
+                        <li>keygen / credential_utils</li>
+                        <li>host_detection / terminal_input</li>
+                    </ul>
+                </div>
+                <div class="arch-arrow">↕ aiosqlite</div>
+                <div class="arch-layer l-data">
+                    <h4>Data · SQLite (WAL) <small>30+ tables, versioned migrations</small></h4>
+                    <ul>
+                        <li>users / credentials / hosts</li>
+                        <li>host_groups / host_shares / host_tags</li>
+                        <li>ai_host_knowledge / ai_host_prompts</li>
+                        <li>ai_chat_sessions / ai_chat_messages</li>
+                        <li>server_maintenance_history</li>
+                        <li>best_practices / skills</li>
+                        <li>batch_operations / details</li>
+                        <li>ssh_channels</li>
+                        <li>triggered_tasks / runs / messages</li>
+                        <li>scheduled_tasks / runs / messages</li>
+                        <li>user_ai_config / user_mail_config</li>
+                        <li>api_tokens / password_reset / email_verification</li>
+                        <li>local_shell_sessions / logs</li>
+                        <li>operation_logs / user_login_events</li>
+                        <li>anonymous_messages</li>
+                        <li>user_feedback / user_feedback_replies</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Security -->
+    <section class="block highlight" id="security">
+        <div class="container">
+            <div class="section-head reveal">
+                <span class="section-tag">Security &amp; scope</span>
+                <h2>A clear permission model: everyone knows what they can see</h2>
+                <p>Every sensitive action is bounded: normal users only see their own; admins can audit the whole; when you share a host, prompts and knowledge do not mix; SMTP and model keys are per person.</p>
+            </div>
+            <div class="grid grid-3">
+                <div class="card reveal"><div class="icon">🔐</div><h3>JWT + captcha</h3>
+                    <p>Sign-in and sign-up use a simple a+b style math captcha; after too many failures the account is locked, unlock by email; JWT defaults to 24 hours.</p></div>
+                <div class="card reveal"><div class="icon">👤</div><h3>User data separation</h3>
+                    <p>Operation logs, host prompts, local file area, model config, SMTP, sessions, and messages are all strictly under <code>user_id</code>.</p></div>
+                <div class="card reveal"><div class="icon">🪢</div><h3>Host sharing does not mix profiles</h3>
+                    <p>You can share a host with someone else, but the per-host prompt and group stay in the receiver’s own namespace.</p></div>
+                <div class="card reveal"><div class="icon">⚖️</div><h3>sudo policy</h3>
+                    <p>Try passwordless sudo first; only when the terminal really asks for a password, use host knowledge or ask the user and store it as suitable.</p></div>
+                <div class="card reveal"><div class="icon">📋</div><h3>Full operation log</h3>
+                    <p>UI, model tool calls, sharing, and task triggers are all written to storage; admins can filter by user or host, end users only see their rows.</p></div>
+                <div class="card reveal"><div class="icon">🪪</div><h3>API token</h3>
+                    <p>Users can issue dedicated API tokens for program access, revocable in personal settings, independent of the sign-in session.</p></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Schedules & triggers -->
+    <section class="block" id="tasks">
+        <div class="container">
+            <div class="section-head reveal">
+                <span class="section-tag">Automation &amp; orchestration</span>
+                <h2>Carry the model’s skills into the hours with nobody at the desk</h2>
+                <p>Triggered jobs are “model jobs someone or something else fires”; scheduled jobs are cron driving model work; the two can call each other to build event-driven operations.</p>
+            </div>
+            <div class="two-col">
+                <div class="reveal">
+                    <h2>Triggered task</h2>
+                    <p class="lead">Name a model instruction and write a “when to fire” description; the model or another job can run it on demand.</p>
+                    <ul class="feature-list">
+                        <li><strong>Callable from other jobs</strong>: jobs can branch and call each other.</li>
+                        <li><strong>Exposed to discovery</strong>: you can make it listable to scheduled jobs (<code>triggered_task_list_exposed</code>).</li>
+                        <li><strong>Chat-style run history</strong>: each run keeps a full chat-style trace for postmortems.</li>
+                        <li><strong>Per user</strong>: every user has their own triggered list; admins can review.</li>
+                    </ul>
+                </div>
+                <div class="reveal">
+                    <h2>Scheduled task</h2>
+                    <p class="lead">Classic five-field cron, plus an on/off switch, <code>notify_email_to</code>, and run-now to execute immediately.</p>
+                    <ul class="feature-list">
+                        <li><strong>SMTP email</strong>: on completion, the job owner’s personal SMTP can send a summary.</li>
+                        <li><strong>Run now</strong>: you can still call <code>scheduled_task_run_now</code> and not wait for cron.</li>
+                        <li><strong>Exclusion</strong>: cron and run-now for the same job exclude each other to avoid clashing.</li>
+                        <li><strong>Run history</strong>: each run’s messages are kept by <code>run_id</code> so you can track failures.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Tech stack -->
+    <section class="block highlight" id="tech-stack">
+        <div class="container">
+            <div class="section-head reveal">
+                <span class="section-tag">Tech stack</span>
+                <h2>Everything is chosen to be stable, light, and self-hostable</h2>
+                <p>No Redis, message queue, or separate database server: a single-file SQLite is enough. Same code on Windows and Linux; deploy with Docker.</p>
+            </div>
+            <div class="grid grid-4">
+                <div class="card reveal"><div class="icon">🐍</div><h3>Python 3 + FastAPI</h3><p>Async routes and lifespan; migrations run on startup; errors return JSON consistently.</p></div>
+                <div class="card reveal"><div class="icon">🗄️</div><h3>SQLite + WAL</h3><p>One file; WAL for concurrent read/write; versioned migration scripts on upgrade.</p></div>
+                <div class="card reveal"><div class="icon">🔑</div><h3>Paramiko SSH / SFTP</h3><p>Password and key auth, SCP/SFTP, interactive TTY; includes banner workarounds.</p></div>
+                <div class="card reveal"><div class="icon">🤖</div><h3>OpenAI-style layer</h3><p>Alibaba Cloud DashScope, Ollama, and OpenAI—three model styles with smooth switching.</p></div>
+                <div class="card reveal"><div class="icon">🖥️</div><h3>xterm.js</h3><p>Real terminal in the browser; FitAddon for sizing; auto-connect and type-back.</p></div>
+                <div class="card reveal"><div class="icon">📈</div><h3>ECharts / Mermaid / Markmap</h3><p>Charts and mind maps in chat; Mermaid parse errors are auto-corrected when possible.</p></div>
+                <div class="card reveal"><div class="icon">🐳</div><h3>Docker</h3><p>Dockerfile and export script; data and config can live on bind mounts.</p></div>
+                <div class="card reveal"><div class="icon">🪟</div><h3>Windows ConPTY</h3><p>For local host on Windows, ConPTY is preferred: arrow key history, backspace echoing.</p></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ─────────── FAQ ─────────── -->
+    <section class="block" id="faq">
+        <div class="container">
+            <div class="section-head reveal">
+                <span class="section-tag">Common questions</span>
+                <h2>A few things you may want to ask first</h2>
+            </div>
+            <div class="faq reveal">
+                <details class="faq-item" open>
+                    <summary>How is Moso different from a web SSH client?</summary>
+                    <p>
+                        Moso is not only a web terminal: the AI is a first-class citizen—function calling drives hosts, files, jobs, and config.
+                        You still get a host tree, separate credentials, multi-user isolation, and full operation logging.
+                        You can use only the terminal, or you can have the model do about 80% of the work for you with you approving and reviewing.
+                    </p>
+                </details>
+                <details class="faq-item" open>
+                    <summary>⚠️ Do I have to configure an AI model? Can I use “terminal only”?</summary>
+                    <p>
+                        <strong>Yes, you need a model.</strong> Moso is built around AI as the main entry—without a model, the AI assistant, per-host AI, triggered tasks, scheduled tasks, and local-host AI will not work.
+                        Three API styles: <code>Alibaba DashScope (compatible-mode)</code> / <code>Ollama local</code> / <code>OpenAI native or compatible</code>.
+                        Each user sets Base URL, key, and model, or inherits admin defaults.
+                        Without your own key, a shared system key applies with a <strong>2000</strong>-call quota (configurable); the first reply each round shows usage; when exhausted, configure your own key or ask an admin to reset or apply system defaults. Admins can clear shared-key counts anytime.
+                    </p>
+                </details>
+                <details class="faq-item">
+                    <summary>“Per-host AI prompts” vs “host knowledge”—what is the difference?</summary>
+                    <p>
+                        <strong>Per-host prompts</strong>: rules, installed tools, paths, and taboos—so the AI knows what to do on that machine; searchable across hosts by capability.
+                        <strong>Host knowledge</strong>: accounts, passwords, tokens—used only per host when needed, not for cross-host search.
+                        Both are stored per user × host and are not shared when you share a host with someone else.
+                    </p>
+                </details>
+                <details class="faq-item">
+                    <summary>Can the AI run dangerous commands on its own?</summary>
+                    <p>
+                        Actions require <code>tool_call</code> and are logged. You can enable auto-approve or review each call.
+                        In production, avoid auto-approving risky tools; put forbidden actions and change windows in per-host prompts; keep human confirmation where needed.
+                    </p>
+                </details>
+                <details class="faq-item">
+                    <summary>Can I deploy on-prem? Is data uploaded?</summary>
+                    <p>
+                        Yes: SQLite in one file, all data local. With Ollama, inference can stay on your network too.
+                        With a cloud LLM, only the chat context goes to the provider you configured—nothing extra to a third party.
+                    </p>
+                </details>
+                <details class="faq-item">
+                    <summary>How many hosts can one Moso serve?</summary>
+                    <p>
+                        Moso is a collaboration hub; connections are limited mainly by memory and SSH sessions. WAL SQLite is enough for most small and mid teams.
+                        Larger deployments can use multiple workers on Linux (<code>EDGEOPS_WORKERS&gt;1</code>); with the built-in scheduler and SQLite write patterns, a single process plus container replicas is usually recommended.
+                    </p>
+                </details>
+                <details class="faq-item">
+                    <summary>How do I start?</summary>
+                    <p>
+                        ① Register and sign in (email optional + captcha) →
+                        <strong>② ⚠️ The most important step: in “System settings → My AI config”, fill in Base URL / key / model—<u>without this, nothing else works</u></strong> →
+                        ③ Open “AI assistant” in the header and say, e.g., “Add a host 10.0.0.12 for me”—credentials, hosts, tags, batch jobs, and tasks can be handled in natural language;
+                        ④ (Optional) you can also use the “Host management” menu and build each item by hand.
+                        <br><br>
+                        One principle: <strong style="color:#ffd9a8"> model-assisted chat is the core way to work in this system; you start from conversation.</strong>
+                        See the <code>README</code> and <code>docs/</code> directory, or click “Help” in the top-right after you sign in.
+                    </p>
+                </details>
+            </div>
+        </div>
+    </section>
+
+    <!-- ─────────── CTA ─────────── -->
+    <section class="block" id="cta">
+        <div class="container">
+            <div class="cta reveal">
+                <h2>Ready to have AI keep watch on your servers for you?</h2>
+                <p>
+                    Sign in to your Moso instance, or self-host on your network—features are evolving, and in-app or email feedback is welcome.<br>
+                    <strong style="color:#ffd9a8">Do not forget: the first thing is to configure a model, then you drive everything from AI chat.</strong>
+                </p>
+                <div class="hero-actions" style="justify-content:center">
+                    <a class="btn btn-primary" href="/login">Sign in →</a>
+                    <a class="btn btn-ghost" href="#start-here">Read me first · set up the model</a>
+                    <a class="btn btn-ghost" href="#features">See every capability</a>
+                </div>
+                <p style="margin-top:26px;font-size:0.85rem;color:var(--text-muted)">Tip: for production, use “auto-approve” carefully and write change policy into prompts. Contact: pubsvn@gmail.com</p>
+            </div>
+        </div>
+    </section>
+
+    <footer>
+        <div class="container foot-row">
+            <div>© Moso — remote AI operations, driven over SSH</div>
+            <div>
+                <a href="/login">Sign in</a> · 
+                <a href="#start-here">Read me first</a> · 
+                <a href="#features">Features</a> · 
+                <a href="#ai">AI</a> · 
+                <a href="#multihost">Multi-host</a> · 
+                <a href="#architecture">Architecture</a> · 
+                <a href="#faq">FAQ</a>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        // ─── scroll reveal ───
+        var observer = new IntersectionObserver(function(entries) {
+            entries.forEach(function(e) {
+                if (e.isIntersecting) { e.target.classList.add('show'); observer.unobserve(e.target); }
+            });
+        }, { threshold: 0.12 });
+        document.querySelectorAll('.reveal').forEach(function(el) { observer.observe(el); });
+
+        // ─── hero particle web ───
+        (function(){
+            var c = document.getElementById('heroCanvas');
+            if (!c) return;
+            var ctx = c.getContext('2d');
+            var w = 0, h = 0, dpr = window.devicePixelRatio || 1;
+            var particles = [];
+            var N = 80;
+            function resize(){
+                w = c.clientWidth = c.offsetWidth;
+                h = c.clientHeight = c.offsetHeight;
+                c.width = w * dpr; c.height = h * dpr;
+                ctx.setTransform(dpr,0,0,dpr,0,0);
+            }
+            function init(){
+                particles = [];
+                for (var i=0;i<N;i++){
+                    particles.push({
+                        x: Math.random()*w, y: Math.random()*h,
+                        vx: (Math.random()-0.5)*0.35,
+                        vy: (Math.random()-0.5)*0.35,
+                        r: Math.random()*1.8+0.4
+                    });
+                }
+            }
+            function draw(){
+                ctx.clearRect(0,0,w,h);
+                // connect nearby particles
+                for (var i=0;i<particles.length;i++){
+                    var p = particles[i];
+                    p.x += p.vx; p.y += p.vy;
+                    if (p.x<0||p.x>w) p.vx*=-1;
+                    if (p.y<0||p.y>h) p.vy*=-1;
+                    for (var j=i+1;j<particles.length;j++){
+                        var q = particles[j];
+                        var dx=p.x-q.x, dy=p.y-q.y;
+                        var d = Math.sqrt(dx*dx+dy*dy);
+                        if (d<140){
+                            ctx.strokeStyle = 'rgba(111,168,255,'+(0.18*(1-d/140))+')';
+                            ctx.lineWidth = 0.6;
+                            ctx.beginPath();
+                            ctx.moveTo(p.x,p.y); ctx.lineTo(q.x,q.y); ctx.stroke();
+                        }
+                    }
+                }
+                for (var k=0;k<particles.length;k++){
+                    var pp = particles[k];
+                    ctx.fillStyle = 'rgba(156,194,255,0.7)';
+                    ctx.beginPath();
+                    ctx.arc(pp.x,pp.y,pp.r,0,Math.PI*2); ctx.fill();
+                }
+                requestAnimationFrame(draw);
+            }
+            window.addEventListener('resize', function(){ resize(); init(); });
+            resize(); init(); draw();
+        })();
+    </script>
+</body>
+</html>

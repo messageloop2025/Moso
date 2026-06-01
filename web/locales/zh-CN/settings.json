@@ -1,0 +1,216 @@
+{
+  "settings": {
+    "pageTitle": "系统设置",
+    "display": {
+      "title": "显示语言",
+      "description": "选择界面显示语言。选择「跟随浏览器」将使用上方检测到的语言（可随浏览器/系统变化）。已登录后此处设置保存在本机浏览器。",
+      "label": "界面语言",
+      "browser": "跟随浏览器",
+      "useBrowser": "（跟随浏览器）",
+      "systemDetected": "当前检测为："
+    },
+    "saveDisplay": "保存语言",
+    "aiForm": {
+      "title": "我的 AI 配置",
+      "intro": "每用户独立配置 Key、URL、模型等，用于 AI 助手与运维对话。",
+      "modelType": "AI 源类型",
+      "modelTypeAuto": "自动探测（按服务地址识别）",
+      "apiKey": "API Key",
+      "apiKeyPh": "大模型 API Key（Ollama 可留空）",
+      "baseUrl": "服务地址",
+      "baseUrlPh": "如 https://api.openai.com/v1 或 http://localhost:11434/v1",
+      "model": "模型",
+      "modelPh": "如 gpt-4o-mini、qwen3.5-plus",
+      "context": "上下文长度",
+      "contextManualPh": "或输入0～8M",
+      "contextHelp": "字符数上限，0=不限制，支持到8MB(8388608)",
+      "autoApprove": "自动审批工具",
+      "autoApproveLabel": "启用后 AI 调用工具无需用户确认",
+      "vision": "支持图像识别",
+      "visionLabel": "所配模型支持识图（默认开启）",
+      "visionHelp": "勾选后，用户上传的图片会以 OpenAI 多模态 <code>image_url</code> 段内联到对话里让视觉模型直接「看到」；关闭则不内联，改由 AI 按需调 <code>read_chat_attachment</code> 拿 base64 兜底（建议只在模型/网关不支持多模态时关闭）。",
+      "outputLocale": "回复语言（无法从输入判断时）",
+      "outputLocaleAuto": "自动（站点 / 界面语言）",
+      "outputLocaleZh": "简体中文",
+      "outputLocaleEn": "English",
+      "outputLocaleHelp": "当单条消息过短或无法判断语种时作为默认；留空则按全局设置与界面语言策略。用户显式要求某语言时始终优先。",
+      "agentMax": "Agent 最大步数",
+      "agentPh": "0=沿用全局默认",
+      "agentHint": "单轮内最多调用工具/思考步数；0/留空 表示沿用全局默认（当前默认 {{def}}，上限 {{cap}}）",
+      "assistantMax": "辅助 AI 最大轮数",
+      "assistantPh": "0=沿用全局默认",
+      "assistantHint": "连续助手轮次（自动续跑次数）；0/留空 表示沿用全局默认（当前默认 {{def}}，上限 {{cap}}）",
+      "save": "保存 AI 配置"
+    },
+    "mail": {
+      "title": "我的发信设置",
+      "intro": "使用<strong>您自己的 SMTP</strong>向外发邮件（如通过 AI 发送报告、定时任务结果通知）。与管理员在「全局设置」中配置的系统 SMTP 无关；系统验证码、通知类邮件仍走管理员 SMTP。<strong>默认关闭</strong>，需填写完整后再勾选启用。",
+      "enable": "启用邮件发送",
+      "enableLabel": "启用后「发送邮件」「定时任务通知」将使用下方 SMTP",
+      "smtpHost": "SMTP 服务器",
+      "smtpHostPh": "如 smtp.example.com",
+      "port": "端口",
+      "portPh": "587",
+      "user": "用户名",
+      "userPh": "通常是邮箱地址",
+      "password": "密码",
+      "passwordPh": "留空表示不修改已保存的密码",
+      "from": "发件人 From",
+      "fromPh": "发件人邮箱",
+      "tlsSsl": "TLS / SSL",
+      "tlsLabel": "STARTTLS（常见 587）",
+      "sslLabel": "SSL 直连（常见 465）",
+      "tlsSslHelp": "两者互斥：SSL 直连（端口 465 起就走 TLS）与 STARTTLS（端口 587 明文升级）只能选其一；都不选则明文发送，仅供内网测试。",
+      "save": "保存发信设置"
+    },
+    "search": {
+      "title": "搜索服务（GitHub / 阿里云 IQS / …）",
+      "intro": "为 AI 提供网页与代码搜索能力。每个服务的 API Key 按当前用户独立保存，AI 调用 <code>search_web</code> / <code>search_github</code> 时自动取用。<strong>不配置则不启用</strong>；GitHub 即使无 PAT 也能匿名搜索，IQS 必须配置个人 Key。",
+      "noProviders": "尚未注册任何搜索服务。",
+      "loadFailed": "加载失败：{{message}}",
+      "optionDefault": "（默认）",
+      "docs": "查看官方文档",
+      "enableRow": "启用",
+      "enableLabel": "启用此搜索服务（不勾选时即使配置了 Key 也不会被 AI 使用）",
+      "save": "保存",
+      "test": "测试连通性",
+      "clear": "清空配置",
+      "passwordLeaveBlank": "已保存（留空表示不修改）",
+      "badgeKey5000": "● 已配置 Key（5000 次/小时）",
+      "badgeNoKey60": "● 无 Key 也可用（限速 60 次/小时）",
+      "badgeKey": "● 已配置 Key",
+      "badgeNoKeyRequired": "● 未配置 Key（不可用）"
+    },
+    "apiAccess": {
+      "title": "API 访问令牌",
+      "intro": "供第三方（自动化、OpenClaw 等）以<strong>您当前账号的角色与数据范围</strong>调用 毛竹 的 HTTP API。请在请求头加入 <code>Authorization: Bearer &lt;完整令牌&gt;</code>。每个令牌仅创建时显示一次明文，遗失请撤销后重建。",
+      "namePh": "备注名称（可选）",
+      "newToken": "新建令牌"
+    },
+    "mailStatus": {
+      "ok": "当前状态：已可发信。",
+      "incomplete": "当前状态：已勾选启用但配置不完整，无法发信。请补全服务器、端口、用户名、密码、发件人后再次保存。",
+      "disabled": "当前状态：发信未启用。填写完整 SMTP 后可勾选「启用邮件发送」。",
+      "loadFailed": "无法加载发信设置，请稍后重试或检查登录状态。"
+    },
+    "context": {
+      "unlimited": "不限制",
+      "current": "当前: {{label}}",
+      "manualOr": "或输入 0～{{m}}M"
+    },
+    "aiModelType": {
+      "aliyun": "阿里云 DashScope",
+      "ollama": "Ollama（本地）",
+      "openai": "OpenAI / 兼容接口"
+    },
+    "searchProviderMeta": {
+      "github": {
+        "displayName": "GitHub 搜索",
+        "description": "通过 GitHub 官方 REST API 搜索仓库 / 代码 / Issue / 用户。未配置个人访问令牌（PAT）时仍可使用，但限速 60 次/小时；配置 PAT 后限速提升至 5000 次/小时，且可搜索私有仓库。",
+        "fields": {
+          "api_key": {
+            "label": "Personal Access Token (PAT)",
+            "placeholder": "ghp_xxx 或 github_pat_xxx（可选）",
+            "help": "可选。访问 https://github.com/settings/tokens 创建。仅勾选 public_repo 即可搜索公开内容；如需搜私有仓库勾选 repo。"
+          }
+        }
+      },
+      "iqs": {
+        "displayName": "阿里云 IQS 搜索",
+        "description": "阿里云信息查询服务（UnifiedSearch），面向 Agent 的开放域通用网页搜索，支持多种引擎类型与时间范围筛选。需在阿里云控制台开通服务并创建 API Key。",
+        "fields": {
+          "api_key": {
+            "label": "IQS API Key",
+            "placeholder": "在阿里云 IQS 控制台创建（创建后约 5 分钟生效）",
+            "help": "开通服务并创建 Key：https://help.aliyun.com/zh/document_detail/2872258.html。请注意：管理员与普通用户均需各自配置个人 Key，本服务不提供共享 Key。"
+          },
+          "default_engine_type": {
+            "label": "默认引擎类型",
+            "placeholder": "Generic",
+            "help": "未在调用时指定时使用此默认值；GenericAdvanced 为收费选项，按调用量计费。"
+          }
+        },
+        "engineTypes": {
+          "Generic": "标准版（约 10 条结果）",
+          "GenericAdvanced": "增强版（约 50 条，权威站点更多，收费）",
+          "LiteAdvanced": "联网搜索极速版（语义化，1-50 条）",
+          "Deep": "深度搜索（复杂 query，时延高，1-50 条）"
+        }
+      }
+    },
+    "trial": {
+      "ownKey": "✅ <b>已使用自有 Key：</b>你已配置自己的 AI Key，毛竹 不再对你的调用次数计数或限制。",
+      "sharedExhausted": "❌ <b>系统共享 Key 配额已用尽</b>（{{used}} / {{limit}}）：请在下方填写自有 Base URL / API Key / Model 以<b>解除次数限制</b>，或联系管理员重置配额 / 写入系统默认配置。",
+      "sharedOk": "💡 <b>系统共享 Key 配额</b>：已用 <b>{{used}}</b> / 共 <b>{{limit}}</b> 次，剩余 <b>{{remaining}}</b> 次。填写自有 Key 可<b>解除次数限制</b>（毛竹 不再计数）。"
+    },
+    "prompts": {
+      "newApiToken": "请立即复制保存完整令牌（关闭对话框后无法再次查看）：",
+      "deleteAccountPassword": "请输入当前登录密码，作为身份验证：",
+      "deleteAccountTypeDelete": "最后确认：在下方输入大写单词  DELETE  以确认注销"
+    },
+    "danger": {
+      "title": "⚠️ 危险操作 · 注销账户",
+      "intro": "注销账户将<strong style=\"color:#ff6b6b\">不可逆地</strong>删除以下所有与你相关的数据：",
+      "li1": "你创建的<strong>所有主机、凭证、主机分组、主机标签</strong>；",
+      "li2": "你分享给其他用户的主机，将一并从<strong>对方账号里撤销</strong>，且对方因这些主机产生的<strong>聊天会话、主机知识、主机提示词、标签、通道</strong>也一并清除；",
+      "li3": "你自己的<strong>所有 AI 聊天会话与消息</strong>（全局、本机、主机运维），以及个人 AI 配置、共享 Key 调用计数、API 令牌、个人发信配置、触发任务、定时任务、批量操作等；",
+      "li4": "你账号下 <code>web/fs</code> 工作目录中的所有文件；",
+      "li5": "你的账号与邮箱绑定。",
+      "adminOnly": "管理员账户不能在此注销，请联系另一位管理员在「用户管理」中删除（避免删除最后一位管理员）。",
+      "btn": "注销我的账户…"
+    },
+    "admin": {
+      "userAiTitle": "为用户配置 AI（管理员）",
+      "userAiIntro": "可为任意用户配置 AI 源与模型；或直接将系统默认配置应用到该用户。",
+      "selectUser": "选择用户",
+      "pleaseSelectUser": "请选择用户",
+      "loadUserCfg": "加载该用户配置",
+      "saveToUser": "保存到该用户",
+      "applySystem": "将系统配置应用到该用户",
+      "modelType": "AI 源类型",
+      "modelTypeAuto": "自动探测",
+      "apiKey": "API Key",
+      "apiKeyPh": "API Key（Ollama 可留空）",
+      "baseUrl": "服务地址",
+      "baseUrlPh": "如 https://api.openai.com/v1",
+      "model": "模型",
+      "modelPh": "如 gpt-4o-mini",
+      "context": "上下文长度",
+      "contextManualPh": "或输入0～8M",
+      "autoApprove": "自动审批工具",
+      "autoEnable": "启用",
+      "vision": "支持图像识别",
+      "visionLabel": "所配模型支持识图（默认开启）",
+      "visionHelp": "关闭后不再把图片以多模态 <code>image_url</code> 内联到对话，改为让 AI 用 <code>read_chat_attachment</code> 拿 base64 兜底。",
+      "agentMax": "Agent 最大步数",
+      "agentPh": "0=沿用全局默认",
+      "agentHint": "0/留空 表示沿用全局默认（当前默认 {{def}}，上限 {{cap}}）",
+      "assistantMax": "辅助 AI 最大轮数",
+      "assistantPh": "0=沿用全局默认",
+      "assistantHint": "0/留空 表示沿用全局默认（当前默认 {{def}}，上限 {{cap}}）",
+      "notifyFeedbackTitle": "反馈邮件通知（仅管理员）",
+      "notifyFeedbackIntro": "开启后，<strong>用户提交一条新反馈</strong>会触发系统级 SMTP 向<strong>所有 admin 邮箱</strong>发邮件提醒（30 秒内最多发一次以避免重复打扰）。",
+      "notifyFeedbackCode": "若 <code>smtp_host</code> 未在下方全局设置中配置，本开关不生效。",
+      "notifyFeedbackCheck": "用户反馈到达时通知管理员",
+      "save": "保存",
+      "emailTemplatesTitle": "邮件通知模板（仅管理员）",
+      "emailTemplatesIntro": "用于锁定/解锁/暂停/恢复通知，标题统一为「毛竹通知」。正文支持变量 <code>{{username}}</code>（用户账户名）。",
+      "emailSubject": "邮件标题",
+      "emailSubjectPh": "毛竹通知",
+      "bodyLock": "锁定通知正文",
+      "bodyUnlock": "解锁通知正文",
+      "bodySuspend": "暂停使用通知正文",
+      "bodyRestore": "恢复使用通知正文",
+      "lockBodyPh": "{{username}}用户您好，您的毛竹账号已锁定...",
+      "globalTitle": "全局设置项（仅管理员）",
+      "thKey": "键",
+      "thValue": "值",
+      "thAction": "操作",
+      "preview": "预览",
+      "loginAnnouncementTitle": "登录页公告（Markdown）",
+      "loginAnnouncementIntro": "显示在登录页右侧顶部。留空则不展示；内容支持 Markdown。",
+      "loginAnnouncementPh": "例如：### 维护公告\n今晚 22:00-23:00 升级系统，期间可能短暂不可用。",
+      "loginAnnouncementAiHint": "AI 管理员也可更新 key：login_announcement_md"
+    }
+  }
+}

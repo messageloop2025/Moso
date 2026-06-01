@@ -1,0 +1,2 @@
+showToast('请输入用户名', 'error')
+showToast('请选择或创建会话')

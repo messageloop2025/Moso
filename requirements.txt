@@ -1,0 +1,23 @@
+fastapi>=0.136.0
+uvicorn[standard]>=0.47.0
+aiosqlite>=0.20.0
+python-jose[cryptography]>=3.3.0
+bcrypt>=4.0.0
+python-multipart>=0.0.29
+httpx>=0.28.0
+pydantic>=2.13.0
+pydantic-settings>=2.14.0
+# Paramiko 5.0 移除 ssh-rsa(SHA-1)，OpenWrt/老旧 dropbear 无法连接；锁定 4.x
+paramiko>=3.4.0,<5.0
+cryptography>=48.0.0
+croniter>=2.0.0
+# IANA 时区数据（Windows 上 zoneinfo 依赖）
+tzdata>=2026.1
+beautifulsoup4>=4.12.0
+PyYAML
+# 聊天附件：Office/PDF → Markdown（AI read_chat_attachment）
+markitdown[pdf,docx,pptx,xlsx]>=0.1.5
+# MCP 内置（services/edgeops_mcp；默认同进程 /mcp，与 claw-ops 同 REST 工具）
+mcp>=1.6.0
+# 本机终端在 Windows 下使用 ConPTY（可选；未安装则回退为 PIPE）
+pywinpty>=2.0.0; sys_platform == "win32"

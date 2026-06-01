@@ -1,0 +1,436 @@
+"""SSH 终端 WebSocket 与 AI 介入 API（xterm.js 前端 + 后端桥接）。
+
+卡顿/白闪/断连说明：
+- SSH 长时间无数据时，中间网络或服务端可能断开连接，后端已对 SSH 开启 keepalive（约 30 秒）以减轻空闲断连。
+- 终端输出量很大时，浏览器主线程会被 xterm 渲染占满，表现为界面卡住、白闪；前端已对 term.write 做 requestAnimationFrame 节流，每帧合并输出以减轻卡顿；ResizeObserver/窗口 resize 对 fit 做了短防抖，减少分栏拖拽时的连续 resize 与闪白。
+- WebSocket 或 SSH 任一侧断开后，终端会显示未连接，需用户重新点击「连接」。"""
+import asyncio
+import json
+import logging
+import socket
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
+
+from database import get_db
+from api.auth import get_current_user, user_dict_for_websocket_from_token
+from api.hosts import _resolve_host_auth, parse_host_aliases_cell
+from services.ssh_shell import open_shell_session
+from services.ssh_connect import friendly_ssh_error
+from services.terminal_input import expand_control_keys, is_control_only
+import paramiko
+
+logger = logging.getLogger("edgeops.terminal")
+
+router = APIRouter(prefix="/api/terminal", tags=["SSH 终端"])
+
+DEFAULT_TERMINAL_SCOPE = "default"
+
+# 终端会话：(user_id, scope_id, slot) -> { channel, client, buffer, host_id, host_type, host_name, host_ip, host_port, host_aliases, created_by, ws, task }；slot 0 为默认控制台
+_user_sessions: dict[tuple[int, str, int], dict] = {}
+# AI 请求创建控制台：(user_id, scope_id) -> [ { "host_id", "created_by": "ai" }, ... ]，前端轮询取走后清空
+_pending_console_creations: dict[tuple[int, str], list[dict]] = {}
+BUFFER_MAX = 262144
+TERMINAL_SLOT_AI = 0  # 默认控制台槽位（不可关闭）
+# connect_terminal 后前端建立 WebSocket+SSH 需时间；AI 连续 tool 调用时服务端在 send/read 前等待就绪
+TERMINAL_CONNECT_WAIT_MAX_SEC = 5.0
+TERMINAL_CONNECT_POLL_SEC = 0.25
+
+
+def normalize_terminal_scope_id(scope_id: Optional[str]) -> str:
+    scope = (scope_id or "").strip()
+    if not scope:
+        return DEFAULT_TERMINAL_SCOPE
+    if len(scope) > 120:
+        scope = scope[:120]
+    return scope
+
+
+@router.websocket("/ws")
+async def terminal_websocket(ws: WebSocket):
+    await ws.accept()
+    token = ws.query_params.get("token") or ws.query_params.get("Authorization", "").replace("Bearer ", "")
+    user = await user_dict_for_websocket_from_token(token)
+    if not user:
+        await ws.send_json({"type": "error", "message": "未登录或 Token 无效"})
+        await ws.close()
+        return
+
+    user_id = user["id"]
+    slot = 0
+    scope_id = DEFAULT_TERMINAL_SCOPE
+    session: Optional[dict] = None
+
+    try:
+        # 第一帧必须是 init
+        raw = await ws.receive_text()
+        try:
+            msg = json.loads(raw)
+        except json.JSONDecodeError:
+            await ws.send_json({"type": "error", "message": "首帧须为 JSON: { type, host_id }"})
+            return
+        if msg.get("type") != "init" or "host_id" not in msg:
+            await ws.send_json({"type": "error", "message": "需要 type: init 与 host_id"})
+            return
+
+        if isinstance(msg.get("slot"), (int, float)):
+            slot = int(msg["slot"])
+        elif isinstance(msg.get("slot"), str) and msg["slot"].isdigit():
+            slot = int(msg["slot"])
+        else:
+            slot = 0
+        slot = max(0, min(slot, 31))
+        scope_id = normalize_terminal_scope_id(msg.get("scope_id"))
+        created_by = (msg.get("created_by") or "user").strip().lower()
+        if created_by not in ("default", "user", "ai"):
+            created_by = "user"
+        if slot == 0 and created_by != "ai":
+            created_by = "default"
+        host_id = int(msg["host_id"])
+        db = await get_db()
+        rows = await db.execute_fetchall("SELECT * FROM hosts WHERE id = ?", (host_id,))
+        if not rows:
+            await ws.send_json({"type": "error", "message": "主机不存在"})
+            return
+        host_row = dict(rows[0])
+        auth = await _resolve_host_auth(db, host_row)
+        if not auth or not auth.get("username"):
+            await ws.send_json({"type": "error", "message": "主机未配置有效登录凭证"})
+            return
+
+        # 同一用户同 slot 已有会话时先关闭，避免旧连接占用导致新连接异常
+        session_key = (user_id, scope_id, slot)
+        old = _user_sessions.pop(session_key, None)
+        if old:
+            old.get("task") and old["task"].cancel()
+            try:
+                old.get("channel") and old["channel"].close()
+            except Exception:
+                pass
+            try:
+                old.get("client") and old["client"].close()
+            except Exception:
+                pass
+
+        # SSH 建连放入线程池，避免阻塞事件循环（否则长时间/卡住会拖死整个 worker）
+        try:
+            client, channel = await asyncio.to_thread(
+                open_shell_session,
+                host=host_row["host"],
+                port=host_row.get("port") or 22,
+                username=auth["username"],
+                auth_type=auth.get("auth_type") or "password",
+                password=auth.get("password"),
+                key_path=auth.get("key_path"),
+                private_key_pem=auth.get("private_key_pem"),
+                timeout=45,
+            )
+        except Exception as e:
+            # 认证失败/网络问题属于常见用户错误，不需要堆栈刷屏；未知异常仍保留堆栈以便排查
+            if isinstance(
+                e,
+                (
+                    paramiko.ssh_exception.AuthenticationException,
+                    paramiko.ssh_exception.BadAuthenticationType,
+                    paramiko.ssh_exception.SSHException,
+                    socket.timeout,
+                    TimeoutError,
+                    EOFError,
+                    ConnectionRefusedError,
+                    OSError,
+                ),
+            ):
+                logger.warning("SSH shell open failed: %s", e)
+            else:
+                logger.exception("SSH shell open failed")
+            await ws.send_json({"type": "error", "message": friendly_ssh_error(e)})
+            return
+
+        buffer: list = []
+        buffer_size = [0]  # 用 list 以便闭包内修改
+
+        async def channel_to_ws():
+            try:
+                while True:
+                    data = await asyncio.to_thread(channel.recv, 4096)
+                    if not data:
+                        break
+                    text = data.decode("utf-8", errors="replace")
+                    buffer.append(text)
+                    buffer_size[0] += len(text)
+                    while buffer_size[0] > BUFFER_MAX and buffer:
+                        first = buffer.pop(0)
+                        buffer_size[0] -= len(first)
+                    await ws.send_text(text)
+            except (WebSocketDisconnect, ConnectionError, RuntimeError):
+                pass
+            except Exception as e:
+                logger.exception("channel_to_ws: %s", e)
+
+        task = asyncio.create_task(channel_to_ws())
+        session = {
+            "scope_id": scope_id,
+            "host_id": host_id,
+            "host_type": (host_row.get("host_type") or "").strip(),
+            "host_name": (host_row.get("name") or "").strip(),
+            "host_ip": (host_row.get("host") or "").strip(),
+            "host_port": int(host_row.get("port") or 22),
+            "host_aliases": parse_host_aliases_cell(host_row.get("aliases")),
+            "created_by": created_by,
+            "channel": channel,
+            "client": client,
+            "buffer": buffer,
+            "buffer_size": buffer_size,
+            "ws": ws,
+            "task": task,
+        }
+        session_key = (user_id, scope_id, slot)
+        _user_sessions[session_key] = session
+        await ws.send_json({"type": "ready", "slot": slot, "scope_id": scope_id})
+
+        # 之后所有来自客户端的为终端输入或 resize（xterm 原始字符或 JSON { type: "input", data } / { type: "resize", cols, rows }）
+        while True:
+            raw = await ws.receive_text()
+            try:
+                obj = json.loads(raw)
+                if isinstance(obj, dict):
+                    if obj.get("type") == "input" and "data" in obj:
+                        raw = obj["data"]
+                    elif obj.get("type") == "resize" and session.get("channel") and not channel.exit_status_ready():
+                        try:
+                            c = int(obj.get("cols") or 0)
+                            r = int(obj.get("rows") or 0)
+                        except (TypeError, ValueError):
+                            c, r = 0, 0
+                        if c >= 2 and r >= 1:
+                            c, r = min(c, 1000), min(r, 500)
+                            try:
+                                channel.resize_pty(width=c, height=r)
+                            except Exception:
+                                pass
+                        continue
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+            if session.get("channel") and not channel.exit_status_ready():
+                channel.send(raw.encode("utf-8", errors="replace"))
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.exception("terminal ws: %s", e)
+        try:
+            await ws.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
+    finally:
+        session_key = (user_id, scope_id, slot)
+        if session_key in _user_sessions:
+            s = _user_sessions.pop(session_key, None)
+            if s:
+                s["task"].cancel()
+                try:
+                    await s["task"]
+                except asyncio.CancelledError:
+                    pass
+                try:
+                    s["channel"].close()
+                except Exception:
+                    pass
+                try:
+                    s["client"].close()
+                except Exception:
+                    pass
+
+
+def is_terminal_session_ready(user_id: int, slot: int | None = None, scope_id: str | None = None) -> bool:
+    """前端 WebSocket 已完成 init 且 SSH 会话已登记、通道可用。"""
+    if slot is None:
+        slot = TERMINAL_SLOT_AI
+    scope_id = normalize_terminal_scope_id(scope_id)
+    session = _user_sessions.get((user_id, scope_id, slot))
+    if not session:
+        return False
+    ch = session.get("channel")
+    return bool(ch and not ch.exit_status_ready())
+
+
+async def wait_for_terminal_session_ready(
+    user_id: int,
+    slot: int | None = None,
+    scope_id: str | None = None,
+    *,
+    max_wait_sec: float = TERMINAL_CONNECT_WAIT_MAX_SEC,
+    poll_interval_sec: float = TERMINAL_CONNECT_POLL_SEC,
+) -> bool:
+    """在 connect_terminal / create_console 之后轮询，直到会话就绪或超时（避免紧接的读写失败）。"""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(0.5, min(max_wait_sec, 30.0))
+    while loop.time() < deadline:
+        if is_terminal_session_ready(user_id, slot, scope_id):
+            return True
+        await asyncio.sleep(poll_interval_sec)
+    return False
+
+
+def get_terminal_buffer_for_user(user_id: int, slot: int | None = None, scope_id: str | None = None) -> tuple[str, bool]:
+    """供 Agent 内部调用：返回指定控制台的 (buffer 文本, 是否已连接)。slot 为空则用默认 (0)。"""
+    if slot is None:
+        slot = TERMINAL_SLOT_AI
+    scope_id = normalize_terminal_scope_id(scope_id)
+    session = _user_sessions.get((user_id, scope_id, slot))
+    if not session:
+        return "", False
+    return "".join(session["buffer"]), True
+
+
+def get_current_host_id_for_user(user_id: int, scope_id: str | None = None, slot: int | None = None) -> int | None:
+    """供 Agent 内部调用：返回指定控制台（默认 0）所连接的主机 ID。"""
+    scope_id = normalize_terminal_scope_id(scope_id)
+    slot = TERMINAL_SLOT_AI if slot is None else max(0, min(slot, 31))
+    session = _user_sessions.get((user_id, scope_id, slot))
+    if not session:
+        return None
+    return session.get("host_id")
+
+
+def get_terminals_for_user(user_id: int, scope_id: str | None = None) -> list[dict]:
+    """供 Agent 调用：返回当前用户所有控制台列表（含终端与主机映射扩展信息）。"""
+    scope_id = normalize_terminal_scope_id(scope_id)
+    out = []
+    for (uid, session_scope_id, slot), s in list(_user_sessions.items()):
+        if uid != user_id or session_scope_id != scope_id:
+            continue
+        ch = s.get("channel")
+        out.append({
+            "slot": slot,
+            "scope_id": session_scope_id,
+            "host_id": s.get("host_id"),
+            "host_name": s.get("host_name") or "",
+            "host_ip": s.get("host_ip") or "",
+            "host_port": s.get("host_port") or 22,
+            "host_aliases": s.get("host_aliases") or [],
+            "created_by": s.get("created_by") or "user",
+            "connected": ch is not None and not ch.exit_status_ready(),
+        })
+    out.sort(key=lambda x: x["slot"])
+    return out
+
+
+def add_pending_console_creation(user_id: int, host_id: int, created_by: str = "ai", scope_id: str | None = None) -> None:
+    """AI 请求创建控制台时调用；前端轮询 GET 取走后会创建对应 tab 并连接。"""
+    scope_id = normalize_terminal_scope_id(scope_id)
+    key = (user_id, scope_id)
+    if key not in _pending_console_creations:
+        _pending_console_creations[key] = []
+    _pending_console_creations[key].append({"host_id": host_id, "created_by": created_by, "scope_id": scope_id})
+
+
+async def close_console(user_id: int, slot: int, scope_id: str | None = None) -> tuple[bool, str]:
+    """关闭指定 slot 的控制台。仅当 created_by 为 ai 时可关闭（无默认控制台后 slot 0 也可关闭）。返回 (成功, 消息)。"""
+    scope_id = normalize_terminal_scope_id(scope_id)
+    session = _user_sessions.get((user_id, scope_id, slot))
+    if not session:
+        return False, "该控制台不存在或已关闭"
+    if (session.get("created_by") or "user") != "ai":
+        return False, "仅可关闭由 AI 创建的控制台"
+    task = session.get("task")
+    if task:
+        task.cancel()
+    try:
+        session.get("channel") and session["channel"].close()
+    except Exception:
+        pass
+    try:
+        session.get("client") and session["client"].close()
+    except Exception:
+        pass
+    try:
+        ws = session.get("ws")
+        if ws:
+            await ws.close()
+    except Exception:
+        pass
+    _user_sessions.pop((user_id, scope_id, slot), None)
+    return True, "已关闭"
+
+
+def _terminal_line_ending(text: str, host_type: str) -> str:
+    """Windows 需 \\r\\n 提交命令，Linux 用 \\n。"""
+    if not text:
+        return text
+    ht = (host_type or "").lower()
+    if "windows" in ht:
+        text = text.rstrip("\r\n")
+        return text + "\r\n"
+    if not text.endswith("\n"):
+        return text + "\n"
+    return text
+
+
+def send_to_user_terminal(user_id: int, text: str, slot: int | None = None, scope_id: str | None = None) -> bool:
+    """供 Agent 内部调用：向指定控制台注入输入；slot 为空则使用默认 (0)。支持 <Ctrl+C> 等控制键占位符。"""
+    if slot is None:
+        slot = TERMINAL_SLOT_AI
+    scope_id = normalize_terminal_scope_id(scope_id)
+    session = _user_sessions.get((user_id, scope_id, slot))
+    if not session:
+        return False
+    ch = session["channel"]
+    if ch.exit_status_ready():
+        return False
+    text = expand_control_keys(text or "")
+    if not is_control_only(text):
+        text = _terminal_line_ending(text, session.get("host_type"))
+    ch.send(text.encode("utf-8", errors="replace"))
+    return True
+
+
+@router.get("/buffer")
+async def get_terminal_buffer(slot: int | None = None, scope_id: str | None = None, user=Depends(get_current_user)):
+    """读取指定控制台最近输出；slot 不传则默认 0。"""
+    slot = max(0, min(slot if slot is not None else TERMINAL_SLOT_AI, 31))
+    scope_id = normalize_terminal_scope_id(scope_id)
+    buf, connected = get_terminal_buffer_for_user(user["id"], slot, scope_id=scope_id)
+    return {"success": True, "buffer": buf, "connected": connected, "slot": slot, "scope_id": scope_id}
+
+
+@router.get("/list")
+async def list_terminals(scope_id: str | None = None, user=Depends(get_current_user)):
+    """返回当前用户所有控制台列表（slot、host_id、host_name、host_aliases、host_ip、host_port、created_by、connected）。"""
+    scope_id = normalize_terminal_scope_id(scope_id)
+    items = get_terminals_for_user(user["id"], scope_id=scope_id)
+    return {"success": True, "terminals": items, "scope_id": scope_id}
+
+
+@router.get("/pending-console-creations")
+async def get_pending_console_creations(scope_id: str | None = None, user=Depends(get_current_user)):
+    """前端轮询：获取待创建的控制台（AI 请求创建的），取走后清空。"""
+    uid = user["id"]
+    scope_id = normalize_terminal_scope_id(scope_id)
+    items = _pending_console_creations.pop((uid, scope_id), [])
+    return {"success": True, "items": items, "scope_id": scope_id}
+
+
+class TerminalSendBody(BaseModel):
+    text: str
+    slot: int | None = None  # 不传则发往默认控制台 (0)
+    scope_id: str | None = None
+
+
+@router.post("/send")
+async def terminal_send(body: TerminalSendBody, user=Depends(get_current_user)):
+    """向指定控制台注入输入；body.slot 不传则发往默认控制台。支持 <Ctrl+C> 等控制键占位符。"""
+    slot = body.slot if body.slot is not None else TERMINAL_SLOT_AI
+    scope_id = normalize_terminal_scope_id(body.scope_id)
+    session = _user_sessions.get((user["id"], scope_id, slot))
+    if not session:
+        raise HTTPException(status_code=400, detail="该控制台未连接或已关闭")
+    channel = session["channel"]
+    if channel.exit_status_ready():
+        raise HTTPException(status_code=400, detail="终端已关闭")
+    text = expand_control_keys(body.text or "")
+    if not is_control_only(text):
+        text = _terminal_line_ending(text, session.get("host_type"))
+    channel.send(text.encode("utf-8", errors="replace"))
+    return {"success": True, "scope_id": scope_id}

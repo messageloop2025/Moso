@@ -1,0 +1,25 @@
+{
+  "ai": {
+    "fsHostLabel": "Host: ",
+    "fsHostTypeaheadPh": "Type name, IP, alias, or ID to filter…",
+    "fsHostNoMatch": "No matching hosts",
+    "fsSelectHostOption": "-- Select host --",
+    "fsPreviewNeedHost": "Select a host above to browse its filesystem",
+    "fsPreviewPickFile": "Select a file on the left to preview",
+    "fsPickHostShort": "Select a host above",
+    "globalSshTitle": "SSH",
+    "collapseInlineTerminal": "Collapse terminal",
+    "promptButtonShort": "Context",
+    "consoleEmptyPickHost": "Select a host and click Connect; the console opens here.",
+    "localConsoleOpenHint": "Use “+ New console” to open a terminal.",
+    "localEmptyLog": "No run log yet. Send a message to see tool calls here.",
+    "local": {
+      "pageTitle": "Local",
+      "adminRequired": "Administrator access required",
+      "terminalHeader": "Local shell & files",
+      "logHint": "Local run log (not persisted; cleared on new session)",
+      "splitterTitle": "Drag to resize",
+      "sessionNew": "Local session"
+    }
+  }
+}

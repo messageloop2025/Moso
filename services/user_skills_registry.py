@@ -1,0 +1,805 @@
+"""每用户 Agent Skills：web/fs/<user>/skills/<name>/SKILL.md + DB 元数据。"""
+
+from __future__ import annotations
+
+import logging
+import re
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+import config
+from api.filesystem import get_user_fs_root
+from database import get_db
+
+logger = logging.getLogger("edgeops.user_skills.registry")
+
+_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+_FRONTMATTER_RE = re.compile(r"^---\r?\n(.*?)\r?\n---\r?\n?", re.DOTALL)
+# Cursor Agent Skills 默认：disable-model-invocation=true → 仅目录披露，按需 get_user_skill
+_DEFAULT_DISABLE_MODEL_INVOCATION = True
+
+DEFAULT_SKILL_BODY = """# {title}
+
+## Quick start
+
+（核心步骤，保持简洁；详细内容放同目录 reference.md）
+
+## Additional resources
+
+- 详细参考：`reference.md`（需要时用 `read_user_skill_file` 加载；写入用 `write_user_skill_file`）
+- 示例：`examples.md`（可选）
+- 可执行脚本放 `scripts/`（用 ssh_execute / fs 工具运行，勿用 fs_write_file 写 Skill 文件）
+"""
+
+DEFAULT_SKILL_TEMPLATE = """---
+name: {name}
+description: >-
+  （第三人称）简述能力与触发场景。Include WHAT it does and WHEN to use it
+  (trigger terms). Use when the user mentions …
+disable-model-invocation: true
+---
+
+""" + DEFAULT_SKILL_BODY
+
+_PLACEHOLDER_DESC_MARKERS = (
+    "在此简述",
+    "简述能力与触发",
+    "Use when the user mentions …",
+    "Use when the user mentions ...",
+)
+
+
+def is_placeholder_description(desc: str) -> bool:
+    d = (desc or "").strip()
+    if not d:
+        return True
+    return any(m in d for m in _PLACEHOLDER_DESC_MARKERS)
+
+
+def collect_skill_name_warnings(slug: str) -> list[str]:
+    if "_" in slug:
+        return [f"标识「{slug}」含下划线，Cursor 惯例建议使用连字符 -"]
+    return []
+
+
+def collect_description_warnings(slug: str, desc: str) -> list[str]:
+    warnings = collect_skill_name_warnings(slug)
+    d = (desc or "").strip()
+    if not d:
+        warnings.append(f"Skill「{slug}」缺少 description，请补充 frontmatter")
+    elif is_placeholder_description(d):
+        warnings.append(f"Skill「{slug}」description 仍为模板占位，请填写 WHAT+WHEN")
+    return warnings
+
+
+def default_skill_template_content(name: str = "my-skill", description: str = "") -> str:
+    slug = (name or "my-skill").strip().lower()
+    try:
+        slug = normalize_skill_name(slug)
+    except ValueError:
+        slug = "my-skill"
+    return render_skill_markdown(name=slug, description=description or "")
+
+
+def normalize_skill_name(name: str) -> str:
+    raw = (name or "").strip().lower()
+    raw = re.sub(r"[^a-z0-9_-]+", "-", raw).strip("-")
+    if not raw or not _NAME_RE.match(raw):
+        raise ValueError("标识须为小写字母开头，仅含 a-z、0-9、-、_，最长 64 字符")
+    return raw
+
+
+def get_user_skills_root(user: dict) -> Path:
+    root = get_user_fs_root(user) / config.USER_SKILLS_SUBDIR
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def skill_dir_relative(name: str) -> str:
+    slug = normalize_skill_name(name)
+    return f"{config.USER_SKILLS_SUBDIR}/{slug}"
+
+
+def skill_md_path(user: dict, name: str) -> Path:
+    slug = normalize_skill_name(name)
+    return get_user_skills_root(user) / slug / "SKILL.md"
+
+
+def parse_skill_markdown(content: str) -> tuple[dict[str, Any], str]:
+    text = content or ""
+    meta: dict[str, Any] = {}
+    body = text
+    m = _FRONTMATTER_RE.match(text)
+    if m:
+        try:
+            parsed = yaml.safe_load(m.group(1))
+            if isinstance(parsed, dict):
+                meta = parsed
+        except Exception:
+            meta = {}
+        body = text[m.end() :]
+    name = str(meta.get("name") or "").strip()
+    desc = str(meta.get("description") or "").strip()
+    return meta, body.lstrip("\n")
+
+
+def _yaml_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    s = str(value).strip().lower()
+    if s in ("true", "1", "yes", "on"):
+        return True
+    if s in ("false", "0", "no", "off"):
+        return False
+    return None
+
+
+def skill_should_always_apply(meta: dict[str, Any]) -> bool:
+    """是否内联注入 SKILL.md 正文（对齐 Cursor：disable-model-invocation=false 或 always-apply=true）。"""
+    aa = _yaml_bool(meta.get("always-apply"))
+    if aa is True:
+        return True
+    dmi = _yaml_bool(meta.get("disable-model-invocation"))
+    if dmi is False:
+        return True
+    if dmi is True:
+        return False
+    return not _DEFAULT_DISABLE_MODEL_INVOCATION
+
+
+def extract_display_title(meta: dict[str, Any], body: str, slug: str) -> str:
+    if meta.get("title"):
+        return str(meta["title"]).strip()[:120]
+    if meta.get("displayName"):
+        return str(meta["displayName"]).strip()[:120]
+    m = re.search(r"^#\s+(.+)$", (body or "").strip(), re.MULTILINE)
+    if m:
+        return m.group(1).strip()[:120]
+    return slug
+
+
+def trim_skill_description(desc: str) -> str:
+    limit = max(200, int(config.USER_SKILLS_DESC_MAX_CHARS))
+    d = (desc or "").strip()
+    return d[:limit] if len(d) > limit else d
+
+
+def normalize_skill_file_content(
+    content: str,
+    slug: str,
+    *,
+    fallback_description: str = "",
+) -> str:
+    """写入磁盘前规范化 frontmatter（name、description 长度、保留 Cursor 扩展字段）。"""
+    meta, body = parse_skill_markdown(content or "")
+    slug = normalize_skill_name(slug)
+    meta["name"] = slug
+    desc = trim_skill_description(str(meta.get("description") or fallback_description or ""))
+    lines = ["---", f"name: {slug}"]
+    if desc:
+        if "\n" in desc or len(desc) > 80:
+            lines.append("description: >-")
+            for part in desc.splitlines() or [desc]:
+                lines.append(f"  {part.strip()}")
+        else:
+            lines.append(f"description: {desc}")
+    for key in ("disable-model-invocation", "always-apply"):
+        if key not in meta:
+            continue
+        vb = _yaml_bool(meta[key])
+        if vb is None:
+            lines.append(f"{key}: {meta[key]}")
+        else:
+            lines.append(f"{key}: {str(vb).lower()}")
+    lines.extend(["---", "", (body or "").strip()])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def skill_dir_path(user: dict, name: str) -> Path:
+    slug = normalize_skill_name(name)
+    return get_user_skills_root(user) / slug
+
+
+def list_skill_resource_files(user: dict, name: str) -> list[str]:
+    d = skill_dir_path(user, name)
+    if not d.is_dir():
+        return []
+    out: list[str] = []
+    for p in sorted(d.rglob("*")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(d).as_posix()
+        if rel.startswith(".") or "/." in rel:
+            continue
+        out.append(rel)
+    return out
+
+
+def read_skill_resource_file(
+    user: dict,
+    name: str,
+    relative_path: str,
+    *,
+    max_chars: int | None = None,
+) -> str:
+    rel = normalize_skill_resource_relpath(relative_path)
+    base = skill_dir_path(user, name).resolve()
+    path = (base / rel).resolve()
+    try:
+        path.relative_to(base)
+    except ValueError as e:
+        raise ValueError("非法路径") from e
+    if not path.is_file():
+        raise FileNotFoundError(f"文件不存在: {rel}")
+    limit = max_chars if max_chars is not None else int(config.USER_SKILLS_RESOURCE_MAX_CHARS)
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if len(text) > limit:
+        return text[:limit] + "\n\n…（文件已截断）"
+    return text
+
+
+def normalize_skill_resource_relpath(relative_path: str) -> str:
+    rel = (relative_path or "").strip().replace("\\", "/").lstrip("/")
+    if not rel or ".." in rel.split("/"):
+        raise ValueError("非法路径")
+    return rel
+
+
+def skill_fs_display_path(name: str, relative_path: str) -> str:
+    slug = normalize_skill_name(name)
+    rel = normalize_skill_resource_relpath(relative_path)
+    return f"{config.USER_SKILLS_SUBDIR}/{slug}/{rel}"
+
+
+def write_skill_resource_file(
+    user: dict,
+    name: str,
+    relative_path: str,
+    content: str,
+    *,
+    append: bool = False,
+) -> dict:
+    slug = normalize_skill_name(name)
+    rel = normalize_skill_resource_relpath(relative_path)
+    if rel.lower() == "skill.md":
+        raise ValueError("SKILL.md 须用 save_user_skill 写入，勿用 write_user_skill_file")
+    base = skill_dir_path(user, slug)
+    path = (base / rel).resolve()
+    try:
+        path.relative_to(base.resolve())
+    except ValueError as e:
+        raise ValueError("非法路径") from e
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = content if content is not None else ""
+    if append and path.is_file():
+        old = path.read_text(encoding="utf-8", errors="replace")
+        path.write_text(old + text, encoding="utf-8")
+        mode = "append"
+    else:
+        path.write_text(text, encoding="utf-8")
+        mode = "overwrite"
+    return {
+        "success": True,
+        "skill": slug,
+        "path": rel,
+        "fs_path": skill_fs_display_path(slug, rel),
+        "mode": mode,
+        "size": path.stat().st_size,
+    }
+
+
+def delete_skill_resource_file(user: dict, name: str, relative_path: str) -> dict:
+    slug = normalize_skill_name(name)
+    rel = normalize_skill_resource_relpath(relative_path)
+    if rel.lower() == "skill.md":
+        raise ValueError("删除整个 Skill 请用 delete_user_skill；修改 SKILL.md 请用 save_user_skill")
+    base = skill_dir_path(user, slug)
+    path = (base / rel).resolve()
+    try:
+        path.relative_to(base.resolve())
+    except ValueError as e:
+        raise ValueError("非法路径") from e
+    if not path.is_file():
+        raise FileNotFoundError(f"文件不存在: {rel}")
+    path.unlink()
+    return {"success": True, "skill": slug, "path": rel, "fs_path": skill_fs_display_path(slug, rel)}
+
+
+def list_skill_files_detail(user: dict, name: str) -> list[dict]:
+    slug = normalize_skill_name(name)
+    d = skill_dir_path(user, slug)
+    if not d.is_dir():
+        return []
+    out: list[dict] = []
+    for p in sorted(d.rglob("*")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(d).as_posix()
+        if rel.startswith(".") or "/." in rel:
+            continue
+        try:
+            st = p.stat()
+            out.append(
+                {
+                    "path": rel,
+                    "fs_path": skill_fs_display_path(slug, rel),
+                    "size": st.st_size,
+                    "mtime": st.st_mtime,
+                }
+            )
+        except OSError:
+            continue
+    return out
+
+
+def looks_like_agent_skill_fs_path(relative_path: str) -> bool:
+    """是否为 Agent Skills 专用路径（须走 skill 工具，禁止 fs_write 归位到 chats/）。"""
+    raw = (relative_path or "").strip().replace("\\", "/").lstrip("/").lower()
+    if not raw:
+        return False
+    if raw == "skills" or raw.startswith("skills/"):
+        return True
+    # 误写在 chats/.../skills/ 下
+    if "/skills/" in raw or raw.endswith("/skills"):
+        parts = raw.split("/")
+        if "skills" in parts:
+            idx = parts.index("skills")
+            if idx > 0 and parts[0] == "chats":
+                return True
+    return False
+
+
+def render_skill_markdown(
+    *,
+    name: str,
+    description: str = "",
+    body: str = "",
+    disable_model_invocation: bool | None = True,
+) -> str:
+    slug = normalize_skill_name(name)
+    desc = trim_skill_description(description or "")
+    body = (body or "").strip()
+    if not body:
+        title = slug.replace("-", " ").replace("_", " ").title()
+        body = DEFAULT_SKILL_BODY.format(title=title)
+    lines = ["---", f"name: {slug}"]
+    if desc:
+        if "\n" in desc or len(desc) > 80:
+            lines.append("description: >-")
+            for part in desc.splitlines():
+                lines.append(f"  {part.strip()}")
+        else:
+            lines.append(f"description: {desc}")
+    dmi = disable_model_invocation if disable_model_invocation is not None else _DEFAULT_DISABLE_MODEL_INVOCATION
+    lines.append(f"disable-model-invocation: {str(dmi).lower()}")
+    lines.extend(["---", "", body])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def resolve_skill_content_for_save(
+    name: str,
+    *,
+    content: str | None = None,
+    description: str = "",
+    display_name: str = "",
+    body: str = "",
+    existing_content: str = "",
+) -> str | None:
+    """组装待写入的 SKILL.md；无正文/描述变更时返回 None。"""
+    if content is not None and str(content).strip():
+        text = str(content).strip()
+        return text if text.endswith("\n") else text + "\n"
+    body = (body or "").strip()
+    desc = (description or display_name or "").strip()
+    if body:
+        return render_skill_markdown(name=name, description=desc, body=body)
+    if desc:
+        if existing_content:
+            meta, old_body = parse_skill_markdown(existing_content)
+            merged_desc = desc or str(meta.get("description") or "").strip()
+            return render_skill_markdown(name=name, description=merged_desc, body=old_body)
+        return render_skill_markdown(name=name, description=desc)
+    return None
+
+
+def public_skill_row(row: dict, *, fs_exists: bool | None = None) -> dict:
+    return {
+        "id": row["id"],
+        "name": row.get("name") or "",
+        "display_name": row.get("display_name") or row.get("name") or "",
+        "description": row.get("description") or "",
+        "skill_path": row.get("skill_path") or "",
+        "enabled": bool(row.get("enabled", 1)),
+        "chat_enabled": bool(row.get("chat_enabled", 1)),
+        "chat_scope_web": bool(row.get("chat_scope_web", 1)),
+        "chat_scope_host": bool(row.get("chat_scope_host", 1)),
+        "chat_scope_integration": bool(row.get("chat_scope_integration", 0)),
+        "file_exists": fs_exists if fs_exists is not None else True,
+        "updated_at": row.get("updated_at"),
+        "created_at": row.get("created_at"),
+    }
+
+
+async def user_skills_feature_enabled(db, user_id: int) -> bool:
+    rows = await db.execute_fetchall(
+        "SELECT skills_enabled FROM users WHERE id=?",
+        (user_id,),
+    )
+    if not rows:
+        return False
+    return bool(dict(rows[0]).get("skills_enabled", 0))
+
+
+async def require_user_skills_access(db, user: dict) -> None:
+    if not await user_skills_feature_enabled(db, int(user["id"])):
+        raise PermissionError("管理员尚未为您开启 Skills 功能")
+
+
+async def read_skill_content(user: dict, name: str) -> str:
+    path = skill_md_path(user, name)
+    if not path.is_file():
+        return ""
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+async def write_skill_content(user: dict, name: str, content: str) -> Path:
+    slug = normalize_skill_name(name)
+    normalized = normalize_skill_file_content(content, slug)
+    path = skill_md_path(user, slug)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(normalized or "", encoding="utf-8")
+    return path
+
+
+async def list_user_skills(db, user_id: int, user: dict | None = None) -> list[dict]:
+    rows = await db.execute_fetchall(
+        "SELECT * FROM user_skills WHERE user_id=? ORDER BY name ASC",
+        (user_id,),
+    )
+    out: list[dict] = []
+    for r in rows:
+        row = dict(r)
+        if user:
+            out.append(await enrich_skill_list_item(db, user_id, user, row))
+        else:
+            out.append(public_skill_row(row))
+    return out
+
+
+async def enrich_skill_list_item(_db, user_id: int, user: dict, row: dict) -> dict:
+    slug = row.get("name") or ""
+    fs_ok = skill_md_path(user, slug).is_file() if slug else False
+    pub = public_skill_row(row, fs_exists=fs_ok)
+    resources = list_skill_resource_files(user, slug) if slug else []
+    pub["resources"] = [r for r in resources if r != "SKILL.md"]
+    pub["resources_count"] = len(pub["resources"])
+    pub["always_apply"] = False
+    pub["disable_model_invocation"] = True
+    if fs_ok:
+        try:
+            content = await read_skill_content(user, slug)
+            meta, _ = parse_skill_markdown(content)
+            pub["always_apply"] = skill_should_always_apply(meta)
+            dmi = _yaml_bool(meta.get("disable-model-invocation"))
+            pub["disable_model_invocation"] = dmi if dmi is not None else True
+        except Exception:
+            pass
+    hints = collect_skill_name_warnings(slug)
+    if hints:
+        pub["name_hint"] = hints[0]
+    return pub
+
+
+async def maybe_sync_skill_from_disk(db, user_id: int, user: dict, raw_row: dict) -> None:
+    slug = raw_row.get("name") or ""
+    if not slug:
+        return
+    path = skill_md_path(user, slug)
+    if not path.is_file():
+        return
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return
+    db_mtime = raw_row.get("file_mtime")
+    if db_mtime is not None and abs(float(db_mtime) - float(mtime)) < 0.001:
+        return
+    await _upsert_row_from_file(db, user_id, user, slug, path)
+
+
+async def get_user_skill(db, user_id: int, skill_id: int, user: dict | None = None) -> dict | None:
+    rows = await db.execute_fetchall(
+        "SELECT * FROM user_skills WHERE id=? AND user_id=?",
+        (skill_id, user_id),
+    )
+    if not rows:
+        return None
+    row = dict(rows[0])
+    if user:
+        db = await get_db()
+        await maybe_sync_skill_from_disk(db, user_id, user, row)
+        rows = await db.execute_fetchall(
+            "SELECT * FROM user_skills WHERE id=? AND user_id=?",
+            (skill_id, user_id),
+        )
+        if rows:
+            row = dict(rows[0])
+        pub = await enrich_skill_list_item(db, user_id, user, row)
+        pub["content"] = await read_skill_content(user, row["name"])
+        return pub
+    return public_skill_row(row, fs_exists=None)
+
+
+async def get_user_skill_raw(db, user_id: int, skill_id: int) -> dict | None:
+    rows = await db.execute_fetchall(
+        "SELECT * FROM user_skills WHERE id=? AND user_id=?",
+        (skill_id, user_id),
+    )
+    return dict(rows[0]) if rows else None
+
+
+async def get_user_skill_raw_by_name(db, user_id: int, name: str) -> dict | None:
+    slug = normalize_skill_name(name)
+    rows = await db.execute_fetchall(
+        "SELECT * FROM user_skills WHERE user_id=? AND name=?",
+        (user_id, slug),
+    )
+    return dict(rows[0]) if rows else None
+
+
+def _scan_file_warnings(slug: str, meta: dict[str, Any], desc: str) -> list[str]:
+    warnings: list[str] = []
+    meta_name = str(meta.get("name") or "").strip()
+    if meta_name:
+        try:
+            if normalize_skill_name(meta_name) != slug:
+                warnings.append(
+                    f"Skill「{slug}」: frontmatter name「{meta_name}」与目录名不一致，已按目录同步"
+                )
+        except ValueError:
+            warnings.append(f"Skill「{slug}」: frontmatter name「{meta_name}」无效")
+    warnings.extend(collect_description_warnings(slug, desc))
+    return warnings
+
+
+async def _upsert_row_from_file(
+    db, user_id: int, user: dict, slug: str, path: Path
+) -> tuple[str, list[str]]:
+    content = path.read_text(encoding="utf-8", errors="replace")
+    meta, _body = parse_skill_markdown(content)
+    desc = trim_skill_description(str(meta.get("description") or ""))
+    display = extract_display_title(meta, _body, slug)[:120]
+    mtime = path.stat().st_mtime
+    rel = skill_dir_relative(slug)
+    warnings = _scan_file_warnings(slug, meta, desc)
+    existing = await get_user_skill_raw_by_name(db, user_id, slug)
+    if existing:
+        await db.execute(
+            """UPDATE user_skills SET display_name=?, description=?, skill_path=?,
+               file_mtime=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?""",
+            (display, desc[:2000], rel, mtime, int(existing["id"]), user_id),
+        )
+        await db.commit()
+        return "updated", warnings
+    cur = await db.execute(
+        """INSERT INTO user_skills
+           (user_id, name, display_name, description, skill_path, file_mtime)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (user_id, slug, display, desc[:2000], rel, mtime),
+    )
+    await db.commit()
+    return "imported", warnings
+
+
+async def scan_user_skills_from_disk(db, user_id: int, user: dict) -> dict:
+    root = get_user_skills_root(user)
+    found: list[str] = []
+    imported = updated = skipped = invalid = 0
+    warnings: list[str] = []
+    for child in sorted(root.iterdir()):
+        if not child.is_dir():
+            continue
+        md = child / "SKILL.md"
+        if not md.is_file():
+            continue
+        try:
+            slug = normalize_skill_name(child.name)
+        except ValueError:
+            invalid += 1
+            skipped += 1
+            warnings.append(f"跳过无效目录名「{child.name}」（须小写字母开头，a-z、0-9、-、_）")
+            continue
+        action, w = await _upsert_row_from_file(db, user_id, user, slug, md)
+        warnings.extend(w)
+        if action == "imported":
+            imported += 1
+        elif action == "updated":
+            updated += 1
+        else:
+            skipped += 1
+        found.append(slug)
+    return {
+        "success": True,
+        "scanned": found,
+        "count": len(found),
+        "imported": imported,
+        "updated": updated,
+        "skipped": skipped,
+        "invalid": invalid,
+        "warnings": warnings,
+    }
+
+
+async def create_user_skill(
+    db,
+    user_id: int,
+    user: dict,
+    *,
+    name: str,
+    display_name: str = "",
+    description: str = "",
+    content: str | None = None,
+    enabled: bool = True,
+    chat_enabled: bool = True,
+    chat_scope_web: bool = True,
+    chat_scope_host: bool = True,
+    chat_scope_integration: bool = False,
+) -> dict:
+    slug = normalize_skill_name(name)
+    existing = await get_user_skill_raw_by_name(db, user_id, slug)
+    if existing:
+        raise ValueError(f"Skill「{slug}」已存在")
+    path = skill_md_path(user, slug)
+    if path.is_file():
+        raise ValueError(f"目录 {skill_dir_relative(slug)} 已存在 SKILL.md")
+    md = (
+        content
+        if content is not None and str(content).strip()
+        else render_skill_markdown(
+            name=slug,
+            description=description or display_name,
+        )
+    )
+    path = await write_skill_content(user, slug, md)
+    meta, body = parse_skill_markdown(md)
+    desc = trim_skill_description(description or str(meta.get("description") or ""))
+    disp = (display_name or extract_display_title(meta, body, slug))[:120]
+    rel = skill_dir_relative(slug)
+    mtime = path.stat().st_mtime
+    cur = await db.execute(
+        """INSERT INTO user_skills
+           (user_id, name, display_name, description, skill_path, enabled, chat_enabled,
+            chat_scope_web, chat_scope_host, chat_scope_integration, file_mtime)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            user_id,
+            slug,
+            disp,
+            desc,
+            rel,
+            1 if enabled else 0,
+            1 if chat_enabled else 0,
+            1 if chat_scope_web else 0,
+            1 if chat_scope_host else 0,
+            1 if chat_scope_integration else 0,
+            mtime,
+        ),
+    )
+    await db.commit()
+    row = await get_user_skill(db, user_id, int(cur.lastrowid), user)
+    return row or {}
+
+
+async def update_user_skill(
+    db,
+    user_id: int,
+    user: dict,
+    skill_id: int,
+    *,
+    display_name: str | None = None,
+    description: str | None = None,
+    content: str | None = None,
+    enabled: bool | None = None,
+    chat_enabled: bool | None = None,
+    chat_scope_web: bool | None = None,
+    chat_scope_host: bool | None = None,
+    chat_scope_integration: bool | None = None,
+) -> dict:
+    raw = await get_user_skill_raw(db, user_id, skill_id)
+    if not raw:
+        raise LookupError("Skill 不存在")
+    slug = raw["name"]
+    if content is not None:
+        path = await write_skill_content(user, slug, content)
+        meta, body = parse_skill_markdown(content)
+        if description is None:
+            description = trim_skill_description(str(meta.get("description") or ""))
+        if display_name is None:
+            display_name = extract_display_title(meta, body, slug)[:120]
+        mtime = path.stat().st_mtime
+    else:
+        mtime = None
+    await db.execute(
+        """UPDATE user_skills SET
+           display_name=COALESCE(?, display_name),
+           description=COALESCE(?, description),
+           enabled=COALESCE(?, enabled),
+           chat_enabled=COALESCE(?, chat_enabled),
+           chat_scope_web=COALESCE(?, chat_scope_web),
+           chat_scope_host=COALESCE(?, chat_scope_host),
+           chat_scope_integration=COALESCE(?, chat_scope_integration),
+           file_mtime=COALESCE(?, file_mtime),
+           updated_at=CURRENT_TIMESTAMP
+           WHERE id=? AND user_id=?""",
+        (
+            display_name,
+            description,
+            None if enabled is None else (1 if enabled else 0),
+            None if chat_enabled is None else (1 if chat_enabled else 0),
+            None if chat_scope_web is None else (1 if chat_scope_web else 0),
+            None if chat_scope_host is None else (1 if chat_scope_host else 0),
+            None if chat_scope_integration is None else (1 if chat_scope_integration else 0),
+            mtime,
+            skill_id,
+            user_id,
+        ),
+    )
+    await db.commit()
+    row = await get_user_skill(db, user_id, skill_id, user)
+    return row or {}
+
+
+async def delete_user_skill(db, user_id: int, user: dict, skill_id: int, *, remove_files: bool = False) -> bool:
+    raw = await get_user_skill_raw(db, user_id, skill_id)
+    if not raw:
+        return False
+    slug = raw["name"]
+    cur = await db.execute("DELETE FROM user_skills WHERE id=? AND user_id=?", (skill_id, user_id))
+    await db.commit()
+    if remove_files:
+        import shutil
+        d = get_user_skills_root(user) / slug
+        if d.is_dir():
+            shutil.rmtree(d, ignore_errors=True)
+    return cur.rowcount > 0
+
+
+async def list_chat_enabled_skills_for_context(
+    db,
+    user_id: int,
+    user: dict,
+    session_scope: str | None,
+    session_host_id: int | None = None,
+) -> list[dict]:
+    if not await user_skills_feature_enabled(db, user_id):
+        return []
+    scope = (session_scope or "default").strip().lower() or "default"
+    if scope == "task":
+        return []
+    rows = await db.execute_fetchall(
+        """SELECT * FROM user_skills
+           WHERE user_id=? AND enabled=1 AND chat_enabled=1
+           ORDER BY name ASC""",
+        (user_id,),
+    )
+    out: list[dict] = []
+    for r in rows:
+        row = dict(r)
+        if scope in ("integration", "mcp_orchestrate", "mcp_runtime"):
+            if not bool(row.get("chat_scope_integration", 0)):
+                continue
+        elif session_host_id:
+            if not bool(row.get("chat_scope_host", 1)):
+                continue
+        else:
+            if not bool(row.get("chat_scope_web", 1)):
+                continue
+        path = skill_md_path(user, row["name"])
+        if not path.is_file():
+            continue
+        out.append(row)
+    return out

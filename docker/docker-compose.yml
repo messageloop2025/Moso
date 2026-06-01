@@ -1,0 +1,41 @@
+# 毛竹：应用代码在镜像内；与 compose 同级的 data/ 下集中持久化
+# 项目根执行：docker compose -f docker/docker-compose.yml up -d --build
+#
+#   data/data/  → /app/data      （SQLite 等）
+#   data/fs/    → /app/web/fs    （用户工作区、聊天附件、成果物）
+#   data/logs/  → /app/logs      （uvicorn 运行日志 edgeops.log）
+#
+services:
+  edgeops:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        EDGEOPS_VERSION: ${EDGEOPS_VERSION:-dev}
+    image: edgeops:${EDGEOPS_VERSION:-dev}
+    container_name: edgeops
+    ports:
+      - "8010:8010"
+    environment:
+      EDGEOPS_DB: /app/data/edgeops.db
+      EDGEOPS_HOST: "0.0.0.0"
+      EDGEOPS_PORT: "8010"
+      EDGEOPS_VERSION: ${EDGEOPS_VERSION:-dev}
+      # MCP 同进程挂载于 /mcp（默认启用，与 8010 共用端口；设 false 可关闭）
+      EDGEOPS_MCP_ENABLED: ${EDGEOPS_MCP_ENABLED:-true}
+      # 独立 python -m services.edgeops_mcp --http 时才需要 MCP_HOST/MCP_PORT
+      EDGEOPS_MCP_HOST: ${EDGEOPS_MCP_HOST:-0.0.0.0}
+      EDGEOPS_MCP_PORT: ${EDGEOPS_MCP_PORT:-8011}
+      EDGEOPS_MCP_HTTP_PATH: ${EDGEOPS_MCP_HTTP_PATH:-/mcp}
+      # MCP 回连 毛竹 REST；容器内默认同机 8010
+      EDGEOPS_MCP_API_BASE_URL: ${EDGEOPS_MCP_API_BASE_URL:-http://127.0.0.1:8010}
+      # 可选 fallback Token；HTTP MCP 客户端仍优先用 Authorization 头
+      EDGEOPS_MCP_ACCESS_TOKEN: ${EDGEOPS_MCP_ACCESS_TOKEN:-}
+      # 反代 HTTPS：保留 X-Forwarded-Proto，避免 MCP 等重定向降级为 http
+      EDGEOPS_TRUST_PROXY_HEADERS: ${EDGEOPS_TRUST_PROXY_HEADERS:-true}
+      EDGEOPS_TRUSTED_PROXY_HOSTS: ${EDGEOPS_TRUSTED_PROXY_HOSTS:-*}
+    volumes:
+      - ../data/data:/app/data
+      - ../data/fs:/app/web/fs
+      - ../data/logs:/app/logs
+    restart: unless-stopped
