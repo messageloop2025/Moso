@@ -1,39 +1,42 @@
+<div align="center">
+
 # 毛竹（Moso）
+
+**面向小团队与个人开发者的 SSH 远程 AI 运维系统**
+
+*主机树 · Web 终端 · AI 助手（Function Calling）· 批量 / 定时任务 · 个人 MCP & Agent Skills · OpenClaw / Hermes 集成*
+
+<br>
+
+[![version](https://img.shields.io/badge/version-1.3.8--sp1-blue)](config.py)
+[![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#快速开始)
+[![stack](https://img.shields.io/badge/built%20with-FastAPI-009688)](#技术栈)
+[![db](https://img.shields.io/badge/database-SQLite%20WAL-003B57)](#技术栈)
+[![python](https://img.shields.io/badge/python-3.11+-3776AB)](requirements.txt)
+[![port](https://img.shields.io/badge/default%20port-8010-546E7A)](#快速开始)
+
+<br>
+
+[English](README.en.md) · **中文** · [产品介绍 `/intro/`](http://localhost:8010/intro/) · [功能清单](docs/功能清单.md) · [Docker 部署](docs/Docker部署.md) · [API 文档](docs/API文档.md)
+
+<br>
+
+> **AI 辅助人，不替代人** — 把重复运维交给工具，把精力放在核心业务上。  
+> 版本号以 `config.VERSION` 或 `GET /api/version` 为准。
+
+</div>
+
+---
 
 ## 毛竹的由来
 
 AI 发展太快，想跟上节奏，却常常感到吃力。这个项目是我用 **Vibe Coding** 边学边做练出来的——既是草稿，也希望它能成为真正有用的软件。决定开源，也是希望它在 AI 浪潮里能占一席之地，而不是被一波波新概念冲散。
 
-它最初叫 **EdgeOps**（边缘运维）：面向小团队和个人开发者，通过 SSH 管理虚拟机、物理机与云主机，分析日志、部署与调试在线业务，把重复运维交给工具，让人把精力放在核心业务上。
+它最初叫 **EdgeOps**（边缘运维）：通过 SSH 管理虚拟机、物理机与云主机，分析日志、部署与调试在线业务。
 
-与此同时，AI 的形态几乎每月都在变——聊天、Tool Call、Agent、MCP、Skills、OpenClaw、Hermes……往往刚按「当时最新」开工，一两个月后又像落后了一代。很多中小开发者只有一个人，甚至只能用业余时间做 side project。在巨头林立的行业里，这样的东西还有没有意义？我仍会问自己。
+与此同时，AI 的形态几乎每月都在变——聊天、Tool Call、Agent、MCP、Skills、OpenClaw、Hermes……很多中小开发者只有一个人，甚至只能用业余时间做 side project。在巨头林立的行业里，这样的东西还有没有意义？我仍会问自己。
 
-前沿在谈长期运行的智能体，但我相信：**AI 是辅助人，不是替代人**；一个定位清晰的辅助型工具，未必没有价值。既然要开源，就想给它取个名字——思量之后，叫 **毛竹**（Moso）。竹子大江南北都能长，普通，却生生不息；竹鞭在地下延伸，根系相连，所到之处连成一片竹林——就像一台台服务器，织成一张张网络。毛竹要做的，正是帮你看管这些服务器与它们背后的网络。
-
-以 **SSH** 为操作方式的**远程 AI 运维系统**：主机树、Web 终端、Function Calling 驱动的 AI 助手、批量与定时/触发任务、个人 MCP 与 Agent Skills，以及 OpenClaw / MCP 外部集成。当前版本 **v1.3.6**（见 `config.VERSION` / `GET /api/version`）。
-
-- **产品介绍（无需登录）**：[`/intro/`](http://localhost:8010/intro/) 静态站，中英文切换；登录页表单底部保留小字链接触达。
-- **详细设计**：见下方 [文档索引](#文档索引) 与 [docs/功能清单.md](docs/功能清单.md)。
-
-## 文档索引
-
-| 文档 | 说明 |
-|------|------|
-| [docs/设计.md](docs/设计.md) | 产品设计要点 |
-| [docs/功能清单.md](docs/功能清单.md) | 功能清单与优先级（验收参考） |
-| [docs/软件设计文档.md](docs/软件设计文档.md) | 架构、数据模型、前后端结构 |
-| [docs/数据库结构.md](docs/数据库结构.md) | 表结构、列与索引、迁移说明 |
-| [docs/API文档.md](docs/API文档.md) | REST / WebSocket 接口 |
-| [docs/Skills文档.md](docs/Skills文档.md) | AI 可调用 Skills（Function Calling） |
-| [docs/AI-Delegation-Cookbook.md](docs/AI-Delegation-Cookbook.md) | 多机编排、`delegate_chain`、工作流模板等示例 |
-| [docs/外部集成与ClawOps.md](docs/外部集成与ClawOps.md) | OpenClaw、Hermes、内置 MCP、API Token |
-| [docs/SSH通道与后台任务设计.md](docs/SSH通道与后台任务设计.md) | SSH TTY 通道与任务执行模型 |
-| [docs/技术栈说明.md](docs/技术栈说明.md) | 依赖、环境变量 |
-| [docs/权限边界说明.md](docs/权限边界说明.md) | 角色、数据隔离、Skills 边界 |
-| [docs/Docker部署.md](docs/Docker部署.md) | Docker 部署与卷映射 |
-| [docs/并发与扩展.md](docs/并发与扩展.md) | SQLite WAL、多用户并发、worker 建议 |
-| [docs/开发与完善建议.md](docs/开发与完善建议.md) | 测试、CI、规范等完善方向 |
-| [web/README.md](web/README.md) | 前端本地化与中英文 locale 键对齐校验 |
+前沿在谈长期运行的智能体，但我相信：**AI 是辅助人，不是替代人**；一个定位清晰的辅助型工具，未必没有价值。思量之后，取名 **毛竹**（Moso）——竹子大江南北都能长，普通，却生生不息；竹鞭在地下延伸，根系相连，所到之处连成一片竹林——就像一台台服务器，织成一张张网络。
 
 ## 功能概览
 
@@ -113,85 +116,6 @@ docker compose -f docker/docker-compose.yml up -d
 浏览器访问 `http://localhost:8010`，默认管理员：**admin** / **admin123**（首次建库后请尽快修改密码）。
 
 首次使用请在登录后配置 **「系统设置 → 我的 AI 配置」**（Base URL、API Key、模型）；无有效模型时 AI 助手与任务类能力不可用。
-
-## 目录结构
-
-与仓库当前布局一致（`api/` 约 30 个路由模块，不含已下线的离线申请接口）。
-
-```
-<仓库根目录>/          # Git 克隆目录名可能仍为 EdgeOps
-├── app.py                      # FastAPI 入口、API 注册、/intro 挂载、SPA 回退
-├── config.py                   # VERSION、数据库、JWT、AI、MCP/Skills、SQLite 并发
-├── requirements.txt
-├── start.bat                   # Windows 一键启动
-├── edgeops.db                  # 默认 SQLite（可用 EDGEOPS_DB 改路径；Docker 常挂卷到 data/）
-│
-├── docker/                     # Dockerfile、docker-compose.yml
-├── data/                       # Docker 运行时数据卷目录（可选）
-│
-├── database/
-│   ├── __init__.py             # init_db、get_db、迁移入口
-│   ├── models.py               # SCHEMA_SQL、建表与安全网
-│   ├── schema_version.py
-│   ├── migrations/             # 000_initial … 030_drop_offline_requests（共 31 档 → schema v31）
-│   │   └── README.md           # 迁移编写约定
-│   └── bundles/
-│       └── fresh_install.sql   # 新库快照（改迁移后运行 regenerate_fresh_install_sql.py）
-│
-├── api/                        # FastAPI Router（REST + WebSocket）
-│   ├── auth.py, users.py, api_tokens.py
-│   ├── credentials.py, hosts.py, host_groups.py, host_tags.py
-│   ├── maintenance_history.py, best_practices.py, skills.py
-│   ├── terminal.py, ssh_channel.py, remote_fs.py, filesystem.py
-│   ├── ai_agent.py, chat_attachments.py, ai_artifacts.py
-│   ├── batch.py, triggered_tasks.py, scheduled_tasks.py
-│   ├── dashboard.py, settings.py, local_host.py
-│   ├── user_mail.py, search_config.py
-│   ├── user_mcp_servers.py, user_skills.py
-│   ├── login_board.py, feedback.py          # 登录留言板 + 用户反馈
-│   └── integration_ops.py, integration_mcp.py, integration_claw_ops.py
-│
-├── services/                   # 业务与 AI 执行层
-│   ├── ai_skills.py            # Function Calling 工具定义与 execute_tool
-│   ├── llm_adapter.py, chat_utils.py, sub_ai.py, workflow_templates.py
-│   ├── ssh_client.py, ssh_shell.py, ssh_channel_*.py, ssh_background.py
-│   ├── scheduler.py, task_runner.py, batch_executor.py
-│   ├── edgeops_mcp/            # 内置 MCP Server（挂载 /mcp）
-│   ├── user_mcp_*.py           # 个人 MCP 注册、连接、导入导出
-│   ├── user_skills_*.py        # 个人 Skills 扫描、运行时、导入导出
-│   ├── feedback.py, feedback_notify.py, user_mail.py, email_sender.py
-│   ├── markitdown_convert.py   # Office/PDF 附件转 Markdown
-│   └── host_*.py, search_providers/, …
-│
-├── scripts/
-│   ├── bootstrap_fresh_db.py   # 空库一键建库
-│   ├── migrate_db.py           # 仅跑迁移
-│   ├── regenerate_fresh_install_sql.py
-│   └── check_locale_parity.py  # 中英文 locale 键对齐
-│
-├── tests/                      # 单元测试（user_mcp、user_skills、mcp_result_fetch 等）
-├── docs/                       # 设计、API、数据库、Skills、Docker、并发…
-├── claw-ops/                   # OpenClaw 插件
-├── claw-skills/                # Hermes / 外部 Agent 技能说明
-│
-└── web/                        # 静态前端（挂载为 /static，见 web/README.md）
-    ├── index.html              # SPA 壳
-    ├── favicon.png
-    ├── css/                    # style.css、xterm.min.css
-    ├── js/
-    │   ├── app.js, api.js, router.js, utils.js, i18n.js
-    │   ├── intro-page.js       # /intro/ 产品介绍页组字
-    │   └── xterm*.js, mermaid/echarts/markmap/d3（本地化，无 CDN）
-    ├── locales/
-    │   ├── zh-CN/              # 16 个模块 *.json
-    │   └── en/
-    ├── intro/                  # 产品介绍静态站 → 浏览器 /intro/
-    ├── aihelp/                 # AI 可读帮助 Markdown
-    ├── res/                    # 图片等静态资源
-    └── fs/                     # 运行时用户空间 web/fs/<用户名>/（附件、Skills、chats…）
-```
-
-打包与镜像相关：`build/`、`pack.bat`、`export-image.bat`、`build-and-export.bat`（见 Docker 文档）。
 
 ## 数据库：全新安装与升级
 
