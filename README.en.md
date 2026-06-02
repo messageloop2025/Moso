@@ -14,10 +14,11 @@
 [![db](https://img.shields.io/badge/database-SQLite%20WAL-003B57)](#tech-stack)
 [![python](https://img.shields.io/badge/python-3.11+-3776AB)](requirements.txt)
 [![port](https://img.shields.io/badge/default%20port-8010-546E7A)](#quick-start)
+[![docker](https://img.shields.io/docker/v/messageloop/moso?label=Docker%20Hub&logo=docker)](https://hub.docker.com/r/messageloop/moso)
 
 <br>
 
-**English** · [中文](README.md) · [Product intro `/intro/`](http://localhost:8010/intro/) · [Feature list](docs/功能清单.md) · [Docker deploy](docs/Docker部署.md) · [API docs](docs/API文档.md)
+**English** · [中文](README.md) · [Docker Hub `messageloop/moso`](https://hub.docker.com/r/messageloop/moso) · [Product intro `/intro/`](http://localhost:8010/intro/) · [Feature list](docs/功能清单.md) · [Docker deploy](docs/Docker部署.md) · [API docs](docs/API文档.md)
 
 <br>
 
@@ -103,13 +104,34 @@ python app.py
 
 On Windows, double-click **start.bat** or run **start.sh** on Linux/macOS.
 
-**Option 2: Docker (recommended for deployment)**
+**Option 2: Docker Hub image (recommended for deployment)**
+
+Official image: [**messageloop/moso**](https://hub.docker.com/r/messageloop/moso) (e.g. `messageloop/moso:latest` or a version tag).
+
+After cloning the repo, use the root [`docker-compose.yml`](docker-compose.yml):
 
 ```bash
-docker compose -f docker/docker-compose.yml up -d
+git clone https://github.com/messageloop2025/Moso.git
+cd Moso
+docker compose pull
+docker compose up -d
 ```
 
-See [docs/Docker部署.md](docs/Docker部署.md) (Chinese).
+Pull only (no clone):
+
+```bash
+docker pull messageloop/moso:latest
+```
+
+Volumes `./data/data`, `./data/fs`, and `./data/logs` are mounted automatically. See [docs/Docker部署.md](docs/Docker部署.md) (Chinese) for more options.
+
+**Option 3: build Docker image locally**
+
+```bash
+docker compose -f docker/docker-compose.yml up -d --build
+```
+
+To publish to Hub, use `publish-docker-hub.bat` at the repo root.
 
 ---
 

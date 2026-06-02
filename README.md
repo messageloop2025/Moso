@@ -14,10 +14,11 @@
 [![db](https://img.shields.io/badge/database-SQLite%20WAL-003B57)](#技术栈)
 [![python](https://img.shields.io/badge/python-3.11+-3776AB)](requirements.txt)
 [![port](https://img.shields.io/badge/default%20port-8010-546E7A)](#快速开始)
+[![docker](https://img.shields.io/docker/v/messageloop/moso?label=Docker%20Hub&logo=docker)](https://hub.docker.com/r/messageloop/moso)
 
 <br>
 
-[English](README.en.md) · **中文** · [产品介绍 `/intro/`](http://localhost:8010/intro/) · [功能清单](docs/功能清单.md) · [Docker 部署](docs/Docker部署.md) · [API 文档](docs/API文档.md)
+[English](README.en.md) · **中文** · [Docker Hub `messageloop/moso`](https://hub.docker.com/r/messageloop/moso) · [产品介绍 `/intro/`](http://localhost:8010/intro/) · [功能清单](docs/功能清单.md) · [Docker 部署](docs/Docker部署.md) · [API 文档](docs/API文档.md)
 
 <br>
 
@@ -103,13 +104,34 @@ python app.py
 
 Windows 可直接双击 **start.bat**。
 
-**方式二：Docker（推荐部署）**
+**方式二：Docker Hub 镜像（推荐部署）**
+
+官方镜像：[**messageloop/moso**](https://hub.docker.com/r/messageloop/moso)（如 `messageloop/moso:latest` 或带版本标签）。
+
+克隆仓库后，在项目根目录使用自带的 [`docker-compose.yml`](docker-compose.yml)：
 
 ```bash
-docker compose -f docker/docker-compose.yml up -d
+git clone https://github.com/messageloop2025/Moso.git
+cd Moso
+docker compose pull
+docker compose up -d
 ```
 
-详见 [docs/Docker部署.md](docs/Docker部署.md)。
+仅拉取镜像、不克隆仓库时：
+
+```bash
+docker pull messageloop/moso:latest
+```
+
+数据目录 `./data/data`、`./data/fs`、`./data/logs` 会由 compose 自动挂载；更多变量见 [docs/Docker部署.md](docs/Docker部署.md)。
+
+**方式三：本地构建 Docker 镜像**
+
+```bash
+docker compose -f docker/docker-compose.yml up -d --build
+```
+
+发布镜像到 Hub 见根目录 `publish-docker-hub.bat`。
 
 ---
 
