@@ -5,7 +5,12 @@ from typing import Optional, List
 
 from database import get_db
 from api.auth import get_current_user, _is_admin_role
-from api.hosts import normalize_host_aliases_in_dict, _attach_user_tags_to_hosts
+from api.hosts import (
+    HOST_LIST_OWNER_JOIN,
+    HOST_TREE_SELECT_COLS,
+    normalize_host_aliases_in_dict,
+    _attach_user_tags_to_hosts,
+)
 
 router = APIRouter(prefix="/api/host-groups", tags=["主机分组"])
 
@@ -163,7 +168,9 @@ async def tree_groups(user=Depends(get_current_user)):
         all_hosts = [
             normalize_host_aliases_in_dict(dict(r))
             for r in await db.execute_fetchall(
-                "SELECT id, name, host, port, credential_id, created_by, aliases, remark FROM hosts ORDER BY COALESCE(name, host), id"
+                f"""SELECT {HOST_TREE_SELECT_COLS}
+                    FROM hosts h {HOST_LIST_OWNER_JOIN}
+                    ORDER BY COALESCE(h.name, h.host), h.id"""
             )
         ]
         await _attach_user_tags_to_hosts(db, all_hosts, int(user["id"]))
@@ -217,10 +224,10 @@ async def tree_groups(user=Depends(get_current_user)):
             (uid,),
         )
         hosts = await db.execute_fetchall(
-            """SELECT DISTINCT h.id, h.name, h.host, h.port, h.credential_id, h.aliases, h.remark, h.created_by,
+            f"""SELECT DISTINCT {HOST_TREE_SELECT_COLS},
                          CASE WHEN h.created_by = ? THEN 0 ELSE 1 END AS is_shared,
                          su.id AS shared_from_user_id, su.username AS shared_from_username, su.display_name AS shared_from_display_name
-               FROM hosts h
+               FROM hosts h {HOST_LIST_OWNER_JOIN}
                LEFT JOIN host_shares hs
                  ON hs.host_id = h.id AND hs.shared_with_user_id = ? AND hs.revoked_at IS NULL
                LEFT JOIN users su ON su.id = hs.owner_user_id

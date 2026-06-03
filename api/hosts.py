@@ -15,6 +15,21 @@ from services.credential_utils import normalize_private_key_pem
 
 router = APIRouter(prefix="/api/hosts", tags=["主机管理"])
 
+# 主机列表/搜索共用列（含所有者 id 与登录名、显示名）
+HOST_LIST_SELECT_COLS = (
+    "h.id, h.name, h.host, h.port, h.credential_id, h.username, h.auth_type, h.description, "
+    "h.aliases, h.remark, "
+    "h.host_type, h.host_version, h.host_shell, h.host_package_manager, "
+    "h.created_by, u.username AS created_by_username, u.display_name AS created_by_display_name"
+)
+HOST_LIST_OWNER_JOIN = "LEFT JOIN users u ON h.created_by = u.id"
+
+# 分组树中每台主机的精简列（含所有者）
+HOST_TREE_SELECT_COLS = (
+    "h.id, h.name, h.host, h.port, h.credential_id, h.aliases, h.remark, "
+    "h.created_by, u.username AS created_by_username, u.display_name AS created_by_display_name"
+)
+
 
 def parse_host_aliases_cell(raw) -> list[str]:
     """将 hosts.aliases 列（JSON 数组字符串）解析为别名列表；非法或空则返回 []。"""
@@ -556,9 +571,7 @@ async def search_hosts(
         raise HTTPException(status_code=400, detail="query 不能为空")
     tag_ids = sorted(set(int(x) for x in (tag_ids or []) if x is not None))
 
-    sel_cols = """h.id, h.name, h.host, h.port, h.credential_id, h.username, h.auth_type, h.description,
-                         h.aliases, h.remark,
-                         h.host_type, h.host_version, h.host_shell, h.host_package_manager"""
+    sel_cols = HOST_LIST_SELECT_COLS
     like = f"%{q_raw.lower()}%"
     search_where = """(
         LOWER(h.name) LIKE ?
@@ -600,6 +613,7 @@ async def search_hosts(
             rows = await db.execute_fetchall(
                 f"""SELECT {sel_cols}
                     FROM hosts h
+                    {HOST_LIST_OWNER_JOIN}
                     INNER JOIN host_group_members m ON h.id = m.host_id
                     WHERE {where_clause}
                     ORDER BY h.name
@@ -612,6 +626,7 @@ async def search_hosts(
             rows = await db.execute_fetchall(
                 f"""SELECT {sel_cols}
                     FROM hosts h
+                    {HOST_LIST_OWNER_JOIN}
                     INNER JOIN host_group_members m ON h.id = m.host_id
                     INNER JOIN host_groups hg ON hg.id = m.group_id AND hg.created_by = ?
                     LEFT JOIN host_shares hs
@@ -628,6 +643,7 @@ async def search_hosts(
             rows = await db.execute_fetchall(
                 f"""SELECT {sel_cols}
                     FROM hosts h
+                    {HOST_LIST_OWNER_JOIN}
                     WHERE {where_clause}
                     ORDER BY h.name
                     LIMIT {int(limit)}""",
@@ -639,6 +655,7 @@ async def search_hosts(
             rows = await db.execute_fetchall(
                 f"""SELECT DISTINCT {sel_cols}
                     FROM hosts h
+                    {HOST_LIST_OWNER_JOIN}
                     LEFT JOIN host_shares hs
                       ON hs.host_id = h.id AND hs.shared_with_user_id = ? AND hs.revoked_at IS NULL
                     WHERE {where_clause}

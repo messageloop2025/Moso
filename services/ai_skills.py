@@ -23,6 +23,9 @@ from xml.etree import ElementTree as ET
 from database import get_db
 from api.auth import hash_api_access_token
 from api.hosts import (
+    HOST_LIST_OWNER_JOIN,
+    HOST_LIST_SELECT_COLS,
+    HOST_TREE_SELECT_COLS,
     _attach_user_tags_to_hosts,
     _make_inline_credential_code,
     _resolve_host_auth,
@@ -148,7 +151,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "list_hosts",
-            "description": "列出 SSH 主机；可按分组与标签筛选，也可按关键字快速搜索（名称、IP/域名、端口、描述、用途备注 remark、别名 aliases JSON、系统类型、标签名、或纯数字主机 id）。无关键字时返回全量（仍受权限过滤）。找机时优先传 q 缩小范围；用户用口语化称呼（如「生产 Web1」）时往往在别名或标签里。",
+            "description": "列出 SSH 主机；可按分组与标签筛选，也可按关键字快速搜索（名称、IP/域名、端口、描述、用途备注 remark、别名 aliases JSON、系统类型、标签名、或纯数字主机 id）。无关键字时返回全量（仍受权限过滤）。每条主机含所有者 created_by、created_by_username、created_by_display_name。找机时优先传 q 缩小范围。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -913,7 +916,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_host_groups_tree",
-            "description": "获取主机分组的树形结构（含每组的 children 与 hosts），与界面「服务器树」一致。可选 host_q：只保留名称/IP/端口/描述/用途备注/别名/类型或 id 匹配的主机（各分组下 hosts 数组被过滤，便于按条件快速定位）。",
+            "description": "获取主机分组的树形结构（含每组的 children 与 hosts），与界面「服务器树」一致；树中每台主机含所有者 created_by、created_by_username、created_by_display_name。可选 host_q：只保留名称/IP/端口/描述/用途备注/别名/类型或 id 匹配的主机（各分组下 hosts 数组被过滤，便于按条件快速定位）。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -5529,9 +5532,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                         continue
                 tag_ids = sorted(set(tag_ids))
 
-            sel_cols = """h.id, h.name, h.host, h.port, h.credential_id, h.username, h.auth_type, h.description,
-                                  h.aliases, h.remark,
-                                  h.host_type, h.host_version, h.host_shell, h.host_package_manager"""
+            sel_cols = HOST_LIST_SELECT_COLS
 
             def _search_sql_h(alias: str = "h") -> tuple[str, list]:
                 if not q_raw:
@@ -5584,14 +5585,14 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     if where_clause:
                         rows = await db.execute_fetchall(
                             f"""SELECT {sel_cols}
-                           FROM hosts h INNER JOIN host_group_members m ON h.id = m.host_id
+                           FROM hosts h {HOST_LIST_OWNER_JOIN} INNER JOIN host_group_members m ON h.id = m.host_id
                            WHERE {where_clause} ORDER BY h.name{limit_sql}""",
                             params,
                         )
                     else:
                         rows = await db.execute_fetchall(
                             f"""SELECT {sel_cols}
-                           FROM hosts h INNER JOIN host_group_members m ON h.id = m.host_id
+                           FROM hosts h {HOST_LIST_OWNER_JOIN} INNER JOIN host_group_members m ON h.id = m.host_id
                            WHERE m.group_id = ? ORDER BY h.name""",
                             (group_id,),
                         )
@@ -5601,7 +5602,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     if where_clause:
                         rows = await db.execute_fetchall(
                             f"""SELECT {sel_cols}
-                           FROM hosts h INNER JOIN host_group_members m ON h.id = m.host_id
+                           FROM hosts h {HOST_LIST_OWNER_JOIN} INNER JOIN host_group_members m ON h.id = m.host_id
                            INNER JOIN host_groups hg ON hg.id = m.group_id AND hg.created_by = ?
                            LEFT JOIN host_shares hs
                              ON hs.host_id = h.id AND hs.shared_with_user_id = ? AND hs.revoked_at IS NULL
@@ -5612,7 +5613,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                         params = [user["id"], user["id"], group_id, user["id"], *tag_filter_params]
                         rows = await db.execute_fetchall(
                             f"""SELECT {sel_cols}
-                           FROM hosts h INNER JOIN host_group_members m ON h.id = m.host_id
+                           FROM hosts h {HOST_LIST_OWNER_JOIN} INNER JOIN host_group_members m ON h.id = m.host_id
                            INNER JOIN host_groups hg ON hg.id = m.group_id AND hg.created_by = ?
                            LEFT JOIN host_shares hs
                              ON hs.host_id = h.id AND hs.shared_with_user_id = ? AND hs.revoked_at IS NULL
@@ -5626,13 +5627,13 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     if where_clause:
                         rows = await db.execute_fetchall(
                             f"""SELECT {sel_cols}
-                           FROM hosts h WHERE {where_clause} ORDER BY h.name{limit_sql}""",
+                           FROM hosts h {HOST_LIST_OWNER_JOIN} WHERE {where_clause} ORDER BY h.name{limit_sql}""",
                             params,
                         )
                     else:
                         rows = await db.execute_fetchall(
                             f"""SELECT {sel_cols}
-                           FROM hosts h ORDER BY h.name"""
+                           FROM hosts h {HOST_LIST_OWNER_JOIN} ORDER BY h.name"""
                         )
                 else:
                     where_clause = _combine_where("(h.created_by = ? OR hs.id IS NOT NULL)", search_where, tag_filter_where)
@@ -5640,7 +5641,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     if where_clause:
                         rows = await db.execute_fetchall(
                             f"""SELECT DISTINCT {sel_cols}
-                           FROM hosts h
+                           FROM hosts h {HOST_LIST_OWNER_JOIN}
                            LEFT JOIN host_shares hs
                              ON hs.host_id = h.id AND hs.shared_with_user_id = ? AND hs.revoked_at IS NULL
                            WHERE {where_clause}
@@ -5651,7 +5652,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                         params = [user["id"], user["id"], *tag_filter_params]
                         rows = await db.execute_fetchall(
                             f"""SELECT DISTINCT {sel_cols}
-                           FROM hosts h
+                           FROM hosts h {HOST_LIST_OWNER_JOIN}
                            LEFT JOIN host_shares hs
                              ON hs.host_id = h.id AND hs.shared_with_user_id = ? AND hs.revoked_at IS NULL
                            WHERE (h.created_by = ? OR hs.id IS NOT NULL){(' AND ' + tag_filter_where) if tag_filter_where else ''}
@@ -5690,9 +5691,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                         continue
                 tag_ids = sorted(set(tag_ids))
 
-            sel_cols = """h.id, h.name, h.host, h.port, h.credential_id, h.username, h.auth_type, h.description,
-                                  h.aliases, h.remark,
-                                  h.host_type, h.host_version, h.host_shell, h.host_package_manager"""
+            sel_cols = HOST_LIST_SELECT_COLS
 
             like = f"%{query.lower()}%"
             search_where = """(
@@ -5734,7 +5733,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     params = [group_id, *search_params, *tag_filter_params]
                     rows = await db.execute_fetchall(
                         f"""SELECT {sel_cols}
-                           FROM hosts h
+                           FROM hosts h {HOST_LIST_OWNER_JOIN}
                            INNER JOIN host_group_members m ON h.id = m.host_id
                            WHERE {where_clause}
                            ORDER BY h.name
@@ -5746,7 +5745,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     params = [user["id"], user["id"], group_id, user["id"], *search_params, *tag_filter_params]
                     rows = await db.execute_fetchall(
                         f"""SELECT {sel_cols}
-                           FROM hosts h
+                           FROM hosts h {HOST_LIST_OWNER_JOIN}
                            INNER JOIN host_group_members m ON h.id = m.host_id
                            INNER JOIN host_groups hg ON hg.id = m.group_id AND hg.created_by = ?
                            LEFT JOIN host_shares hs
@@ -5762,7 +5761,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     params = [*search_params, *tag_filter_params]
                     rows = await db.execute_fetchall(
                         f"""SELECT {sel_cols}
-                           FROM hosts h
+                           FROM hosts h {HOST_LIST_OWNER_JOIN}
                            WHERE {where_clause}
                            ORDER BY h.name
                            LIMIT {limit}""",
@@ -5773,7 +5772,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     params = [user["id"], user["id"], *search_params, *tag_filter_params]
                     rows = await db.execute_fetchall(
                         f"""SELECT DISTINCT {sel_cols}
-                           FROM hosts h
+                           FROM hosts h {HOST_LIST_OWNER_JOIN}
                            LEFT JOIN host_shares hs
                              ON hs.host_id = h.id AND hs.shared_with_user_id = ? AND hs.revoked_at IS NULL
                            WHERE {where_clause}
@@ -8048,17 +8047,19 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             if _is_admin(user):
                 rows = await db.execute_fetchall("SELECT id, name, description, parent_id, created_by, created_at FROM host_groups ORDER BY id")
                 host_rows = await db.execute_fetchall(
-                    "SELECT h.id, h.name, h.host, h.port, h.credential_id, h.aliases, h.remark FROM hosts h ORDER BY h.name"
+                    f"""SELECT {HOST_TREE_SELECT_COLS}
+                        FROM hosts h {HOST_LIST_OWNER_JOIN}
+                        ORDER BY h.name"""
                 )
             else:
                 rows = await db.execute_fetchall("SELECT id, name, description, parent_id, created_by, created_at FROM host_groups WHERE created_by = ? ORDER BY id", (user["id"],))
                 host_rows = await db.execute_fetchall(
-                    """SELECT DISTINCT h.id, h.name, h.host, h.port, h.credential_id, h.aliases, h.remark
-                       FROM hosts h
-                       LEFT JOIN host_shares hs
-                         ON hs.host_id = h.id AND hs.shared_with_user_id = ? AND hs.revoked_at IS NULL
-                       WHERE h.created_by = ? OR hs.id IS NOT NULL
-                       ORDER BY h.name""",
+                    f"""SELECT DISTINCT {HOST_TREE_SELECT_COLS}
+                        FROM hosts h {HOST_LIST_OWNER_JOIN}
+                        LEFT JOIN host_shares hs
+                          ON hs.host_id = h.id AND hs.shared_with_user_id = ? AND hs.revoked_at IS NULL
+                        WHERE h.created_by = ? OR hs.id IS NOT NULL
+                        ORDER BY h.name""",
                     (user["id"], user["id"]),
                 )
             groups = [dict(r) for r in rows]
