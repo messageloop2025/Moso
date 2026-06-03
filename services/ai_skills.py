@@ -76,6 +76,19 @@ from services.ssh_client import run_ssh_command, sftp_get_to_local_path, sftp_pu
 from services.keygen import generate_rsa_key, generate_ecc_key
 from services.credential_utils import normalize_private_key_pem
 from services.chat_utils import assistant_content_for_summary
+from services.aihelp_paths import (
+    list_aihelp_md_paths_sync,
+    read_aihelp_text_async,
+    resolve_aihelp_path,
+)
+from services.markdown_sections import (
+    get_markdown_section,
+    list_markdown_sections,
+    read_markdown_document,
+    replace_markdown_section,
+    search_markdown_corpus,
+    search_markdown_sections,
+)
 from services.ssh_channel_manager import SSHChannelManager
 from services.ssh_channel_service import (
     close_channel_full,
@@ -3476,8 +3489,23 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_aihelp_index",
-            "description": "读取 AI 帮助文档目录 index.md 的完整内容。当用户询问「如何操作」「帮助」「怎么用」时，先调用此接口获取目录，再按需调用 get_aihelp_file 读取具体文档。所有用户只读。",
-            "parameters": {"type": "object", "properties": {}, "required": []},
+            "description": (
+                "读取 AI 帮助 index.md。大文档优先 sections_only=true 或 max_level 列章节，"
+                "再 get_aihelp_file / markdown_search_sections 按需加载。支持 section_* / heading / max_chars。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sections_only": {"type": "boolean", "description": "true=仅章节清单"},
+                    "max_level": {"type": "integer", "description": "章节清单展示到第 N 级标题"},
+                    "section_index": {"type": "integer"},
+                    "section_path": {"type": "array", "items": {"type": "string"}},
+                    "heading": {"type": "string"},
+                    "max_chars": {"type": "integer"},
+                    "include_children": {"type": "boolean"},
+                },
+                "required": [],
+            },
         },
     },
     {
@@ -3492,13 +3520,135 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_aihelp_file",
-            "description": "按相对路径读取 web/aihelp 下的某一帮助文档内容（如 path 为 hosts.md 或 intro/quickstart.md）。用于根据 index 目录或用户问题读取对应帮助页。所有用户只读。",
+            "description": (
+                "读取 web/aihelp 帮助文档。勿默认拉全文：先 sections_only 或 markdown_search_sections(scope=titles)，"
+                "再 section_path/heading + max_chars 读单节。REST 同等：GET /api/aihelp/file?path=&sections_only=…"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "相对于 aihelp 的路径，如 hosts.md、docker.md"},
+                    "path": {"type": "string", "description": "相对路径，如 hosts.md"},
+                    "sections_only": {"type": "boolean"},
+                    "max_level": {"type": "integer"},
+                    "section_index": {"type": "integer"},
+                    "section_path": {"type": "array", "items": {"type": "string"}},
+                    "heading": {"type": "string"},
+                    "max_chars": {"type": "integer"},
+                    "include_heading": {"type": "boolean"},
+                    "include_children": {"type": "boolean"},
                 },
                 "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "markdown_search_sections",
+            "description": (
+                "在 Markdown 中按关键字搜索章节（scope=titles 仅标题 | content 仅正文 | all）。"
+                "返回命中章节 path/index 与 snippets；file_root=aihelp 且不设 path 时搜全部帮助文档。"
+                "命中后再 markdown_read_section / get_aihelp_file 精读。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "搜索关键字"},
+                    "file_root": {"type": "string", "enum": ["fs", "aihelp", "skill"]},
+                    "path": {"type": "string", "description": "限定单文件；aihelp 空则搜全部 .md"},
+                    "skill_name": {"type": "string"},
+                    "scope": {"type": "string", "enum": ["titles", "content", "all"]},
+                    "regex": {"type": "boolean"},
+                    "case_insensitive": {"type": "boolean"},
+                    "max_level": {"type": "integer"},
+                    "max_hits": {"type": "integer"},
+                    "snippet_chars": {"type": "integer"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "markdown_list_sections",
+            "description": (
+                "列出 Markdown 文件的 ATX 标题章节清单（可限制到第 N 级标题）。"
+                "file_root=fs|aihelp|skill；大文档先调此工具再 markdown_read_section 按需加载。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_root": {
+                        "type": "string",
+                        "description": "fs=web/fs 用户目录；aihelp=帮助文档；skill=skills/<name>/ 下文件",
+                        "enum": ["fs", "aihelp", "skill"],
+                    },
+                    "path": {"type": "string", "description": "相对路径，如 hosts.md、reference.md"},
+                    "skill_name": {"type": "string", "description": "file_root=skill 时必填"},
+                    "max_level": {"type": "integer", "description": "展示到的标题级别 1–6，默认 6"},
+                    "include_preamble": {"type": "boolean", "description": "是否包含首个 # 标题前的序言块，默认 false"},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "markdown_read_section",
+            "description": (
+                "读取 Markdown 指定章节正文（section_path / section_index / heading 三选一），"
+                "可限 max_chars、include_children=false 仅直属段落不含子节。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_root": {"type": "string", "enum": ["fs", "aihelp", "skill"]},
+                    "path": {"type": "string"},
+                    "skill_name": {"type": "string"},
+                    "section_path": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "标题路径，如 [\"安装\", \"Docker\"]",
+                    },
+                    "section_index": {"type": "integer", "description": "扁平标题序号，与 list 返回的 index 一致"},
+                    "heading": {"type": "string", "description": "按标题文本定位（不唯一时报错）"},
+                    "case_insensitive": {"type": "boolean"},
+                    "max_chars": {"type": "integer", "description": "返回正文最大字符数，默认见配置"},
+                    "include_heading": {"type": "boolean", "description": "是否含 # 标题行，默认 true"},
+                    "include_children": {"type": "boolean", "description": "是否含子章节，默认 true"},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "markdown_replace_section",
+            "description": (
+                "定点替换 Markdown 某一节并写回文件。mode=replace_body 保留原标题行只换正文；"
+                "replace_all 替换标题+整节（含子节）。aihelp 仅管理员可写。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_root": {"type": "string", "enum": ["fs", "aihelp", "skill"]},
+                    "path": {"type": "string"},
+                    "skill_name": {"type": "string"},
+                    "section_path": {"type": "array", "items": {"type": "string"}},
+                    "section_index": {"type": "integer"},
+                    "heading": {"type": "string"},
+                    "case_insensitive": {"type": "boolean"},
+                    "new_content": {"type": "string", "description": "替换后的 Markdown 片段"},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["replace_body", "replace_all"],
+                        "description": "默认 replace_body",
+                    },
+                },
+                "required": ["path", "new_content"],
             },
         },
     },
@@ -3799,7 +3949,7 @@ TOOLS = [
             "name": "get_user_skill",
             "description": (
                 "按标识名或数字 id 获取 Skill 详情（含 SKILL.md 正文与 resources 文件列表）。"
-                "渐进式披露：目录匹配后、执行前须先调用本工具加载完整指令。"
+                "渐进式披露：目录匹配后先 get_user_skill 或 read_user_skill_file(sections_only)；大文档用 markdown_search_sections(file_root=skill) 定位后再读单节。"
             ),
             "parameters": {
                 "type": "object",
@@ -3873,14 +4023,22 @@ TOOLS = [
         "function": {
             "name": "read_user_skill_file",
             "description": (
-                "读取 Skill 目录 skills/<name>/ 下的附属文件（reference.md、examples.md、scripts/*.py 等），"
-                "用于渐进式披露。path 为相对 skills/<name>/ 的路径；勿用 fs_read_file 读 Skill 文件。"
+                "读取 skills/<name>/ 下文件（渐进式披露）。大 .md 先 sections_only 或 markdown_search_sections，"
+                "再 section_path/heading + max_chars；勿用 fs_read_file 读 Skill。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "name": {"type": "string", "description": "Skill 标识名"},
-                    "path": {"type": "string", "description": "相对路径，如 reference.md、examples.md"},
+                    "path": {"type": "string", "description": "相对路径，如 SKILL.md、reference.md"},
+                    "sections_only": {"type": "boolean"},
+                    "max_level": {"type": "integer"},
+                    "section_index": {"type": "integer"},
+                    "section_path": {"type": "array", "items": {"type": "string"}},
+                    "heading": {"type": "string"},
+                    "max_chars": {"type": "integer"},
+                    "include_heading": {"type": "boolean"},
+                    "include_children": {"type": "boolean"},
                 },
                 "required": ["name", "path"],
             },
@@ -11909,46 +12067,47 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             return json.dumps({"success": True, "message": "已删除"}, ensure_ascii=False)
 
         # ── AI 帮助文档（web/aihelp）：用户只读，仅管理员可写/更新 index
-        def _resolve_aihelp_path(relative: str):
-            """将相对路径解析到 aihelp 目录内，禁止 .. 与绝对路径。返回 Path 或 raise ValueError。"""
-            base = getattr(config, "AIHELP_DIR", None) or (Path(config.BASE_DIR) / "web" / "aihelp")
-            base = Path(base)
-            relative = (relative or "").strip().replace("\\", "/").lstrip("/")
-            if ".." in relative or relative.startswith("/"):
-                raise ValueError("路径不允许")
-            if not relative:
-                return base
-            resolved = (base / relative).resolve()
+        async def _aihelp_read_payload(arguments: dict, *, default_path: str) -> dict:
+            path_arg = (arguments.get("path") or default_path).strip()
             try:
-                resolved.relative_to(base.resolve())
-            except ValueError:
-                raise ValueError("路径不允许")
-            return resolved
+                text = await read_aihelp_text_async(path_arg)
+            except FileNotFoundError:
+                if default_path == "index.md":
+                    text = "# AI 帮助文档\n\n（暂无目录，请联系管理员维护 web/aihelp/index.md）\n"
+                else:
+                    raise
+            section_path = arguments.get("section_path")
+            if section_path is not None and not isinstance(section_path, list):
+                section_path = None
+            payload = read_markdown_document(
+                text,
+                sections_only=bool(arguments.get("sections_only")),
+                max_level=arguments.get("max_level") if arguments.get("max_level") is not None else 6,
+                section_index=arguments.get("section_index"),
+                section_path=section_path,
+                heading=arguments.get("heading"),
+                case_insensitive=bool(arguments.get("case_insensitive")),
+                max_chars=arguments.get("max_chars"),
+                include_heading=arguments.get("include_heading") is not False,
+                include_children=arguments.get("include_children") is not False,
+            )
+            payload["path"] = path_arg
+            return payload
 
         if name == "get_aihelp_index":
             try:
-                base = Path(getattr(config, "AIHELP_DIR", None) or (Path(config.BASE_DIR) / "web" / "aihelp"))
-                index_file = base / "index.md"
-                if not index_file.is_file():
-                    return json.dumps({"success": True, "content": "# AI 帮助文档\n\n（暂无目录，请联系管理员维护 web/aihelp/index.md）\n"}, ensure_ascii=False)
-                content = await asyncio.to_thread(index_file.read_text, encoding="utf-8", errors="replace")
-                return json.dumps({"success": True, "content": content}, ensure_ascii=False)
+                payload = await _aihelp_read_payload(arguments, default_path="index.md")
+                return json.dumps({"success": True, **payload}, ensure_ascii=False)
+            except FileNotFoundError as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+            except ValueError as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
             except Exception as e:
                 return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
         if name == "list_aihelp_files":
             try:
-                base = Path(getattr(config, "AIHELP_DIR", None) or (Path(config.BASE_DIR) / "web" / "aihelp"))
-                if not base.is_dir():
-                    return json.dumps({"success": True, "files": []}, ensure_ascii=False)
-                files = []
-                md_files = await asyncio.to_thread(lambda: sorted(base.rglob("*.md")))
-                for p in md_files:
-                    try:
-                        rel = p.relative_to(base)
-                        files.append(str(rel).replace("\\", "/"))
-                    except ValueError:
-                        pass
+                files = await asyncio.to_thread(list_aihelp_md_paths_sync)
                 return json.dumps({"success": True, "files": files}, ensure_ascii=False)
             except Exception as e:
                 return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
@@ -11958,11 +12117,10 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             if not path_arg:
                 return json.dumps({"success": False, "error": "缺少 path"}, ensure_ascii=False)
             try:
-                resolved = _resolve_aihelp_path(path_arg)
-                if not resolved.is_file():
-                    return json.dumps({"success": False, "error": "文件不存在"}, ensure_ascii=False)
-                content = await asyncio.to_thread(resolved.read_text, encoding="utf-8", errors="replace")
-                return json.dumps({"success": True, "content": content}, ensure_ascii=False)
+                payload = await _aihelp_read_payload(arguments, default_path=path_arg)
+                return json.dumps({"success": True, **payload}, ensure_ascii=False)
+            except FileNotFoundError:
+                return json.dumps({"success": False, "error": "文件不存在"}, ensure_ascii=False)
             except ValueError as e:
                 return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
@@ -11976,7 +12134,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             if content is None:
                 content = ""
             try:
-                resolved = _resolve_aihelp_path(path_arg)
+                resolved = resolve_aihelp_path(path_arg)
                 await asyncio.to_thread(resolved.parent.mkdir, parents=True, exist_ok=True)
                 await asyncio.to_thread(resolved.write_text, content if isinstance(content, str) else str(content), encoding="utf-8")
                 return json.dumps({"success": True, "message": f"已写入 {path_arg}，请记得维护 index.md 目录"}, ensure_ascii=False)
@@ -11996,6 +12154,180 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 await asyncio.to_thread(index_file.write_text, content if isinstance(content, str) else str(content), encoding="utf-8")
                 return json.dumps({"success": True, "message": "已更新 index.md"}, ensure_ascii=False)
             except Exception as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+
+        async def _load_markdown_source_text(arguments: dict) -> tuple[str, str, str]:
+            file_root = (arguments.get("file_root") or "fs").strip().lower()
+            path_arg = (arguments.get("path") or "").strip()
+            if not path_arg:
+                raise ValueError("缺少 path")
+            if file_root == "aihelp":
+                text = await read_aihelp_text_async(path_arg)
+                return text, file_root, path_arg
+            if file_root == "skill":
+                slug = (arguments.get("skill_name") or "").strip()
+                if not slug:
+                    raise ValueError("file_root=skill 时需要 skill_name")
+                from services.user_skills_registry import read_skill_resource_file
+
+                text = read_skill_resource_file(user, slug, path_arg)
+                return text, file_root, path_arg
+            if file_root == "fs":
+                guard = _skill_fs_path_guard(path_arg)
+                if guard:
+                    raise ValueError(guard)
+                base = get_user_fs_root(user)
+                out = await fs_read_file_async(path_arg, base, offset=0, size=None)
+                if not out.get("success"):
+                    raise ValueError("读取失败")
+                return out.get("content") or "", file_root, path_arg
+            raise ValueError("file_root 须为 fs、aihelp 或 skill")
+
+        async def _save_markdown_source_text(arguments: dict, text: str) -> None:
+            file_root = (arguments.get("file_root") or "fs").strip().lower()
+            path_arg = (arguments.get("path") or "").strip()
+            if file_root == "aihelp":
+                if not _is_admin(user):
+                    raise PermissionError("仅管理员可修改 aihelp")
+                resolved = resolve_aihelp_path(path_arg)
+                await asyncio.to_thread(resolved.parent.mkdir, parents=True, exist_ok=True)
+                await asyncio.to_thread(resolved.write_text, text, encoding="utf-8")
+                return
+            if file_root == "skill":
+                slug = (arguments.get("skill_name") or "").strip()
+                if not slug:
+                    raise ValueError("file_root=skill 时需要 skill_name")
+                from services.user_skills_registry import write_skill_resource_file
+
+                write_skill_resource_file(user, slug, path_arg, text)
+                return
+            if file_root == "fs":
+                guard = _skill_fs_path_guard(path_arg)
+                if guard:
+                    raise ValueError(guard)
+                base = get_user_fs_root(user)
+                await fs_write_file_async(path_arg, text, base, mode="overwrite")
+                return
+            raise ValueError("file_root 须为 fs、aihelp 或 skill")
+
+        if name == "markdown_search_sections":
+            query = (arguments.get("query") or arguments.get("q") or "").strip()
+            if not query:
+                return json.dumps({"success": False, "error": "缺少 query"}, ensure_ascii=False)
+            try:
+                file_root = (arguments.get("file_root") or "aihelp").strip().lower()
+                path_arg = (arguments.get("path") or "").strip()
+                scope = arguments.get("scope") or "all"
+                if file_root == "aihelp" and not path_arg:
+                    rels = await asyncio.to_thread(list_aihelp_md_paths_sync)
+                    max_files = int(getattr(config, "MARKDOWN_SECTIONS_SEARCH_MAX_FILES", 100))
+                    pairs: list[tuple[str, str]] = []
+                    for rel in rels[:max_files]:
+                        try:
+                            pairs.append((rel, await read_aihelp_text_async(rel)))
+                        except (FileNotFoundError, ValueError):
+                            continue
+                    out = search_markdown_corpus(
+                        pairs,
+                        query,
+                        scope=scope,
+                        regex=bool(arguments.get("regex")),
+                        case_insensitive=arguments.get("case_insensitive") is not False,
+                        max_level=arguments.get("max_level") or 6,
+                        max_hits=arguments.get("max_hits") or 30,
+                        snippet_chars=arguments.get("snippet_chars") or 200,
+                    )
+                else:
+                    text, file_root, path_arg = await _load_markdown_source_text(arguments)
+                    out = search_markdown_sections(
+                        text,
+                        query,
+                        scope=scope,
+                        regex=bool(arguments.get("regex")),
+                        case_insensitive=arguments.get("case_insensitive") is not False,
+                        max_level=arguments.get("max_level") or 6,
+                        max_hits=arguments.get("max_hits") or 30,
+                        snippet_chars=arguments.get("snippet_chars") or 200,
+                    )
+                    if path_arg:
+                        out["path"] = path_arg
+                out["success"] = True
+                out["file_root"] = file_root
+                return json.dumps(out, ensure_ascii=False)
+            except (ValueError, PermissionError) as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+            except FileNotFoundError as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+
+        if name == "markdown_list_sections":
+            try:
+                text, file_root, path_arg = await _load_markdown_source_text(arguments)
+                out = list_markdown_sections(
+                    text,
+                    max_level=arguments.get("max_level") if arguments.get("max_level") is not None else 6,
+                    include_preamble=bool(arguments.get("include_preamble")),
+                )
+                out["success"] = True
+                out["file_root"] = file_root
+                out["path"] = path_arg
+                return json.dumps(out, ensure_ascii=False)
+            except (ValueError, PermissionError) as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+            except FileNotFoundError as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+
+        if name == "markdown_read_section":
+            try:
+                text, file_root, path_arg = await _load_markdown_source_text(arguments)
+                section_path = arguments.get("section_path")
+                if section_path is not None and not isinstance(section_path, list):
+                    section_path = None
+                out = get_markdown_section(
+                    text,
+                    section_index=arguments.get("section_index"),
+                    section_path=section_path,
+                    heading=arguments.get("heading"),
+                    case_insensitive=bool(arguments.get("case_insensitive")),
+                    max_chars=arguments.get("max_chars"),
+                    include_heading=arguments.get("include_heading") is not False,
+                    include_children=arguments.get("include_children") is not False,
+                )
+                out["success"] = True
+                out["file_root"] = file_root
+                out["path"] = path_arg
+                return json.dumps(out, ensure_ascii=False)
+            except (ValueError, PermissionError) as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+            except FileNotFoundError as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+
+        if name == "markdown_replace_section":
+            if arguments.get("new_content") is None:
+                return json.dumps({"success": False, "error": "缺少 new_content"}, ensure_ascii=False)
+            try:
+                text, file_root, path_arg = await _load_markdown_source_text(arguments)
+                section_path = arguments.get("section_path")
+                if section_path is not None and not isinstance(section_path, list):
+                    section_path = None
+                rep = replace_markdown_section(
+                    text,
+                    str(arguments.get("new_content") or ""),
+                    section_index=arguments.get("section_index"),
+                    section_path=section_path,
+                    heading=arguments.get("heading"),
+                    case_insensitive=bool(arguments.get("case_insensitive")),
+                    mode=arguments.get("mode") or "replace_body",
+                )
+                await _save_markdown_source_text(arguments, rep["content"])
+                rep["success"] = True
+                rep["file_root"] = file_root
+                rep["path"] = path_arg
+                rep.pop("content", None)
+                rep["message"] = "已写回文件"
+                return json.dumps(rep, ensure_ascii=False)
+            except (ValueError, PermissionError) as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+            except FileNotFoundError as e:
                 return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
         # ── 文件系统（web/fs）──
@@ -13101,6 +13433,25 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     return json.dumps({"success": False, "error": "需要 name 与 path"}, ensure_ascii=False)
                 try:
                     text = read_skill_resource_file(user, slug, rel)
+                    section_path = arguments.get("section_path")
+                    if section_path is not None and not isinstance(section_path, list):
+                        section_path = None
+                    if rel.lower().endswith(".md") or bool(arguments.get("sections_only")) or arguments.get("section_index") is not None or section_path or arguments.get("heading"):
+                        payload = read_markdown_document(
+                            text,
+                            sections_only=bool(arguments.get("sections_only")),
+                            max_level=arguments.get("max_level") if arguments.get("max_level") is not None else 6,
+                            section_index=arguments.get("section_index"),
+                            section_path=section_path,
+                            heading=arguments.get("heading"),
+                            max_chars=arguments.get("max_chars"),
+                            include_heading=arguments.get("include_heading") is not False,
+                            include_children=arguments.get("include_children") is not False,
+                        )
+                        return json.dumps(
+                            {"success": True, "name": slug, "path": rel.replace("\\", "/"), **payload},
+                            ensure_ascii=False,
+                        )
                 except FileNotFoundError as e:
                     return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
                 except ValueError as e:
@@ -13110,6 +13461,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                         "success": True,
                         "name": slug,
                         "path": rel.replace("\\", "/"),
+                        "mode": "full",
                         "content": text,
                     },
                     ensure_ascii=False,

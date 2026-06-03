@@ -13,6 +13,7 @@ from services.user_skills_export import (
     export_user_skills_json,
     import_user_skills_bundle,
 )
+from services.markdown_sections import read_markdown_document, search_markdown_sections
 from services.user_skills_registry import (
     collect_description_warnings,
     create_user_skill,
@@ -20,6 +21,8 @@ from services.user_skills_registry import (
     delete_user_skill,
     get_user_skill,
     list_user_skills,
+    normalize_skill_name,
+    read_skill_resource_file,
     require_user_skills_access,
     scan_user_skills_from_disk,
     update_user_skill,
@@ -176,6 +179,64 @@ async def create_my_skill(body: SkillCreateBody, user=Depends(get_current_user))
         raise HTTPException(status_code=400, detail=str(e)) from e
     warnings = collect_description_warnings(row.get("name") or body.name, row.get("description") or "")
     return {"success": True, "skill": row, "warnings": warnings}
+
+
+@router.get("/by-name/{skill_name}/markdown")
+async def read_skill_markdown(
+    skill_name: str,
+    path: str = "SKILL.md",
+    sections_only: bool = False,
+    max_level: int = 6,
+    section_index: int | None = None,
+    section_path: list[str] | None = None,
+    heading: str | None = None,
+    max_chars: int | None = None,
+    include_heading: bool = True,
+    include_children: bool = True,
+    q: str | None = None,
+    scope: str = "all",
+    regex: bool = False,
+    case_insensitive: bool = True,
+    max_hits: int = 30,
+    user=Depends(get_current_user),
+):
+    """读取 Skill 内 Markdown：章节清单 / 按节读取 / 章节搜索（q 非空时搜索）。"""
+    await _guard_skills(user)
+    rel = (path or "SKILL.md").strip().replace("\\", "/")
+    slug = normalize_skill_name(skill_name)
+    try:
+        text = read_skill_resource_file(user, slug, rel)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    try:
+        if q and q.strip():
+            payload = search_markdown_sections(
+                text,
+                q.strip(),
+                scope=scope,
+                regex=regex,
+                case_insensitive=case_insensitive,
+                max_level=max_level,
+                max_hits=max_hits,
+            )
+            payload["mode"] = "search"
+        else:
+            payload = read_markdown_document(
+                text,
+                sections_only=sections_only,
+                max_level=max_level,
+                section_index=section_index,
+                section_path=section_path,
+                heading=heading,
+                max_chars=max_chars,
+                include_heading=include_heading,
+                include_children=include_children,
+            )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"success": True, "name": slug, "path": rel, **payload}
 
 
 @router.get("/{skill_id}")

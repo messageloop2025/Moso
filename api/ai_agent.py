@@ -4074,9 +4074,16 @@ def _build_system_prompt() -> str:
 - **get_me** 也会附带当前 **site_timezone** 与服务器时间摘要。
 
 操作帮助文档（web/aihelp，用户只读、仅管理员可编辑）：
-- 当用户询问「如何操作」「帮助」「怎么用」「有哪些功能」等时，先调用 get_aihelp_index 获取帮助目录 index.md 的内容，再根据目录或主题调用 get_aihelp_file(path) 读取对应文档（path 如 hosts.md、docker.md），据此向用户提供操作说明。
-- 可选：list_aihelp_files 可列出当前所有帮助文档路径，便于确定可读主题。
-- 仅管理员可调用 write_aihelp_file(path, content) 创建/覆盖帮助页、update_aihelp_index(content) 更新 index.md 目录；创建或修改帮助文档后需同步维护 index.md 以便用户通过目录查阅。
+- **勿默认拉整篇**：长文档先 `get_aihelp_index(sections_only=true)` 或 `get_aihelp_file(path, sections_only=true, max_level=3)` 看章节清单；或用 **`markdown_search_sections`**（`file_root=aihelp`，`scope=titles` 搜标题 / `scope=content|all` 搜正文）定位章节，再 `get_aihelp_file(path, section_path=[...], max_chars=8000, include_children=false)` 精读单节。
+- REST 同等能力：`GET /api/aihelp/file?path=hosts.md&sections_only=true`；`GET /api/aihelp/search?q=...&scope=titles`（不限 path 时搜全部 .md）。
+- 当用户询问「如何操作」「帮助」「怎么用」时，按上列渐进流程作答，避免一次性读全文占满上下文。
+- 可选：list_aihelp_files 列出帮助路径。
+- 仅管理员可 write_aihelp_file / update_aihelp_index；改文档后维护 index.md。
+
+Markdown / Skills 渐进阅读（与 aihelp 相同章节模型）：
+- 通用工具：**markdown_list_sections**、**markdown_read_section**、**markdown_search_sections**、**markdown_replace_section**（`file_root=fs|aihelp|skill`）。
+- **Agent Skills**：目录注入仅 name+description；正文用 **get_user_skill** / **read_user_skill_file**（支持 sections_only、section_path、heading、max_chars）。大 SKILL.md 先 `markdown_search_sections(file_root=skill, skill_name=..., scope=titles)` 再读单节。REST：`GET /api/user-skills/by-name/{name}/markdown?path=SKILL.md&sections_only=true`；`?q=关键字` 为章节搜索。
+- 用户 fs 下 .md 报告/笔记：优先章节工具，勿 fs_read_file 通读大文件。
 
 聊天附件（用户在聊天输入框中上传或粘贴的图片/文本/Markdown 等）：
 - 用户消息末尾若出现「📎 附件」清单（每行形如 `` - `name.ext`（kind · size）· uuid: `XXXX` ``），表示本轮有若干附件可供参考。

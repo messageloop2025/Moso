@@ -151,6 +151,18 @@ token 来自解锁邮件链接。
 
 集成运维 AI 工具 **list_hosts** 的搜索条件会匹配 **description**、**remark** 与 **aliases**（JSON 子串），便于用昵称定位主机。
 
+### AI 帮助文档（Markdown 章节）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/aihelp/index` | index.md；支持 `sections_only`、`max_level`、`section_path` / `heading` / `max_chars` 等 |
+| GET | `/api/aihelp/files` | 列出全部 `.md` |
+| GET | `/api/aihelp/file?path=hosts.md` | 读单文件；同上章节参数；默认全文（可 `max_chars` 截断） |
+| GET | `/api/aihelp/search?q=关键字` | 章节搜索；`scope=titles\|content\|all`；可选 `path` 限定单文件 |
+| PUT | `/api/aihelp/file?path=...` | 管理员覆盖写入（body: `{content}`） |
+
+用户 Skills Markdown：`GET /api/user-skills/by-name/{skill_name}/markdown?path=SKILL.md`（参数与 aihelp 章节读/搜一致）。
+
 ### POST /hosts（新建）
 
 必须二选一：**credential_id**（已有凭证）或 **new_credential**（新建凭证并关联）。

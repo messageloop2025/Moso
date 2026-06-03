@@ -23,7 +23,7 @@ _USER_SKILLS_HINT = (
     "目录结构：`SKILL.md`（YAML frontmatter + Markdown），可选 `reference.md`、`examples.md`、`scripts/`。\n"
     "**文件操作须用 Skill 专用工具**（勿用 fs_write_file / fs_mkdir / fs_delete，否则会被错误归位到 chats/ 日期目录）：\n"
     "- `save_user_skill`：写 SKILL.md\n"
-    "- `write_user_skill_file` / `read_user_skill_file` / `delete_user_skill_file`：附属文件\n"
+    "- `write_user_skill_file` / `read_user_skill_file` / `delete_user_skill_file`：附属文件；大 .md 用 `sections_only` / `section_path` / `markdown_search_sections(file_root=skill)` 按需读\n"
     "- `list_user_skill_files`：列出目录内全部文件\n"
     "- `list_user_skills`、`get_user_skill`、`delete_user_skill`、`scan_user_skills`、"
     "`export_user_skills_config` / `import_user_skills_config`\n\n"
