@@ -127,8 +127,13 @@ var API = {
                         var defFail = (typeof t === 'function' ? t('api.requestFailed') : 'Request failed');
                         var msg = Array.isArray(detail)
                             ? (detail.map(function(d) { return (d && d.msg) || ''; }).filter(Boolean).join('；') || defFail)
-                            : (typeof detail === 'string' ? detail : defFail);
-                        throw new Error(msg);
+                            : (typeof detail === 'string' ? detail : (detail && typeof detail === 'object' && detail.message ? detail.message : defFail));
+                        var err = new Error(msg);
+                        if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+                            err.apiDetail = detail;
+                            err.status = resp.status;
+                        }
+                        throw err;
                     }
                     return data;
                 }).catch(function(e) {
@@ -220,6 +225,11 @@ var API = {
     getHost: function(id) { return this.get('/hosts/' + id); },
     hostStats: function() { return this.get('/hosts/stats'); },
     getDashboardStats: function() { return this.get('/dashboard/stats'); },
+    checkHostDuplicate: function(host, port) {
+        var q = new URLSearchParams({ host: host || '' });
+        if (port != null && port !== '') q.set('port', String(port));
+        return this.get('/hosts/check-duplicate?' + q.toString());
+    },
     createHost: function(data) { return this.post('/hosts', data); },
     updateHost: function(id, data) { return this.put('/hosts/' + id, data); },
     deleteHost: function(id) { return this.del('/hosts/' + id); },

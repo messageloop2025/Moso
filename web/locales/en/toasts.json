@@ -243,6 +243,8 @@
     "ungroupShareTitle": "Remove share",
     "ungroupShareBody": "Remove the share for host “{{name}}”? This will not remove the real host.",
     "deleteHostNameBody": "Delete host “{{name}}”?",
+    "duplicateHostTitle": "Duplicate host found",
+    "duplicateHostBody": "Address {{host}}:{{port}} already exists for owner “{{owner}}” ({{ownerUsername}}), host name “{{name}}”. Add another record anyway?",
     "clearSessionChat": "Delete all messages in this session?",
     "keepNMessages": "Keep the first {{n}} messages and delete everything after them?",
     "moveConfirm": "Move this item here?",

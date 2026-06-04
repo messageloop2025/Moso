@@ -12,6 +12,12 @@ from database import get_db
 from api.auth import get_current_user, _is_admin_role
 from services.ssh_client import run_ssh_command
 from services.credential_utils import normalize_private_key_pem
+from services.host_duplicate import (
+    find_duplicate_host_for_owner,
+    host_duplicate_error_detail,
+    normalize_host_address,
+    normalize_host_port,
+)
 
 router = APIRouter(prefix="/api/hosts", tags=["主机管理"])
 
@@ -163,6 +169,7 @@ class HostCreate(BaseModel):
     description: str = ""
     aliases: Optional[list[str]] = None
     remark: str = ""
+    allow_duplicate: bool = False
 
 
 class HostUpdate(BaseModel):
@@ -699,6 +706,30 @@ async def search_hosts(
     }
 
 
+@router.get("/check-duplicate")
+async def check_host_duplicate(
+    host: str = Query(..., description="主机地址（IP 或域名）"),
+    port: Optional[int] = Query(None, description="SSH 端口；未传则按 22 比较"),
+    user=Depends(get_current_user),
+):
+    """检测当前用户作为所有者时是否已有相同 host+port 的主机（含所有者信息）。"""
+    host_value = normalize_host_address(host)
+    if not host_value:
+        raise HTTPException(status_code=400, detail="主机地址不能为空")
+    port_value = normalize_host_port(port)
+    db = await get_db()
+    existing = await find_duplicate_host_for_owner(
+        db, owner_user_id=int(user["id"]), host=host_value, port=port_value
+    )
+    return {
+        "success": True,
+        "duplicate": existing is not None,
+        "host": host_value,
+        "port": port_value,
+        "existing_host": existing,
+    }
+
+
 @router.get("/{host_id}")
 async def get_host(host_id: int, user=Depends(get_current_user)):
     db = await get_db()
@@ -732,18 +763,20 @@ def _make_inline_credential_code(host: str, port: int) -> str:
 async def create_host(req: HostCreate, user=Depends(get_current_user)):
     try:
         db = await get_db()
-        host_value = (req.host or "").strip()
+        host_value = normalize_host_address(req.host)
         if not host_value:
             raise HTTPException(status_code=400, detail="主机地址不能为空")
-        # 主机重复仅在「当前用户」范围内校验：不同用户允许添加同一 host:port。
-        duplicate_rows = await db.execute_fetchall(
-            """SELECT id FROM hosts
-               WHERE created_by = ? AND port = ? AND lower(trim(host)) = lower(trim(?))
-               LIMIT 1""",
-            (user["id"], req.port, host_value),
-        )
-        if duplicate_rows:
-            raise HTTPException(status_code=400, detail="同一用户下该主机地址和端口已存在")
+        port_value = normalize_host_port(req.port)
+        # 重复判定：同一所有者 + 相同地址 + 相同端口（未指定端口时默认 22）；不同所有者允许相同 host:port。
+        if not req.allow_duplicate:
+            existing = await find_duplicate_host_for_owner(
+                db, owner_user_id=int(user["id"]), host=host_value, port=port_value
+            )
+            if existing:
+                raise HTTPException(
+                    status_code=409,
+                    detail=host_duplicate_error_detail(existing),
+                )
         cred_id = None
         if req.credential_id:
             cred_rows = await db.execute_fetchall("SELECT id, created_by FROM credentials WHERE id = ?", (req.credential_id,))
@@ -754,7 +787,7 @@ async def create_host(req: HostCreate, user=Depends(get_current_user)):
             cred_id = req.credential_id
         elif req.new_credential:
             nc = req.new_credential
-            code = (nc.code or "").strip() or _make_inline_credential_code(req.host, req.port)
+            code = (nc.code or "").strip() or _make_inline_credential_code(host_value, port_value)
             name = (nc.name or "").strip() or ("{} 登录".format((req.name or req.host or "").strip()[:28]))
             desc = (nc.description or "").strip()
             username = (nc.username or "").strip()
@@ -794,7 +827,7 @@ async def create_host(req: HostCreate, user=Depends(get_current_user)):
         await db.execute(
             """INSERT INTO hosts (name, host, port, credential_id, username, description, aliases, remark, created_by)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (req.name or host_value, host_value, req.port, cred_id, "", req.description or "", aliases_json, remark_val, user["id"]),
+            (req.name or host_value, host_value, port_value, cred_id, "", req.description or "", aliases_json, remark_val, user["id"]),
         )
         await db.commit()
         cur = await db.execute("SELECT last_insert_rowid()")

@@ -243,6 +243,8 @@
     "ungroupShareTitle": "确认解除分享",
     "ungroupShareBody": "确定要解除主机「{{name}}」的分享吗？这不会删除真实主机。",
     "deleteHostNameBody": "确定要删除主机「{{name}}」吗？",
+    "duplicateHostTitle": "发现重复主机",
+    "duplicateHostBody": "地址 {{host}}:{{port}} 在所有者「{{owner}}」（{{ownerUsername}}）下已存在，主机名为「{{name}}」。仍要添加一条新记录吗？",
     "clearSessionChat": "确定清空本会话全部聊天内容？",
     "keepNMessages": "确定保留前 {{n}} 条消息，删除其后的全部？",
     "moveConfirm": "是否移动？",

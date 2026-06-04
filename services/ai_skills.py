@@ -33,6 +33,12 @@ from api.hosts import (
     parse_host_aliases_cell,
     serialize_host_aliases_for_db,
 )
+from services.host_duplicate import (
+    find_duplicate_host_for_owner,
+    host_duplicate_error_detail,
+    normalize_host_address,
+    normalize_host_port,
+)
 from services.user_mail import (
     USER_MAIL_SETUP_HINT_ZH,
     effective_scheduled_task_notify_email_to,
@@ -958,13 +964,14 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "create_host",
-            "description": "新建 SSH 主机。需管理员。必须提供 credential_id（选择已有凭证）或 new_credential（新建凭证并自动保存、关联到该主机）。不内联账号密码。",
+            "description": "新建 SSH 主机。需管理员。必须提供 credential_id（选择已有凭证）或 new_credential（新建凭证并自动保存、关联到该主机）。不内联账号密码。重复判定：同一所有者下地址（忽略大小写）+ 端口（未指定则 22）均相同视为重复；若 duplicate 且未传 allow_duplicate 会返回已有主机及所有者信息，用户确认后可传 allow_duplicate=true 强制添加。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "name": {"type": "string", "description": "主机名称"},
                     "host": {"type": "string", "description": "主机地址（IP 或域名）"},
-                    "port": {"type": "integer", "description": "SSH 端口，默认 22"},
+                    "port": {"type": "integer", "description": "SSH 端口，默认 22；仅当与已有记录端口相同才算重复"},
+                    "allow_duplicate": {"type": "boolean", "description": "为 true 时即使与当前用户已有 host+port 重复也仍创建"},
                     "credential_id": {"type": "integer", "description": "可选，已有凭证 ID"},
                     "new_credential": {"type": "object", "description": "可选，新建凭证并关联。含 code、name、username、type。type 必须与认证方式一致：使用公钥认证时填 type=key_pair 并填 private_key（必填）与 public_key（可选）；使用密码时填 type=password 并填 password。不可提供私钥/公钥却填 type=password，否则认证会失败。"},
                     "description": {"type": "string", "description": "描述/备注（与 remark 用途说明可同时使用）"},
@@ -8289,27 +8296,30 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
 
         if name == "create_host":
             name_ = (arguments.get("name") or "").strip()
-            host_ = (arguments.get("host") or "").strip()
+            host_ = normalize_host_address(arguments.get("host") or "")
             if not name_ or not host_:
                 return json.dumps({"success": False, "error": "name 和 host 必填"}, ensure_ascii=False)
-            port_ = int(arguments.get("port") or 22)
+            port_ = normalize_host_port(arguments.get("port"))
+            allow_dup = bool(arguments.get("allow_duplicate"))
             desc_ = (arguments.get("description") or "").strip()
             aliases_json = serialize_host_aliases_for_db(arguments.get("aliases"))
             remark_ = (arguments.get("remark") or "").strip()
             cred_id = arguments.get("credential_id")
             new_cred = arguments.get("new_credential")
             db = await get_db()
-            duplicate_rows = await db.execute_fetchall(
-                """SELECT id FROM hosts
-                   WHERE created_by = ? AND port = ? AND lower(trim(host)) = lower(trim(?))
-                   LIMIT 1""",
-                (user["id"], port_, host_),
-            )
-            if duplicate_rows:
-                return json.dumps(
-                    {"success": False, "error": "同一用户下该主机地址和端口已存在"},
-                    ensure_ascii=False,
+            if not allow_dup:
+                existing = await find_duplicate_host_for_owner(
+                    db, owner_user_id=int(user["id"]), host=host_, port=port_
                 )
+                if existing:
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "duplicate": True,
+                            **host_duplicate_error_detail(existing),
+                        },
+                        ensure_ascii=False,
+                    )
             if cred_id:
                 r = await db.execute_fetchall("SELECT id, created_by FROM credentials WHERE id = ?", (cred_id,))
                 if not r:

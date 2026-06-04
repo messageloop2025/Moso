@@ -135,8 +135,9 @@ token 来自解锁邮件链接。
 |------|------|------|
 | GET | /hosts | 主机列表（含 credential_code/name；普通用户返回“自有主机 + 收到分享的主机”） |
 | GET | /hosts/stats | 主机统计 |
+| GET | /hosts/check-duplicate | 检测当前用户下是否已有相同地址+端口的主机（含所有者信息） |
 | GET | /hosts/{host_id} | 主机详情 |
-| POST | /hosts | 新建主机 |
+| POST | /hosts | 新建主机（可选 `allow_duplicate` 强制添加） |
 | PUT | /hosts/{host_id} | 更新主机（仅主机所有者/管理员） |
 | DELETE | /hosts/{host_id} | 删除主机（所有者/管理员=真实删除；接收方=解除分享） |
 | GET | /hosts/shares/received | 当前用户收到的主机分享列表 |
@@ -163,9 +164,19 @@ token 来自解锁邮件链接。
 
 用户 Skills Markdown：`GET /api/user-skills/by-name/{skill_name}/markdown?path=SKILL.md`（参数与 aihelp 章节读/搜一致）。
 
+### GET /hosts/check-duplicate
+
+查询参数：`host`（必填）、`port`（可选，未传按 **22** 参与比较）。
+
+响应：`{ "success": true, "duplicate": bool, "host", "port", "existing_host": null | { id, name, host, port, created_by, created_by_username, created_by_display_name } }`
+
+重复规则：仅当**同一所有者**（当前登录用户）下，`lower(trim(host))` 与 **port** 均与已有记录一致时 `duplicate=true`。不同用户可拥有相同 `host:port`。
+
 ### POST /hosts（新建）
 
 必须二选一：**credential_id**（已有凭证）或 **new_credential**（新建凭证并关联）。
+
+未传 `port` 时默认 **22**。与已有记录重复时默认返回 **409**，`detail` 含 `code: host_duplicate` 与 `existing_host`（含所有者字段）；请求体设 **`allow_duplicate": true`** 可仍创建一条新记录。
 
 **请求体**
 ```json
@@ -186,7 +197,8 @@ token 来自解锁邮件链接。
   },
   "description": "",
   "aliases": ["别名一", "别名二"],
-  "remark": "用途说明，如：生产环境 Web 入口"
+  "remark": "用途说明，如：生产环境 Web 入口",
+  "allow_duplicate": false
 }
 ```
 

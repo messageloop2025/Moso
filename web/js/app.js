@@ -4586,7 +4586,7 @@ function refreshActiveHostsListDOM() {
 function renderHostsList() {
     renderLayout();
     var el = getPageEl();
-    el.innerHTML = '<div class="topbar"><h2>' + esc(t('nav.hosts')) + '</h2><div class="topbar-actions"><button type="button" class="btn" id="hostsManageTagsBtn">' + esc(t('ui.page.hosts.tagMgmt')) + '</button><button type="button" class="btn" id="hostsReceivedSharesBtn">' + esc(t('ui.page.hosts.receivedShares')) + '</button><button type="button" class="btn" id="hostsListRefreshBtn">' + esc(t('common.refresh')) + '</button></div></div>'
+    el.innerHTML = '<div class="topbar"><h2>' + esc(t('nav.hosts')) + '</h2><div class="topbar-actions"><button type="button" class="btn btn-primary" id="hostsAddHostBtn">' + esc(t('modals.addHost')) + '</button><button type="button" class="btn" id="hostsManageTagsBtn">' + esc(t('ui.page.hosts.tagMgmt')) + '</button><button type="button" class="btn" id="hostsReceivedSharesBtn">' + esc(t('ui.page.hosts.receivedShares')) + '</button><button type="button" class="btn" id="hostsListRefreshBtn">' + esc(t('common.refresh')) + '</button></div></div>'
         + '<div class="page-content ai-page-layout hosts-page-layout" id="hostsPageLayout">'
         + '<div class="ai-left-sidebar hosts-left-sidebar" id="hostsLeftSidebar">'
         + '<div class="ai-left-sidebar-tabs"><div class="ai-left-sidebar-tab" id="hostsSidebarTabActive" data-tab="activeHosts" title="' + esc(t('ui.activeHosts.tabExpand')) + '">' + t('ui.activeHosts.title') + '</div></div>'
@@ -4640,6 +4640,8 @@ function renderHostsList() {
             if (wrap) wrap.innerHTML = '<div class="empty-state"><h3>' + esc(t('ui.loadFailedH3')) + '</h3><p>' + esc(err.message) + '</p></div>';
         });
     }
+    var addHostBtn = document.getElementById('hostsAddHostBtn');
+    if (addHostBtn) addHostBtn.onclick = function() { showAddHostModal(); };
     var refreshBtn = document.getElementById('hostsListRefreshBtn');
     if (refreshBtn) refreshBtn.onclick = function() { load(); showToast(t('toast.refreshed')); };
     var tagBtn = document.getElementById('hostsManageTagsBtn');
@@ -9358,9 +9360,11 @@ function showServerTreeContextMenu(e, target) {
         menu.appendChild(a);
     }
     if (target.type === 'root' || target.type === 'ungrouped_area') {
+        item(t('hostTree.newHost'), function() { showAddHostModal(); });
         item(t('hostTree.addGroup'), function() { showAddGroupModal(null, null); });
         item(t('common.refresh'), function() { refreshHostGroupsTree(); });
     } else if (target.type === 'group') {
+        item(t('hostTree.newHostHere'), function() { showAddHostModal(); });
         item(t('hostTree.addGroup'), function() { showAddGroupModal(target.group.id, target.group.name || ''); });
         if (target.group.parent_id != null) item(t('hostTree.moveToTop'), function() { moveGroupToParent(target.group.id, null); });
         item(t('hostTree.renameGroup'), function() { showRenameGroupModal(target.group); });
@@ -9455,6 +9459,91 @@ function deleteGroup(id) {
         if (!ok) return;
         API.deleteHostGroup(id).then(function() { showToast(t('toast.deleted')); refreshHostGroupsTree(); }).catch(function(err) { showToast(err.message, 'error'); });
     });
+}
+
+function edgeopsConfirmAndCreateDuplicateHost(existing, host, port, onConfirm) {
+    var ex = existing || {};
+    var owner = (ex.created_by_display_name || ex.created_by_username || String(ex.created_by || '')).trim() || '-';
+    var uname = (ex.created_by_username || owner).trim();
+    showConfirm(
+        t('confirm.duplicateHostTitle'),
+        t('confirm.duplicateHostBody', {
+            host: host || ex.host || '',
+            port: port != null && port !== '' ? port : (ex.port || 22),
+            name: ex.name || '',
+            owner: owner,
+            ownerUsername: uname
+        })
+    ).then(function(ok) {
+        if (ok && typeof onConfirm === 'function') onConfirm();
+    });
+}
+
+function showAddHostModal() {
+    var f = 'forms.addHost';
+    var content = '<div class="form-group"><label>' + t(f + '.name') + '</label><input class="form-control" id="addHostName" placeholder="' + esc(t(f + '.namePh')) + '"></div>'
+        + '<div class="form-group"><label>' + t(f + '.addr') + '</label><input class="form-control" id="addHostAddr" placeholder="' + esc(t(f + '.addrPh')) + '"></div>'
+        + '<div class="form-group"><label>' + t(f + '.port') + '</label><input type="number" class="form-control" id="addHostPort" value="22" min="1" max="65535"></div>'
+        + '<div class="form-group"><label>' + t(f + '.pickCred') + '</label><select class="form-control" id="addHostCredential"><option value="">' + esc(t(f + '.pickCredEmpty')) + '</option></select></div>';
+    showModal(t('modals.addHost'), content, edgeopsModalFooterCancelSave('submitAddHostFromModal()'));
+    API.listCredentials({ page: 1, page_size: 100 }).then(function(r) {
+        var sel = document.getElementById('addHostCredential');
+        if (!sel) return;
+        (r.credentials || []).forEach(function(c) {
+            var opt = document.createElement('option');
+            opt.value = String(c.id);
+            opt.textContent = (c.name || c.code || '') + (c.username ? (' (' + c.username + ')') : '');
+            sel.appendChild(opt);
+        });
+    }).catch(function() {});
+    setTimeout(function() {
+        var el = document.getElementById('addHostName');
+        if (el) el.focus();
+    }, 80);
+}
+
+function submitAddHostFromModal() {
+    var name = (document.getElementById('addHostName') || {}).value;
+    name = name ? name.trim() : '';
+    var host = (document.getElementById('addHostAddr') || {}).value;
+    host = host ? host.trim() : '';
+    var portRaw = (document.getElementById('addHostPort') || {}).value;
+    var port = portRaw === '' || portRaw == null ? 22 : parseInt(portRaw, 10);
+    var credId = parseInt((document.getElementById('addHostCredential') || {}).value, 10);
+    if (!name || !host) { showToast(t('toast.fillNameAndHost'), 'error'); return; }
+    if (isNaN(port) || port < 1 || port > 65535) { showToast(t('toast.opFailed'), 'error'); return; }
+    if (!credId) { showToast(t('toast.selectCredential'), 'error'); return; }
+    var payload = { name: name, host: host, port: port, credential_id: credId };
+
+    function finishCreate() {
+        API.createHost(payload).then(function(res) {
+            closeModal();
+            showToast(t('toast.added'));
+            if (typeof renderHostsList === 'function' && Router.currentPath === '/hosts') renderHostsList();
+            if (typeof refreshHostGroupsTree === 'function') refreshHostGroupsTree();
+            if (res && res.id) Router.navigate('/hosts/' + res.id);
+        }).catch(function(err) {
+            if (!payload.allow_duplicate && err && err.apiDetail && err.apiDetail.code === 'host_duplicate' && err.apiDetail.existing_host) {
+                edgeopsConfirmAndCreateDuplicateHost(err.apiDetail.existing_host, host, port, function() {
+                    payload.allow_duplicate = true;
+                    finishCreate();
+                });
+                return;
+            }
+            showToast(err.message, 'error');
+        });
+    }
+
+    API.checkHostDuplicate(host, port).then(function(r) {
+        if (r && r.duplicate && r.existing_host) {
+            edgeopsConfirmAndCreateDuplicateHost(r.existing_host, host, port, function() {
+                payload.allow_duplicate = true;
+                finishCreate();
+            });
+        } else {
+            finishCreate();
+        }
+    }).catch(function(err) { showToast(err.message, 'error'); });
 }
 
 function showRenameHostModal(host) {
