@@ -1,4 +1,4 @@
-"""主机类型与版本检测：通过 SSH 识别 Linux/macOS/Windows/FreeBSD/OpenBSD/NetBSD 及版本、Shell、包管理器，供 AI 优化命令与脚本策略"""
+"""主机类型与版本检测：通过 SSH 识别 Linux/macOS/Windows/ESXi/FreeBSD 等及版本、Shell、包管理器，供 AI 优化命令与脚本策略"""
 import re
 import logging
 from typing import Tuple, Dict, Any, Optional
@@ -109,8 +109,26 @@ async def detect_host_env(
                 result["host_type"] = "NetBSD"
                 result["host_version"] = bsd_version_line[:120] if bsd_version_line else _UNKNOWN
             elif "LINUX" in uname_s:
+                esxi_ver = _esxi_version_from_os_release(os_release_lines)
+                if esxi_ver:
+                    result["host_type"] = "ESXi"
+                    result["host_version"] = esxi_ver
+                    _apply_esxi_defaults(result)
+                    return result
                 result["host_type"] = "Linux"
                 result["host_version"] = _parse_os_release(os_release) or _UNKNOWN
+            elif "VMKERNEL" in uname_s:
+                result["host_type"] = "ESXi"
+                result["host_version"] = (
+                    _esxi_version_from_os_release(os_release_lines)
+                    or _parse_esxi_uname_release(bsd_version_line)
+                    or _UNKNOWN
+                )
+                ver = await _fetch_esxi_version_extra(auth)
+                if ver:
+                    result["host_version"] = ver
+                _apply_esxi_defaults(result)
+                return result
 
             if result["host_type"] != _UNKNOWN:
                 await _detect_unix_shell_and_pkg(auth, result)
@@ -118,6 +136,10 @@ async def detect_host_env(
                 return result
     except Exception as e:
         logger.debug("Unix 系检测失败 %s: %s", host, e)
+
+    esxi_result = await _try_detect_esxi_fallback(auth, result)
+    if esxi_result:
+        return esxi_result
 
     try:
         out, err, code = await run_ssh_command(
@@ -287,8 +309,145 @@ def _infer_shell_and_package_manager(result: HostEnvResult, os_release_lines: Op
         if not shell:
             shell = "cmd"
 
+    elif ht == "ESXi":
+        if not shell:
+            shell = "sh"
+        if not pkg:
+            pkg = "esxcli"
+
     result["shell"] = shell if shell else _UNKNOWN
     result["package_manager"] = pkg if pkg else _UNKNOWN
+
+
+def _apply_esxi_defaults(result: HostEnvResult) -> None:
+    result["shell"] = "sh"
+    result["package_manager"] = "esxcli"
+
+
+def _esxi_version_from_os_release(os_release_lines: Optional[list]) -> str:
+    if not os_release_lines:
+        return ""
+    d = _parse_os_release_dict(os_release_lines)
+    oid = (d.get("ID") or "").strip().lower()
+    name = (d.get("NAME") or "").strip()
+    pretty = (d.get("PRETTY_NAME") or "").strip()
+    version_id = (d.get("VERSION_ID") or d.get("VERSION") or "").strip()
+    blob = f"{name} {pretty}".lower()
+    if oid in ("vmware-esxi", "vmware_esxi", "esxi") or "vmware esxi" in blob or "esxi" in oid:
+        if pretty:
+            return pretty[:200]
+        if name and version_id:
+            return f"{name} {version_id}"[:200]
+        if version_id:
+            return f"VMware ESXi {version_id}"[:200]
+        return _parse_os_release(os_release_lines) or ""
+    return ""
+
+
+def _parse_esxi_uname_release(release_line: str) -> str:
+    s = (release_line or "").strip()
+    if not s:
+        return ""
+    m = re.search(r"(\d+\.\d+(?:\.\d+)?)", s)
+    if m:
+        return f"VMware ESXi {m.group(1)}"[:200]
+    return s[:200]
+
+
+def _parse_vmware_v_output(text: str) -> str:
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.search(
+            r"VMware\s+ESXi\s+(\d+\.\d+(?:\.\d+)?)(?:\s+build[-\s]?(\d+))?",
+            line,
+            re.IGNORECASE,
+        )
+        if m:
+            ver = m.group(1)
+            build = m.group(2) or ""
+            return f"VMware ESXi {ver} build-{build}".strip() if build else f"VMware ESXi {ver}"
+        if re.search(r"esxi", line, re.IGNORECASE):
+            return line[:200]
+    return ""
+
+
+def _parse_esxcli_version_output(text: str) -> str:
+    product = ""
+    version = ""
+    build = ""
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or ":" not in line:
+            continue
+        k, _, v = line.partition(":")
+        key = k.strip().lower().replace(" ", "_")
+        val = v.strip()
+        if key in ("product_name", "name") and val and not product:
+            product = val
+        elif key in ("version", "product_version") and val:
+            version = val
+        elif key == "build" and val:
+            build = val
+    if version:
+        base = product or "VMware ESXi"
+        if build and build.lower() not in version.lower():
+            return f"{base} {version} build-{build}"[:200]
+        return f"{base} {version}"[:200]
+    return ""
+
+
+async def _fetch_esxi_version_extra(auth: dict) -> str:
+    try:
+        out, err, code = await run_ssh_command(
+            **auth,
+            command=(
+                "vmware -v 2>/dev/null; echo '---'; "
+                "esxcli system version get 2>/dev/null | head -n 16; "
+                "true"
+            ),
+        )
+        text = (out or "").strip()
+        if not text:
+            return ""
+        parts = text.split("---", 1)
+        v1 = _parse_vmware_v_output(parts[0])
+        if v1:
+            return v1
+        if len(parts) > 1:
+            v2 = _parse_esxcli_version_output(parts[1])
+            if v2:
+                return v2
+    except Exception as e:
+        logger.debug("ESXi 版本探测失败 %s: %s", auth.get("host"), e)
+    return ""
+
+
+async def _try_detect_esxi_fallback(auth: dict, base: HostEnvResult) -> Optional[HostEnvResult]:
+    """uname 未识别时，用 vmware -v / esxcli 兜底识别 ESXi。"""
+    try:
+        out, err, code = await run_ssh_command(
+            **auth,
+            command="vmware -v 2>/dev/null; echo '---'; esxcli system version get 2>/dev/null | head -n 12; true",
+        )
+        text = (out or "").strip()
+        if not text:
+            return None
+        low = text.lower()
+        if "esxi" not in low and "vmware" not in low and "vmkernel" not in low:
+            return None
+        ver = _parse_vmware_v_output(text.split("---", 1)[0])
+        if not ver and "---" in text:
+            ver = _parse_esxcli_version_output(text.split("---", 1)[1])
+        result = dict(base)
+        result["host_type"] = "ESXi"
+        result["host_version"] = ver or _UNKNOWN
+        _apply_esxi_defaults(result)
+        return result
+    except Exception as e:
+        logger.debug("ESXi 兜底检测失败 %s: %s", auth.get("host"), e)
+        return None
 
 
 async def _detect_unix_shell_and_pkg(auth: dict, result: HostEnvResult) -> None:
