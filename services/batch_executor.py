@@ -9,6 +9,7 @@ from database import get_db
 from api.hosts import _resolve_host_auth
 from api.filesystem import resolve_fs_path, fs_read_file
 from services.ssh_client import run_ssh_command, sftp_put_content
+from services.sftp_transfer import sftp_push_path_sync
 
 logger = logging.getLogger("edgeops.batch")
 
@@ -124,7 +125,32 @@ async def _execute_single(db, host_row: dict, op_type: str, params: dict) -> dic
         if content is None and local_path:
             try:
                 fp = resolve_fs_path(local_path)
-                content_b = fp.read_bytes()
+                if not fp.exists():
+                    return {"success": False, "error": f"本地路径不存在: {local_path}"}
+                recursive = fp.is_dir()
+                if recursive:
+                    return {"success": False, "error": "批量 scp_push 暂不支持目录，请打包后上传单文件"}
+                result = await asyncio.to_thread(
+                    sftp_push_path_sync,
+                    host=host,
+                    port=port,
+                    username=auth.get("username") or "",
+                    auth_type=auth.get("auth_type") or "password",
+                    password=auth.get("password"),
+                    key_path=auth.get("key_path"),
+                    private_key_pem=auth.get("private_key_pem"),
+                    local_path=str(fp.resolve()),
+                    remote_path=remote_path,
+                    recursive=False,
+                    timeout=timeout,
+                )
+                if not result.success:
+                    return {"success": False, "error": result.error or "上传失败"}
+                return {
+                    "success": True,
+                    "message": f"已写入 {remote_path}",
+                    "bytes_transferred": result.bytes_transferred,
+                }
             except Exception as e:
                 return {"success": False, "error": f"读取本地文件失败: {e}"}
         else:

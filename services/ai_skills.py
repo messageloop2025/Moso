@@ -78,8 +78,8 @@ from api.filesystem import (
     fs_delete_async,
     fs_copy_or_move_async,
 )
-from services.ssh_client import run_ssh_command, sftp_get_to_local_path, sftp_put_content
-from services.scp_client import probe_remote_path_kind_and_size, run_scp_transfer, scp_command_available
+from services.ssh_client import run_ssh_command, sftp_put_content
+from services.sftp_transfer import run_sftp_pull_async, run_sftp_push_async
 from services.keygen import generate_rsa_key, generate_ecc_key
 from services.credential_utils import normalize_private_key_pem
 from services.chat_utils import assistant_content_for_summary
@@ -1792,14 +1792,20 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "scp_push",
-            "description": "通过 SFTP 将文件推送到主机。两种方式二选一：1) content：文本内容（字符串）；2) local_path：web/fs 下相对路径（如 infohelper.tgz），从本机文件系统读取该文件（支持二进制 .tgz/.zip/图片等）并上传。若同时提供则优先 local_path。",
+            "description": (
+                "通过 **SFTP** 将文件或目录推送到主机（流式传输，支持大文件与目录树，调用卡会显示进度）。"
+                "二选一：1) **content** 文本字符串（适合小脚本）；2) **local_path** web/fs 相对路径（文件或目录，支持二进制）。"
+                "目录上传需 **recursive=true**。大文件/安装包优先 local_path，勿用 content。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "host_id": {"type": "integer", "description": "主机 ID"},
-                    "remote_path": {"type": "string", "description": "远程文件路径，如 /tmp/script.sh 或 /mnt/xxx.tgz"},
-                    "content": {"type": "string", "description": "文本内容（与 local_path 二选一）"},
-                    "local_path": {"type": "string", "description": "web/fs 下相对路径，指定则读取该文件（支持二进制）并上传，与 content 二选一"},
+                    "remote_path": {"type": "string", "description": "远程路径，如 /tmp/script.sh 或 /tmp/mydir/"},
+                    "content": {"type": "string", "description": "文本内容（与 local_path 二选一，仅适合小文本）"},
+                    "local_path": {"type": "string", "description": "web/fs 相对路径（文件或目录），与 content 二选一"},
+                    "recursive": {"type": "boolean", "description": "local_path 为目录时必须 true"},
+                    "timeout": {"type": "integer", "description": "超时秒数，默认 300，范围 30–3600"},
                 },
                 "required": ["host_id", "remote_path"],
             },
@@ -1810,26 +1816,25 @@ TOOLS = [
         "function": {
             "name": "scp_pull",
             "description": (
-                "通过 **SFTP** 从主机拉取**单个远程文件**到当前用户的 **web/fs**（与 scp_push 对称）。"
-                "适合：命令/脚本在服务器上生成的大输出已写入文件（如 `your_cmd > /tmp/out.log 2>&1`），"
-                "再拉到本地做分段阅读或二次处理；或把远端数据文件拉到 fs 后用 regex/data_query/fs_read_file(offset/size) 分析。\n\n"
-                "**大数据处理建议**：可在 web/fs 编写 `.py`/`.sh`（fs_write_file），scp_push 到远端执行并将结果写到另一远端路径，"
-                "再 scp_pull 取回输出文件，避免巨量 stdout 经 ssh_execute 进入上下文。\n\n"
-                "`local_path`：推荐只写逻辑路径（如 `data/host1-syslog.txt`）；若未以 `chats/` 开头会自动加上 **当天 UTC** 的 `chats/年/月/日/`；"
-                "若文件名不含标准 UUID 前缀会自动补上。**不要**把拉取结果写到用户 fs 根。单文件大小受 `max_bytes` 与系统上限约束。"
+                "通过 **SFTP** 从主机拉取**文件或目录**到当前用户 **web/fs**（流式落盘，调用卡显示进度）。"
+                "适合大日志、安装包、归档；目录拉取需 **recursive=true**。\n\n"
+                "`local_path`：逻辑路径如 `data/host1-syslog.txt` 或 `data/logs-backup`；"
+                "未以 `chats/` 开头会自动加 **当天 UTC** 的 `chats/年/月/日/` 并补 UUID 前缀。"
+                "单文件受 `max_bytes` 约束；目录受系统整树字节上限约束。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "host_id": {"type": "integer", "description": "主机 ID"},
-                    "remote_path": {"type": "string", "description": "远程文件绝对路径，如 /tmp/result.json"},
+                    "remote_path": {"type": "string", "description": "远程绝对路径（文件或目录）"},
                     "local_path": {
                         "type": "string",
-                        "description": "逻辑路径如 data/pulls/host53-result.log（自动加 chats/<UTC今日>/，并补 UUID 文件名前缀）",
+                        "description": "逻辑落盘路径（文件或目录名，自动归位 chats/<UTC>/）",
                     },
+                    "recursive": {"type": "boolean", "description": "远程为目录时必须 true"},
                     "max_bytes": {
                         "type": "integer",
-                        "description": "最多接收字节数，默认与系统上限一致，不可超过系统上限",
+                        "description": "单文件字节上限，默认与系统 SCP_PULL_MAX_BYTES 一致",
                     },
                     "timeout": {
                         "type": "integer",
@@ -1837,51 +1842,6 @@ TOOLS = [
                     },
                 },
                 "required": ["host_id", "remote_path", "local_path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "scp_transfer",
-            "description": (
-                "通过系统 **scp** 命令在**当前用户 web/fs** 与远程主机之间传输**大文件或目录**（流式落盘，不经内存缓冲）。"
-                "与 scp_push/scp_pull（Paramiko SFTP）互补：小文本/中小文件可用 SFTP 工具；**百 MB 级安装包、镜像层、日志归档、目录树**优先本工具。\n\n"
-                "**push**：从 web/fs 的 local_path 上传到 remote_path；**pull**：从 remote_path 拉到 local_path（未写 chats/ 前缀时自动归位到当日 chats/UTC 并补 UUID 文件名，规则同 scp_pull）。\n\n"
-                "支持密码与密钥认证；legacy_rsa=true 可强制启用 ssh-rsa 算法（OpenWrt/老旧 dropbear）。"
-                "目录传输需 recursive=true。密码认证：Linux/Docker 优先 sshpass；**Windows 本机通过 SSH_ASKPASS** 非交互传密；"
-                "若 scp 仍失败则自动回退 Paramiko SFTP 流式传输（大文件同样不经内存缓冲）。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "host_id": {"type": "integer", "description": "主机 ID"},
-                    "direction": {
-                        "type": "string",
-                        "enum": ["push", "pull"],
-                        "description": "push=上传到远程；pull=从远程下载到 web/fs",
-                    },
-                    "local_path": {
-                        "type": "string",
-                        "description": "web/fs 相对路径；push 时为源文件/目录；pull 时为落盘路径（推荐 data/xxx.tgz 等逻辑名）",
-                    },
-                    "remote_path": {"type": "string", "description": "远程绝对路径，如 /tmp/pkg.tgz 或 /var/log/app/"},
-                    "compress": {"type": "boolean", "description": "是否 scp -C 压缩传输，默认 true"},
-                    "recursive": {"type": "boolean", "description": "是否 scp -r 递归目录，默认 false"},
-                    "legacy_rsa": {
-                        "type": "boolean",
-                        "description": "是否强制 legacy ssh-rsa 算法；默认 false，失败时会按系统配置自动回退重试",
-                    },
-                    "max_bytes": {
-                        "type": "integer",
-                        "description": "pull 时单文件字节上限，默认与系统 SCP_PULL_MAX_BYTES 一致；目录 pull 不受此限",
-                    },
-                    "timeout": {
-                        "type": "integer",
-                        "description": "传输超时秒数，默认 600，范围 60–7200",
-                    },
-                },
-                "required": ["host_id", "direction", "local_path", "remote_path"],
             },
         },
     },
@@ -1907,7 +1867,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "transfer_file_between_hosts",
-            "description": "在两台主机间自动传输文件/目录：先检测 A->B 与 B->A 的 22 端口可达性，确定主动方；优先尝试 scp/rsync/sshfs（基于 SSH），若都失败则自动回退到 毛竹（Moso）文件系统中转。",
+            "description": "在两台主机间自动传输文件/目录：先检测 A->B 与 B->A 的 22 端口可达性，确定主动方；优先尝试 scp/rsync/sshfs（基于 SSH），若都失败则自动回退经 毛竹 web/fs 中转（服务端 SFTP 先拉到用户目录再推到目标机）。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1930,7 +1890,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "relay_file_between_hosts",
-            "description": "通过 毛竹（Moso）文件系统中转在两台主机间传文件：先让 A 用 curl 上传到 web/fs，再让 B 用 curl 下载。会自动创建短时效临时 API Key 并可自动回收；适合 A->B 直连失败时兜底。若 source_path 是目录，会先在 A 上强制打 .tgz（/tmp）再中转。默认传输完成后会主动撤销临时 key 并删除中转文件；仅多目标分发时可显式保留中转文件。",
+            "description": "经 毛竹（Moso）web/fs 用户目录中转在两台主机间传文件/目录：服务端 SFTP 先从源主机拉到 web/fs/<用户>/staging，再 SFTP 推到目标主机（调用卡显示进度）。适合 A->B 直连失败或需统一经毛竹中转时。默认传输完成后删除中转文件；多目标分发时可保留 staging 供复用。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1938,13 +1898,11 @@ TOOLS = [
                     "source_path": {"type": "string", "description": "A 上待传输文件路径"},
                     "target_host_id": {"type": "integer", "description": "目标主机 ID（B）"},
                     "target_path": {"type": "string", "description": "B 上目标路径"},
-                    "edgeops_base_url": {"type": "string", "description": "毛竹（Moso）可被主机访问的地址（如 https://ops.example.com）。不传则优先系统 site_url，再回退本地地址。"},
-                    "staging_path": {"type": "string", "description": "可选，中转文件在 web/fs 下相对路径；不传自动生成。"},
-                    "ttl_seconds": {"type": "integer", "description": "临时 key 有效期（60~3600 秒），默认 600"},
+                    "staging_path": {"type": "string", "description": "可选，中转路径（web/fs 下相对路径，默认 exchange/<时间戳>-<随机>/…）；不传自动生成。"},
                     "keep_staging_for_multi_target": {"type": "boolean", "description": "多目标分发模式：为后续多个目标复用同一中转文件。默认 false（单目标传输后自动删中转文件）。"},
-                    "auto_unpack_on_target": {"type": "boolean", "description": "当 source_path 为目录并被打包为 tgz 时，是否在 B 侧自动解包到 target_path（目录）。默认 true。"},
-                    "cleanup_staging": {"type": "boolean", "description": "完成后是否删除中转文件，默认 true"},
-                    "revoke_token_on_finish": {"type": "boolean", "description": "完成后是否立即撤销临时 key，默认 true"},
+                    "auto_unpack_on_target": {"type": "boolean", "description": "当 source_path 为目录时，是否在目标机 target_path 下保留源目录名（如 target_path/foo/）。默认 true。"},
+                    "cleanup_staging": {"type": "boolean", "description": "完成后是否删除 web/fs 中转文件，默认 true"},
+                    "transfer_timeout_seconds": {"type": "integer", "description": "单次 SFTP 拉取/推送超时（秒），默认 600"},
                 },
                 "required": ["source_host_id", "source_path", "target_host_id", "target_path"],
             },
@@ -5580,12 +5538,89 @@ def _scheduled_task_dict_for_tool(row) -> dict:
     return d
 
 
-async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None = None, terminal_scope_id: str | None = None, default_terminal_slot: int | None = None, task_id: int | None = None, ui_capable: bool = True, stream_callback=None, session_id: int | None = None, ui_locale: str | None = None) -> str:
+def _normalize_sftp_pull_local_path(raw_local: str, remote_path: str, *, as_directory: bool) -> str:
+    """将 pull 的 local_path 归位到 chats/<UTC>/ 并补 UUID 前缀。"""
+    date_u = datetime.now(timezone.utc).strftime("%Y/%m/%d")
+    norm = (raw_local or "").replace("\\", "/").strip().lstrip("/")
+    if not norm.lower().startswith("chats/"):
+        norm = f"chats/{date_u}/{norm}"
+    p_part = Path(norm)
+    stem = p_part.stem
+    suf = p_part.suffix
+    if as_directory:
+        if not re.match(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            stem,
+            re.I,
+        ):
+            slug = re.sub(r"[^A-Za-z0-9._-]+", "_", stem or "").strip("._-")[:48] or "pull-dir"
+            stem = f"{uuid4()}-{slug}"
+        return str(p_part.parent / stem).replace("\\", "/")
+    if not suf:
+        suf = Path(remote_path.replace("\\", "/")).suffix or ".txt"
+    if not re.match(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        stem,
+        re.I,
+    ):
+        slug = re.sub(r"[^A-Za-z0-9._-]+", "_", stem or "").strip("._-")[:48] or "pull"
+        stem = f"{uuid4()}-{slug}"
+    return str(p_part.parent / f"{stem}{suf}").replace("\\", "/")
+
+
+def _sftp_timeout_from_args(arguments: dict, default: int = 300) -> int:
+    try:
+        timeout = int(arguments.get("timeout") or default)
+    except (TypeError, ValueError):
+        timeout = default
+    return max(30, min(3600, timeout))
+
+
+async def _probe_remote_path_kind(host_row: dict, auth: dict, remote_path: str) -> tuple[str | None, str, str, int]:
+    """探测远端路径为 file 或 dir。返回 (kind, stdout, stderr, exit_code)。"""
+    script = (
+        "set -euo pipefail\n"
+        f"SRC={shlex.quote(remote_path)}\n"
+        "if [ -d \"$SRC\" ]; then echo TYPE=dir\n"
+        "elif [ -f \"$SRC\" ]; then echo TYPE=file\n"
+        "else echo \"路径不存在或不可读: $SRC\" >&2; exit 12\n"
+        "fi\n"
+    )
+    out, err, code = await run_ssh_command(
+        host=host_row["host"],
+        port=int(host_row.get("port") or 22),
+        username=auth.get("username") or "",
+        auth_type=auth.get("auth_type") or "password",
+        password=auth.get("password"),
+        key_path=auth.get("key_path"),
+        private_key_pem=auth.get("private_key_pem"),
+        command=script,
+        timeout=60,
+    )
+    kind = None
+    if int(code or 1) == 0:
+        for ln in (out or "").splitlines():
+            line = ln.strip()
+            if line.startswith("TYPE="):
+                kind = line[5:].strip() or None
+    return kind, out or "", err or "", int(code or 1)
+
+
+def _relay_default_staging_path(source_path: str, *, is_dir: bool) -> str:
+    name = Path(source_path.replace("\\", "/")).name or "payload.bin"
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    token = secrets.token_hex(4)
+    if is_dir:
+        return f"exchange/{ts}-{token}/{name}"
+    return f"exchange/{ts}-{token}-{name}"
+
+
+async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None = None, terminal_scope_id: str | None = None, default_terminal_slot: int | None = None, task_id: int | None = None, ui_capable: bool = True, stream_callback=None, session_id: int | None = None, ui_locale: str | None = None, transfer_cancel_event=None) -> str:
     """执行工具，返回 JSON 字符串。scope 由调用方传入：'local' 表示本机管理会话；'task' 表示后台任务（此时 task_id 为任务 ID，SSH 通道绑定到该任务）。
     ui_capable: 调用方是否带浏览器交互（False 表示 OpenClaw 集成 / 后台任务等无 UI 场景，
     `ask_user_choice` 等需要前端渲染的工具会改用纯文本回退）。task scope 自动视为 ui_capable=False。
     stream_callback: 可选的 async 回调 `fn(event: dict) -> None`。当工具支持流式进度时
-    （目前为 `delegate_to_cli_agent` / `delegate_chain` / `run_workflow_template`），
+    （`delegate_to_cli_agent` / `delegate_chain` / `run_workflow_template` / `scp_push` / `scp_pull`），
     工具会边跑边调该回调把增量事件推给调用方（例如 SSE 生成器），事件 dict 必含 `kind` 字段
     （sub_agent_line / chain_step_start / chain_step_line / chain_step_end / chain_step_skip）。
     ui_locale: 可选；浏览器/界面 BCP-47（如 zh-CN、en），传入时子技能（如 delegate_to_edgeops_ai）可将回复语言策略与界面一致。
@@ -9876,6 +9911,8 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     default_terminal_slot=default_terminal_slot,
                     task_id=task_id,
                     ui_locale=ui_locale,
+                    stream_callback=stream_callback,
+                    transfer_cancel_event=transfer_cancel_event,
                 )
                 try:
                     relay_obj = json.loads(relay_raw)
@@ -9983,6 +10020,8 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 default_terminal_slot=default_terminal_slot,
                 task_id=task_id,
                 ui_locale=ui_locale,
+                stream_callback=stream_callback,
+                transfer_cancel_event=transfer_cancel_event,
             )
             try:
                 relay_obj = json.loads(relay_raw)
@@ -10011,19 +10050,17 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             target_host_id = arguments.get("target_host_id")
             source_path = (arguments.get("source_path") or "").strip()
             target_path = (arguments.get("target_path") or "").strip()
-            base_url = (arguments.get("edgeops_base_url") or "").strip().rstrip("/")
             staging_path = (arguments.get("staging_path") or "").strip().replace("\\", "/").lstrip("/")
-            ttl_seconds = int(arguments.get("ttl_seconds") or 600)
-            ttl_seconds = max(60, min(3600, ttl_seconds))
             keep_staging_for_multi_target = bool(arguments.get("keep_staging_for_multi_target") or False)
             auto_unpack_on_target = True if arguments.get("auto_unpack_on_target") is None else bool(arguments.get("auto_unpack_on_target"))
             cleanup_staging_arg = arguments.get("cleanup_staging")
             if cleanup_staging_arg is None:
-                # 默认单目标传输后删除中转文件；仅多目标分发模式可默认保留。
                 cleanup_staging = not keep_staging_for_multi_target
             else:
                 cleanup_staging = bool(cleanup_staging_arg)
-            revoke_token_on_finish = True if arguments.get("revoke_token_on_finish") is None else bool(arguments.get("revoke_token_on_finish"))
+            timeout_seconds = _sftp_timeout_from_args(arguments, default=600)
+            pull_cap = int(getattr(config, "SCP_PULL_MAX_BYTES", 200 * 1024 * 1024))
+            tree_cap = int(getattr(config, "SCP_PULL_MAX_TREE_BYTES", 2 * 1024 * 1024 * 1024))
             if not source_host_id or not target_host_id or not source_path or not target_path:
                 return json.dumps({"success": False, "error": "需要 source_host_id/source_path/target_host_id/target_path"}, ensure_ascii=False)
             source_row = await _get_host_row(source_host_id)
@@ -10057,28 +10094,35 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 stage="target_prepare",
                 extra={"source_host_id": source_host_id},
             )
-            site_url = await _get_effective_site_url(db)
-            effective_base = base_url or site_url or f"http://127.0.0.1:{int(getattr(config, 'PORT', 8010))}"
-            source_is_dir = False
-            upload_source_path = source_path
-            source_archive_cleanup_path = ""
-            inspect_script = (
-                "set -euo pipefail\n"
-                f"SRC={shlex.quote(source_path)}\n"
-                "if [ -d \"$SRC\" ]; then\n"
-                "  base=$(basename \"$SRC\")\n"
-                "  parent=$(dirname \"$SRC\")\n"
-                "  archive=\"/tmp/edgeops-relay-${base}-$(date +%Y%m%d%H%M%S)-$RANDOM.tgz\"\n"
-                "  tar -C \"$parent\" -czf \"$archive\" \"$base\"\n"
-                "  printf 'TYPE=dir\\nUPLOAD=%s\\nARCHIVE=%s\\n' \"$archive\" \"$archive\"\n"
-                "elif [ -f \"$SRC\" ]; then\n"
-                "  printf 'TYPE=file\\nUPLOAD=%s\\n' \"$SRC\"\n"
-                "else\n"
-                "  echo \"源路径不存在或不可读: $SRC\" >&2\n"
-                "  exit 12\n"
-                "fi\n"
+            path_kind, prep_stdout, prep_stderr, prep_code = await _probe_remote_path_kind(
+                source_row, source_auth, source_path
             )
-            prep_stdout, prep_stderr, prep_code = await run_ssh_command(
+            if prep_code != 0 or path_kind not in ("file", "dir"):
+                return json.dumps(
+                    {
+                        "success": False,
+                        "step": "prepare_source_payload",
+                        "error": "源路径检查失败",
+                        "stdout": prep_stdout,
+                        "stderr": prep_stderr,
+                    },
+                    ensure_ascii=False,
+                )
+            source_is_dir = path_kind == "dir"
+            if not staging_path:
+                staging_path = _relay_default_staging_path(source_path, is_dir=source_is_dir)
+            if ".." in staging_path.split("/"):
+                return json.dumps({"success": False, "error": "staging_path 不允许包含 .."}, ensure_ascii=False)
+
+            fs_base = get_user_fs_root(user)
+            try:
+                local_abs = resolve_fs_path(staging_path, fs_base).resolve()
+                local_abs.relative_to(fs_base.resolve())
+            except ValueError as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+            local_abs.parent.mkdir(parents=True, exist_ok=True)
+
+            pull_result = await run_sftp_pull_async(
                 host=source_row["host"],
                 port=int(source_row.get("port") or 22),
                 username=source_auth.get("username") or "",
@@ -10086,222 +10130,109 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 password=source_auth.get("password"),
                 key_path=source_auth.get("key_path"),
                 private_key_pem=source_auth.get("private_key_pem"),
-                command=inspect_script,
-                timeout=120,
+                remote_path=source_path,
+                local_path=str(local_abs),
+                recursive=source_is_dir,
+                max_bytes=pull_cap,
+                max_tree_bytes=tree_cap,
+                timeout=timeout_seconds,
+                stream_callback=stream_callback,
+                cancel_event=transfer_cancel_event,
             )
-            if int(prep_code or 1) != 0:
-                return json.dumps(
-                    {
-                        "success": False,
-                        "step": "prepare_source_payload",
-                        "error": "源路径检查/打包失败",
-                        "stdout": prep_stdout,
-                        "stderr": prep_stderr,
+            if not pull_result.success:
+                out = {
+                    "success": False,
+                    "step": "pull_to_staging",
+                    "error": pull_result.error or "从源主机拉到 web/fs 失败",
+                    "staging_path": staging_path,
+                }
+                if pull_result.interrupted:
+                    out["interrupted"] = True
+                if pull_result.bytes_transferred:
+                    out["bytes_transferred"] = pull_result.bytes_transferred
+                return json.dumps(out, ensure_ascii=False)
+
+            source_name = Path(source_path.replace("\\", "/")).name
+            if source_is_dir and auto_unpack_on_target:
+                push_remote = f"{target_path.rstrip('/')}/{source_name}"
+            else:
+                push_remote = target_path
+            push_recursive = source_is_dir or local_abs.is_dir()
+
+            push_result = await run_sftp_push_async(
+                host=target_row["host"],
+                port=int(target_row.get("port") or 22),
+                username=target_auth.get("username") or "",
+                auth_type=target_auth.get("auth_type") or "password",
+                password=target_auth.get("password"),
+                key_path=target_auth.get("key_path"),
+                private_key_pem=target_auth.get("private_key_pem"),
+                local_path=str(local_abs),
+                remote_path=push_remote,
+                recursive=push_recursive,
+                timeout=timeout_seconds,
+                stream_callback=stream_callback,
+                cancel_event=transfer_cancel_event,
+            )
+            if not push_result.success:
+                out = {
+                    "success": False,
+                    "step": "push_from_staging",
+                    "error": push_result.error or "从 web/fs 推到目标主机失败",
+                    "staging_path": staging_path,
+                    "push_remote_path": push_remote,
+                }
+                if push_result.interrupted:
+                    out["interrupted"] = True
+                if push_result.bytes_transferred:
+                    out["bytes_transferred"] = push_result.bytes_transferred
+                return json.dumps(out, ensure_ascii=False)
+
+            cleanup_result = {"staging_deleted": False}
+            if cleanup_staging:
+                try:
+                    await fs_delete_async(staging_path, fs_base)
+                    cleanup_result["staging_deleted"] = True
+                except Exception:
+                    cleanup_result["staging_deleted"] = False
+
+            return json.dumps(
+                {
+                    "success": True,
+                    "method": "relay_via_edgeops_fs_sftp",
+                    "source_host_id": source_host_id,
+                    "target_host_id": target_host_id,
+                    "source_path": source_path,
+                    "source_is_dir": source_is_dir,
+                    "auto_unpack_on_target": bool(source_is_dir and auto_unpack_on_target),
+                    "target_path": target_path,
+                    "push_remote_path": push_remote,
+                    "staging_path": staging_path,
+                    "keep_staging_for_multi_target": keep_staging_for_multi_target,
+                    "pull": {
+                        "bytes_transferred": pull_result.bytes_transferred,
+                        "files_transferred": pull_result.files_transferred,
+                        "duration_sec": pull_result.duration_sec,
                     },
-                    ensure_ascii=False,
-                )
-            for ln in (prep_stdout or "").splitlines():
-                line = ln.strip()
-                if line.startswith("TYPE="):
-                    source_is_dir = (line[5:] == "dir")
-                elif line.startswith("UPLOAD="):
-                    upload_source_path = line[7:].strip() or upload_source_path
-                elif line.startswith("ARCHIVE="):
-                    source_archive_cleanup_path = line[8:].strip()
-            if not staging_path:
-                file_name = Path(upload_source_path).name or "payload.bin"
-                ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-                staging_path = f"exchange/{ts}-{secrets.token_hex(4)}-{file_name}"
-            if ".." in staging_path.split("/"):
-                return json.dumps({"success": False, "error": "staging_path 不允许包含 .."}, ensure_ascii=False)
-
-            upload_token_id = None
-            download_token_id = None
-            upload_ok = False
-            try:
-                upload_token_id, upload_token_plain, upload_token_prefix, upload_token_expires_at = await _create_temp_api_token(
-                    db, user, purpose="host-relay", ttl_seconds=ttl_seconds
-                )
-                upload_url = f"{effective_base}/api/fs/upload"
-                download_url = f"{effective_base}/api/fs/download?path={quote(staging_path, safe='')}"
-                upload_auth_header = "Authorization: Bearer " + upload_token_plain
-
-                upload_script = (
-                    "set -euo pipefail\n"
-                    f"curl -fsS -H {shlex.quote(upload_auth_header)} "
-                    f"-F {shlex.quote('path=' + staging_path)} "
-                    f"-F {shlex.quote('file=@' + upload_source_path)} "
-                    f"{shlex.quote(upload_url)}\n"
-                )
-                up_stdout, up_stderr, up_code = await run_ssh_command(
-                    host=source_row["host"],
-                    port=int(source_row.get("port") or 22),
-                    username=source_auth.get("username") or "",
-                    auth_type=source_auth.get("auth_type") or "password",
-                    password=source_auth.get("password"),
-                    key_path=source_auth.get("key_path"),
-                    private_key_pem=source_auth.get("private_key_pem"),
-                    command=upload_script,
-                    timeout=180,
-                )
-                if int(up_code or 1) != 0:
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "step": "upload_from_source",
-                            "error": "源主机上传失败",
-                            "stdout": up_stdout,
-                            "stderr": up_stderr,
-                            "token_id": upload_token_id,
-                            "token_prefix": upload_token_prefix,
-                        },
-                        ensure_ascii=False,
-                    )
-                upload_ok = True
-
-                if upload_token_id is not None:
-                    await db.execute("DELETE FROM api_tokens WHERE id = ? AND user_id = ?", (int(upload_token_id), user["id"]))
-                    await db.commit()
-
-                download_token_id, download_token_plain, download_token_prefix, download_token_expires_at = await _create_temp_api_token(
-                    db, user, purpose="host-relay", ttl_seconds=ttl_seconds
-                )
-                download_auth_header = "Authorization: Bearer " + download_token_plain
-                target_parent = Path(target_path).parent.as_posix()
-                mk_parent = ""
-                if target_parent and target_parent not in (".", "/"):
-                    mk_parent = f"mkdir -p {shlex.quote(target_parent)}\n"
-                if source_is_dir and auto_unpack_on_target:
-                    tmp_archive_path = f"/tmp/edgeops-relay-fetch-{secrets.token_hex(6)}.tgz"
-                    download_script = (
-                        "set -euo pipefail\n"
-                        + f"mkdir -p {shlex.quote(target_path)}\n"
-                        + f"curl -fsS -H {shlex.quote(download_auth_header)} {shlex.quote(download_url)} -o {shlex.quote(tmp_archive_path)}\n"
-                        + f"tar -xzf {shlex.quote(tmp_archive_path)} -C {shlex.quote(target_path)}\n"
-                        + f"rm -f {shlex.quote(tmp_archive_path)}\n"
-                    )
-                else:
-                    download_script = (
-                        "set -euo pipefail\n"
-                        + mk_parent
-                        + f"curl -fsS -H {shlex.quote(download_auth_header)} {shlex.quote(download_url)} -o {shlex.quote(target_path)}\n"
-                    )
-                down_stdout, down_stderr, down_code = await run_ssh_command(
-                    host=target_row["host"],
-                    port=int(target_row.get("port") or 22),
-                    username=target_auth.get("username") or "",
-                    auth_type=target_auth.get("auth_type") or "password",
-                    password=target_auth.get("password"),
-                    key_path=target_auth.get("key_path"),
-                    private_key_pem=target_auth.get("private_key_pem"),
-                    command=download_script,
-                    timeout=180,
-                )
-                if int(down_code or 1) != 0:
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "step": "download_to_target",
-                            "error": "目标主机下载失败",
-                            "stdout": down_stdout,
-                            "stderr": down_stderr,
-                            "token_id": download_token_id,
-                            "token_prefix": download_token_prefix,
-                            "staging_path": staging_path,
-                        },
-                        ensure_ascii=False,
-                    )
-
-                cleanup_result = {"staging_deleted": False, "token_revoked": False}
-                if cleanup_staging:
-                    try:
-                        await fs_delete_async(staging_path, get_user_fs_root(user))
-                        cleanup_result["staging_deleted"] = True
-                    except Exception:
-                        cleanup_result["staging_deleted"] = False
-                if revoke_token_on_finish and download_token_id is not None:
-                    try:
-                        await db.execute("DELETE FROM api_tokens WHERE id = ? AND user_id = ?", (int(download_token_id), user["id"]))
-                        await db.commit()
-                        cleanup_result["token_revoked"] = True
-                    except Exception:
-                        cleanup_result["token_revoked"] = False
-
-                return json.dumps(
-                    {
-                        "success": True,
-                        "method": "relay_via_edgeops_fs",
-                        "source_host_id": source_host_id,
-                        "target_host_id": target_host_id,
-                        "source_path": source_path,
-                        "upload_source_path": upload_source_path,
-                        "source_is_dir": source_is_dir,
-                        "auto_unpack_on_target": bool(source_is_dir and auto_unpack_on_target),
-                        "target_path": target_path,
-                        "staging_path": staging_path,
-                        "keep_staging_for_multi_target": keep_staging_for_multi_target,
-                        "edgeops_base_url": effective_base,
-                        "upload_token_id": upload_token_id,
-                        "upload_token_expires_at": upload_token_expires_at,
-                        "download_token_id": download_token_id,
-                        "download_token_expires_at": download_token_expires_at,
-                        "token_strategy": "两段一次性临时 token（A 上传一枚，B 下载一枚）",
-                        "cleanup": cleanup_result,
+                    "push": {
+                        "bytes_transferred": push_result.bytes_transferred,
+                        "files_transferred": push_result.files_transferred,
+                        "duration_sec": push_result.duration_sec,
                     },
-                    ensure_ascii=False,
-                )
-            finally:
-                if upload_token_id is not None and revoke_token_on_finish and not upload_ok:
-                    try:
-                        await db.execute("DELETE FROM api_tokens WHERE id = ? AND user_id = ?", (int(upload_token_id), user["id"]))
-                        await db.commit()
-                    except Exception:
-                        pass
-                if download_token_id is not None and revoke_token_on_finish:
-                    try:
-                        await db.execute("DELETE FROM api_tokens WHERE id = ? AND user_id = ?", (int(download_token_id), user["id"]))
-                        await db.commit()
-                    except Exception:
-                        pass
-                if source_archive_cleanup_path:
-                    try:
-                        cleanup_archive_cmd = f"rm -f {shlex.quote(source_archive_cleanup_path)}"
-                        await run_ssh_command(
-                            host=source_row["host"],
-                            port=int(source_row.get("port") or 22),
-                            username=source_auth.get("username") or "",
-                            auth_type=source_auth.get("auth_type") or "password",
-                            password=source_auth.get("password"),
-                            key_path=source_auth.get("key_path"),
-                            private_key_pem=source_auth.get("private_key_pem"),
-                            command=cleanup_archive_cmd,
-                            timeout=30,
-                        )
-                    except Exception:
-                        pass
+                    "cleanup": cleanup_result,
+                },
+                ensure_ascii=False,
+            )
 
         if name == "scp_push":
             host_id = arguments.get("host_id")
             remote_path = (arguments.get("remote_path") or "").strip()
             content = arguments.get("content")
             local_path = (arguments.get("local_path") or "").strip()
+            recursive = bool(arguments.get("recursive"))
+            timeout = _sftp_timeout_from_args(arguments)
             if not host_id or not remote_path:
                 return json.dumps({"success": False, "error": "需要 host_id 和 remote_path"}, ensure_ascii=False)
-            if local_path:
-                try:
-                    base = get_user_fs_root(user)
-                    path_obj = resolve_fs_path(local_path, base)
-                    if not path_obj.is_file():
-                        return json.dumps({"success": False, "error": f"本地路径不是文件或不存在: {local_path}"}, ensure_ascii=False)
-                    content_b = await asyncio.to_thread(path_obj.read_bytes)
-                except ValueError as e:
-                    return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
-                except OSError as e:
-                    return json.dumps({"success": False, "error": f"读取文件失败: {e}"}, ensure_ascii=False)
-            else:
-                if content is None:
-                    content = ""
-                content_b = (content if isinstance(content, str) else str(content)).encode("utf-8", errors="replace")
             host_row = await _get_host_row(host_id)
             if not host_row:
                 return json.dumps({"success": False, "error": f"主机 ID={host_id} 不存在"}, ensure_ascii=False)
@@ -10316,8 +10247,59 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 auth=auth,
                 operation="scp_push",
                 stage="prepare",
-                extra={"remote_path": remote_path},
+                extra={"remote_path": remote_path, "local_path": local_path or None, "recursive": recursive},
             )
+            if local_path:
+                try:
+                    base = get_user_fs_root(user)
+                    path_obj = resolve_fs_path(local_path, base).resolve()
+                    path_obj.relative_to(base.resolve())
+                except ValueError as e:
+                    return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+                if not path_obj.exists():
+                    return json.dumps({"success": False, "error": f"本地路径不存在: {local_path}"}, ensure_ascii=False)
+                if path_obj.is_dir() and not recursive:
+                    return json.dumps({"success": False, "error": "本地路径为目录，请设置 recursive=true"}, ensure_ascii=False)
+                if not path_obj.is_file() and not path_obj.is_dir():
+                    return json.dumps({"success": False, "error": f"本地路径无效: {local_path}"}, ensure_ascii=False)
+                result = await run_sftp_push_async(
+                    host=host_row["host"],
+                    port=int(host_row.get("port") or 22),
+                    username=auth.get("username") or "",
+                    auth_type=auth.get("auth_type") or "password",
+                    password=auth.get("password"),
+                    key_path=auth.get("key_path"),
+                    private_key_pem=auth.get("private_key_pem"),
+                    local_path=str(path_obj),
+                    remote_path=remote_path,
+                    recursive=recursive,
+                    timeout=timeout,
+                    stream_callback=stream_callback,
+                    cancel_event=transfer_cancel_event,
+                )
+                if not result.success:
+                    out = {"success": False, "error": result.error or "上传失败"}
+                    if result.interrupted:
+                        out["interrupted"] = True
+                    if result.bytes_transferred:
+                        out["bytes_transferred"] = result.bytes_transferred
+                    return json.dumps(out, ensure_ascii=False)
+                return json.dumps(
+                    {
+                        "success": True,
+                        "message": f"已上传至 {remote_path}",
+                        "remote_path": remote_path,
+                        "local_path": local_path,
+                        "bytes_transferred": result.bytes_transferred,
+                        "files_transferred": result.files_transferred,
+                        "duration_sec": result.duration_sec,
+                        "recursive": recursive,
+                    },
+                    ensure_ascii=False,
+                )
+            if content is None:
+                content = ""
+            content_b = (content if isinstance(content, str) else str(content)).encode("utf-8", errors="replace")
             err = await sftp_put_content(
                 host=host_row["host"],
                 port=int(host_row.get("port") or 22),
@@ -10328,50 +10310,42 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 private_key_pem=auth.get("private_key_pem"),
                 remote_path=remote_path,
                 content=content_b,
-                timeout=30,
+                timeout=min(timeout, 120),
             )
             if err:
                 return json.dumps({"success": False, "error": err}, ensure_ascii=False)
-            return json.dumps({"success": True, "message": f"已写入 {remote_path}"}, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "success": True,
+                    "message": f"已写入 {remote_path}",
+                    "bytes_transferred": len(content_b),
+                    "files_transferred": 1,
+                },
+                ensure_ascii=False,
+            )
 
         if name == "scp_pull":
             host_id = arguments.get("host_id")
             remote_path = (arguments.get("remote_path") or "").strip()
             local_path = (arguments.get("local_path") or "").strip()
+            recursive = bool(arguments.get("recursive"))
             if not host_id or not remote_path or not local_path:
                 return json.dumps(
                     {"success": False, "error": "需要 host_id、remote_path、local_path（web/fs 相对路径）"},
                     ensure_ascii=False,
                 )
             raw_local_requested = local_path
-            date_u = datetime.now(timezone.utc).strftime("%Y/%m/%d")
-            norm = local_path.replace("\\", "/").strip().lstrip("/")
-            if not norm.lower().startswith("chats/"):
-                norm = f"chats/{date_u}/{norm}"
-            p_part = Path(norm)
-            stem = p_part.stem
-            suf = p_part.suffix
-            if not suf:
-                suf = Path(remote_path.replace("\\", "/")).suffix or ".txt"
-            if not re.match(
-                r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-                stem,
-                re.I,
-            ):
-                slug = re.sub(r"[^A-Za-z0-9._-]+", "_", stem or "").strip("._-")[:48] or "pull"
-                stem = f"{uuid4()}-{slug}"
-            local_path = str(p_part.parent / f"{stem}{suf}").replace("\\", "/")
             cap = int(getattr(config, "SCP_PULL_MAX_BYTES", 200 * 1024 * 1024))
+            tree_cap = int(getattr(config, "SCP_PULL_MAX_TREE_BYTES", 2 * 1024 * 1024 * 1024))
             try:
                 max_bytes = int(arguments.get("max_bytes") or cap)
             except (TypeError, ValueError):
                 max_bytes = cap
             max_bytes = max(1024, min(max_bytes, cap))
-            try:
-                timeout = int(arguments.get("timeout") or 300)
-            except (TypeError, ValueError):
-                timeout = 300
-            timeout = max(30, min(3600, timeout))
+            timeout = _sftp_timeout_from_args(arguments)
+            local_path = _normalize_sftp_pull_local_path(
+                raw_local_requested, remote_path, as_directory=recursive
+            )
             host_row = await _get_host_row(host_id)
             if not host_row:
                 return json.dumps({"success": False, "error": f"主机 ID={host_id} 不存在"}, ensure_ascii=False)
@@ -10390,7 +10364,8 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 path_obj.relative_to(base.resolve())
             except ValueError:
                 return json.dumps({"success": False, "error": "local_path 越界"}, ensure_ascii=False)
-            path_obj.parent.mkdir(parents=True, exist_ok=True)
+            if not recursive:
+                path_obj.parent.mkdir(parents=True, exist_ok=True)
             await _log_credential_usage_audit(
                 actor_user_id=user["id"],
                 host_row=host_row,
@@ -10401,9 +10376,10 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     "remote_path": remote_path,
                     "local_path": local_path,
                     "requested_local_path": raw_local_requested,
+                    "recursive": recursive,
                 },
             )
-            err = await sftp_get_to_local_path(
+            result = await run_sftp_pull_async(
                 host=host_row["host"],
                 port=int(host_row.get("port") or 22),
                 username=auth.get("username") or "",
@@ -10413,193 +10389,31 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 private_key_pem=auth.get("private_key_pem"),
                 remote_path=remote_path,
                 local_path=str(path_obj),
+                recursive=recursive,
                 max_bytes=max_bytes,
+                max_tree_bytes=tree_cap,
                 timeout=timeout,
+                stream_callback=stream_callback,
+                cancel_event=transfer_cancel_event,
             )
-            if err:
-                return json.dumps({"success": False, "error": err}, ensure_ascii=False)
-            try:
-                sz = path_obj.stat().st_size
-            except OSError:
-                sz = 0
+            if not result.success:
+                out = {"success": False, "error": result.error or "下载失败"}
+                if result.interrupted:
+                    out["interrupted"] = True
+                if result.bytes_transferred:
+                    out["bytes_transferred"] = result.bytes_transferred
+                return json.dumps(out, ensure_ascii=False)
             return json.dumps(
                 {
                     "success": True,
                     "message": f"已保存到 web/fs:{local_path}",
                     "local_path": local_path,
                     "requested_local_path": raw_local_requested,
-                    "bytes_written": sz,
+                    "bytes_transferred": result.bytes_transferred,
+                    "files_transferred": result.files_transferred,
+                    "duration_sec": result.duration_sec,
                     "remote_path": remote_path,
-                },
-                ensure_ascii=False,
-            )
-
-        if name == "scp_transfer":
-            host_id = arguments.get("host_id")
-            direction = (arguments.get("direction") or "").strip().lower()
-            remote_path = (arguments.get("remote_path") or "").strip()
-            local_path = (arguments.get("local_path") or "").strip()
-            if not host_id or direction not in ("push", "pull") or not remote_path or not local_path:
-                return json.dumps(
-                    {
-                        "success": False,
-                        "error": "需要 host_id、direction(push|pull)、local_path、remote_path",
-                    },
-                    ensure_ascii=False,
-                )
-            if not scp_command_available():
-                return json.dumps(
-                    {
-                        "success": False,
-                        "error": "当前运行环境未安装 scp；Docker 请重建镜像（含 openssh-client），本机请安装 OpenSSH 客户端。",
-                    },
-                    ensure_ascii=False,
-                )
-            compress = True if arguments.get("compress") is None else bool(arguments.get("compress"))
-            recursive = bool(arguments.get("recursive"))
-            legacy_rsa = bool(arguments.get("legacy_rsa"))
-            try:
-                timeout = int(arguments.get("timeout") or 600)
-            except (TypeError, ValueError):
-                timeout = 600
-            timeout = max(60, min(7200, timeout))
-            raw_local_requested = local_path
-            if direction == "pull":
-                date_u = datetime.now(timezone.utc).strftime("%Y/%m/%d")
-                norm = local_path.replace("\\", "/").strip().lstrip("/")
-                if not norm.lower().startswith("chats/"):
-                    norm = f"chats/{date_u}/{norm}"
-                p_part = Path(norm)
-                stem = p_part.stem
-                suf = p_part.suffix
-                if not suf:
-                    suf = Path(remote_path.replace("\\", "/")).suffix or ".bin"
-                if not re.match(
-                    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-                    stem,
-                    re.I,
-                ):
-                    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", stem or "").strip("._-")[:48] or "pull"
-                    stem = f"{uuid4()}-{slug}"
-                local_path = str(p_part.parent / f"{stem}{suf}").replace("\\", "/")
-            host_row = await _get_host_row(host_id)
-            if not host_row:
-                return json.dumps({"success": False, "error": f"主机 ID={host_id} 不存在"}, ensure_ascii=False)
-            if not await _can_access_host_with_shares(host_row, user):
-                return json.dumps({"success": False, "error": "无权操作该主机"}, ensure_ascii=False)
-            auth = await _resolve_host_auth(await get_db(), host_row)
-            if not auth:
-                return json.dumps({"success": False, "error": "主机认证信息无效"}, ensure_ascii=False)
-            try:
-                base = get_user_fs_root(user)
-                path_obj = resolve_fs_path(local_path, base)
-            except ValueError as e:
-                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
-            path_obj = path_obj.resolve()
-            try:
-                path_obj.relative_to(base.resolve())
-            except ValueError:
-                return json.dumps({"success": False, "error": "local_path 越界"}, ensure_ascii=False)
-            if direction == "push":
-                if not path_obj.exists():
-                    return json.dumps({"success": False, "error": f"本地路径不存在: {local_path}"}, ensure_ascii=False)
-                if path_obj.is_dir() and not recursive:
-                    return json.dumps(
-                        {"success": False, "error": "本地路径为目录，请设置 recursive=true"},
-                        ensure_ascii=False,
-                    )
-            else:
-                cap = int(getattr(config, "SCP_PULL_MAX_BYTES", 200 * 1024 * 1024))
-                try:
-                    max_bytes = int(arguments.get("max_bytes") or cap)
-                except (TypeError, ValueError):
-                    max_bytes = cap
-                max_bytes = max(1024, min(max_bytes, cap))
-                kind, remote_sz = await probe_remote_path_kind_and_size(
-                    remote_host=host_row["host"],
-                    port=int(host_row.get("port") or 22),
-                    remote_user=auth.get("username") or "",
-                    auth_type=auth.get("auth_type") or "password",
-                    password=auth.get("password"),
-                    key_path=auth.get("key_path"),
-                    private_key_pem=auth.get("private_key_pem"),
-                    remote_path=remote_path,
-                    timeout=min(60, timeout),
-                )
-                if kind == "missing":
-                    return json.dumps({"success": False, "error": "远程路径不存在"}, ensure_ascii=False)
-                if kind == "error":
-                    return json.dumps({"success": False, "error": "无法探测远程路径"}, ensure_ascii=False)
-                if kind == "dir" and not recursive:
-                    return json.dumps(
-                        {"success": False, "error": "远程路径为目录，请设置 recursive=true"},
-                        ensure_ascii=False,
-                    )
-                if kind == "file" and remote_sz is not None and remote_sz > max_bytes:
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "error": f"远程文件过大（{remote_sz} 字节 > 上限 {max_bytes}）",
-                        },
-                        ensure_ascii=False,
-                    )
-                path_obj.parent.mkdir(parents=True, exist_ok=True)
-            await _log_credential_usage_audit(
-                actor_user_id=user["id"],
-                host_row=host_row,
-                auth=auth,
-                operation="scp_transfer",
-                stage="prepare",
-                extra={
-                    "direction": direction,
-                    "remote_path": remote_path,
-                    "local_path": local_path,
-                    "requested_local_path": raw_local_requested,
                     "recursive": recursive,
-                },
-            )
-            stdout, stderr, code = await run_scp_transfer(
-                direction=direction,
-                local_path=str(path_obj),
-                remote_user=auth.get("username") or "",
-                remote_host=host_row["host"],
-                remote_path=remote_path,
-                port=int(host_row.get("port") or 22),
-                auth_type=auth.get("auth_type") or "password",
-                password=auth.get("password"),
-                key_path=auth.get("key_path"),
-                private_key_pem=auth.get("private_key_pem"),
-                compress=compress,
-                recursive=recursive,
-                legacy_rsa=legacy_rsa,
-                timeout=timeout,
-            )
-            if code != 0:
-                err_msg = (stderr or stdout or f"scp 退出码 {code}").strip()
-                return json.dumps({"success": False, "error": err_msg, "exit_code": code}, ensure_ascii=False)
-            bytes_transferred = 0
-            try:
-                if path_obj.is_file():
-                    bytes_transferred = path_obj.stat().st_size
-                elif path_obj.is_dir():
-                    bytes_transferred = sum(
-                        f.stat().st_size for f in path_obj.rglob("*") if f.is_file()
-                    )
-            except OSError:
-                pass
-            return json.dumps(
-                {
-                    "success": True,
-                    "message": (
-                        f"scp {direction} 完成：{'已上传至 ' + remote_path if direction == 'push' else '已保存到 web/fs:' + local_path}"
-                    ),
-                    "direction": direction,
-                    "local_path": local_path,
-                    "requested_local_path": raw_local_requested,
-                    "remote_path": remote_path,
-                    "bytes_transferred": bytes_transferred,
-                    "recursive": recursive,
-                    "legacy_rsa": legacy_rsa,
                 },
                 ensure_ascii=False,
             )
@@ -12567,7 +12381,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     "filename_format": "{UUID}-{kebab-or-safe-ascii-desc}.{ext}",
                     "notes": (
                         "fs_write_file / fs_write_binary 会自动把 path 归位到上述前缀下并加 UUID 文件名。"
-                        "scp_pull / scp_transfer(pull) 的 local_path 若未以 chats/ 开头也会自动补上当日 chats 前缀。"
+                        "scp_pull 的 local_path 若未以 chats/ 开头也会自动补上当日 chats 前缀。"
                         "与聊天附件、chat_tool_spill 使用同一 UTC 日期分层。"
                     ),
                 },

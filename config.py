@@ -9,7 +9,7 @@ PRODUCT_NAME_ZH = "毛竹"
 PRODUCT_NAME_EN = "Moso"
 PRODUCT_DISPLAY = f"{PRODUCT_NAME_ZH}（{PRODUCT_NAME_EN}）"  # AI 提示词中的产品指称
 
-VERSION = os.getenv("EDGEOPS_VERSION", "1.3.8-sp6")
+VERSION = os.getenv("EDGEOPS_VERSION", "1.3.9")
 
 # 数据库 / Database
 DATABASE_PATH = os.getenv("EDGEOPS_DB", str(BASE_DIR / "edgeops.db"))
@@ -177,6 +177,10 @@ CHAT_HISTORY_TOOL_SPILL_SHRINK_THRESHOLD = int(os.getenv("EDGEOPS_CHAT_HISTORY_T
 
 # AI scp_pull：从远端 SFTP 拉到用户 web/fs 的单文件上限（字节）。
 SCP_PULL_MAX_BYTES = int(os.getenv("EDGEOPS_SCP_PULL_MAX_BYTES", str(200 * 1024 * 1024)))
+# AI scp_pull 目录：整树累计字节上限（字节）。
+SCP_PULL_MAX_TREE_BYTES = int(os.getenv("EDGEOPS_SCP_PULL_MAX_TREE_BYTES", str(2 * 1024 * 1024 * 1024)))
+# AI SFTP 目录传输：最多文件数（防止恶意/误操作拉爆磁盘）。
+SCP_TRANSFER_MAX_FILES = int(os.getenv("EDGEOPS_SCP_TRANSFER_MAX_FILES", "5000"))
 
 # AI 成果物（artifacts）：AI 生成的报告 / 数据包 / HTML 可视化 等，落盘在 web/fs/<username>/<ARTIFACT_SUBDIR>/YYYY/MM/DD/<id>/
 # Artifacts (reports, bundles, HTML viz): web/fs/<username>/<ARTIFACT_SUBDIR>/YYYY/MM/DD/<id>/

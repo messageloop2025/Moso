@@ -5559,9 +5559,19 @@ function edgeopsCotOnToolExecuting(toolsEl, ev) {
     }
     var labelExec = typeof t === 'function' ? t('hostAi.toolExecuting') : 'Running';
     var headLine = typeof t === 'function' ? t('hostAi.cotRoundTool', { round: idx, tool: ev.tool || '' }) : ((idx) + ' ' + (ev.tool || ''));
+    var isTransferTool = ev.tool === 'scp_push' || ev.tool === 'scp_pull'
+        || ev.tool === 'relay_file_between_hosts' || ev.tool === 'transfer_file_between_hosts';
+    var transferHeadInit = '';
+    if (isTransferTool) {
+        var dirInit = ev.tool === 'scp_push'
+            ? (typeof t === 'function' ? t('hostAi.transferPushShort') : '↑')
+            : (typeof t === 'function' ? t('hostAi.transferPullShort') : '↓');
+        transferHeadInit = '<span class="ai-cot-transfer-head-progress">' + esc(dirInit + ' …') + '</span>';
+    }
     var head = document.createElement('div');
     head.className = 'ai-cot-step-head';
     head.innerHTML = '<span class="ai-cot-step-title">' + esc(headLine) + '</span>'
+        + transferHeadInit
         + '<span class="ai-cot-tool-badge ai-cot-badge-running">' + esc(labelExec) + '</span>';
     step.appendChild(head);
     var extras = document.createElement('div');
@@ -5605,6 +5615,8 @@ function edgeopsCotOnToolFinished(toolsEl, ev) {
         badge.classList.add(ok ? 'ai-cot-badge-done' : 'ai-cot-badge-fail');
         badge.textContent = typeof t === 'function' ? (ok ? t('hostAi.toolDone') : t('hostAi.toolFailed')) : (ok ? 'ok' : 'fail');
     }
+    var headProgress = target.querySelector('.ai-cot-transfer-head-progress');
+    if (headProgress) headProgress.remove();
     var previewRaw = ev.result_preview != null ? String(ev.result_preview) : '';
     var previewTrim = previewRaw.trim();
     var backfilledStream = false;
@@ -5909,6 +5921,105 @@ function edgeopsFinalizeAssistantStreamReply(opts) {
     return endPhase;
 }
 
+function edgeopsFormatTransferBytes(n) {
+    n = Number(n) || 0;
+    if (n >= 1073741824) return (n / 1073741824).toFixed(2) + ' GB';
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+    if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
+    return n + ' B';
+}
+
+function edgeopsFormatTransferHeadCompact(s) {
+    var transferred = Number(s.transferred) || 0;
+    var total = Number(s.total) || 0;
+    var pct = Math.max(0, Math.min(100, Number(s.percent) || 0));
+    var dirShort = s.direction === 'push'
+        ? (typeof t === 'function' ? t('hostAi.transferPushShort') : '↑')
+        : (typeof t === 'function' ? t('hostAi.transferPullShort') : '↓');
+    var doneStr = edgeopsFormatTransferBytes(transferred);
+    var totalStr = total > 0 ? edgeopsFormatTransferBytes(total) : '…';
+    var pctStr = total > 0 ? (' (' + pct.toFixed(0) + '%)') : '';
+    return dirShort + ' ' + doneStr + ' / ' + totalStr + pctStr;
+}
+
+function edgeopsUpdateTransferHeadProgress(stepEl, s) {
+    if (!stepEl) return;
+    if (!stepEl.classList.contains('ai-tool-executing')) return;
+    var head = stepEl.querySelector('.ai-cot-step-head');
+    if (!head) return;
+    var hp = head.querySelector('.ai-cot-transfer-head-progress');
+    if (!hp) {
+        hp = document.createElement('span');
+        hp.className = 'ai-cot-transfer-head-progress';
+        var badge = head.querySelector('.ai-cot-tool-badge');
+        if (badge) head.insertBefore(hp, badge);
+        else head.appendChild(hp);
+    }
+    hp.textContent = edgeopsFormatTransferHeadCompact(s);
+    var speed = Number(s.speed_bps) || 0;
+    var etaTxt = s.eta_sec != null && s.eta_sec >= 0 ? (Math.round(s.eta_sec) + 's') : '—';
+    hp.title = typeof t === 'function'
+        ? t('hostAi.transferProgress', {
+            pct: (Number(s.percent) || 0).toFixed(1),
+            done: edgeopsFormatTransferBytes(Number(s.transferred) || 0),
+            total: (Number(s.total) || 0) > 0 ? edgeopsFormatTransferBytes(Number(s.total)) : '—',
+            speed: edgeopsFormatTransferBytes(speed) + '/s',
+            elapsed: s.elapsed_sec != null ? s.elapsed_sec : 0,
+            eta: etaTxt
+        })
+        : hp.textContent;
+    hp.classList.toggle('ai-transfer-done', s.phase === 'done');
+}
+
+function edgeopsUpdateTransferProgress(attachParent, s) {
+    var stepEl = attachParent;
+    if (attachParent.classList && !attachParent.classList.contains('ai-cot-step-tool')) {
+        stepEl = attachParent.closest ? attachParent.closest('.ai-cot-step-tool') : null;
+    }
+    if (stepEl) edgeopsUpdateTransferHeadProgress(stepEl, s);
+
+    var host = attachParent;
+    if (host.classList && !host.classList.contains('ai-tool-stream-host')) {
+        host = (stepEl && stepEl.querySelector('.ai-tool-stream-host')) || attachParent.querySelector('.ai-tool-stream-host') || attachParent;
+    }
+    var box = host.querySelector('.ai-tool-transfer-progress');
+    if (!box) {
+        box = document.createElement('div');
+        box.className = 'ai-tool-transfer-progress';
+        box.innerHTML = '<div class="ai-transfer-bar-wrap"><div class="ai-transfer-bar"></div></div>'
+            + '<div class="ai-transfer-meta"></div>'
+            + '<div class="ai-transfer-file"></div>';
+        host.insertBefore(box, host.firstChild);
+    }
+    var pct = Math.max(0, Math.min(100, Number(s.percent) || 0));
+    var bar = box.querySelector('.ai-transfer-bar');
+    if (bar) bar.style.width = (s.total > 0 ? pct : (s.phase === 'done' ? 100 : 8)) + '%';
+    var meta = box.querySelector('.ai-transfer-meta');
+    var transferred = Number(s.transferred) || 0;
+    var total = Number(s.total) || 0;
+    var speed = Number(s.speed_bps) || 0;
+    var etaTxt = s.eta_sec != null && s.eta_sec >= 0 ? (Math.round(s.eta_sec) + 's') : '—';
+    var filesHint = (s.files_total > 1)
+        ? (' · ' + (s.file_index || 0) + '/' + s.files_total)
+        : '';
+    if (meta) {
+        meta.textContent = (typeof t === 'function'
+            ? t('hostAi.transferProgress', {
+                pct: pct.toFixed(1),
+                done: edgeopsFormatTransferBytes(transferred),
+                total: total > 0 ? edgeopsFormatTransferBytes(total) : '—',
+                speed: edgeopsFormatTransferBytes(speed) + '/s',
+                elapsed: s.elapsed_sec != null ? s.elapsed_sec : 0,
+                eta: etaTxt
+            })
+            : (pct.toFixed(1) + '% · ' + edgeopsFormatTransferBytes(transferred) + ' / ' + (total > 0 ? edgeopsFormatTransferBytes(total) : '—')))
+            + filesHint;
+    }
+    var fileEl = box.querySelector('.ai-transfer-file');
+    if (fileEl) fileEl.textContent = s.file ? String(s.file) : '';
+    box.classList.toggle('ai-transfer-done', s.phase === 'done');
+}
+
 // 流式工具进度：追加到当前「执行中」的工具步骤（或旧版 .ai-tool-item）
 function renderToolStreamEvent(toolsEl, ev) {
     if (!toolsEl || !ev || !ev.tool_stream) return;
@@ -5934,6 +6045,13 @@ function renderToolStreamEvent(toolsEl, ev) {
     var s = ev.tool_stream;
     var line = '';
     var tag = s.kind || '';
+    if (tag === 'transfer_progress') {
+        var stepForProgress = (panel && panel._edgeopsCotState && panel._edgeopsCotState.activeToolEl)
+            ? panel._edgeopsCotState.activeToolEl
+            : (attachParent.closest ? attachParent.closest('.ai-cot-step-tool') : attachParent);
+        edgeopsUpdateTransferProgress(stepForProgress || attachParent, s);
+        return;
+    }
     if (tag === 'chain_step_start') {
         line = '\u25b6 [' + (s.index + 1) + '] ' + (s.name || '') + '  kind=' + (s.step_kind || '') + (s.host_label ? '  @' + s.host_label : '');
     } else if (tag === 'chain_step_skip') {

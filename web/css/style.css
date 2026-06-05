@@ -2275,6 +2275,48 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
 .ai-cot-body.ai-cot-collapsed {
     display: none;
 }
+.ai-tool-transfer-progress {
+    margin: 6px 0 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: rgba(59, 130, 246, 0.06);
+    border: 1px solid rgba(59, 130, 246, 0.15);
+}
+.ai-tool-transfer-progress.ai-transfer-done {
+    background: rgba(16, 185, 129, 0.08);
+    border-color: rgba(16, 185, 129, 0.2);
+}
+.ai-transfer-bar-wrap {
+    height: 8px;
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.25);
+    overflow: hidden;
+    margin-bottom: 6px;
+}
+.ai-transfer-bar {
+    height: 100%;
+    width: 0;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #3b82f6, #60a5fa);
+    transition: width 0.35s ease;
+}
+.ai-tool-transfer-progress.ai-transfer-done .ai-transfer-bar {
+    background: linear-gradient(90deg, #10b981, #34d399);
+}
+.ai-transfer-meta {
+    font-size: 11px;
+    color: var(--text-muted, #64748b);
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+.ai-transfer-file {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--text-muted, #94a3b8);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 .ai-cot-steps {
     display: flex;
     flex-direction: column;
@@ -2288,11 +2330,34 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
 }
 .ai-cot-step-head {
     display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 10px;
+    align-items: center;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 8px 10px;
     margin-bottom: 6px;
     font-weight: 600;
+}
+.ai-cot-transfer-head-progress {
+    flex: 0 1 auto;
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 500;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    color: var(--accent, #3b82f6);
+    white-space: nowrap;
+    max-width: min(52vw, 320px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.ai-cot-transfer-head-progress.ai-transfer-done {
+    color: #10b981;
+}
+.ai-cot-step-tool.ai-tool-executing .ai-cot-transfer-head-progress {
+    animation: ai-transfer-pulse 1.6s ease-in-out infinite;
+}
+@keyframes ai-transfer-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.72; }
 }
 .ai-cot-step-reasoning {
     border-left: 3px solid rgba(59, 130, 246, 0.65);
