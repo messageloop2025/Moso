@@ -79,6 +79,7 @@ from api.filesystem import (
     fs_copy_or_move_async,
 )
 from services.ssh_client import run_ssh_command, sftp_get_to_local_path, sftp_put_content
+from services.scp_client import probe_remote_path_kind_and_size, run_scp_transfer, scp_command_available
 from services.keygen import generate_rsa_key, generate_ecc_key
 from services.credential_utils import normalize_private_key_pem
 from services.chat_utils import assistant_content_for_summary
@@ -1836,6 +1837,51 @@ TOOLS = [
                     },
                 },
                 "required": ["host_id", "remote_path", "local_path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scp_transfer",
+            "description": (
+                "通过系统 **scp** 命令在**当前用户 web/fs** 与远程主机之间传输**大文件或目录**（流式落盘，不经内存缓冲）。"
+                "与 scp_push/scp_pull（Paramiko SFTP）互补：小文本/中小文件可用 SFTP 工具；**百 MB 级安装包、镜像层、日志归档、目录树**优先本工具。\n\n"
+                "**push**：从 web/fs 的 local_path 上传到 remote_path；**pull**：从 remote_path 拉到 local_path（未写 chats/ 前缀时自动归位到当日 chats/UTC 并补 UUID 文件名，规则同 scp_pull）。\n\n"
+                "支持密码与密钥认证；legacy_rsa=true 可强制启用 ssh-rsa 算法（OpenWrt/老旧 dropbear）。"
+                "目录传输需 recursive=true。密码认证：Linux/Docker 优先 sshpass；**Windows 本机通过 SSH_ASKPASS** 非交互传密；"
+                "若 scp 仍失败则自动回退 Paramiko SFTP 流式传输（大文件同样不经内存缓冲）。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "host_id": {"type": "integer", "description": "主机 ID"},
+                    "direction": {
+                        "type": "string",
+                        "enum": ["push", "pull"],
+                        "description": "push=上传到远程；pull=从远程下载到 web/fs",
+                    },
+                    "local_path": {
+                        "type": "string",
+                        "description": "web/fs 相对路径；push 时为源文件/目录；pull 时为落盘路径（推荐 data/xxx.tgz 等逻辑名）",
+                    },
+                    "remote_path": {"type": "string", "description": "远程绝对路径，如 /tmp/pkg.tgz 或 /var/log/app/"},
+                    "compress": {"type": "boolean", "description": "是否 scp -C 压缩传输，默认 true"},
+                    "recursive": {"type": "boolean", "description": "是否 scp -r 递归目录，默认 false"},
+                    "legacy_rsa": {
+                        "type": "boolean",
+                        "description": "是否强制 legacy ssh-rsa 算法；默认 false，失败时会按系统配置自动回退重试",
+                    },
+                    "max_bytes": {
+                        "type": "integer",
+                        "description": "pull 时单文件字节上限，默认与系统 SCP_PULL_MAX_BYTES 一致；目录 pull 不受此限",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "传输超时秒数，默认 600，范围 60–7200",
+                    },
+                },
+                "required": ["host_id", "direction", "local_path", "remote_path"],
             },
         },
     },
@@ -10388,6 +10434,176 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 ensure_ascii=False,
             )
 
+        if name == "scp_transfer":
+            host_id = arguments.get("host_id")
+            direction = (arguments.get("direction") or "").strip().lower()
+            remote_path = (arguments.get("remote_path") or "").strip()
+            local_path = (arguments.get("local_path") or "").strip()
+            if not host_id or direction not in ("push", "pull") or not remote_path or not local_path:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": "需要 host_id、direction(push|pull)、local_path、remote_path",
+                    },
+                    ensure_ascii=False,
+                )
+            if not scp_command_available():
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": "当前运行环境未安装 scp；Docker 请重建镜像（含 openssh-client），本机请安装 OpenSSH 客户端。",
+                    },
+                    ensure_ascii=False,
+                )
+            compress = True if arguments.get("compress") is None else bool(arguments.get("compress"))
+            recursive = bool(arguments.get("recursive"))
+            legacy_rsa = bool(arguments.get("legacy_rsa"))
+            try:
+                timeout = int(arguments.get("timeout") or 600)
+            except (TypeError, ValueError):
+                timeout = 600
+            timeout = max(60, min(7200, timeout))
+            raw_local_requested = local_path
+            if direction == "pull":
+                date_u = datetime.now(timezone.utc).strftime("%Y/%m/%d")
+                norm = local_path.replace("\\", "/").strip().lstrip("/")
+                if not norm.lower().startswith("chats/"):
+                    norm = f"chats/{date_u}/{norm}"
+                p_part = Path(norm)
+                stem = p_part.stem
+                suf = p_part.suffix
+                if not suf:
+                    suf = Path(remote_path.replace("\\", "/")).suffix or ".bin"
+                if not re.match(
+                    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                    stem,
+                    re.I,
+                ):
+                    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", stem or "").strip("._-")[:48] or "pull"
+                    stem = f"{uuid4()}-{slug}"
+                local_path = str(p_part.parent / f"{stem}{suf}").replace("\\", "/")
+            host_row = await _get_host_row(host_id)
+            if not host_row:
+                return json.dumps({"success": False, "error": f"主机 ID={host_id} 不存在"}, ensure_ascii=False)
+            if not await _can_access_host_with_shares(host_row, user):
+                return json.dumps({"success": False, "error": "无权操作该主机"}, ensure_ascii=False)
+            auth = await _resolve_host_auth(await get_db(), host_row)
+            if not auth:
+                return json.dumps({"success": False, "error": "主机认证信息无效"}, ensure_ascii=False)
+            try:
+                base = get_user_fs_root(user)
+                path_obj = resolve_fs_path(local_path, base)
+            except ValueError as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+            path_obj = path_obj.resolve()
+            try:
+                path_obj.relative_to(base.resolve())
+            except ValueError:
+                return json.dumps({"success": False, "error": "local_path 越界"}, ensure_ascii=False)
+            if direction == "push":
+                if not path_obj.exists():
+                    return json.dumps({"success": False, "error": f"本地路径不存在: {local_path}"}, ensure_ascii=False)
+                if path_obj.is_dir() and not recursive:
+                    return json.dumps(
+                        {"success": False, "error": "本地路径为目录，请设置 recursive=true"},
+                        ensure_ascii=False,
+                    )
+            else:
+                cap = int(getattr(config, "SCP_PULL_MAX_BYTES", 200 * 1024 * 1024))
+                try:
+                    max_bytes = int(arguments.get("max_bytes") or cap)
+                except (TypeError, ValueError):
+                    max_bytes = cap
+                max_bytes = max(1024, min(max_bytes, cap))
+                kind, remote_sz = await probe_remote_path_kind_and_size(
+                    remote_host=host_row["host"],
+                    port=int(host_row.get("port") or 22),
+                    remote_user=auth.get("username") or "",
+                    auth_type=auth.get("auth_type") or "password",
+                    password=auth.get("password"),
+                    key_path=auth.get("key_path"),
+                    private_key_pem=auth.get("private_key_pem"),
+                    remote_path=remote_path,
+                    timeout=min(60, timeout),
+                )
+                if kind == "missing":
+                    return json.dumps({"success": False, "error": "远程路径不存在"}, ensure_ascii=False)
+                if kind == "error":
+                    return json.dumps({"success": False, "error": "无法探测远程路径"}, ensure_ascii=False)
+                if kind == "dir" and not recursive:
+                    return json.dumps(
+                        {"success": False, "error": "远程路径为目录，请设置 recursive=true"},
+                        ensure_ascii=False,
+                    )
+                if kind == "file" and remote_sz is not None and remote_sz > max_bytes:
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "error": f"远程文件过大（{remote_sz} 字节 > 上限 {max_bytes}）",
+                        },
+                        ensure_ascii=False,
+                    )
+                path_obj.parent.mkdir(parents=True, exist_ok=True)
+            await _log_credential_usage_audit(
+                actor_user_id=user["id"],
+                host_row=host_row,
+                auth=auth,
+                operation="scp_transfer",
+                stage="prepare",
+                extra={
+                    "direction": direction,
+                    "remote_path": remote_path,
+                    "local_path": local_path,
+                    "requested_local_path": raw_local_requested,
+                    "recursive": recursive,
+                },
+            )
+            stdout, stderr, code = await run_scp_transfer(
+                direction=direction,
+                local_path=str(path_obj),
+                remote_user=auth.get("username") or "",
+                remote_host=host_row["host"],
+                remote_path=remote_path,
+                port=int(host_row.get("port") or 22),
+                auth_type=auth.get("auth_type") or "password",
+                password=auth.get("password"),
+                key_path=auth.get("key_path"),
+                private_key_pem=auth.get("private_key_pem"),
+                compress=compress,
+                recursive=recursive,
+                legacy_rsa=legacy_rsa,
+                timeout=timeout,
+            )
+            if code != 0:
+                err_msg = (stderr or stdout or f"scp 退出码 {code}").strip()
+                return json.dumps({"success": False, "error": err_msg, "exit_code": code}, ensure_ascii=False)
+            bytes_transferred = 0
+            try:
+                if path_obj.is_file():
+                    bytes_transferred = path_obj.stat().st_size
+                elif path_obj.is_dir():
+                    bytes_transferred = sum(
+                        f.stat().st_size for f in path_obj.rglob("*") if f.is_file()
+                    )
+            except OSError:
+                pass
+            return json.dumps(
+                {
+                    "success": True,
+                    "message": (
+                        f"scp {direction} 完成：{'已上传至 ' + remote_path if direction == 'push' else '已保存到 web/fs:' + local_path}"
+                    ),
+                    "direction": direction,
+                    "local_path": local_path,
+                    "requested_local_path": raw_local_requested,
+                    "remote_path": remote_path,
+                    "bytes_transferred": bytes_transferred,
+                    "recursive": recursive,
+                    "legacy_rsa": legacy_rsa,
+                },
+                ensure_ascii=False,
+            )
+
         if name == "ask_user_choice":
             question = (arguments.get("question") or "").strip()
             raw_options = arguments.get("options") or []
@@ -12351,7 +12567,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     "filename_format": "{UUID}-{kebab-or-safe-ascii-desc}.{ext}",
                     "notes": (
                         "fs_write_file / fs_write_binary 会自动把 path 归位到上述前缀下并加 UUID 文件名。"
-                        "scp_pull 的 local_path 若未以 chats/ 开头也会自动补上当日 chats 前缀。"
+                        "scp_pull / scp_transfer(pull) 的 local_path 若未以 chats/ 开头也会自动补上当日 chats 前缀。"
                         "与聊天附件、chat_tool_spill 使用同一 UTC 日期分层。"
                     ),
                 },

@@ -38,7 +38,7 @@
 
 - 列出/查询主机、凭证、分组、维护历史、最佳实践。
 - 在指定主机上执行 SSH 命令（ssh_execute）、向已打开的控制台发送输入（send_to_terminal）。
-- 上传文件到主机（scp_push）：支持直接传文本内容，或指定 web/fs 下的文件路径（可传二进制如 .tgz）。
+- 上传/下载文件：小文件用 scp_push / scp_pull（SFTP）；大文件或目录用 scp_transfer（系统 scp 流式传输，支持 recursive、legacy_rsa）。
 - 创建/管理批量任务（batch_create、list、detail、cancel、retry）。
 - 管理主机知识（get/update/append_host_knowledge）：记录该主机上的账户、密码、路径等机密信息，供 AI 在操作该主机时使用（如 sudo 密码），**不会在回复中原文展示**。
 - **主机级 AI 提示词**（get/update/append_host_prompt）：按「用户 × 主机」独立保存，描述该主机**独有的规则 / 能力 / 工具链 / 配置**（如已装 gh cli、cursor cli、opencode；数据目录约定；禁忌操作等）。主机维度会话中会自动注入 system 提示；主机分享给其它用户时不共用。

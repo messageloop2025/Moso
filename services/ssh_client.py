@@ -423,6 +423,80 @@ def _sftp_get_to_local_path_sync(
                 pass
 
 
+def _sftp_put_from_path_sync(
+    host: str,
+    port: int,
+    username: str,
+    auth_type: str,
+    password: Optional[str],
+    key_path: Optional[str],
+    private_key_pem: Optional[str],
+    local_path: str,
+    remote_path: str,
+    timeout: int = 30,
+) -> Optional[str]:
+    """SFTP 从本地路径上传单个文件（流式读取，不经内存缓冲）。成功返回 None，失败返回错误信息。"""
+    client = None
+    try:
+        patch_banner_encoding()
+        client = establish_ssh_client(
+            hostname=host,
+            port=port,
+            username=username,
+            auth_type=auth_type,
+            password=password,
+            key_path=key_path,
+            private_key_pem=private_key_pem,
+            timeout=timeout,
+        )
+        sftp = client.open_sftp()
+        try:
+            sftp.put(local_path, remote_path)
+            return None
+        finally:
+            try:
+                sftp.close()
+            except Exception:
+                pass
+    except Exception as e:
+        return str(e)
+    finally:
+        unpatch_banner_encoding()
+        if client:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+
+async def sftp_put_from_path(
+    host: str,
+    port: int = 22,
+    username: str = "",
+    auth_type: str = "password",
+    password: Optional[str] = None,
+    key_path: Optional[str] = None,
+    private_key_pem: Optional[str] = None,
+    local_path: str = "",
+    remote_path: str = "",
+    timeout: int = 30,
+) -> Optional[str]:
+    """异步：SFTP 从本地路径流式上传单个文件。成功返回 None，失败返回错误信息。"""
+    return await asyncio.to_thread(
+        _sftp_put_from_path_sync,
+        host,
+        port,
+        username,
+        auth_type,
+        password,
+        key_path,
+        private_key_pem,
+        local_path,
+        remote_path,
+        timeout,
+    )
+
+
 async def sftp_get_to_local_path(
     host: str,
     port: int = 22,

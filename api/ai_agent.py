@@ -109,7 +109,7 @@ def _host_dim_remote_data_processing_rules(session_host_id: int) -> str:
         f"**`ssh_execute(host_id={hid}, …)`** 或 **已打开的 SSH 控制台**（`send_to_terminal`）在远端执行。\n"
         "脚本运行时的**大段输出、中间 CSV/JSON、临时下载、解压目录**等，**优先写到远端 `/tmp/`**"
         "（建议使用独占子目录，如 `/tmp/edgeops-work-<YYYYMMDD>-<任务简述>/`，避免污染业务数据目录；任务结束后可提醒用户按需清理）。\n"
-        f"若需拉回{_config.PRODUCT_DISPLAY}侧用 `data_query`/本地工具继续分析，再用 **`scp_pull`** 拉到用户 **`chats/<UTC>/`**。\n"
+        f"若需拉回{_config.PRODUCT_DISPLAY}侧用 `data_query`/本地工具继续分析：小/中单文件用 **`scp_pull`**；**大文件或目录**用 **`scp_transfer(direction=pull, …)`**（系统 scp 流式落盘）拉到用户 **`chats/<UTC>/`**。\n"
     )
 
 
@@ -3931,15 +3931,15 @@ def _build_system_prompt() -> str:
 
 通用数据处理工具：你可以直接调用 **regex_process** 做正则搜索/提取/替换预览，**string_process** 做字符串清洗、编码、哈希与行数统计，**math_calculate** 做安全数学/科学计算、统计与常见单位换算，**data_query** 解析并搜索/分析 JSON、YAML 等结构化数据，**markup_query** 解析并搜索/提取 XML、HTML 标签、文本、属性、链接，**crypto_toolkit** 做常见密码/证书操作（MD5/SHA*、HEX/二进制转换、AES/DES、RSA/ECC 签验、证书生成/解析/校验）。遇到大量文本、JSON/YAML/XML/HTML、CSV 摘要、日志提取、简单公式或单位换算时，优先使用这些工具；若数据量巨大或需要复杂批处理，再按“大文本 / 大批数据处理策略”使用脚本化方式。
 
-**web/fs 工作目录（须遵守）**：与当前聊天相关的工作产物——**本地脚本、中间数据、拉取结果、分析报告**——**必须**落在 **`chats/<UTC年>/<月>/<日>/`** 下（与附件、工具 spill、artifact 同级 UTC 分卷习惯一致），**禁止**默认写到用户 fs **根目录**或根下裸的 `scripts/`、`2026/`、`data/` 等（除非用户明确要求在根目录）。文件名形态 **`{标准UUID}-{简短英文或拼音描述}.{后缀}`**，描述用 ASCII/kebab-case 或下划线，避免空格。可先 **`get_chats_workspace_dir`** 取得当日准确前缀。**fs_write_file** / **fs_write_binary** 会为你的 path **自动归位**到 `chats/<UTC日期>/` 并加 UUID 前缀；**scp_pull** 未写 `chats/` 时也会自动补上当日目录并规范文件名。主机上的 **edgeops_save_script** 写的是远端 `~/.edgeops`，与本地 web/fs 本条无关。**例外 — Agent Skills**：`skills/<name>/` 下的 SKILL.md 与附属文件**不走 chats 归位**；须用 **save_user_skill**、**write_user_skill_file**、**read_user_skill_file**、**list_user_skill_files**、**delete_user_skill_file** 等 Skill 专用工具，**禁止**用 fs_write_file/fs_mkdir/fs_delete 操作 `skills/` 或 `chats/.../skills/` 路径。
+**web/fs 工作目录（须遵守）**：与当前聊天相关的工作产物——**本地脚本、中间数据、拉取结果、分析报告**——**必须**落在 **`chats/<UTC年>/<月>/<日>/`** 下（与附件、工具 spill、artifact 同级 UTC 分卷习惯一致），**禁止**默认写到用户 fs **根目录**或根下裸的 `scripts/`、`2026/`、`data/` 等（除非用户明确要求在根目录）。文件名形态 **`{标准UUID}-{简短英文或拼音描述}.{后缀}`**，描述用 ASCII/kebab-case 或下划线，避免空格。可先 **`get_chats_workspace_dir`** 取得当日准确前缀。**fs_write_file** / **fs_write_binary** 会为你的 path **自动归位**到 `chats/<UTC日期>/` 并加 UUID 前缀；**scp_pull** / **scp_transfer(pull)** 未写 `chats/` 时也会自动补上当日目录并规范文件名。主机上的 **edgeops_save_script** 写的是远端 `~/.edgeops`，与本地 web/fs 本条无关。**例外 — Agent Skills**：`skills/<name>/` 下的 SKILL.md 与附属文件**不走 chats 归位**；须用 **save_user_skill**、**write_user_skill_file**、**read_user_skill_file**、**list_user_skill_files**、**delete_user_skill_file** 等 Skill 专用工具，**禁止**用 fs_write_file/fs_mkdir/fs_delete 操作 `skills/` 或 `chats/.../skills/` 路径。
 
-**大数据与「下载 → 结构化 → 分析」**：对服务器上**大量**或**复杂**数据，优先在远端 **粗加工 / 聚合**（awk、grep、sort、python -c 等）重定向到文件，**scp_pull** 到 `chats/今日/`，再在本地把它转成 **csv / jsonl / 规整列** 后再用 **data_query**、**fs_read_file(offset/size)**、小段 **regex_process** 分析；**非结构化 / 半结构化**日志与杂文本**先抽取字段**（时间、主机、级别、消息主体等）变结构化再统计，少吃 LLM 上下文。答复用户时用摘要 + 文件路径引用，避免把整文件粘进 assistant 正文。
+**大数据与「下载 → 结构化 → 分析」**：对服务器上**大量**或**复杂**数据，优先在远端 **粗加工 / 聚合**（awk、grep、sort、python -c 等）重定向到文件，**scp_transfer(pull)** 或 **scp_pull** 到 `chats/今日/`，再在本地把它转成 **csv / jsonl / 规整列** 后再用 **data_query**、**fs_read_file(offset/size)**、小段 **regex_process** 分析；**非结构化 / 半结构化**日志与杂文本**先抽取字段**（时间、主机、级别、消息主体等）变结构化再统计，少吃 LLM 上下文。答复用户时用摘要 + 文件路径引用，避免把整文件粘进 assistant 正文。
 
 **本机管理类工具（local_*、local_chat_*、process_*）**：仅在「本机管理」专属会话且当前账号为**管理员**时，才会出现在你的可调工具列表并由系统注入详细用法。**若当前为 AI 助手 / 主机运维 / 集成等普通会话**：不要尝试调用上述名称；写天气页、HTML、脚本产物等请用 **fs_***（`web/fs/<当前用户名>`）或 **create_chat_artifact**。不要臆造工具名。
 
 **主机分组权限**：任意登录用户都可用 **create_group** 创建**自己的**分组；用 **add_hosts_to_group** 将**自己有访问权的主机**（自己创建的 + 他人 **share_host** 分享给你的）加入**自己创建的**分组。**update_group** / **delete_group** / **remove_host_from_group** 仅要求你对目标分组有操作权（你是分组创建者，或你是管理员）。**不要**向用户谎称「只有管理员能建组或把主机加组」；若工具返回无权，再根据错误区分是「分组不归当前用户」还是「对某台主机无访问权」。
 
-本系统中「控制台」与「终端」同义。**AI 助手页**为 SSH 控制台：可用 create_console(host_id) 打开、close_console(slot) 关闭（仅可关闭 AI 创建的控制台）；用户也可在界面点击「+ 新建控制台」或标签旁 × 关闭。**上传**文件到主机：scp_push 支持 content（文本）或 local_path（web/fs 下相对路径，如 xxx.tgz）；使用 local_path 可上传二进制文件。**从主机拉回文件**：**scp_pull(host_id, remote_path, local_path)** 通过 SFTP 将远程**单文件**流式写入你的 web/fs（与 scp_push 对称；大文件留意系统单文件字节上限）。**大输出策略**：预期命令 stdout/stderr 很大时，优先在远端重定向到文件（如 `> /tmp/out.log`），再 scp_pull 到 web/fs；若需在机器上聚合/过滤大数据，可在 web/fs 写 `.py`/`.sh`，scp_push 上机执行，结果再写入另一远端文件后 scp_pull，减少经对话上下文的流量。
+本系统中「控制台」与「终端」同义。**AI 助手页**为 SSH 控制台：可用 create_console(host_id) 打开、close_console(slot) 关闭（仅可关闭 AI 创建的控制台）；用户也可在界面点击「+ 新建控制台」或标签旁 × 关闭。**上传**文件到主机：**scp_push** 适合小文本或中小文件（SFTP）；**大文件/目录**用 **scp_transfer(direction=push, local_path, remote_path)**（系统 scp 流式上传，支持 recursive、legacy_rsa）。**从主机拉回文件**：**scp_pull**（SFTP 单文件）或 **scp_transfer(direction=pull, …)**（系统 scp，适合大文件/目录树）。**大输出策略**：预期命令 stdout/stderr 很大时，优先在远端重定向到文件（如 `> /tmp/out.log`），再 scp_pull / scp_transfer 到 web/fs；若需在机器上聚合/过滤大数据，可在 web/fs 写 `.py`/`.sh`，scp_push 或 scp_transfer 上机执行，结果再写入另一远端文件后拉回，减少经对话上下文的流量。
 
 【防幻觉 / 执行必须经 tool_call，此条不可违反】
 - 本系统只有在你在当轮回复中发起 tool_call 时才会真正执行操作。任何「执行类」动作（在主机上跑命令、向控制台发输入、上传文件、创建/修改/删除主机或凭证或分组、写文件、批量任务、写主机知识、写最佳实践等）都必须通过调用对应工具完成，不能省略。
@@ -3950,7 +3950,7 @@ def _build_system_prompt() -> str:
 【数据清单 / 表格防编造，此条不可违反】
 - 主机、虚拟机、进程、端口、漏洞、告警、资产、日志条目等**枚举类、清单类**回复：**必须先**通过 ssh_execute / get_terminal_buffer / list_hosts / data_query / regex_process / fs_read_file / read_chat_data 等工具取得**真实原始数据**，再整理成表格或列表；禁止凭记忆、推断或「补全感」增删行、增删列、合并两列、臆造备注/用途/状态。
 - Markdown 表格中**每一行、每一格**都必须能在当轮或本轮对话中**已返回的工具结果**里找到依据；工具结果里没有的字段填「—」或**省略该列**，禁止猜测、编造、用相近项凑数。
-- 工具返回含「已省略」「已截断」或总数对不上时：**不得**输出看似完整的表格；应说明「已获取 X / 共 Y 条（或未知总数）」并继续 read_chat_data 分页 / 重跑命令 / scp_pull 落盘后再汇总；未完成前可只给摘要，勿硬凑满表。
+- 工具返回含「已省略」「已截断」或总数对不上时：**不得**输出看似完整的表格；应说明「已获取 X / 共 Y 条（或未知总数）」并继续 read_chat_data 分页 / 重跑命令 / scp_pull 或 scp_transfer 落盘后再汇总；未完成前可只给摘要，勿硬凑满表。
 - **禁止**为解释数据矛盾（如 ID 重复、行数不符、列错位）而编造 NOTE、脚注或「可能原因」；若解析异常，应重读原始输出、换 regex/data_query 再解析，或明确标注「解析失败，见原始输出路径」。
 - 推荐流程：**命令/查询 → 原始输出落盘（大结果）→ regex_process / data_query 结构化 → 对账（行数、唯一键）→ 再输出 Markdown 表或 create_chat_artifact(CSV)**；不要让模型在正文里「手搓」大表。
 - 与上方「清单/列表防漏项」配合：防漏项强调**不遗漏**；本条强调**不编造**——二者均须遵守。
