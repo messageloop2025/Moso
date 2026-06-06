@@ -14,6 +14,8 @@ croniter>=2.0.0
 # IANA 时区数据（Windows 上 zoneinfo 依赖）
 tzdata>=2026.1
 beautifulsoup4>=4.12.0
+# AI 聊天识图：上传图内联前缩放 JPEG，视觉降级重试亦依赖 Pillow
+Pillow>=10.0.0
 PyYAML
 # 聊天附件：Office/PDF → Markdown（AI read_chat_attachment）
 markitdown[pdf,docx,pptx,xlsx]>=0.1.5

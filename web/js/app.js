@@ -1389,6 +1389,7 @@ function edgeopsEnhanceAttachmentList(rootEl) {
             var link = document.createElement('a');
             link.href = url;
             link.target = '_blank';
+            link.setAttribute('data-attachment-enhanced', '1');
             link.appendChild(img);
             li.appendChild(document.createElement('br'));
             li.appendChild(link);
@@ -1502,6 +1503,7 @@ function edgeopsEnhanceChatAttachmentLinks(rootEl) {
     });
     rootEl.querySelectorAll('a[href*="/api/ai/attachments/"]').forEach(function(a) {
         if (a.getAttribute('data-attachment-enhanced') === '1') return;
+        if (a.querySelector('img.chat-attachment-image-inline')) return;
         var href = a.getAttribute('href') || '';
         var fixed = edgeopsRewriteChatAttachmentUrl(href);
         if (fixed) a.setAttribute('href', fixed);

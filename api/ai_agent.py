@@ -825,6 +825,57 @@ def _extract_attachment_uuids_from_text(text: str) -> list[str]:
     return out
 
 
+# 内联 vision 前预处理：避免 2MB+ 原图 base64 直接打爆网关 input length（如阿里云 ~29k）。
+_VISION_INLINE_PREP_MAX_SIDE = 1536
+_VISION_INLINE_PREP_JPEG_QUALITY = 85
+_VISION_INLINE_PREP_MIN_BYTES = 400 * 1024
+
+
+def _encode_image_bytes_for_vision_inline(raw: bytes, mime: str) -> tuple[str, str]:
+    """缩放/转 JPEG 后生成 data URL。返回 (url, mime_used)。"""
+    import base64 as _b64
+
+    mime_out = (mime or "image/png").strip() or "image/png"
+    data = raw
+    if len(raw) > _VISION_INLINE_PREP_MIN_BYTES:
+        try:
+            import io
+
+            from PIL import Image
+
+            im = Image.open(io.BytesIO(raw))
+            im.load()
+            if im.mode not in ("RGB", "L"):
+                im = im.convert("RGB")
+            w, h = im.size
+            longest = max(w, h) or 1
+            if longest > _VISION_INLINE_PREP_MAX_SIDE:
+                scale = _VISION_INLINE_PREP_MAX_SIDE / float(longest)
+                im = im.resize(
+                    (max(1, int(w * scale)), max(1, int(h * scale))),
+                    Image.LANCZOS,
+                )
+            buf = io.BytesIO()
+            im.save(
+                buf,
+                format="JPEG",
+                quality=_VISION_INLINE_PREP_JPEG_QUALITY,
+                optimize=True,
+            )
+            data = buf.getvalue()
+            mime_out = "image/jpeg"
+            logger.info(
+                "vision: 入站图片已预处理 raw=%d -> jpeg=%d side<=%d",
+                len(raw),
+                len(data),
+                _VISION_INLINE_PREP_MAX_SIDE,
+            )
+        except Exception as exc:
+            logger.warning("vision: 入站图片预处理失败，使用原图 err=%s", exc)
+    url = f"data:{mime_out};base64," + _b64.b64encode(data).decode("ascii")
+    return url, mime_out
+
+
 def _image_row_to_image_url_part(row: dict, username: str, per_byte_limit: int) -> dict | None:
     """把一条 image 附件行读成 image_url 多模态段；失败或单图超限返回 None。"""
     try:
@@ -858,7 +909,7 @@ def _image_row_to_image_url_part(row: dict, username: str, per_byte_limit: int) 
         logger.warning("vision: 处理图片异常 uuid=%s err=%s", row.get("uuid"), exc)
         return None
     mime = (row.get("mime_type") or "image/png").strip() or "image/png"
-    url = f"data:{mime};base64," + _b64.b64encode(raw).decode("ascii")
+    url, _ = _encode_image_bytes_for_vision_inline(raw, mime)
     return {"type": "image_url", "image_url": {"url": url, "detail": "auto"}}
 
 
@@ -1142,6 +1193,7 @@ def _classify_vision_error(status_code: int, err_text: str) -> str:
         "range of input length", "input length", "context length",
         "maximum context length", "maximum token", "token limit",
         "input is too large", "too many tokens", "reduce the length",
+        "invalidparameter", "algo.invalidparameter",
         "超长", "超过长度", "超出长度", "输入长度", "上下文长度",
     )
     if any(m in t for m in length_markers):
