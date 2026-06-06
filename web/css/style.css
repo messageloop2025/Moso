@@ -1859,6 +1859,23 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
     font-family: 'Cambria Math', 'Times New Roman', serif;
     white-space: nowrap;
 }
+.chat-math-katex-inline,
+.chat-math-katex-block {
+    display: inline-block;
+    vertical-align: middle;
+    max-width: 100%;
+}
+.chat-math-katex-block {
+    margin: 4px 0;
+}
+.message-content .katex {
+    font-size: 1.05em;
+    color: #dbeafe;
+}
+.message-content .katex-display {
+    margin: 0.4em 0;
+    overflow-x: auto;
+}
 .math-sqrt::before {
     content: "√";
     font-size: 1.12em;

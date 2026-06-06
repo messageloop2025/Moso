@@ -405,17 +405,46 @@ function edgeopsBuildDiagramBlockHtml(type, source, lang) {
         + '</div>';
 }
 
+function edgeopsNormalizeMathDelimiters(text) {
+    return String(text || '').replace(/\uFF04/g, '$');
+}
+
+function edgeopsReplaceDollarMathWithPlaceholders(text, bucket, prefix) {
+    prefix = prefix || 'EDGEOPSMDMATHINLINE';
+    return String(text || '').replace(/(^|[^\\$])\$([^\n$]+?)\$/g, function (match, lead, expr) {
+        var id = prefix + bucket.length;
+        bucket.push(String(expr || '').trim());
+        return lead + id;
+    });
+}
+
+/** 提取行内公式占位：$...$、\\(...\\)，全角 ＄ 会归一为 $。 */
+function edgeopsApplyInlineMathPlaceholders(text, bucket, prefix) {
+    text = edgeopsNormalizeMathDelimiters(text);
+    text = edgeopsReplaceDollarMathWithPlaceholders(text, bucket, prefix);
+    return text.replace(/\\\(([\s\S]+?)\\\)/g, function (match, expr) {
+        var id = prefix + bucket.length;
+        bucket.push(String(expr || '').trim());
+        return id;
+    });
+}
+
 function edgeopsRenderMathHtml(source, displayMode) {
     var expr = String(source || '').trim();
     if (!expr) return '';
     if (typeof window !== 'undefined' && window.katex && typeof window.katex.renderToString === 'function') {
         try {
-            return window.katex.renderToString(expr, {
+            var rendered = window.katex.renderToString(expr, {
                 displayMode: !!displayMode,
                 throwOnError: false,
                 strict: false,
+                trust: false,
                 output: 'html'
             });
+            if (displayMode) {
+                return '<span class="chat-math-katex-block">' + rendered + '</span>';
+            }
+            return '<span class="chat-math-katex-inline">' + rendered + '</span>';
         } catch (e) {}
     }
     var cls = displayMode ? 'chat-math-block' : 'chat-math-inline';
@@ -445,6 +474,14 @@ function edgeopsRenderBasicLatexFallback(expr) {
         '\\pm': '±',
         '\\to': '→',
         '\\rightarrow': '→',
+        '\\Rightarrow': '⇒',
+        '\\Leftarrow': '⇐',
+        '\\iff': '⇔',
+        '\\Leftrightarrow': '⇔',
+        '\\implies': '⇒',
+        '\\forall': '∀',
+        '\\exists': '∃',
+        '\\infty': '∞',
         '\\left': '',
         '\\right': ''
     };
@@ -623,6 +660,8 @@ function edgeopsRenderCodeBlockHtml(lang, code) {
 function formatMarkdownInline(text) {
     if (!text) return '';
     var s = normalizeSafeHtmlTags(text);
+    var inlineMath = [];
+    s = edgeopsApplyInlineMathPlaceholders(s, inlineMath, 'EDGEOPSMDINLINEMATH');
     var inlineCodes = [];
     s = s.replace(/\x60([^\x60\n]+)\x60/g, function (match, code) {
         var id = 'EDGEOPSMDINLINE' + inlineCodes.length;
@@ -671,6 +710,17 @@ function formatMarkdownInline(text) {
     for (var j = 0; j < inlineCodes.length; j++) {
         s = edgeopsReplaceIndexedPlaceholder(s, 'EDGEOPSMDINLINE', j, '<code>' + escapeHtmlForCode(inlineCodes[j]) + '</code>');
     }
+    for (var m = 0; m < inlineMath.length; m++) {
+        s = edgeopsReplaceIndexedPlaceholder(s, 'EDGEOPSMDINLINEMATH', m, edgeopsRenderMathHtml(inlineMath[m], false));
+    }
+    // 模型偶发不写 $...$ 时，常见符号仍可读
+    s = s.replace(/\\iff\b/g, '⇔')
+        .replace(/\\Leftrightarrow\b/g, '⇔')
+        .replace(/\\Rightarrow\b/g, '⇒')
+        .replace(/\\Leftarrow\b/g, '⇐')
+        .replace(/\\le\b/g, '≤')
+        .replace(/\\ge\b/g, '≥')
+        .replace(/\\neq\b/g, '≠');
     return s;
 }
 
@@ -845,9 +895,15 @@ function markdownToHtml(text) {
     });
 
     var mathBlocks = [];
+    html = edgeopsNormalizeMathDelimiters(html);
     html = html.replace(/\$\$([\s\S]+?)\$\$/g, function (match, expr) {
         var id = 'EDGEOPSMDMATHBLOCK' + mathBlocks.length;
-        mathBlocks.push(expr);
+        mathBlocks.push(String(expr || '').trim());
+        return '\n' + id + '\n';
+    });
+    html = html.replace(/\\\[([\s\S]+?)\\\]/g, function (match, expr) {
+        var id = 'EDGEOPSMDMATHBLOCK' + mathBlocks.length;
+        mathBlocks.push(String(expr || '').trim());
         return '\n' + id + '\n';
     });
     html = html.split('\n').map(function(line) {
@@ -858,11 +914,7 @@ function markdownToHtml(text) {
     }).join('\n');
 
     var inlineMath = [];
-    html = html.replace(/(^|[^\\$])\$([^\n$]+?)\$/g, function (match, prefix, expr) {
-        var id = 'EDGEOPSMDMATHINLINE' + inlineMath.length;
-        inlineMath.push(expr);
-        return prefix + id;
-    });
+    html = edgeopsApplyInlineMathPlaceholders(html, inlineMath, 'EDGEOPSMDMATHINLINE');
 
     // 先提取表格（与 edgeopsComputeStreamCommittedEnd 同一套扫描器，避免流式冻结段与收尾全量渲染不一致）
     var tableExtract = edgeopsExtractCompleteMarkdownTablesIterative(html);
