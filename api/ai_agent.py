@@ -825,57 +825,6 @@ def _extract_attachment_uuids_from_text(text: str) -> list[str]:
     return out
 
 
-# 内联 vision 前预处理：避免 2MB+ 原图 base64 直接打爆网关 input length（如阿里云 ~29k）。
-_VISION_INLINE_PREP_MAX_SIDE = 1536
-_VISION_INLINE_PREP_JPEG_QUALITY = 85
-_VISION_INLINE_PREP_MIN_BYTES = 400 * 1024
-
-
-def _encode_image_bytes_for_vision_inline(raw: bytes, mime: str) -> tuple[str, str]:
-    """缩放/转 JPEG 后生成 data URL。返回 (url, mime_used)。"""
-    import base64 as _b64
-
-    mime_out = (mime or "image/png").strip() or "image/png"
-    data = raw
-    if len(raw) > _VISION_INLINE_PREP_MIN_BYTES:
-        try:
-            import io
-
-            from PIL import Image
-
-            im = Image.open(io.BytesIO(raw))
-            im.load()
-            if im.mode not in ("RGB", "L"):
-                im = im.convert("RGB")
-            w, h = im.size
-            longest = max(w, h) or 1
-            if longest > _VISION_INLINE_PREP_MAX_SIDE:
-                scale = _VISION_INLINE_PREP_MAX_SIDE / float(longest)
-                im = im.resize(
-                    (max(1, int(w * scale)), max(1, int(h * scale))),
-                    Image.LANCZOS,
-                )
-            buf = io.BytesIO()
-            im.save(
-                buf,
-                format="JPEG",
-                quality=_VISION_INLINE_PREP_JPEG_QUALITY,
-                optimize=True,
-            )
-            data = buf.getvalue()
-            mime_out = "image/jpeg"
-            logger.info(
-                "vision: 入站图片已预处理 raw=%d -> jpeg=%d side<=%d",
-                len(raw),
-                len(data),
-                _VISION_INLINE_PREP_MAX_SIDE,
-            )
-        except Exception as exc:
-            logger.warning("vision: 入站图片预处理失败，使用原图 err=%s", exc)
-    url = f"data:{mime_out};base64," + _b64.b64encode(data).decode("ascii")
-    return url, mime_out
-
-
 def _image_row_to_image_url_part(row: dict, username: str, per_byte_limit: int) -> dict | None:
     """把一条 image 附件行读成 image_url 多模态段；失败或单图超限返回 None。"""
     try:
@@ -908,9 +857,21 @@ def _image_row_to_image_url_part(row: dict, username: str, per_byte_limit: int) 
     except Exception as exc:  # pragma: no cover - 防御性
         logger.warning("vision: 处理图片异常 uuid=%s err=%s", row.get("uuid"), exc)
         return None
+    from services.vision_image import encode_image_bytes_for_vision_data_url, vision_inline_max_b64_chars
+
     mime = (row.get("mime_type") or "image/png").strip() or "image/png"
-    url, _ = _encode_image_bytes_for_vision_inline(raw, mime)
-    return {"type": "image_url", "image_url": {"url": url, "detail": "auto"}}
+    url, _, _jpeg_len = encode_image_bytes_for_vision_data_url(raw, mime=mime)
+    cap = vision_inline_max_b64_chars()
+    if len(url) > cap:
+        logger.warning(
+            "vision: 压缩后仍超限，跳过内联 uuid=%s url_chars=%d cap=%d",
+            row.get("uuid"),
+            len(url),
+            cap,
+        )
+        return None
+    detail = "low" if len(url) > cap // 2 else "auto"
+    return {"type": "image_url", "image_url": {"url": url, "detail": detail}}
 
 
 # 用户明确要求"再次回读原图"的关键词；命中时即便附件已有 ai_description，仍强制内联原图像素。
@@ -1221,25 +1182,11 @@ def _messages_have_image_url(messages: list[dict]) -> bool:
     return False
 
 
-def _compress_messages_image_urls(
-    messages: list[dict],
-    *,
-    max_side: int,
-    jpeg_quality: int,
-) -> int:
-    """就地对所有 image_url 段做等比缩小 + JPEG 重编码。返回实际被重编码的段数。
+def _shrink_messages_vision_inline(messages: list[dict]) -> int:
+    """发送前再次收紧 messages 中所有 image_url data URL。返回重编码段数。"""
+    from services.vision_image import reencode_data_url_for_vision, vision_inline_max_b64_chars
 
-    - 不依赖原始 mime：统一转 JPEG（视觉模型几乎都吃 JPEG，体积更小）。
-    - PIL/Pillow 不可用时返回 0，调用方会直接跳到"剥离图片"兜底分支。
-    """
-    try:
-        from PIL import Image
-    except Exception:
-        logger.warning("vision-fallback: 未安装 Pillow，无法压缩图片；将直接走剥离兜底")
-        return 0
-    import io
-    import base64 as _b64
-
+    cap = vision_inline_max_b64_chars()
     count = 0
     for m in messages or []:
         c = (m or {}).get("content")
@@ -1248,36 +1195,31 @@ def _compress_messages_image_urls(
         for p in c:
             if not isinstance(p, dict) or p.get("type") != "image_url":
                 continue
-            url = ((p.get("image_url") or {}).get("url") or "")
-            if not url.startswith("data:"):
+            old_url = ((p.get("image_url") or {}).get("url") or "")
+            if not old_url.startswith("data:") or _is_vision_placeholder_data_url(old_url):
                 continue
-            if _is_vision_placeholder_data_url(url):
-                # 已被历史去重占位（合法 1x1 PNG），跳过
+            new_url = reencode_data_url_for_vision(old_url, max_b64_chars=cap)
+            if not new_url or new_url == old_url:
                 continue
-            try:
-                _header, b64 = url.split(",", 1)
-                raw = _b64.b64decode(b64)
-                im = Image.open(io.BytesIO(raw))
-                im.load()
-                if im.mode not in ("RGB", "L"):
-                    im = im.convert("RGB")
-                w, h = im.size
-                longest = max(w, h) or 1
-                if longest > max_side:
-                    scale = max_side / float(longest)
-                    im = im.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
-                buf = io.BytesIO()
-                im.save(buf, format="JPEG", quality=int(jpeg_quality), optimize=True)
-                new_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
-                p["image_url"] = {
-                    "url": "data:image/jpeg;base64," + new_b64,
-                    "detail": (p.get("image_url") or {}).get("detail") or "auto",
-                }
-                count += 1
-            except Exception as exc:
-                logger.warning("vision-fallback: 压缩单图失败 err=%s", exc)
-                continue
+            detail = (p.get("image_url") or {}).get("detail") or "auto"
+            if len(new_url) > cap // 2:
+                detail = "low"
+            p["image_url"] = {"url": new_url, "detail": detail}
+            count += 1
+    if count:
+        logger.info("vision: 发送前收紧 image_url count=%d cap=%d", count, cap)
     return count
+
+
+def _compress_messages_image_urls(
+    messages: list[dict],
+    *,
+    max_side: int,
+    jpeg_quality: int,
+) -> int:
+    """视觉降级：按指定档位重编码（兼容旧阶梯参数）。返回实际被重编码的段数。"""
+    del max_side, jpeg_quality  # 统一走 vision_image 多档阶梯
+    return _shrink_messages_vision_inline(messages)
 
 
 # 历史 base64 占位：让 provider 不再把同一张图的 base64 反复当 token 计入。
@@ -1544,6 +1486,7 @@ async def _post_chat_with_vision_fallback(
             _dedup["placeholders"], _dedup["bytes_saved"],
             _dedup["last_img_idx"], _dedup["last_tool_idx"],
         )
+    _shrink_messages_vision_inline(messages)
     payload["messages"] = messages
     resp = await client.post(api_url, headers=headers, json=payload)
     if resp.status_code == 200:
@@ -1654,6 +1597,7 @@ async def _stream_chat_with_vision_fallback(
             "vision-dedupe(stream): 历史 base64 占位化 count=%d bytes_saved=%d",
             _dedup["placeholders"], _dedup["bytes_saved"],
         )
+    _shrink_messages_vision_inline(messages)
 
     # 视觉降级状态机：先尝试原始一次；若首帧报错且消息里有图，则按压缩阶梯逐档
     # 重试，最后再尝试整体剥离图片。没图的请求则只跑 attempts[0]

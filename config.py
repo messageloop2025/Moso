@@ -9,7 +9,7 @@ PRODUCT_NAME_ZH = "毛竹"
 PRODUCT_NAME_EN = "Moso"
 PRODUCT_DISPLAY = f"{PRODUCT_NAME_ZH}（{PRODUCT_NAME_EN}）"  # AI 提示词中的产品指称
 
-VERSION = os.getenv("EDGEOPS_VERSION", "1.3.9-sp1")
+VERSION = os.getenv("EDGEOPS_VERSION", "1.3.9-sp2")
 
 # 数据库 / Database
 DATABASE_PATH = os.getenv("EDGEOPS_DB", str(BASE_DIR / "edgeops.db"))
@@ -174,6 +174,9 @@ CHAT_TOOL_SPILL_MIN_CHARS = int(os.getenv("EDGEOPS_CHAT_TOOL_SPILL_MIN_CHARS", "
 CHAT_TOOL_SPILL_READ_MAX_CHARS = int(os.getenv("EDGEOPS_CHAT_TOOL_SPILL_READ_MAX_CHARS", str(500_000)))
 # 历史消息按字符预算裁剪时，单条配额低于此值则 tool 消息中的溢出块可收缩为仅哨兵行（引导 read_chat_data）。
 CHAT_HISTORY_TOOL_SPILL_SHRINK_THRESHOLD = int(os.getenv("EDGEOPS_CHAT_HISTORY_TOOL_SPILL_SHRINK_THRESHOLD", "900"))
+
+# AI 识图内联：单张图 data URL 字符上限（为 system/对话/工具定义留白；阿里云等常见总 input ~983616）
+VISION_INLINE_MAX_B64_CHARS = int(os.getenv("EDGEOPS_VISION_INLINE_MAX_B64_CHARS", "640000"))
 
 # AI scp_pull：从远端 SFTP 拉到用户 web/fs 的单文件上限（字节）。
 SCP_PULL_MAX_BYTES = int(os.getenv("EDGEOPS_SCP_PULL_MAX_BYTES", str(200 * 1024 * 1024)))

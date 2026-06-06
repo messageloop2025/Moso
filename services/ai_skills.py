@@ -2118,7 +2118,7 @@ TOOLS = [
                 "响应含 `converted_from_markitdown: true`；若转换失败会返回 error 与 hint；\n"
                 "- 图片：**若附件已有 `ai_description`（此前轮次 AI 已识别并保存的扩展信息），默认只返回这段描述文本，不再返回 data_url**，"
                 "节省上下文；若你需要重新识别（比如用户追问局部/细节而描述未覆盖，或用户明确要求「看原图」），传 `force_reload=true` 强制返回 `data_url`；"
-                "若附件尚无描述，则默认返回 `data_url`（base64 data URL，不做大小截断）。\n"
+                "若附件尚无描述，则默认返回 `data_url`（已自动缩放压缩的 JPEG data URL，适配网关 input 长度上限）。\n"
                 "- 首次识别图片后，请**主动调用 `save_image_description(uuid=..., description=...)`** 把提取到的内容（OCR 文本 + 主要视觉元素 + 结构化信息）"
                 "写回附件行，后续轮次才能跳过重读原图。\n"
                 "- 仅可读取**当前用户自己**的附件，其他用户或越权 UUID 一律拒绝。\n"
@@ -12680,20 +12680,23 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                         ),
                     }, ensure_ascii=False)
                 if as_data_url:
-                    import base64 as _b64
+                    from services.vision_image import encode_image_bytes_for_vision_data_url
+
                     try:
                         raw = await asyncio.to_thread(path.read_bytes)
                     except OSError as exc:
                         return json.dumps({"success": False, "error": f"读取失败: {exc}"}, ensure_ascii=False)
-                    # 按产品要求：AI 加载图片时不做大小限制、不截断 data_url；
-                    # 上游网关若有 body 上限（例如某些 provider 16 MB）会在 HTTP 层报错，
-                    # 再由调用方根据错误反馈处理，不在此处提前拒绝。
-                    data_url = f"data:{row.get('mime_type') or 'image/png'};base64," + _b64.b64encode(raw).decode("ascii")
+                    data_url, _mime_out, jpeg_len = encode_image_bytes_for_vision_data_url(
+                        raw,
+                        mime=(row.get("mime_type") or "image/png"),
+                    )
                     resp = {
                         "success": True,
                         "attachment": meta,
                         "data_url": data_url,
-                        "bytes": len(raw),
+                        "bytes": int(row.get("size_bytes") or 0) or len(raw),
+                        "vision_jpeg_bytes": jpeg_len,
+                        "data_url_chars": len(data_url),
                     }
                     # 若同时存在缓存描述，一并带出，便于 AI 对比/更新
                     if cached_desc:
