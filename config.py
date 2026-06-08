@@ -9,7 +9,7 @@ PRODUCT_NAME_ZH = "毛竹"
 PRODUCT_NAME_EN = "Moso"
 PRODUCT_DISPLAY = f"{PRODUCT_NAME_ZH}（{PRODUCT_NAME_EN}）"  # AI 提示词中的产品指称
 
-VERSION = os.getenv("EDGEOPS_VERSION", "1.3.9-sp3")
+VERSION = os.getenv("EDGEOPS_VERSION", "1.4.0")
 
 # 数据库 / Database
 DATABASE_PATH = os.getenv("EDGEOPS_DB", str(BASE_DIR / "edgeops.db"))
@@ -44,7 +44,7 @@ WORKERS = max(0, int(os.getenv("EDGEOPS_WORKERS", "0")))
 # OpenAI:  AI_BASE_URL=https://api.openai.com/v1  AI_MODEL=gpt-4o-mini
 AI_API_KEY = os.getenv("AI_API_KEY", "")
 AI_BASE_URL = os.getenv("AI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-AI_MODEL = os.getenv("AI_MODEL", "qwen3.5-plus")  # 阿里 compatible-mode 推荐 / Aliyun compatible-mode default
+AI_MODEL = os.getenv("AI_MODEL", "qwen3.6-plus")  # 阿里 compatible-mode 推荐 / Aliyun compatible-mode default
 # Agent 内层（单轮内最多调用工具/思考步数）默认 100，硬上限 1000
 # Inner agent loop: max tool/thinking steps per model round (default 100, cap 1000).
 AGENT_MAX_STEPS = int(os.getenv("EDGEOPS_AGENT_MAX_STEPS", "100"))
