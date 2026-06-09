@@ -115,3 +115,90 @@ def test_chinese_text_annotation_renders():
     # 有字体时文本区域不应与纯白底完全相同
     samples = [img.getpixel((x, 35)) for x in range(20, 120, 5)]
     assert any(p[0] > 200 and p[1] < 240 for p in samples)
+
+
+def test_pin_annotation_draws_marker():
+    raw = _blank_png()
+    out, _ = apply_image_edits(
+        raw,
+        annotations=[{"type": "pin", "x": 100, "y": 50, "color": "#ff0000", "radius": 10}],
+    )
+    img = Image.open(__import__("io").BytesIO(out)).convert("RGBA")
+    # 中心为白色内点，外圈应为红色
+    samples = [img.getpixel((100 + dx, 50 + dy)) for dx, dy in ((8, 0), (0, 8), (-8, 0), (0, -8))]
+    assert any(r > 200 and g < 80 for r, g, b, _ in samples)
+
+
+def test_crosshair_leaves_center_clear():
+    raw = _blank_png()
+    out, _ = apply_image_edits(
+        raw,
+        annotations=[{"type": "crosshair", "x": 100, "y": 50, "color": "#ff0000", "arm_length": 14, "gap_radius": 5}],
+    )
+    img = Image.open(__import__("io").BytesIO(out)).convert("RGBA")
+    assert img.getpixel((100, 50))[:3] == (240, 240, 240)
+    samples = [img.getpixel((100 + dx, 50 + dy)) for dx, dy in ((12, 0), (-12, 0), (0, 12), (0, -12))]
+    assert any(r > 200 and g < 80 for r, g, b, _ in samples)
+
+
+def test_target_ring_hollow_interior():
+    raw = _blank_png()
+    out, _ = apply_image_edits(
+        raw,
+        annotations=[{"type": "target", "x": 100, "y": 50, "color": "#ff0000", "radius": 10, "ring_width": 2}],
+    )
+    img = Image.open(__import__("io").BytesIO(out)).convert("RGBA")
+    assert img.getpixel((100, 50))[:3] == (240, 240, 240)
+    r, g, b, _ = img.getpixel((110, 50))
+    assert r > 200 and g < 80
+
+
+def test_callout_draws_leader_and_label():
+    raw = _blank_png(260, 120)
+    out, _ = apply_image_edits(
+        raw,
+        annotations=[
+            {
+                "type": "callout",
+                "anchor_x": 40,
+                "anchor_y": 60,
+                "label_x": 90,
+                "label_y": 30,
+                "text": "target",
+                "color": "#ff0000",
+                "anchor_style": "none",
+                "line_width": 1,
+            }
+        ],
+    )
+    img = Image.open(__import__("io").BytesIO(out)).convert("RGBA")
+    assert any(img.getpixel((x, 45))[0] > 200 and img.getpixel((x, 45))[1] < 100 for x in range(55, 80))
+    label_samples = [img.getpixel((x, y)) for x in range(90, 130, 3) for y in range(30, 45, 3)]
+    assert any(r > 200 and g < 100 for r, g, b, _ in label_samples)
+
+
+def test_scale_annotations_keypoint_fields():
+    from services.image_edit import annotation_max_extent, scale_annotations
+
+    anns = [
+        {
+            "type": "callout",
+            "anchor_x": 10,
+            "anchor_y": 20,
+            "label_x": 40,
+            "label_y": 50,
+            "radius": 4,
+            "arm_length": 6,
+            "gap_radius": 2,
+        }
+    ]
+    scaled = scale_annotations(anns, 2.0, 3.0)
+    assert scaled[0]["anchor_x"] == 20
+    assert scaled[0]["anchor_y"] == 60
+    assert scaled[0]["label_x"] == 80
+    assert scaled[0]["label_y"] == 150
+    assert scaled[0]["radius"] == 10
+    assert scaled[0]["arm_length"] == 15
+    max_x, max_y = annotation_max_extent(scaled)
+    assert max_x >= 90
+    assert max_y >= 160

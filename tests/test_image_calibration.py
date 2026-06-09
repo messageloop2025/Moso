@@ -10,7 +10,9 @@ from services.image_calibration import (
     build_cell_grid_plan,
     build_percent_grid_annotations,
     cells_to_bbox,
+    clamp_tight_box_sizes,
     compute_calibration_transform,
+    estimate_auto_global_transform,
     fit_scale_offset,
     normalized_space_divisor,
     parse_global_transform,
@@ -28,6 +30,28 @@ def test_parse_global_transform_variants():
     assert parse_global_transform({"scale_x": 1.1, "scale_y": 0.8, "offset_x": -5, "offset_y": 3}) == (1.1, 0.8, -5.0, 3.0)
 
 
+def test_estimate_auto_global_shift_left_cluster():
+    # 模拟 AI 给的 percent 框整体偏左（应在内容区），auto 应给出正 offset_x
+    anns = [
+        {"type": "rect", "x": 2, "y": 30, "width": 8, "height": 10},
+        {"type": "rect", "x": 2, "y": 55, "width": 8, "height": 10},
+        {"type": "rect", "x": 2, "y": 80, "width": 8, "height": 10},
+    ]
+    res = estimate_auto_global_transform(anns, 1024, 547, space="percent")
+    assert res is not None
+    sx, sy, ox, oy, sp, _ = res
+    assert ox > 2.0
+    assert sp == "percent"
+
+
+def test_percent_content_mapping():
+    anns = [{"type": "rect", "x": 0, "y": 0, "width": 50, "height": 50}]
+    cb = {"x": 100, "y": 50, "width": 800, "height": 400}
+    out, _, _ = apply_normalized_space(anns, 1024, 547, "percent_content", cb)
+    assert out[0]["x"] == 100
+    assert out[0]["width"] == 400
+
+
 def test_global_transform_then_percent_pipeline():
     # AI 给相对布局（percent），整组右移 10% + 放大 1.1，全局微调后再换算到像素
     anns = [
@@ -36,12 +60,11 @@ def test_global_transform_then_percent_pipeline():
     ]
     gsx, gsy, gox, goy = parse_global_transform({"scale": 1.1, "offset_x": 10})
     adjusted = apply_calibration_transform_to_annotations(anns, gsx, gsy, gox, goy)
-    # x: 10*1.1+10=21 ; 50*1.1+10=65 （仍在 percent 空间）
     assert adjusted[0]["x"] == 21
     assert adjusted[1]["x"] == 65
     out, _, meta = resolve_annotation_transform(adjusted, 1000, 800, {}, [], None, coordinate_space="percent")
     assert meta["method"] == "explicit_space"
-    assert out[0]["x"] == 210  # 21% of 1000
+    assert out[0]["x"] == 210
 
 
 def test_percent_space_deterministic():
@@ -167,3 +190,28 @@ def test_auto_offset_search_reduces_margin_cluster():
     q = assess_transform_quality(anns, 1920, 1032, sx, sy, ox, oy)
     assert name == "norm1000"
     assert q["margin_left_frac"] + q["margin_right_frac"] < 0.5
+
+
+def test_clamp_tight_box_sizes_percent():
+    anns = [
+        {"type": "highlight", "x": 2, "y": 40, "width": 25, "height": 18, "fill": "#ff0000"},
+        {"type": "pin", "x": 10, "y": 50},
+        {"type": "crosshair", "x": 20, "y": 50, "width": 50, "height": 30},
+        {"type": "target", "x": 30, "y": 50, "width": 50, "height": 30},
+        {"type": "callout", "anchor_x": 30, "anchor_y": 50, "label_x": 40, "label_y": 40, "width": 50, "height": 30},
+    ]
+    out, notes = clamp_tight_box_sizes(anns, space="percent", max_width=18.0, max_height=5.5)
+    assert out[0]["height"] == 5.5
+    assert out[0]["width"] == 18.0
+    assert out[1]["x"] == 10
+    assert out[2]["height"] == 30
+    assert out[3]["width"] == 50
+    assert out[4]["height"] == 30
+    assert len(notes) == 1
+
+
+def test_clamp_respects_allow_large():
+    anns = [{"type": "rect", "x": 0, "y": 0, "width": 50, "height": 30, "allow_large": True}]
+    out, notes = clamp_tight_box_sizes(anns, space="percent")
+    assert out[0]["height"] == 30
+    assert notes == []

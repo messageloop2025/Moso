@@ -241,12 +241,28 @@ def scale_annotations(
         if not isinstance(ann, dict):
             continue
         item = dict(ann)
-        for key in ("x", "y", "x1", "y1", "x2", "y2", "left", "top", "right", "bottom"):
+        point_keys = (
+            "x",
+            "y",
+            "x1",
+            "y1",
+            "x2",
+            "y2",
+            "left",
+            "top",
+            "right",
+            "bottom",
+            "anchor_x",
+            "anchor_y",
+            "label_x",
+            "label_y",
+        )
+        for key in point_keys:
             if key in item and item[key] is not None:
                 val = _float(item[key], 0)
-                if key in ("x", "x1", "left"):
+                if key in ("x", "x1", "left", "anchor_x", "label_x"):
                     item[key] = int(round((val - ox) * sx))
-                elif key in ("y", "y1", "top"):
+                elif key in ("y", "y1", "top", "anchor_y", "label_y"):
                     item[key] = int(round((val - oy) * sy))
                 elif key in ("x2", "right"):
                     item[key] = int(round((val - ox) * sx))
@@ -256,6 +272,9 @@ def scale_annotations(
             if key in item and item[key] is not None:
                 val = _float(item[key], 0)
                 item[key] = int(round(val * (sx if key in ("width", "w") else sy)))
+        for key in ("radius", "ring_width", "arm_length", "gap_radius"):
+            if key in item and item[key] is not None:
+                item[key] = int(round(_float(item[key], 0) * ((sx + sy) / 2.0)))
         pts = item.get("points")
         if isinstance(pts, list):
             new_pts = []
@@ -297,6 +316,19 @@ def annotation_max_extent(annotations: list[dict] | None) -> tuple[float, float]
         h = _float(ann.get("height", ann.get("h")), 0)
         max_x = max(max_x, x + w, _float(ann.get("x2"), 0), _float(ann.get("right"), 0))
         max_y = max(max_y, y + h, _float(ann.get("y2"), 0), _float(ann.get("bottom"), 0))
+        radius = max(
+            _float(ann.get("radius"), 0),
+            _float(ann.get("arm_length"), 0),
+            _float(ann.get("gap_radius"), 0),
+        )
+        for px_key in ("anchor_x", "label_x"):
+            px = ann.get(px_key)
+            if px is not None:
+                max_x = max(max_x, _float(px) + radius)
+        for py_key in ("anchor_y", "label_y"):
+            py = ann.get(py_key)
+            if py is not None:
+                max_y = max(max_y, _float(py) + radius)
         for p in ann.get("points") or []:
             if isinstance(p, (list, tuple)) and len(p) >= 2:
                 max_x = max(max_x, _float(p[0]))
@@ -430,6 +462,139 @@ def _line_width(ann: dict, default: int = 2) -> int:
     return max(1, _int(v, default))
 
 
+def _point_center(ann: dict) -> tuple[int, int]:
+    x_key = "anchor_x" if ann.get("anchor_x") is not None else "x"
+    y_key = "anchor_y" if ann.get("anchor_y") is not None else "y"
+    cx = _int(ann.get(x_key), 0)
+    cy = _int(ann.get(y_key), 0)
+    w = _int(ann.get("width", ann.get("w")), 0)
+    h = _int(ann.get("height", ann.get("h")), 0)
+    if w > 0:
+        cx += w // 2
+    if h > 0:
+        cy += h // 2
+    return cx, cy
+
+
+def _marker_rgba(ann: dict) -> tuple[int, int, int, int]:
+    return _resolve_rgba(
+        ann,
+        color_keys=("color", "outline", "stroke", "fill"),
+        default_rgb=(255, 0, 0),
+        default_opacity=1.0,
+    ) or (255, 0, 0, 255)
+
+
+def _draw_crosshair(img, ann: dict, *, color_rgba: tuple[int, int, int, int] | None = None) -> Any:
+    from PIL import ImageDraw
+
+    rgba = color_rgba or _marker_rgba(ann)
+    if rgba[3] <= 0:
+        return img
+    cx, cy = _point_center(ann)
+    arm = max(4, _int(ann.get("arm_length"), 12))
+    gap = max(1, _int(ann.get("gap_radius"), 3))
+    lw = _line_width(ann, 2)
+    segments = [
+        (cx - arm, cy, cx - gap, cy),
+        (cx + gap, cy, cx + arm, cy),
+        (cx, cy - arm, cx, cy - gap),
+        (cx, cy + gap, cx, cy + arm),
+    ]
+
+    def _draw(draw):
+        for x1, y1, x2, y2 in segments:
+            draw.line((x1, y1, x2, y2), fill=rgba if rgba[3] < 255 else rgba[:3], width=lw)
+
+    if rgba[3] < 255:
+        return _composite_overlay(img, lambda overlay: _draw(ImageDraw.Draw(overlay)))
+    _draw(ImageDraw.Draw(img))
+    return img
+
+
+def _draw_target_ring(img, ann: dict, *, color_rgba: tuple[int, int, int, int] | None = None) -> Any:
+    from PIL import ImageDraw
+
+    rgba = color_rgba or _marker_rgba(ann)
+    if rgba[3] <= 0:
+        return img
+    cx, cy = _point_center(ann)
+    radius = max(3, _int(ann.get("radius") or ann.get("size"), 8))
+    lw = max(1, _int(ann.get("ring_width") or ann.get("line_width"), _line_width(ann, 2)))
+    box = (cx - radius, cy - radius, cx + radius, cy + radius)
+
+    def _draw(draw):
+        draw.ellipse(box, outline=rgba if rgba[3] < 255 else rgba[:3], width=lw)
+
+    if rgba[3] < 255:
+        return _composite_overlay(img, lambda overlay: _draw(ImageDraw.Draw(overlay)))
+    _draw(ImageDraw.Draw(img))
+    return img
+
+
+def _draw_filled_pin(img, ann: dict, *, color_rgba: tuple[int, int, int, int] | None = None) -> Any:
+    from PIL import ImageDraw
+
+    rgba = color_rgba or _marker_rgba(ann)
+    if rgba[3] <= 0:
+        return img
+    cx, cy = _point_center(ann)
+    radius = max(3, _int(ann.get("radius") or ann.get("size"), 8))
+    lw = _line_width(ann, 2)
+
+    def _draw(draw):
+        rgb = rgba if rgba[3] < 255 else rgba[:3]
+        outer = (cx - radius, cy - radius, cx + radius, cy + radius)
+        draw.ellipse(outer, fill=rgb, outline=rgb, width=max(1, lw))
+        inner_r = max(1, radius // 3)
+        draw.ellipse((cx - inner_r, cy - inner_r, cx + inner_r, cy + inner_r), fill=(255, 255, 255, 255))
+
+    if rgba[3] < 255:
+        return _composite_overlay(img, lambda overlay: _draw(ImageDraw.Draw(overlay)))
+    _draw(ImageDraw.Draw(img))
+    return img
+
+
+def _draw_callout(img, ann: dict) -> Any:
+    from PIL import ImageDraw
+
+    rgba = _marker_rgba(ann)
+    if rgba[3] <= 0:
+        return img
+    ax = _int(ann.get("anchor_x", ann.get("x")), 0)
+    ay = _int(ann.get("anchor_y", ann.get("y")), 0)
+    lx = _int(ann.get("label_x", ann.get("x")), ax + 24)
+    ly = _int(ann.get("label_y", ann.get("y")), ay - 24)
+    text = str(ann.get("text") or ann.get("label") or "")
+    lw = _line_width(ann, 2)
+    font = _load_font(_int(ann.get("size"), 16))
+    leader = str(ann.get("leader", "line")).strip().lower()
+    anchor_style = str(ann.get("anchor_style", "crosshair")).strip().lower()
+
+    def _draw(draw):
+        fill = rgba if rgba[3] < 255 else rgba[:3]
+        if anchor_style in ("crosshair", "hair"):
+            # callout 内联的准星只画引导点，避免额外覆盖目标中心。
+            arm = max(4, _int(ann.get("arm_length"), 8))
+            gap = max(1, _int(ann.get("gap_radius"), 3))
+            for seg in ((ax - arm, ay, ax - gap, ay), (ax + gap, ay, ax + arm, ay), (ax, ay - arm, ax, ay - gap), (ax, ay + gap, ax, ay + arm)):
+                draw.line(seg, fill=fill, width=lw)
+        elif anchor_style == "dot":
+            draw.point((ax, ay), fill=fill)
+        elif anchor_style in ("target", "ring"):
+            radius = max(3, _int(ann.get("radius"), 6))
+            draw.ellipse((ax - radius, ay - radius, ax + radius, ay + radius), outline=fill, width=lw)
+        if leader != "none":
+            draw.line((ax, ay, lx, ly), fill=fill, width=lw)
+        if text:
+            draw.text((lx, ly), text, fill=fill, font=font)
+
+    if rgba[3] < 255:
+        return _composite_overlay(img, lambda overlay: _draw(ImageDraw.Draw(overlay)))
+    _draw(ImageDraw.Draw(img))
+    return img
+
+
 def _apply_annotation(img, ann: dict) -> Any:
     from PIL import ImageDraw
 
@@ -480,6 +645,23 @@ def _apply_annotation(img, ann: dict) -> Any:
         if outline_rgba is None:
             outline_rgba = (255, 0, 0, 255)
         return _draw_stroke_shape(img, ann, kind, outline_rgba, lw)
+
+    if kind in ("crosshair", "hair"):
+        return _draw_crosshair(img, ann)
+
+    if kind in ("target", "ring"):
+        return _draw_target_ring(img, ann)
+
+    if kind == "callout":
+        return _draw_callout(img, ann)
+
+    if kind in ("pin", "marker", "point"):
+        style = str(ann.get("style") or "").strip().lower()
+        if style in ("crosshair", "hair"):
+            return _draw_crosshair(img, ann)
+        if style in ("target", "ring", "hollow"):
+            return _draw_target_ring(img, ann)
+        return _draw_filled_pin(img, ann)
 
     if kind == "line":
         outline_rgba = _resolve_rgba(

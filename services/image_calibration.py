@@ -47,7 +47,68 @@ def parse_global_transform(gt: Any) -> tuple[float, float, float, float] | None:
     return (sx, sy, ox, oy)
 
 
-def normalized_space_divisor(space: Any) -> float | None:
+def clamp_tight_box_sizes(
+    annotations: list[dict] | None,
+    *,
+    space: Any = "percent",
+    max_width: float = 18.0,
+    max_height: float = 5.5,
+    enabled: bool = True,
+) -> tuple[list[dict] | None, list[str]]:
+    """限制 rect/highlight 等框过大（如单个菜单项标成三行高）。
+
+    max_width/max_height 单位与 coordinate_space 一致（percent 下为百分点）。
+    标注项设 allow_large=true 可跳过；pin/marker/line/text 不限制。
+    """
+    if not enabled or not annotations:
+        return annotations, []
+    div = normalized_space_divisor(space or "percent")
+    if div is None or div == "content":
+        mw, mh = max_width, max_height
+    elif div == 1000.0:
+        mw, mh = max_width * 10.0, max_height * 10.0
+    elif div == 1.0:
+        mw, mh = max_width / 100.0, max_height / 100.0
+    else:
+        mw, mh = max_width, max_height
+    skip_types = {"pin", "marker", "point", "crosshair", "hair", "target", "ring", "callout", "line", "text", "polygon"}
+    notes: list[str] = []
+    out: list[dict] = []
+    for ann in annotations:
+        if not isinstance(ann, dict):
+            continue
+        item = dict(ann)
+        kind = (item.get("type") or "rect").strip().lower()
+        if kind in skip_types or item.get("allow_large") in (True, "true", 1, "1"):
+            out.append(item)
+            continue
+        if kind not in ("rect", "rectangle", "box", "overlay", "mask", "highlight", "ellipse", "circle"):
+            out.append(item)
+            continue
+        wkey = "width" if "width" in item else ("w" if "w" in item else None)
+        hkey = "height" if "height" in item else ("h" if "h" in item else None)
+        if not wkey and not hkey:
+            out.append(item)
+            continue
+        changed = False
+        if wkey:
+            ow = _float(item.get(wkey), 0)
+            if ow > mw:
+                item[wkey] = round(mw, 4)
+                changed = True
+        if hkey:
+            oh = _float(item.get(hkey), 0)
+            if oh > mh:
+                item[hkey] = round(mh, 4)
+                changed = True
+        if changed:
+            label = item.get("label") or item.get("text") or kind
+            notes.append(f"{label}: 框尺寸已收紧至 max {mw:.1f}×{mh:.1f}")
+        out.append(item)
+    return out, notes
+
+
+def normalized_space_divisor(space: Any) -> float | str | None:
     """把显式坐标系名解析为「除数」：x_px = x / divisor * W。"""
     s = (str(space or "")).strip().lower()
     if s in ("percent", "pct", "percentage", "%", "百分比"):
@@ -56,7 +117,165 @@ def normalized_space_divisor(space: Any) -> float | None:
         return 1.0
     if s in ("norm1000", "0-1000", "0~1000", "thousand", "qwen", "gemini"):
         return 1000.0
+    if s in ("percent_content", "content_percent", "content", "内容区百分比"):
+        return "content"
     return None
+
+
+def detect_content_bounds(raw: bytes, *, white_threshold: int = 242) -> dict | None:
+    """检测截图中非空白内容区（左右/上下白边），返回像素 bbox 或 None。"""
+    if not raw:
+        return None
+    try:
+        import io
+        from PIL import Image
+    except Exception:
+        return None
+    try:
+        im = Image.open(io.BytesIO(raw)).convert("RGB")
+        w, h = im.size
+        if w <= 0 or h <= 0:
+            return None
+        scale = min(1.0, 512.0 / max(w, h))
+        if scale < 1.0:
+            im = im.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.Resampling.BILINEAR)
+        px = im.load()
+        sw, sh = im.size
+        thr = max(200, min(255, int(white_threshold)))
+        min_x, min_y, max_x, max_y = sw, sh, -1, -1
+        for y in range(sh):
+            for x in range(sw):
+                r, g, b = px[x, y][:3]
+                if r >= thr and g >= thr and b >= thr:
+                    continue
+                min_x = min(min_x, x)
+                min_y = min(min_y, y)
+                max_x = max(max_x, x)
+                max_y = max(max_y, y)
+        if max_x < 0:
+            return None
+        inv = 1.0 / scale if scale > 0 else 1.0
+        cx = int(round(min_x * inv))
+        cy = int(round(min_y * inv))
+        cw = int(round((max_x - min_x + 1) * inv))
+        ch = int(round((max_y - min_y + 1) * inv))
+        cx = max(0, min(cx, w - 1))
+        cy = max(0, min(cy, h - 1))
+        cw = max(1, min(cw, w - cx))
+        ch = max(1, min(ch, h - cy))
+        if cw >= w * 0.97 and ch >= h * 0.97:
+            return None
+        return {
+            "x": cx, "y": cy, "width": cw, "height": ch,
+            "full_width": w, "full_height": h,
+            "margin_left_frac": round(cx / w, 4),
+            "margin_top_frac": round(cy / h, 4),
+        }
+    except Exception:
+        return None
+
+
+def _annotations_to_pixels(
+    annotations: list[dict],
+    src_w: int,
+    src_h: int,
+    space: Any,
+    content_bounds: dict | None = None,
+) -> list[dict] | None:
+    """把 annotations 换算到原图像素（用于打分，不含 global_transform）。"""
+    div = normalized_space_divisor(space)
+    if div is None or not annotations or src_w <= 0 or src_h <= 0:
+        return None
+    if div == "content":
+        cb = content_bounds or {}
+        cx = int(cb.get("x") or 0)
+        cy = int(cb.get("y") or 0)
+        cw = max(1, int(cb.get("width") or src_w))
+        ch = max(1, int(cb.get("height") or src_h))
+        out: list[dict] = []
+        for ann in annotations:
+            if not isinstance(ann, dict):
+                continue
+            item = dict(ann)
+            for key in ("x", "x1", "left"):
+                if key in item and item[key] is not None:
+                    item[key] = int(round(cx + _float(item[key]) / 100.0 * cw))
+            for key in ("y", "y1", "top"):
+                if key in item and item[key] is not None:
+                    item[key] = int(round(cy + _float(item[key]) / 100.0 * ch))
+            for key in ("width", "w"):
+                if key in item and item[key] is not None:
+                    item[key] = max(1, int(round(_float(item[key]) / 100.0 * cw)))
+            for key in ("height", "h"):
+                if key in item and item[key] is not None:
+                    item[key] = max(1, int(round(_float(item[key]) / 100.0 * ch)))
+            out.append(item)
+        return out
+    sx = float(src_w) / float(div)
+    sy = float(src_h) / float(div)
+    return apply_calibration_transform_to_annotations(annotations, sx, sy, 0.0, 0.0)
+
+
+def estimate_auto_global_transform(
+    annotations: list[dict],
+    src_w: int,
+    src_h: int,
+    *,
+    space: Any = "percent",
+    content_bounds: dict | None = None,
+    raw: bytes | None = None,
+    min_improvement: float = 4.0,
+) -> tuple[float, float, float, float, str, dict | None] | None:
+    """在标注坐标系内自动搜索整组 scale+offset（宏观校正）。
+
+    返回 (sx, sy, ox, oy, 选用的坐标系, content_bounds)；若无改善返回 None。
+    """
+    if not annotations or src_w <= 0 or src_h <= 0 or len(annotations) < 2:
+        return None
+    cb = content_bounds
+    if cb is None and raw:
+        cb = detect_content_bounds(raw)
+    spaces: list[tuple[str, dict | None]] = [(str(space or "percent"), cb if str(space or "") in ("percent_content", "content") else None)]
+    if cb and (cb.get("margin_left_frac") or 0) > 0.03:
+        spaces.append(("percent_content", cb))
+    if str(space or "percent") != "percent":
+        spaces.insert(0, ("percent", None))
+
+    def _score_for(gsx: float, gsy: float, gox: float, goy: float, sp: str, bounds: dict | None) -> float:
+        adj = apply_calibration_transform_to_annotations(annotations, gsx, gsy, gox, goy) or []
+        px = _annotations_to_pixels(adj, src_w, src_h, sp, bounds)
+        if not px:
+            return -1e18
+        return _score_transform(px, src_w, src_h, 1.0, 1.0, 0.0, 0.0)
+
+    best_overall: tuple[float, float, float, float, float, str, dict | None] | None = None
+    scales = (0.78, 0.85, 0.92, 0.96, 1.0, 1.04, 1.08, 1.15, 1.22)
+    for sp, bounds in spaces:
+        if normalized_space_divisor(sp) is None:
+            continue
+        if sp == "percent_content" and not bounds:
+            continue
+        base = _score_for(1.0, 1.0, 0.0, 0.0, sp, bounds)
+        best = (1.0, 1.0, 0.0, 0.0, base, sp, bounds)
+        for sx in scales:
+            for sy in scales:
+                for ox in range(-28, 29, 4):
+                    for oy in range(-18, 19, 4):
+                        sc = _score_for(sx, sy, float(ox), float(oy), sp, bounds)
+                        if sc > best[4]:
+                            best = (sx, sy, float(ox), float(oy), sc, sp, bounds)
+        if best_overall is None or best[4] > best_overall[4]:
+            best_overall = best
+    if not best_overall:
+        return None
+    sx, sy, ox, oy, score, sp_out, bounds_out = best_overall
+    base_percent = _score_for(1.0, 1.0, 0.0, 0.0, "percent", None)
+    if score - base_percent < min_improvement and sp_out == "percent" and abs(ox) < 1e-6 and abs(oy) < 1e-6:
+        return None
+    if abs(sx - 1.0) < 1e-6 and abs(sy - 1.0) < 1e-6 and abs(ox) < 1e-6 and abs(oy) < 1e-6:
+        if sp_out == "percent":
+            return None
+    return sx, sy, ox, oy, sp_out, bounds_out
 
 
 def apply_normalized_space(
@@ -64,11 +283,15 @@ def apply_normalized_space(
     src_w: int,
     src_h: int,
     space: Any,
+    content_bounds: dict | None = None,
 ) -> tuple[list[dict] | None, float, float] | None:
-    """按显式坐标系（percent / 0-1 / 0-1000）确定性换算到原图像素。"""
+    """按显式坐标系（percent / percent_content / 0-1 / 0-1000）确定性换算到原图像素。"""
     div = normalized_space_divisor(space)
     if div is None or not annotations or src_w <= 0 or src_h <= 0:
         return None
+    if div == "content":
+        out = _annotations_to_pixels(annotations, src_w, src_h, space, content_bounds)
+        return out, 1.0, 1.0
     sx = float(src_w) / div
     sy = float(src_h) / div
     out = apply_calibration_transform_to_annotations(annotations, sx, sy, 0.0, 0.0)
@@ -601,6 +824,7 @@ def resolve_annotation_transform(
     cal_observations: list[dict] | None,
     *,
     coordinate_space: Any = None,
+    content_bounds: dict | None = None,
     reference_width: int | None = None,
     reference_height: int | None = None,
     offset_x: float = 0,
@@ -622,12 +846,14 @@ def resolve_annotation_transform(
         )
         return out, note, {"method": "calibration", "sx": sx, "sy": sy, "ox": ox, "oy": oy, "points": matched}
 
-    space_res = apply_normalized_space(annotations, src_w, src_h, coordinate_space)
+    space_res = apply_normalized_space(annotations, src_w, src_h, coordinate_space, content_bounds)
     if space_res:
         out, sx, sy = space_res
-        return out, f"显式坐标系 {coordinate_space} → 原图 {src_w}×{src_h}", {
-            "method": "explicit_space", "space": str(coordinate_space), "sx": sx, "sy": sy,
-        }
+        note = f"显式坐标系 {coordinate_space} → 原图 {src_w}×{src_h}"
+        meta_out: dict = {"method": "explicit_space", "space": str(coordinate_space), "sx": sx, "sy": sy}
+        if content_bounds and normalized_space_divisor(coordinate_space) == "content":
+            meta_out["content_bounds"] = content_bounds
+        return out, note, meta_out
 
     if use_original:
         return list(annotations), "use_original_coordinates（未换算）", {"method": "original"}

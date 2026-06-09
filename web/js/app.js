@@ -1743,6 +1743,13 @@ function edgeopsOpenChatAttachmentPreview(url, title) {
     title = title || t('ui.attach.preview');
     var userScale = 1;
     var rotation = 0;
+    var panX = 0;
+    var panY = 0;
+    var dragging = false;
+    var dragStartX = 0;
+    var dragStartY = 0;
+    var dragPanX = 0;
+    var dragPanY = 0;
     var overlay = document.createElement('div');
     overlay.id = 'edgeopsChatAttachmentPreviewOverlay';
     overlay.className = 'modal-overlay edgeops-chat-attach-preview-overlay';
@@ -1770,24 +1777,52 @@ function edgeopsOpenChatAttachmentPreview(url, title) {
     document.body.appendChild(overlay);
     var modal = overlay.querySelector('.edgeops-chat-attach-preview-modal');
     var body = overlay.querySelector('.edgeops-chat-attach-preview-body');
+    var stage = overlay.querySelector('.edgeops-chat-attach-preview-stage');
     var wrap = overlay.querySelector('.edgeops-chat-attach-preview-img-wrap');
     overlay.querySelector('.edgeops-chat-attach-preview-title').textContent = title;
     overlay.querySelector('.edgeops-chat-attach-preview-title').title = title;
     var img = overlay.querySelector('.edgeops-chat-attach-preview-img');
 
-    function applyView() {
+    function getFitScale() {
         if (!img.naturalWidth || !img.naturalHeight || !body) return;
         var pad = 24;
         var bw = Math.max(64, body.clientWidth - pad);
         var bh = Math.max(64, body.clientHeight - pad);
-        var fit = Math.min(bw / img.naturalWidth, bh / img.naturalHeight);
-        var s = fit * userScale;
-        wrap.style.transform = 'scale(' + s + ') rotate(' + rotation + 'deg)';
+        return Math.min(bw / img.naturalWidth, bh / img.naturalHeight);
+    }
+
+    function getDisplayScale() {
+        var fit = getFitScale();
+        return (fit || 1) * userScale;
+    }
+
+    function applyView() {
+        if (!img.naturalWidth || !img.naturalHeight || !body) return;
+        var s = getDisplayScale();
+        wrap.style.transform = 'translate(' + panX + 'px, ' + panY + 'px) scale(' + s + ') rotate(' + rotation + 'deg)';
+    }
+
+    function setZoom(nextScale, clientX, clientY) {
+        if (!img.naturalWidth || !stage) return;
+        var oldDisplay = getDisplayScale();
+        var oldScale = userScale;
+        userScale = Math.max(0.1, Math.min(10, nextScale));
+        if (clientX != null && clientY != null && oldDisplay > 0 && userScale !== oldScale) {
+            var rect = stage.getBoundingClientRect();
+            var dx = clientX - rect.left - rect.width / 2 - panX;
+            var dy = clientY - rect.top - rect.height / 2 - panY;
+            var ratio = getDisplayScale() / oldDisplay;
+            panX += dx - dx * ratio;
+            panY += dy - dy * ratio;
+        }
+        applyView();
     }
 
     img.onload = function() {
         img.style.width = img.naturalWidth + 'px';
         img.style.height = img.naturalHeight + 'px';
+        panX = 0;
+        panY = 0;
         applyView();
     };
     img.onerror = function() {
@@ -1808,13 +1843,46 @@ function edgeopsOpenChatAttachmentPreview(url, title) {
     overlay.querySelectorAll('[data-act]').forEach(function(btn) {
         btn.addEventListener('click', function() {
             var act = btn.getAttribute('data-act');
-            if (act === 'zoom-in') userScale = Math.min(5, userScale + 0.25);
-            else if (act === 'zoom-out') userScale = Math.max(0.25, userScale - 0.25);
+            if (act === 'zoom-in') setZoom(userScale * 1.2);
+            else if (act === 'zoom-out') setZoom(userScale / 1.2);
             else if (act === 'rotate') rotation = (rotation + 90) % 360;
-            else if (act === 'reset') { userScale = 1; rotation = 0; }
+            else if (act === 'reset') { userScale = 1; rotation = 0; panX = 0; panY = 0; }
             applyView();
         });
     });
+    if (stage) {
+        stage.addEventListener('wheel', function(ev) {
+            ev.preventDefault();
+            var factor = ev.deltaY < 0 ? 1.12 : 1 / 1.12;
+            setZoom(userScale * factor, ev.clientX, ev.clientY);
+        }, { passive: false });
+        stage.addEventListener('pointerdown', function(ev) {
+            if (ev.button !== 0) return;
+            dragging = true;
+            dragStartX = ev.clientX;
+            dragStartY = ev.clientY;
+            dragPanX = panX;
+            dragPanY = panY;
+            stage.classList.add('is-dragging');
+            try { stage.setPointerCapture(ev.pointerId); } catch (_e) {}
+            ev.preventDefault();
+        });
+        stage.addEventListener('pointermove', function(ev) {
+            if (!dragging) return;
+            panX = dragPanX + (ev.clientX - dragStartX);
+            panY = dragPanY + (ev.clientY - dragStartY);
+            applyView();
+        });
+        function stopDrag(ev) {
+            if (!dragging) return;
+            dragging = false;
+            stage.classList.remove('is-dragging');
+            try { stage.releasePointerCapture(ev.pointerId); } catch (_e) {}
+        }
+        stage.addEventListener('pointerup', stopDrag);
+        stage.addEventListener('pointercancel', stopDrag);
+        stage.addEventListener('pointerleave', stopDrag);
+    }
     window._edgeopsChatAttachmentPreviewKeyHandler = function(ev) { if (ev.key === 'Escape') edgeopsCloseChatAttachmentPreview(); };
     document.addEventListener('keydown', window._edgeopsChatAttachmentPreviewKeyHandler);
 }

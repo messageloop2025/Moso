@@ -2205,18 +2205,21 @@ TOOLS = [
             "description": (
                 "对用户在聊天中上传的**图片附件**做简单编辑并保存为**新附件**（不覆盖原图）。"
                 "可用于画红框、半透明高亮遮罩、画线、填色、插入文字，或旋转/裁剪/缩放。\n\n"
-                "**标注定位（务必避免偏移）——首选「一次标全部 + 全局微调」**\n"
-                "1. **最佳（强烈推荐）**：一次性标出**所有**目标，用 `coordinate_space=\"percent\"`，x/y/width/height 用 0–100 百分比。"
-                "不必纠结绝对精确——只要各框的**相对位置/布局**大致对即可（这是你擅长的）。\n"
-                "2. **全局微调闭环（关键）**：本工具返回 `data_url`=标注效果图。查看后：\n"
-                "   - 若**所有框整体一起偏**（相对位置对、整组平移或缩放不准）：**不要逐个改框**，只调 `global_transform` 做宏观校正"
-                "（如整组右移 `{\"offset_x\":8}`、整组偏大 `{\"scale\":0.9}`），annotations 保持不变再次调用；\n"
-                "   - 仅个别框不准：单独微调那一个的百分比。\n"
-                "   迭代 2–3 次直到对齐，再把 `markdown_image` 给用户。\n"
-                "3. **可选**：`grid_overlay=true` 看 0–100 刻度；`cell_grid=true` + `annotations[].cells=[编号]` 用编号网格让后端确定性出框。\n"
-                "4. **勿**传 `use_original_coordinates`、**勿**自己心算像素缩放、**勿**跳过看图自检。\n\n"
+                "**标注定位（默认 1 次调用）——首选「找关键点 + 小标记 + 全局微调」**\n"
+                "1. **最佳（强烈推荐）**：一次性标出**所有**目标，用 `coordinate_space=\"percent\"`，关键点只给 x/y（0–100）。"
+                "UI 菜单/按钮/图标中心优先 `type=\"crosshair\"` 或 `type=\"callout\"`；通用图片关键点优先 `type=\"target\"`/`ring`。"
+                "不要为单个目标估大矩形范围。\n"
+                "2. **语义定位必须先确认**：用户要求标记狗/人/物体时，先确认内容区里真实可见的目标实例，标对象中心点；"
+                "不要把搜索框、输入框、标题栏、搜索词或按钮误当作目标。若无法确定目标在哪，先问用户，不要乱标。\n"
+                "3. **全局微调**：默认 `auto_global_transform=true`，后端会自动搜索整组 scale+offset；也可手动传 `global_transform`。"
+                "网页截图左右白边大时用 `coordinate_space=\"percent_content\"`（相对内容区 0–100）。\n"
+                "4. **兜底预览（首轮默认勿用）**：`grid_overlay` / `cell_grid` / `calibration_probe` 只在一次关键点标注后仍明显不准时使用，会增加轮次。\n"
+                "5. **少遮挡**：需要区域时才用 `type=rect` 细框（只设 outline、不设 fill）；单行菜单/按钮 height 约 **3–5%**。"
+                "**禁止**用 highlight/overlay 实心大块遮罩标单个菜单项。默认 `tight_boxes=true` 会收紧过大框。\n"
+                "6. 正常结果若返回 `deliver_now=true`，立即交付 `markdown_image`，不要再调工具；若 `should_retry=true`，仅原样复用 annotations 并微调 `global_transform` 一次。\n"
+                "7. **勿**传 `use_original_coordinates`、**勿**自己心算像素缩放、**勿**逐个目标单独修。\n\n"
                 "**透明度**：每项可设 `opacity`（0~1 或 0~100）；颜色可用 `#RRGGBBAA`。\n\n"
-                "**annotations 类型**：rect/ellipse/polygon、overlay/mask/highlight、line、text。\n"
+                "**annotations 类型**：crosshair、target/ring、callout、pin/marker、rect/ellipse/polygon、overlay/mask/highlight、line、text。\n"
                 "仅可编辑当前用户自己的 image 类附件。"
             ),
             "parameters": {
@@ -2232,19 +2235,24 @@ TOOLS = [
                     "scale": {"type": "number", "description": "等比缩放倍数，如 0.5 或 2.0"},
                     "coordinate_space": {
                         "type": "string",
-                        "enum": ["percent", "norm", "norm1000", "pixel"],
+                        "enum": ["percent", "percent_content", "norm", "norm1000", "pixel"],
                         "description": (
-                            "annotations 的坐标系。**首选 percent**（x/y/width/height 用 0–100 百分比）；"
-                            "norm=0–1 小数；norm1000=0–1000；pixel=原图绝对像素（默认/不指定时走自动猜测，易偏移）。"
+                            "annotations 的坐标系。**首选 percent**（0–100 相对整图）；"
+                            "网页/截图左右有大白边时用 **percent_content**（0–100 相对检测到的内容区）；"
+                            "norm=0–1；norm1000=0–1000；pixel=原图像素。"
                         ),
+                    },
+                    "auto_global_transform": {
+                        "type": "boolean",
+                        "description": "默认 true：后端自动搜索整组 scale+offset 宏观校正（相对布局对、整组偏时可免 AI 手调 global_transform）。传 false 关闭。",
                     },
                     "grid_overlay": {
                         "type": "boolean",
-                        "description": "true 时仅输出一张带 0–100 百分比刻度网格的预览图，便于你读取相对位置后用 percent 坐标标注（不做业务标注）",
+                        "description": "兜底预览，首轮默认勿用。true 时仅输出一张 0–100 百分比刻度图，便于读取坐标（不做业务标注，会增加轮次）。",
                     },
                     "cell_grid": {
                         "type": "boolean",
-                        "description": "true 时仅输出一张带编号小格的预览图（Set-of-Mark）。看图后用 annotations[].cells=[编号...] 让后端确定性出框，最准。",
+                        "description": "兜底预览，首轮默认勿用。true 时仅输出编号小格图；下一轮用 annotations[].cells=[编号...] 出框（不适合关键点，增加轮次）。",
                     },
                     "cell_cols": {"type": "integer", "description": "编号网格列数（默认 12，2–40）；cell_grid 预览与带 cells 的标注必须用相同值"},
                     "cell_rows": {"type": "integer", "description": "编号网格行数（默认 8，2–40）"},
@@ -2255,6 +2263,18 @@ TOOLS = [
                             "字段：scale（统一缩放）或 scale_x/scale_y，offset_x/offset_y（平移，单位同坐标系：percent 下为百分点）。"
                             "例：整组右移 8% 用 {\"offset_x\":8}；整组偏大用 {\"scale\":0.9}。看结果图后只调这一组旋钮即可整体对齐，不必逐个改框。"
                         ),
+                    },
+                    "tight_boxes": {
+                        "type": "boolean",
+                        "description": "默认 true：自动收紧 rect/highlight 等过大的 width/height（如单行菜单误标成三行高）。传 false 关闭。",
+                    },
+                    "max_box_height_percent": {
+                        "type": "number",
+                        "description": "tight_boxes 时 height 上限（percent 坐标下默认 5.5 百分点，约一行菜单高）",
+                    },
+                    "max_box_width_percent": {
+                        "type": "number",
+                        "description": "tight_boxes 时 width 上限（percent 坐标下默认 18 百分点）",
                     },
                     "reference_width": {
                         "type": "number",
@@ -2278,7 +2298,7 @@ TOOLS = [
                     },
                     "calibration_probe": {
                         "type": "boolean",
-                        "description": "true 时仅输出带绿色校准线的探测图 + calibration_reference，不做业务标注",
+                        "description": "兜底预览，首轮默认勿用。true 时仅输出带绿色校准线的探测图 + calibration_reference，不做业务标注。",
                     },
                     "calibration_observations": {
                         "type": "array",
@@ -2291,10 +2311,15 @@ TOOLS = [
                     "annotations": {
                         "type": "array",
                         "description": (
-                            "标注列表。**定位优先用 `cells`**：`{\"type\":\"rect\",\"cells\":[编号,...],\"outline\":\"#ff0000\"}`，"
-                            "后端按编号网格确定性出框（需配合 cell_grid 预览 + 相同 cell_cols/cell_rows）。"
-                            "其它字段：type, x/y/width/height 或 points, fill/outline/color, opacity(0~1 或 0~100), line_width。"
-                            "半透明遮罩用 type=overlay|mask|highlight + fill + opacity。"
+                            "标注列表。**默认关键点模式**：一次列全所有目标，优先 `{\"type\":\"crosshair\",\"x\":12.5,\"y\":24}` "
+                            "或 `{\"type\":\"target\",\"x\":50,\"y\":45}`。`callout` 用 anchor_x/anchor_y 指目标、label_x/label_y 放文字。"
+                            "标对象时 x/y 必须落在真实可见对象中心，不要落在搜索框、输入框、标题栏或搜索按钮上。"
+                            "需要区域时才用 rect 的 x/y/width/height 且只设 outline；勿用实心 highlight 标菜单。"
+                            "兜底才用 `cells`：`{\"type\":\"rect\",\"cells\":[编号,...],\"outline\":\"#ff0000\"}`。"
+                            "其它字段：type, x/y/anchor_x/anchor_y/label_x/label_y/width/height 或 points, fill/outline/color, opacity(0~1 或 0~100), line_width, radius, arm_length, gap_radius。"
+                            "半透明遮罩用 type=overlay|mask|highlight + fill + opacity（勿用于单行菜单）。"
+                            "侧边栏菜单等窄目标优先 crosshair/callout/target（x/y 为标点，无 width/height）或细框 rect 仅 outline。"
+                            "设 allow_large=true 可跳过 tight_boxes 收紧。"
                         ),
                         "items": {"type": "object"},
                     },
@@ -12995,7 +13020,10 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 build_cell_grid_plan as _build_cell_grid_plan,
                 cells_to_bbox as _cells_to_bbox,
                 parse_global_transform as _parse_global_transform,
+                estimate_auto_global_transform as _estimate_auto_global_transform,
+                detect_content_bounds as _detect_content_bounds,
                 apply_calibration_transform_to_annotations as _apply_affine_anns,
+                clamp_tight_box_sizes as _clamp_tight_box_sizes,
                 resolve_annotation_transform as _resolve_annotation_transform,
                 CALIBRATION_MIN_POINTS as _CAL_MIN,
             )
@@ -13100,6 +13128,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                         "对每个要标注的目标，**只需说出它覆盖了哪些格子编号**，然后调用本工具并在 annotations 里用 "
                         '`{"type":"rect","cells":[编号,...],"outline":"#ff0000"}`（不要给 x/y/坐标）。'
                         "后端会把这些格子并成精确像素框。务必传相同的 cell_cols/cell_rows。"
+                        "这是兜底预览，不是最终交付；下一步必须单次带全量 annotations，且不要连续开启预览。"
                     ),
                 }, ensure_ascii=False)
 
@@ -13151,7 +13180,8 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     "hint": (
                         "**请查看上面返回的 data_url（带 0–100 百分比刻度的预览图）**：横轴红字=X%，纵轴红字=Y%。"
                         "对照刻度读出每个目标的左上角(x,y)和宽高(width,height)百分比，"
-                        "然后用 coordinate_space=\"percent\" + annotations（x/y/width/height 均为 0–100）再次调用本工具输出标注图。"
+                        "然后用 coordinate_space=\"percent\" + annotations 再次调用本工具输出标注图。"
+                        "关键点优先只给 x/y 并使用 crosshair/target/callout；这是兜底预览，不是最终交付，不要连续开启预览。"
                     ),
                 }, ensure_ascii=False)
 
@@ -13207,6 +13237,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     "hint": (
                         "**请查看上面返回的 data_url（带角标 ①②③④ 的预览图）**，读取每个角标左上角在你所见画面中的 x,y，"
                         f"至少 {_CAL_MIN} 条不同 id，填入 calibration_observations 后再调用本工具输出最终标注图。"
+                        "这是兜底预览，不是最终交付；下一步必须单次带全量 annotations，且不要连续开启预览。"
                     ),
                 }, ensure_ascii=False)
 
@@ -13254,11 +13285,54 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                         coord_anns.append(a)
             # 全局微调：整组标注相对布局准、仅整体缩放/平移有偏差时，在坐标系换算前统一校正
             global_transform = _parse_global_transform(arguments.get("global_transform"))
+            content_bounds = None
+            auto_gt_flag = arguments.get("auto_global_transform")
+            auto_gt_on = auto_gt_flag is None or auto_gt_flag in (True, "true", 1, "1")
+            if not coordinate_space and coord_anns:
+                coordinate_space = "percent"
+            if coordinate_space in ("percent_content", "content", "content_percent", "内容区百分比"):
+                content_bounds = _detect_content_bounds(raw)
             global_note = ""
+            auto_space_switch = ""
+            if not global_transform and auto_gt_on and coord_anns and len(coord_anns) >= 2 and src_w and src_h:
+                auto_res = _estimate_auto_global_transform(
+                    coord_anns, src_w, src_h, space=coordinate_space or "percent", raw=raw,
+                )
+                if auto_res:
+                    gsx, gsy, gox, goy, sp_auto, cb_auto = auto_res
+                    global_transform = (gsx, gsy, gox, goy)
+                    if sp_auto and sp_auto != (coordinate_space or "percent"):
+                        coordinate_space = sp_auto
+                        auto_space_switch = f"坐标系→{sp_auto}"
+                    if cb_auto:
+                        content_bounds = cb_auto
+                    global_note = (
+                        f"auto_global_transform scale=({gsx:.3f},{gsy:.3f}) offset=({gox:+.2f},{goy:+.2f})"
+                        + (f"；{auto_space_switch}" if auto_space_switch else "")
+                    )
             if global_transform and coord_anns:
                 gsx, gsy, gox, goy = global_transform
                 coord_anns = _apply_affine_anns(coord_anns, gsx, gsy, gox, goy) or coord_anns
                 global_note = f"全局微调 scale=({gsx:.3f},{gsy:.3f}) offset=({gox:+.2f},{goy:+.2f})"
+            clamp_notes: list[str] = []
+            tight_flag = arguments.get("tight_boxes")
+            tight_on = tight_flag is None or tight_flag in (True, "true", 1, "1")
+            try:
+                max_box_h = float(arguments.get("max_box_height_percent") or 5.5)
+            except (TypeError, ValueError):
+                max_box_h = 5.5
+            try:
+                max_box_w = float(arguments.get("max_box_width_percent") or 18.0)
+            except (TypeError, ValueError):
+                max_box_w = 18.0
+            if coord_anns and tight_on:
+                coord_anns, clamp_notes = _clamp_tight_box_sizes(
+                    coord_anns,
+                    space=coordinate_space or "percent",
+                    max_width=max_box_w,
+                    max_height=max_box_h,
+                    enabled=True,
+                )
             if coord_anns and src_w and src_h:
                 scaled_anns, coord_note, transform_meta = _resolve_annotation_transform(
                     coord_anns,
@@ -13268,16 +13342,32 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     cal_reference,
                     cal_obs,
                     coordinate_space=coordinate_space,
+                    content_bounds=content_bounds,
                     reference_width=ref_w,
                     reference_height=ref_h,
                     offset_x=offset_x,
                     offset_y=offset_y,
                     use_original=use_original,
                 )
-                if global_note:
-                    coord_note = (global_note + "；" + coord_note) if coord_note else global_note
+                if global_note or clamp_notes:
+                    extra = "；".join([p for p in (global_note, "；".join(clamp_notes) if clamp_notes else "") if p])
+                    coord_note = (extra + "；" + coord_note) if coord_note else extra
                     if isinstance(transform_meta, dict):
-                        transform_meta["global_transform"] = {"scale_x": global_transform[0], "scale_y": global_transform[1], "offset_x": global_transform[2], "offset_y": global_transform[3]}
+                        if clamp_notes:
+                            transform_meta["clamp_notes"] = clamp_notes
+                            transform_meta["tight_boxes"] = {
+                                "enabled": tight_on,
+                                "max_height_percent": max_box_h,
+                                "max_width_percent": max_box_w,
+                            }
+                        if global_transform:
+                            transform_meta["global_transform"] = {
+                                "scale_x": global_transform[0], "scale_y": global_transform[1],
+                                "offset_x": global_transform[2], "offset_y": global_transform[3],
+                                "auto": bool(auto_gt_on and not arguments.get("global_transform")),
+                            }
+                        if content_bounds:
+                            transform_meta["content_bounds"] = content_bounds
                 if scaled_anns is None:
                     return json.dumps({
                         "success": False,
@@ -13339,16 +13429,34 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 _result_url, _, _, _ = _bivm(edited, mime=mime)
             except Exception:  # noqa: BLE001
                 _result_url = None
-            hint = (
-                "**先查看上面返回的 data_url（标注后的实际效果图），核对所有框/标记的位置**：\n"
-                "- 若**所有框整体一起偏移/偏大偏小**（相对位置对、但整组平移或缩放不准）：**不要逐个改框**，只需调 `global_transform` 做宏观校正，"
-                "例如整组右移就加 `offset_x`、整组偏大就把 `scale` 调小（percent 坐标下 offset 单位是百分点）；保持 annotations 不变再次调用本工具。\n"
-                "- 若只是个别框不准：单独调那一个 annotation 的坐标。\n"
-                "最多迭代 2–3 次，定位合理后再把 markdown_image 插入回复给用户。原图 uuid 不变。"
+            point_types = {"crosshair", "hair", "target", "ring", "callout", "pin", "marker", "point"}
+            annotation_count = len(anns or [])
+            point_annotation_count = sum(
+                1
+                for a in (anns or [])
+                if isinstance(a, dict) and (str(a.get("type") or "").strip().lower() in point_types)
             )
-            if isinstance(transform_meta, dict) and transform_meta.get("recommend_calibration_probe"):
+            should_retry = bool(
+                isinstance(transform_meta, dict)
+                and (transform_meta.get("likely_offset_error") or transform_meta.get("recommend_calibration_probe"))
+            )
+            deliver_now = not should_retry
+            retry_mode = "global_transform_only" if should_retry else None
+            suggested_global_transform = (
+                {"scale_x": global_transform[0], "scale_y": global_transform[1],
+                 "offset_x": global_transform[2], "offset_y": global_transform[3]}
+                if global_transform else None
+            )
+            if deliver_now:
                 hint = (
-                    "标注整体可能偏移（框集中在左右边距）。优先用 `global_transform` 整体平移/缩放校正（见下）。" + hint
+                    "后端坐标换算与自动校正已完成，`deliver_now=true`。"
+                    "请立即把 `markdown_image` 插入回复交付；不要再次调用本工具，不要逐个目标微调。"
+                )
+            else:
+                hint = (
+                    "检测到标注可能存在整组偏移，`should_retry=true`。"
+                    "只允许最后再调用一次：原样复用本次 annotations，仅调整 `global_transform`（或 percent/percent_content 坐标系），"
+                    "禁止逐个目标修改 x/y，禁止再开 grid_overlay/cell_grid/calibration_probe。"
                 )
             return json.dumps({
                 "success": True,
@@ -13368,6 +13476,12 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                      "offset_x": global_transform[2], "offset_y": global_transform[3]}
                     if global_transform else None
                 ),
+                "suggested_global_transform": suggested_global_transform,
+                "deliver_now": deliver_now,
+                "should_retry": should_retry,
+                "retry_mode": retry_mode,
+                "annotation_count": annotation_count,
+                "point_annotation_count": point_annotation_count,
                 "hint": hint,
             }, ensure_ascii=False)
 
