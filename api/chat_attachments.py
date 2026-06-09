@@ -189,6 +189,43 @@ def _attachment_row_to_dict(row: dict) -> dict:
     }
 
 
+def read_image_pixel_size(path: Path) -> tuple[int, int] | None:
+    """读取图片文件像素尺寸 (width, height)。"""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as im:
+            im.load()
+            w, h = im.size
+            return int(w), int(h)
+    except Exception:
+        return None
+
+
+def enrich_image_attachment_meta(row: dict, username: str) -> dict:
+    """为 image 附件补充 width/height 与识图内联估算尺寸（写入 row 副本字段）。"""
+    if (row.get("kind") or "").lower() != "image":
+        return row
+    try:
+        path = resolve_attachment_file(row, username)
+    except Exception:
+        return row
+    if not path.exists() or not path.is_file():
+        return row
+    dims = read_image_pixel_size(path)
+    if dims:
+        row["image_width"], row["image_height"] = dims
+        row["width"], row["height"] = dims
+    try:
+        from services.vision_image import inline_vision_dimension_info
+
+        info = inline_vision_dimension_info(path.read_bytes(), mime=row.get("mime_type") or "")
+        row.update({k: v for k, v in info.items() if v is not None})
+    except OSError:
+        pass
+    return row
+
+
 async def save_bytes_as_chat_attachment(
     user: dict,
     raw: bytes,
@@ -578,24 +615,17 @@ def humanize_size(size: int) -> str:
 
 
 def build_attachment_message_suffix(attachments: list[dict]) -> str:
-    """把附件元信息格式化为追加到用户消息末尾的 Markdown 段，AI 与前端均可理解。
+    """把附件元信息格式化为追加到用户消息末尾的 Markdown 段，供 AI 读取。
 
-    输出形如：
-
-    \n\n---\n**📎 附件（由用户在聊天框上传；AI 可用 `read_chat_attachment(uuid=...)` 读取内容）：**
-    - `name.png`（image · 1.2 MB）· uuid: `xxxx`
-      · **AI 已识别内容（后续请优先基于此回答；非必要不再回读原图）**：
-      > 截图内容一览…
-    - `notes.md`（markdown · 3 KB）· uuid: `yyyy`
-
-    对已有 `ai_description` 的图片，把描述摘录进清单，AI 后续轮次只看这段文本即可作答。
+    对用户可见部分保持简短：文件名、类型、大小、uuid、路径、图片尺寸等关键字段。
+    详细用法说明见系统提示与工具 schema，不重复写在清单里。
     """
     if not attachments:
         return ""
     lines = [
         "",
         "---",
-        "**📎 附件（由用户在聊天框上传；AI 可调用 `read_chat_attachment(uuid=...)` 查看文本/Markdown/Office·PDF（转 Markdown）或获取图片的 data URL）：**",
+        "**📎 附件**",
     ]
     for a in attachments:
         name = a.get("original_name") or a.get("name") or "(未命名)"
@@ -603,15 +633,25 @@ def build_attachment_message_suffix(attachments: list[dict]) -> str:
         size = humanize_size(a.get("size_bytes") or a.get("size") or 0)
         uuid_s = a.get("uuid") or ""
         fs_path = attachment_relative_path(a)
-        lines.append(f"- `{name}`（{kind} · {size}）· uuid: `{uuid_s}`")
-        lines.append(
-            f"  · **落地路径**（用户文件根下，可用 `fs_read_file` / 文件系统面板 / `read_chat_attachment`）：`{fs_path}`"
-        )
+        line = f"- `{name}` · {kind} · {size} · uuid `{uuid_s}` · `{fs_path}`"
+        if (kind or "").lower() == "image":
+            ow = a.get("image_width") or a.get("width") or a.get("original_width")
+            oh = a.get("image_height") or a.get("height") or a.get("original_height")
+            if ow and oh:
+                dim = f"{int(ow)}×{int(oh)}"
+                mw = a.get("model_view_width")
+                mh = a.get("model_view_height")
+                vw = a.get("vision_width")
+                vh = a.get("vision_height")
+                if mw and mh and (int(mw) != int(ow) or int(mh) != int(oh)):
+                    dim += f" (视图 {int(mw)}×{int(mh)})"
+                elif vw and vh and (int(vw) != int(ow) or int(vh) != int(oh)):
+                    dim += f" (识图 {int(vw)}×{int(vh)})"
+                line += f" · {dim}"
+        lines.append(line)
         desc = (a.get("ai_description") or "").strip()
         if desc and (kind or "").lower() == "image":
-            # 过长描述按 1500 字裁一刀，避免把附件清单撑爆；AI 需要完整内容再调工具拉全文
-            short = desc if len(desc) <= 1500 else (desc[:1500] + " …（已截断，如需完整内容调用 `read_chat_attachment` 并传 `prefer_description=true`）")
-            lines.append("  · **AI 已识别内容（后续优先基于此回答；非必要不再回读原图）**：")
+            short = desc if len(desc) <= 1500 else (desc[:1500] + " …")
             for ln in short.splitlines() or [short]:
                 lines.append(f"  > {ln}")
     return "\n".join(lines)

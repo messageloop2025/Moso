@@ -1337,6 +1337,41 @@ function edgeopsInstallChatAttachments(opts) {
 }
 
 /**
+ * 从用户消息正文（含 📎 附件段）解析附件列表，供历史回放时还原内联图片。
+ */
+function edgeopsParseAttachmentsFromUserContent(text) {
+    var out = [];
+    var seen = {};
+    if (!text || String(text).indexOf('uuid') < 0) return out;
+    var lines = String(text).split(/\r?\n/);
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        var um = /uuid\s*[:：]?\s*`?([0-9a-fA-F]{32})`?/i.exec(line);
+        if (!um) continue;
+        var uuid = um[1];
+        if (seen[uuid]) continue;
+        seen[uuid] = true;
+        var nameM = /`([^`]+)`/.exec(line);
+        var name = nameM ? nameM[1] : uuid;
+        var kind = 'binary';
+        if (/\s·\s*image\s·/i.test(line)) kind = 'image';
+        else if (/\s·\s*markdown\s·/i.test(line)) kind = 'markdown';
+        else if (/\s·\s*text\s·/i.test(line)) kind = 'text';
+        out.push({ uuid: uuid, name: name, kind: kind });
+    }
+    return out;
+}
+
+/** 用户气泡展示时隐藏 📎 附件元数据段（仍保留在 DB 供 AI 读取）。 */
+function edgeopsStripAttachmentSuffixForDisplay(text) {
+    if (!text) return '';
+    var s = String(text);
+    var idx = s.search(/\r?\n---\r?\n\*\*📎\s*附件\*\*/);
+    if (idx >= 0) return s.slice(0, idx).replace(/\s+$/, '');
+    return s;
+}
+
+/**
  * 渲染一段「已随当前用户消息附带的附件」预览 HTML，用于用户消息气泡内的即时反馈。
  * 图片用缩略图（直接请求 /api/ai/attachments/<uuid>），文本附件显示为带扩展名徽标的链接。
  * 调用者负责在外层 msg bubble innerHTML 后拼接此字符串。
@@ -1347,7 +1382,6 @@ function edgeopsRenderAttachmentsInline(attachments) {
     attachments.forEach(function(a) {
         var url = (API && API.buildChatAttachmentUrl) ? API.buildChatAttachmentUrl(a.uuid) : ('/api/ai/attachments/' + encodeURIComponent(a.uuid));
         var name = esc(a.name || t('ui.attach.unnamed'));
-        var fsPath = esc(a.fs_path || '');
         html += '<div class="chat-user-attachment-item">';
         if (a.kind === 'image') {
             html += '<img class="chat-attachment-image-inline chat-attachment-previewable" src="' + url + '" alt="' + name + '" title="' + name + '" data-preview-url="' + url + '" role="button" tabindex="0">';
@@ -1356,9 +1390,6 @@ function edgeopsRenderAttachmentsInline(attachments) {
                     + '<span class="chip-icon">' + esc(a.kind === 'markdown' ? 'M' : (a.kind === 'text' ? 'T' : '📄')) + '</span>'
                     + '<span class="chip-label">' + name + '</span>'
                     + '</a>';
-        }
-        if (fsPath) {
-            html += '<div class="chat-attachment-fs-path" title="' + fsPath + '"><span class="chat-attachment-fs-label">' + esc(t('ui.attach.fsPath')) + '</span><code>' + fsPath + '</code></div>';
         }
         html += '</div>';
     });
@@ -1379,7 +1410,7 @@ function edgeopsEnhanceAttachmentList(rootEl) {
     for (var i = 0; i < needs.length; i++) {
         var li = needs[i];
         var text = li.textContent || '';
-        var m = /uuid[:：]\s*([0-9a-fA-F-]{8,})/.exec(text);
+        var m = /uuid\s*[:：]?\s*`?([0-9a-fA-F]{32})`?/i.exec(text);
         if (!m) continue;
         var uuid = m[1];
         var url = (API && API.buildChatAttachmentUrl) ? API.buildChatAttachmentUrl(uuid) : ('/api/ai/attachments/' + encodeURIComponent(uuid));
@@ -1693,6 +1724,10 @@ function edgeopsCloseArtifactPreview() {
 
 function edgeopsCloseChatAttachmentPreview() {
     var el = document.getElementById('edgeopsChatAttachmentPreviewOverlay');
+    if (window._edgeopsChatAttachPreviewRo) {
+        try { window._edgeopsChatAttachPreviewRo.disconnect(); } catch (_e) {}
+        window._edgeopsChatAttachPreviewRo = null;
+    }
     if (el && el.parentNode) el.parentNode.removeChild(el);
     if (window._edgeopsChatAttachmentPreviewKeyHandler) {
         document.removeEventListener('keydown', window._edgeopsChatAttachmentPreviewKeyHandler);
@@ -1700,13 +1735,13 @@ function edgeopsCloseChatAttachmentPreview() {
     }
 }
 
-/** 聊天附件大图预览：缩放/旋转/下载（用户上传与 AI 输出图片共用）。 */
+/** 聊天附件大图预览：默认适应窗口、可拖拽调宽、缩放/旋转/下载。 */
 function edgeopsOpenChatAttachmentPreview(url, title) {
     if (!url) return;
     edgeopsCloseChatAttachmentPreview();
     url = (typeof edgeopsRewriteChatAttachmentUrl === 'function') ? (edgeopsRewriteChatAttachmentUrl(url) || url) : url;
     title = title || t('ui.attach.preview');
-    var scale = 1;
+    var userScale = 1;
     var rotation = 0;
     var overlay = document.createElement('div');
     overlay.id = 'edgeopsChatAttachmentPreviewOverlay';
@@ -1724,31 +1759,60 @@ function edgeopsOpenChatAttachmentPreview(url, title) {
         + '<button type="button" class="modal-close edgeops-chat-attach-preview-close" aria-label="' + esc(t('artifact.close')) + '">&times;</button>'
         + '</div></div>'
         + '<div class="modal-body edgeops-chat-attach-preview-body">'
-        + '<div class="edgeops-chat-attach-preview-stage"><img class="edgeops-chat-attach-preview-img" alt=""></div>'
-        + '</div></div>';
+        + '  <div class="edgeops-chat-attach-preview-stage">'
+        + '    <div class="edgeops-chat-attach-preview-img-wrap">'
+        + '      <img class="edgeops-chat-attach-preview-img" alt="">'
+        + '    </div>'
+        + '  </div>'
+        + '</div>'
+        + '<div class="edgeops-chat-attach-preview-resize-grip" title="' + esc(t('ui.attach.resizeWidth')) + '" aria-hidden="true"></div>'
+        + '</div>';
     document.body.appendChild(overlay);
+    var modal = overlay.querySelector('.edgeops-chat-attach-preview-modal');
+    var body = overlay.querySelector('.edgeops-chat-attach-preview-body');
+    var wrap = overlay.querySelector('.edgeops-chat-attach-preview-img-wrap');
     overlay.querySelector('.edgeops-chat-attach-preview-title').textContent = title;
     overlay.querySelector('.edgeops-chat-attach-preview-title').title = title;
     var img = overlay.querySelector('.edgeops-chat-attach-preview-img');
-    function applyTransform() {
-        img.style.transform = 'scale(' + scale + ') rotate(' + rotation + 'deg)';
+
+    function applyView() {
+        if (!img.naturalWidth || !img.naturalHeight || !body) return;
+        var pad = 24;
+        var bw = Math.max(64, body.clientWidth - pad);
+        var bh = Math.max(64, body.clientHeight - pad);
+        var fit = Math.min(bw / img.naturalWidth, bh / img.naturalHeight);
+        var s = fit * userScale;
+        wrap.style.transform = 'scale(' + s + ') rotate(' + rotation + 'deg)';
     }
-    img.onload = function() { applyTransform(); };
+
+    img.onload = function() {
+        img.style.width = img.naturalWidth + 'px';
+        img.style.height = img.naturalHeight + 'px';
+        applyView();
+    };
     img.onerror = function() {
         overlay.querySelector('.edgeops-chat-attach-preview-body').innerHTML =
             '<div class="edgeops-artifact-preview-error">' + esc(t('artifact.imageLoadFailed')) + '</div>';
     };
     img.src = url;
+
+    if (typeof ResizeObserver !== 'undefined' && modal) {
+        var ro = new ResizeObserver(function() { applyView(); });
+        ro.observe(modal);
+        if (body) ro.observe(body);
+        window._edgeopsChatAttachPreviewRo = ro;
+    }
+
     overlay.querySelector('.edgeops-chat-attach-preview-close').addEventListener('click', edgeopsCloseChatAttachmentPreview);
     overlay.addEventListener('click', function(ev) { if (ev.target === overlay) edgeopsCloseChatAttachmentPreview(); });
     overlay.querySelectorAll('[data-act]').forEach(function(btn) {
         btn.addEventListener('click', function() {
             var act = btn.getAttribute('data-act');
-            if (act === 'zoom-in') scale = Math.min(5, scale + 0.25);
-            else if (act === 'zoom-out') scale = Math.max(0.25, scale - 0.25);
+            if (act === 'zoom-in') userScale = Math.min(5, userScale + 0.25);
+            else if (act === 'zoom-out') userScale = Math.max(0.25, userScale - 0.25);
             else if (act === 'rotate') rotation = (rotation + 90) % 360;
-            else if (act === 'reset') { scale = 1; rotation = 0; }
-            applyTransform();
+            else if (act === 'reset') { userScale = 1; rotation = 0; }
+            applyView();
         });
     });
     window._edgeopsChatAttachmentPreviewKeyHandler = function(ev) { if (ev.key === 'Escape') edgeopsCloseChatAttachmentPreview(); };
@@ -2227,6 +2291,15 @@ function edgeopsRenderSessionMessages(box, msgs, formatter, sessionId, options) 
                 + '<div class="ai-reply-tools"></div>'
                 + '<div class="ai-reply-text message-body">' + formatter(p.clean) + '</div>'
                 + '</div><div class="message-time">' + esc(tsP) + '</div></div></div>';
+        }
+        if (m && m.role === 'user') {
+            var userAttachments = edgeopsParseAttachmentsFromUserContent(p.raw);
+            var userDisplay = edgeopsStripAttachmentSuffixForDisplay(p.clean);
+            var userBody = formatter(userDisplay);
+            if (userAttachments.length) {
+                userBody += edgeopsRenderAttachmentsInline(userAttachments);
+            }
+            return '<div class="chat-message user"' + sidAttr + midAttr + '><div class="avatar">U</div>' + edgeopsRenderMessageBubble(userBody, m && m.created_at) + '</div>';
         }
         return '<div class="chat-message ' + (m.role || 'assistant') + '"' + sidAttr + midAttr + '><div class="avatar">' + ((m && m.role) === 'user' ? 'U' : 'A') + '</div>' + edgeopsRenderMessageBubble(formatter(p.clean), m && m.created_at) + '</div>';
     }).join('');
@@ -5814,6 +5887,7 @@ function edgeopsReplySuggestsPendingWork(text) {
 
 function edgeopsMakeChatStreamingUISetter(opts) {
     opts = opts || {};
+    var prevMode = 'idle';
     return function setStreamingUI(mode) {
         var input = opts.inputId ? document.getElementById(opts.inputId) : opts.input;
         var sendBtn = opts.sendId ? document.getElementById(opts.sendId) : opts.sendBtn;
@@ -5842,6 +5916,18 @@ function edgeopsMakeChatStreamingUISetter(opts) {
                 else ctl.note(typeof t === 'function' ? t('hostAi.runtimeTipCompact') : '');
             }
         }
+        // AI 输出完成（由非空闲态转为空闲）后，把输入焦点自动跳回消息输入框
+        if (idle && prevMode !== 'idle' && input) {
+            setTimeout(function() {
+                try {
+                    if (input.disabled || input.offsetParent === null) return;
+                    input.focus({ preventScroll: true });
+                } catch (_e) {
+                    try { input.focus(); } catch (_e2) {}
+                }
+            }, 0);
+        }
+        prevMode = idle ? 'idle' : (awaiting ? 'awaiting' : 'active');
     };
 }
 

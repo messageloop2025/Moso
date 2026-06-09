@@ -3189,10 +3189,28 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
     z-index: 10050;
 }
 .edgeops-chat-attach-preview-modal {
-    width: min(96vw, 1100px);
+    position: relative;
+    width: min(88vw, 960px);
+    min-width: 320px;
+    max-width: 96vw;
+    height: min(86vh, 820px);
     max-height: 92vh;
+    resize: horizontal;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
+}
+.edgeops-chat-attach-preview-resize-grip {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 8px;
+    height: 56px;
+    border-radius: 4px 0 0 4px;
+    background: linear-gradient(90deg, transparent, rgba(148, 163, 184, 0.35));
+    cursor: ew-resize;
+    pointer-events: none;
 }
 .edgeops-chat-attach-preview-header {
     display: flex;
@@ -3200,6 +3218,7 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
     justify-content: space-between;
     gap: 12px;
     flex-wrap: wrap;
+    flex-shrink: 0;
 }
 .edgeops-chat-attach-preview-toolbar {
     display: flex;
@@ -3209,22 +3228,29 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
 }
 .edgeops-chat-attach-preview-body {
     flex: 1;
-    min-height: 240px;
+    min-height: 0;
     overflow: auto;
     background: rgba(2, 6, 23, 0.55);
 }
 .edgeops-chat-attach-preview-stage {
-    min-height: 240px;
+    width: 100%;
+    height: 100%;
+    min-height: 200px;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 16px;
+    padding: 12px;
+    box-sizing: border-box;
+}
+.edgeops-chat-attach-preview-img-wrap {
+    transform-origin: center center;
+    transition: transform 0.12s ease;
+    flex-shrink: 0;
 }
 .edgeops-chat-attach-preview-img {
+    display: block;
     max-width: none;
     max-height: none;
-    transform-origin: center center;
-    transition: transform 0.15s ease;
     border-radius: 6px;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
 }

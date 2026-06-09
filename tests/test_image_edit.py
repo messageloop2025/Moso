@@ -22,6 +22,37 @@ def _blank_png(w: int = 200, h: int = 100) -> bytes:
     return buf.getvalue()
 
 
+def test_scale_annotations_vision_to_original():
+    from services.image_edit import scale_annotations
+
+    # 原图 2000×1000，内联识图约 1536×768；AI 在识图空间标 (100, 50, 200×100)
+    anns = [{"type": "rect", "x": 100, "y": 50, "width": 200, "height": 100}]
+    scaled = scale_annotations(anns, 2000 / 1536.0, 1000 / 768.0)
+    assert scaled[0]["x"] == int(round(100 * 2000 / 1536))
+    assert scaled[0]["y"] == int(round(50 * 1000 / 768))
+    assert scaled[0]["width"] == int(round(200 * 2000 / 1536))
+    assert scaled[0]["height"] == int(round(100 * 1000 / 768))
+
+
+def test_scale_annotations_with_offset():
+    from services.image_edit import scale_annotations
+
+    anns = [{"type": "rect", "x": 10, "y": 20, "width": 30, "height": 40}]
+    scaled = scale_annotations(anns, 2.0, 2.0, offset_x=5, offset_y=10)
+    assert scaled[0]["x"] == int(round((10 - 5) * 2))
+    assert scaled[0]["y"] == int(round((20 - 10) * 2))
+
+
+def test_infer_annotation_reference_size():
+    from services.image_edit import infer_annotation_reference_size
+
+    anns = [{"type": "rect", "x": 100, "y": 50, "width": 200, "height": 100}]
+    # 坐标落在识图范围内、超出识图宽度的原图坐标不应误判
+    assert infer_annotation_reference_size(anns, 1920, 1032, 1280, 688) == (1280, 688)
+    orig_anns = [{"type": "rect", "x": 1500, "y": 900, "width": 200, "height": 100}]
+    assert infer_annotation_reference_size(orig_anns, 1920, 1032, 1280, 688) is None
+
+
 def test_semi_transparent_overlay():
     raw = _blank_png()
     out, mime = apply_image_edits(

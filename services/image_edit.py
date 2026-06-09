@@ -222,6 +222,122 @@ def _float(val: Any, default: float = 1.0) -> float:
         return default
 
 
+def scale_annotations(
+    annotations: list[dict] | None,
+    scale_x: float,
+    scale_y: float,
+    *,
+    offset_x: float = 0,
+    offset_y: float = 0,
+) -> list[dict] | None:
+    """将标注坐标从 reference 空间换算到原图像素空间。"""
+
+    if not annotations:
+        return annotations
+    sx, sy = float(scale_x or 1), float(scale_y or 1)
+    ox, oy = float(offset_x or 0), float(offset_y or 0)
+    out: list[dict] = []
+    for ann in annotations:
+        if not isinstance(ann, dict):
+            continue
+        item = dict(ann)
+        for key in ("x", "y", "x1", "y1", "x2", "y2", "left", "top", "right", "bottom"):
+            if key in item and item[key] is not None:
+                val = _float(item[key], 0)
+                if key in ("x", "x1", "left"):
+                    item[key] = int(round((val - ox) * sx))
+                elif key in ("y", "y1", "top"):
+                    item[key] = int(round((val - oy) * sy))
+                elif key in ("x2", "right"):
+                    item[key] = int(round((val - ox) * sx))
+                elif key in ("y2", "bottom"):
+                    item[key] = int(round((val - oy) * sy))
+        for key in ("width", "height", "w", "h"):
+            if key in item and item[key] is not None:
+                val = _float(item[key], 0)
+                item[key] = int(round(val * (sx if key in ("width", "w") else sy)))
+        pts = item.get("points")
+        if isinstance(pts, list):
+            new_pts = []
+            for p in pts:
+                if isinstance(p, (list, tuple)) and len(p) >= 2:
+                    new_pts.append([
+                        int(round((_float(p[0]) - ox) * sx)),
+                        int(round((_float(p[1]) - oy) * sy)),
+                    ])
+                else:
+                    new_pts.append(p)
+            item["points"] = new_pts
+        out.append(item)
+    return out
+
+
+def read_image_pixel_size_from_bytes(raw: bytes) -> tuple[int, int] | None:
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(raw)) as im:
+            im.load()
+            return int(im.size[0]), int(im.size[1])
+    except Exception:
+        return None
+
+
+def annotation_max_extent(annotations: list[dict] | None) -> tuple[float, float]:
+    max_x = 0.0
+    max_y = 0.0
+    if not annotations:
+        return max_x, max_y
+    for ann in annotations:
+        if not isinstance(ann, dict):
+            continue
+        x = _float(ann.get("x"), 0)
+        y = _float(ann.get("y"), 0)
+        w = _float(ann.get("width", ann.get("w")), 0)
+        h = _float(ann.get("height", ann.get("h")), 0)
+        max_x = max(max_x, x + w, _float(ann.get("x2"), 0), _float(ann.get("right"), 0))
+        max_y = max(max_y, y + h, _float(ann.get("y2"), 0), _float(ann.get("bottom"), 0))
+        for p in ann.get("points") or []:
+            if isinstance(p, (list, tuple)) and len(p) >= 2:
+                max_x = max(max_x, _float(p[0]))
+                max_y = max(max_y, _float(p[1]))
+    return max_x, max_y
+
+
+def infer_annotation_reference_size(
+    annotations: list[dict] | None,
+    src_w: int,
+    src_h: int,
+    vision_w: int,
+    vision_h: int,
+) -> tuple[int, int] | None:
+    """推断 annotations 坐标所在参考画布；返回 (ref_w, ref_h) 或 None（已是原图坐标）。"""
+    if not annotations or src_w <= 0 or src_h <= 0:
+        return None
+    vw = max(1, int(vision_w or src_w))
+    vh = max(1, int(vision_h or src_h))
+    if vw == int(src_w) and vh == int(src_h):
+        return None
+    max_x, max_y = annotation_max_extent(annotations)
+    if max_x <= 0 and max_y <= 0:
+        return vw, vh
+    fits_vision = max_x <= vw * 1.08 and max_y <= vh * 1.08
+    fits_source = max_x <= int(src_w) * 1.02 and max_y <= int(src_h) * 1.02
+    if fits_source and not fits_vision:
+        return None
+    if fits_vision and not fits_source:
+        return vw, vh
+    if fits_vision and fits_source:
+        if max_x <= vw * 0.99 and max_y <= vh * 0.99:
+            return vw, vh
+        return None
+    if max_x <= 1000 and max_y <= 1000 and (int(src_w) > 1000 or int(src_h) > 1000):
+        return 1000, 1000
+    if fits_source:
+        return None
+    return vw, vh
+
+
 def _composite_overlay(img, draw_fn: Callable) -> Any:
     from PIL import Image
 

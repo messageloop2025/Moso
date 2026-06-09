@@ -825,7 +825,7 @@ def _extract_attachment_uuids_from_text(text: str) -> list[str]:
     return out
 
 
-def _image_row_to_image_url_part(row: dict, username: str, per_byte_limit: int) -> dict | None:
+def _image_row_to_image_url_part(row: dict, username: str, per_byte_limit: int) -> tuple[dict, dict] | None:
     """把一条 image 附件行读成 image_url 多模态段；失败或单图超限返回 None。"""
     try:
         from api.chat_attachments import resolve_attachment_file as _resolve_attachment_file
@@ -857,10 +857,10 @@ def _image_row_to_image_url_part(row: dict, username: str, per_byte_limit: int) 
     except Exception as exc:  # pragma: no cover - 防御性
         logger.warning("vision: 处理图片异常 uuid=%s err=%s", row.get("uuid"), exc)
         return None
-    from services.vision_image import encode_image_bytes_for_vision_data_url, vision_inline_max_b64_chars
+    from services.vision_image import build_inline_vision_meta, vision_inline_max_b64_chars
 
     mime = (row.get("mime_type") or "image/png").strip() or "image/png"
-    url, _, _jpeg_len = encode_image_bytes_for_vision_data_url(raw, mime=mime)
+    url, _mime_out, _jpeg_len, dim_meta = build_inline_vision_meta(raw, mime=mime)
     cap = vision_inline_max_b64_chars()
     if len(url) > cap:
         logger.warning(
@@ -870,8 +870,30 @@ def _image_row_to_image_url_part(row: dict, username: str, per_byte_limit: int) 
             cap,
         )
         return None
-    detail = "low" if len(url) > cap // 2 else "auto"
-    return {"type": "image_url", "image_url": {"url": url, "detail": detail}}
+    detail = (dim_meta.get("vision_detail") or "high").strip()
+    part = {"type": "image_url", "image_url": {"url": url, "detail": detail}}
+    return part, dim_meta
+
+
+def _format_inline_image_dimension_hint(row: dict, dim_meta: dict | None) -> str | None:
+    """内联 image_url 前附带的像素尺寸说明，避免 AI 按压缩图估坐标导致标注偏移。"""
+    meta = dim_meta or {}
+    uuid_s = (row.get("uuid") or "").strip()
+    ow = meta.get("original_width") or row.get("original_width") or row.get("image_width") or row.get("width")
+    oh = meta.get("original_height") or row.get("original_height") or row.get("image_height") or row.get("height")
+    if not ow or not oh:
+        return None
+    vw = meta.get("vision_width") or row.get("vision_width")
+    vh = meta.get("vision_height") or row.get("vision_height")
+    mw = meta.get("model_view_width") or row.get("model_view_width")
+    mh = meta.get("model_view_height") or row.get("model_view_height")
+    parts = [f"[图片 uuid=`{uuid_s}` {int(ow)}×{int(oh)}"]
+    if mw and mh and (int(mw) != int(ow) or int(mh) != int(oh)):
+        parts.append(f"视图 {int(mw)}×{int(mh)}")
+    elif vw and vh and (int(vw) != int(ow) or int(vh) != int(oh)):
+        parts.append(f"识图 {int(vw)}×{int(vh)}")
+    parts.append("edit 标注坐标请用「视图」尺寸或传 reference_width/height")
+    return " · ".join(parts) + "]"
 
 
 # 用户明确要求"再次回读原图"的关键词；命中时即便附件已有 ai_description，仍强制内联原图像素。
@@ -948,9 +970,13 @@ def _build_user_message_content_with_images(
         ):
             logger.info("vision: 本轮累计图片超上限，剩余图片跳过 uuid=%s", row.get("uuid"))
             break
-        part = _image_row_to_image_url_part(row, username, _VISION_CURRENT_PER_BYTES)
-        if part is None:
+        part_result = _image_row_to_image_url_part(row, username, _VISION_CURRENT_PER_BYTES)
+        if part_result is None:
             continue
+        part, dim_meta = part_result
+        hint = _format_inline_image_dimension_hint(row, dim_meta)
+        if hint:
+            images.append({"type": "text", "text": hint})
         images.append(part)
         total += size if size > 0 else 0
     if skipped_cached:
@@ -1096,9 +1122,13 @@ async def _inject_history_image_memory(
                 and total_bytes + size > _VISION_HISTORY_TOTAL_BYTES
             ):
                 break
-            part = _image_row_to_image_url_part(row, username, _VISION_HISTORY_PER_BYTES)
-            if part is None:
+            part_result = _image_row_to_image_url_part(row, username, _VISION_HISTORY_PER_BYTES)
+            if part_result is None:
                 continue
+            part, dim_meta = part_result
+            hint = _format_inline_image_dimension_hint(row, dim_meta)
+            if hint:
+                parts.append({"type": "text", "text": hint})
             parts.append(part)
             total_imgs += 1
             total_bytes += size if size > 0 else 0
@@ -1449,6 +1479,61 @@ def _strip_messages_image_urls(messages: list[dict]) -> int:
     return stripped
 
 
+def _promote_recent_tool_image_to_user_message(messages: list[dict]) -> bool:
+    """把最近一条带真实 data_url 的工具结果，提升为视觉模型真正可见的 image_url user 段。
+
+    OpenAI 兼容 API 中，`role=tool` 消息文本里的 base64 data_url **不会**被当作图像解析，
+    模型其实看不到工具产出的图（标注结果图、grid/probe 预览图）。这里把最新一条工具图
+    转成标准的 `image_url` 段挂到一条合成 user 消息上，并把 tool 文本里的副本占位化以免重复计费。
+    幂等：占位化后下次扫描不到真实 data_url，不会重复注入。
+    """
+    if not messages:
+        return False
+    idx = -1
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i] or {}
+        if m.get("role") != "tool":
+            continue
+        c = m.get("content")
+        if not isinstance(c, str) or '"data_url"' not in c or ";base64," not in c:
+            continue
+        try:
+            obj = json.loads(c)
+        except Exception:
+            continue
+        du = obj.get("data_url") if isinstance(obj, dict) else None
+        if (
+            isinstance(du, str)
+            and du.startswith("data:")
+            and ";base64," in du
+            and not _is_vision_placeholder_data_url(du)
+        ):
+            idx = i
+            break
+    if idx < 0:
+        return False
+    # 仅当该 tool 消息位于消息尾部（本轮刚产生、之后没有别的角色）时提升，保证序列合法
+    for j in range(idx + 1, len(messages)):
+        if (messages[j] or {}).get("role") not in ("tool",):
+            return False
+    try:
+        obj = json.loads(messages[idx]["content"])
+    except Exception:
+        return False
+    du = obj.get("data_url")
+    obj["data_url"] = _VISION_PLACEHOLDER_IMAGE_URL
+    obj["_promoted_to_image_url"] = True
+    messages[idx]["content"] = json.dumps(obj, ensure_ascii=False)
+    messages.append({
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "（系统）上一步工具生成/返回的图片如下，请据此核对标注是否对准目标并继续："},
+            {"type": "image_url", "image_url": {"url": du, "detail": "high"}},
+        ],
+    })
+    return True
+
+
 async def _post_chat_with_vision_fallback(
     client,
     *,
@@ -1476,6 +1561,10 @@ async def _post_chat_with_vision_fallback(
             pass
 
     payload = dict(payload)  # 避免污染调用方
+    # 工具产出的图（标注结果 / grid / probe 预览）默认只在 tool 文本里，视觉模型看不到；
+    # 这里先把最新一条提升为标准 image_url user 段，确保模型能真正看到、据此自检修正。
+    if _promote_recent_tool_image_to_user_message(messages):
+        logger.info("vision: 已把最近工具产出图提升为可见 image_url 段")
     # 发送前去重：把历史轮次里的 image_url/data_url base64 替换为占位，
     # 只保留最近一次出现的完整像素；避免多轮把同一张图的 base64 反复塞进请求，
     # 让 provider 按字符长度算 token 直接打爆窗口（如 `Range of input length`）。
@@ -1589,6 +1678,10 @@ async def _stream_chat_with_vision_fallback(
     """
     payload = dict(payload)
     payload["stream"] = True
+    # 工具产出的图（标注结果 / grid / probe 预览）默认只在 tool 文本里，视觉模型看不到；
+    # 提升为标准 image_url user 段，模型才能看到并据此自检修正标注。
+    if _promote_recent_tool_image_to_user_message(messages):
+        logger.info("vision(stream): 已把最近工具产出图提升为可见 image_url 段")
     # 与非流式版保持一致：发送前把历史轮次里重复出现的 base64 占位化，避免
     # 同一张图反复塞进上下文导致 provider 算 token 时打爆窗口
     _dedup = _deduplicate_vision_base64_in_messages(messages)
@@ -3926,7 +4019,7 @@ def _build_system_prompt() -> str:
     )
     return header + """你拥有一组工具：列出/查询主机、在主机上执行 SSH 命令、向用户当前打开的控制台注入输入、查看维护历史与主机分组；主机分享管理（share_host、revoke_host_share、list_host_shares、list_received_host_shares）；主机标签管理（list_host_tags、create_host_tag、update_host_tag、delete_host_tag、set_host_tags，标签按用户隔离）；以主机为维度的 AI 知识（get_host_knowledge / update_host_knowledge / append_host_knowledge，偏机密凭据，严禁回复中展示）；**主机级 AI 提示词**（get_host_prompt / update_host_prompt / append_host_prompt / search_hosts_by_prompt，偏可展示的主机**独有规则 / 能力 / 工具链 / 配置**，按 user×host 独立保存，可跨主机搜索）；主机侧 .edgeops 工作区（edgeops_init_workspace、edgeops_save_script、edgeops_read_workspace_context、edgeops_append_task_log、edgeops_write_rule、edgeops_write_info）；**web/fs 文件系统**（**web/fs/当前用户名** 的目录内容，用于脚本/缓存/上传到主机等）：fs_list、**get_chats_workspace_dir**（当日 chats/UTC 工作前缀）、fs_read_file（支持 offset/size）、fs_write_file（支持 overwrite/append/定位写；自动归位 chats/UTC 并加 UUID 文件名）、fs_read_binary、fs_write_binary（二进制内容支持 encoding=base64|hex）、fs_mkdir、fs_pack_tgz、fs_unpack_tgz、fs_delete、fs_copy；批量任务（batch_create、list_batch_operations、get_batch_detail、batch_cancel、batch_retry、clear_batches，支持 scope_type=tag 按标签批量）；操作日志可查询（list_logs）与清空（clear_logs）；最佳实践、凭证、用户与 AI 配置等；**操作帮助文档**（get_aihelp_index、list_aihelp_files、get_aihelp_file，仅管理员可写：write_aihelp_file、update_aihelp_index）。主机分享只共享主机访问权限，不共享双方历史聊天会话与聊天记录。
 
-通用数据处理工具：你可以直接调用 **regex_process** 做正则搜索/提取/替换预览，**string_process** 做字符串清洗、编码、哈希与行数统计，**math_calculate** 做安全数学/科学计算、统计与常见单位换算，**data_query** 解析并搜索/分析 JSON、YAML 等结构化数据，**markup_query** 解析并搜索/提取 XML、HTML 标签、文本、属性、链接，**crypto_toolkit** 做常见密码/证书操作（MD5/SHA*、HEX/二进制转换、AES/DES、RSA/ECC 签验、证书生成/解析/校验）。遇到大量文本、JSON/YAML/XML/HTML、CSV 摘要、日志提取、简单公式或单位换算时，优先使用这些工具；若数据量巨大或需要复杂批处理，再按“大文本 / 大批数据处理策略”使用脚本化方式。
+通用数据处理工具：你可以直接调用 **regex_process** 做正则搜索/提取/替换预览，**string_process** 做字符串清洗、编码、哈希与行数统计，**math_calculate** 做数学/科学计算（**NumPy 数组与批量数据集+公式**、**SymPy 符号**、统计、单位换算），**data_query** 解析并搜索/分析 JSON、YAML 等结构化数据，**markup_query** 解析并搜索/提取 XML、HTML 标签、文本、属性、链接，**crypto_toolkit** 做常见密码/证书操作（MD5/SHA*、HEX/二进制转换、AES/DES、RSA/ECC 签验、证书生成/解析/校验）。遇到数值批处理、公式推导、统计汇总时**优先 math_calculate**（尤其 `operation=batch`：给 dataset + expression）；大量文本/JSON 用 data_query；若数据量巨大再写脚本。
 
 **web/fs 工作目录（须遵守）**：与当前聊天相关的工作产物——**本地脚本、中间数据、拉取结果、分析报告**——**必须**落在 **`chats/<UTC年>/<月>/<日>/`** 下（与附件、工具 spill、artifact 同级 UTC 分卷习惯一致），**禁止**默认写到用户 fs **根目录**或根下裸的 `scripts/`、`2026/`、`data/` 等（除非用户明确要求在根目录）。文件名形态 **`{标准UUID}-{简短英文或拼音描述}.{后缀}`**，描述用 ASCII/kebab-case 或下划线，避免空格。可先 **`get_chats_workspace_dir`** 取得当日准确前缀。**fs_write_file** / **fs_write_binary** 会为你的 path **自动归位**到 `chats/<UTC日期>/` 并加 UUID 前缀；**scp_pull** 未写 `chats/` 时也会自动补上当日目录并规范文件名。主机上的 **edgeops_save_script** 写的是远端 `~/.edgeops`，与本地 web/fs 本条无关。**例外 — Agent Skills**：`skills/<name>/` 下的 SKILL.md 与附属文件**不走 chats 归位**；须用 **save_user_skill**、**write_user_skill_file**、**read_user_skill_file**、**list_user_skill_files**、**delete_user_skill_file** 等 Skill 专用工具，**禁止**用 fs_write_file/fs_mkdir/fs_delete 操作 `skills/` 或 `chats/.../skills/` 路径。
 
@@ -4091,10 +4184,12 @@ Markdown / Skills 渐进阅读（与 aihelp 相同章节模型）：
   3. 如果你是视觉模型却只看到 `image_url` 段的占位（可能是网关丢弃）或需要更精细地重读，可以调 `read_chat_attachment(uuid="...")`；该工具在有缓存描述时默认返回描述文本；传 `force_reload=true` 才返回原图 `data_url`。
   4. 当用户本轮消息里带"重新识别 / 再看一遍 / 看原图 / 重新分析图"等关键词时，后端会强制把原图再次内联，请基于新观察**覆盖**已有描述（再次调用 `save_image_description`）。
   5. **严禁**仅凭元信息（mime/size/kind）或"我看不到图"来搪塞——现在多轮体系里你要么有缓存描述，要么有内联像素，总有一条路能回答。
-  6. 若用户要求在图上**画框/高亮/半透明遮罩**（如圈出 IP、荧光笔标记、暗色蒙层），调用 **`edit_chat_attachment_image(uuid=..., annotations=[...])`**。"
-                "描边用 `rect`+`outline`；区域半透明填充用 `overlay`/`mask`/`highlight`+`fill`+`opacity`（0.2~0.5 常见）；"
-                "可组合多条 annotation（如先 overlay 再 rect 描边）。坐标基于原图像素，可先 `read_chat_attachment(force_reload=true)` 确认尺寸；"
-                "生成后在回复中插入返回的 `markdown_image`。"
+  6. 若用户要求在图上**画框/高亮/标注目标**，调用 **`edit_chat_attachment_image`**。通用大模型直接估绝对坐标不准，但**多个框的相对布局是准的、整组只差一个统一的缩放+平移**——所以采用「一次标全部 + 全局微调」闭环：
+     a. **第 1 步（一次标全部）**：一次性标出所有目标，传 `coordinate_space="percent"`，x/y/width/height 用 0–100 百分比。只要各框相对位置/布局大致对即可，不必纠结绝对精确。
+     b. **第 2 步（看结果，宏观校正）**：工具返回 `data_url`=标注效果图，**你要真的去看**。若**所有框一起偏移/偏大偏小**（相对位置对、整组平移或缩放不准），**不要逐个改框**，只调 `global_transform` 做整体校正（如整组右移 `{"offset_x":8}`、整组偏大 `{"scale":0.9}`；percent 下 offset 单位是百分点），annotations 保持不变再次调用。仅个别框不准时才单独微调那一个。
+     c. **第 3 步（迭代）**：重复「看结果→调 global_transform」最多 2–3 次，直到所有框对齐，才把最终 `markdown_image` 插入回复给用户。
+     d. 可选：`grid_overlay=true` 看 0–100 刻度；`cell_grid=true`+`annotations[].cells=[编号]` 用编号网格让后端确定性出框。
+     e. **禁止**自行乘除缩放、**禁止**传 `use_original_coordinates`、**禁止**跳过第 2 步看图自检。
 - **文本 / Markdown 附件**：调用 `read_chat_attachment(uuid="...")` 取 `content`（可用 `max_chars` 控制截断长度，默认 40000）。
 - **Office / PDF 附件**（清单中 kind 为 document，如 .docx/.pptx/.xlsx/.pdf）：同样调用 `read_chat_attachment`；后端用 MarkItDown 转为 Markdown 后返回 `content`（`converted_from_markitdown: true`）。分析合同、报表、幻灯片前应先读取全文再作答。
 - 附件沙箱：附件落盘在用户个人目录，`read_chat_attachment` / `save_image_description` / `edit_chat_attachment_image` 仅允许当前用户访问自己上传的附件；读取他人目录用 fs_* 会被拒绝。
@@ -4520,10 +4615,14 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
             from api.chat_attachments import (
                 load_attachments_for_user as _load_user_attachments,
                 build_attachment_message_suffix as _build_attachment_suffix,
+                enrich_image_attachment_meta as _enrich_image_attachment_meta,
             )
             attach_rows = await _load_user_attachments(db, user["id"], req.attachment_uuids)
             if attach_rows:
+                uname = (user.get("username") or "default")
                 for r in attach_rows:
+                    if (r.get("kind") or "").lower() == "image":
+                        _enrich_image_attachment_meta(r, uname)
                     if r.get("session_id") != session_id:
                         await db.execute(
                             "UPDATE chat_attachments SET session_id = ? WHERE uuid = ? AND user_id = ?",
@@ -6217,10 +6316,14 @@ async def run_ops_integration_chat_complete(
             from api.chat_attachments import (
                 load_attachments_for_user as _load_user_attachments,
                 build_attachment_message_suffix as _build_attachment_suffix,
+                enrich_image_attachment_meta as _enrich_image_attachment_meta,
             )
             attach_rows = await _load_user_attachments(db, user["id"], list(attachment_uuids or []))
             if attach_rows:
+                uname = (user.get("username") or "default")
                 for r in attach_rows:
+                    if (r.get("kind") or "").lower() == "image":
+                        _enrich_image_attachment_meta(r, uname)
                     if r.get("session_id") != sid:
                         await db.execute(
                             "UPDATE chat_attachments SET session_id = ? WHERE uuid = ? AND user_id = ?",

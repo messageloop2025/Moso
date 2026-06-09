@@ -2205,20 +2205,18 @@ TOOLS = [
             "description": (
                 "对用户在聊天中上传的**图片附件**做简单编辑并保存为**新附件**（不覆盖原图）。"
                 "可用于画红框、半透明高亮遮罩、画线、填色、插入文字，或旋转/裁剪/缩放。\n\n"
-                "**典型流程**：先用 `read_chat_attachment(uuid, force_reload=true)` 确认图片尺寸与目标区域坐标，"
-                "再调用本工具；回复正文插入返回的 `markdown_image`。\n\n"
-                "**坐标系**：左上角 (0,0)，单位像素；若同时传 crop/rotate/scale，先变换画布再绘制 annotations。\n\n"
-                "**透明度**：每项可设 `opacity`（0~1 小数，或 1~100 百分比）；"
-                "也可在颜色里用 `#RRGGBBAA`；二者同时存在时以 `opacity` 为准。\n\n"
-                "**annotations 类型**：\n"
-                "- `rect` / `ellipse` / `polygon`：`outline` 描边 + 可选 `fill` 填充（配合 `opacity` 做半透明）\n"
-                "- `overlay` / `mask` / `highlight`：**半透明色块遮罩**（默认黄色 opacity≈0.35，可改 `fill`/`opacity`）；"
-                "可选 `shape`: rect|ellipse|polygon；可选 `outline` 描边\n"
-                "- `line`：x1,y1,x2,y2,color,opacity,width\n"
-                "- `text`：x,y,text,color,opacity,size\n\n"
-                "**示例**（圈出区域并加半透明红遮罩）："
-                "`[{type:rect,x:10,y:20,width:180,height:24,outline:#ff0000,line_width:3},"
-                "{type:overlay,x:8,y:18,width:184,height:28,fill:#ff0000,opacity:0.25}]`\n"
+                "**标注定位（务必避免偏移）——首选「一次标全部 + 全局微调」**\n"
+                "1. **最佳（强烈推荐）**：一次性标出**所有**目标，用 `coordinate_space=\"percent\"`，x/y/width/height 用 0–100 百分比。"
+                "不必纠结绝对精确——只要各框的**相对位置/布局**大致对即可（这是你擅长的）。\n"
+                "2. **全局微调闭环（关键）**：本工具返回 `data_url`=标注效果图。查看后：\n"
+                "   - 若**所有框整体一起偏**（相对位置对、整组平移或缩放不准）：**不要逐个改框**，只调 `global_transform` 做宏观校正"
+                "（如整组右移 `{\"offset_x\":8}`、整组偏大 `{\"scale\":0.9}`），annotations 保持不变再次调用；\n"
+                "   - 仅个别框不准：单独微调那一个的百分比。\n"
+                "   迭代 2–3 次直到对齐，再把 `markdown_image` 给用户。\n"
+                "3. **可选**：`grid_overlay=true` 看 0–100 刻度；`cell_grid=true` + `annotations[].cells=[编号]` 用编号网格让后端确定性出框。\n"
+                "4. **勿**传 `use_original_coordinates`、**勿**自己心算像素缩放、**勿**跳过看图自检。\n\n"
+                "**透明度**：每项可设 `opacity`（0~1 或 0~100）；颜色可用 `#RRGGBBAA`。\n\n"
+                "**annotations 类型**：rect/ellipse/polygon、overlay/mask/highlight、line、text。\n"
                 "仅可编辑当前用户自己的 image 类附件。"
             ),
             "parameters": {
@@ -2232,11 +2230,70 @@ TOOLS = [
                         "description": "裁剪区域：x/y/width/height 或 left/top/right/bottom",
                     },
                     "scale": {"type": "number", "description": "等比缩放倍数，如 0.5 或 2.0"},
+                    "coordinate_space": {
+                        "type": "string",
+                        "enum": ["percent", "norm", "norm1000", "pixel"],
+                        "description": (
+                            "annotations 的坐标系。**首选 percent**（x/y/width/height 用 0–100 百分比）；"
+                            "norm=0–1 小数；norm1000=0–1000；pixel=原图绝对像素（默认/不指定时走自动猜测，易偏移）。"
+                        ),
+                    },
+                    "grid_overlay": {
+                        "type": "boolean",
+                        "description": "true 时仅输出一张带 0–100 百分比刻度网格的预览图，便于你读取相对位置后用 percent 坐标标注（不做业务标注）",
+                    },
+                    "cell_grid": {
+                        "type": "boolean",
+                        "description": "true 时仅输出一张带编号小格的预览图（Set-of-Mark）。看图后用 annotations[].cells=[编号...] 让后端确定性出框，最准。",
+                    },
+                    "cell_cols": {"type": "integer", "description": "编号网格列数（默认 12，2–40）；cell_grid 预览与带 cells 的标注必须用相同值"},
+                    "cell_rows": {"type": "integer", "description": "编号网格行数（默认 8，2–40）"},
+                    "global_transform": {
+                        "type": "object",
+                        "description": (
+                            "对**所有** annotations 的宏观微调（在坐标系换算前统一应用），用于「相对位置准、但整组缩放/平移有偏差」的情形。"
+                            "字段：scale（统一缩放）或 scale_x/scale_y，offset_x/offset_y（平移，单位同坐标系：percent 下为百分点）。"
+                            "例：整组右移 8% 用 {\"offset_x\":8}；整组偏大用 {\"scale\":0.9}。看结果图后只调这一组旋钮即可整体对齐，不必逐个改框。"
+                        ),
+                    },
+                    "reference_width": {
+                        "type": "number",
+                        "description": "标注坐标所依据的参考图宽度（通常为内联识图 vision_width）；与原图不同时用于换算",
+                    },
+                    "reference_height": {
+                        "type": "number",
+                        "description": "标注坐标所依据的参考图高度（通常为内联识图 vision_height）",
+                    },
+                    "offset_x": {
+                        "type": "number",
+                        "description": "参考图相对原图左上角的 X 偏移（裁剪/局部图时使用，默认 0）",
+                    },
+                    "offset_y": {
+                        "type": "number",
+                        "description": "参考图相对原图左上角的 Y 偏移（默认 0）",
+                    },
+                    "use_original_coordinates": {
+                        "type": "boolean",
+                        "description": "已废弃：标注请用 calibration_observations 校准，勿传 true",
+                    },
+                    "calibration_probe": {
+                        "type": "boolean",
+                        "description": "true 时仅输出带绿色校准线的探测图 + calibration_reference，不做业务标注",
+                    },
+                    "calibration_observations": {
+                        "type": "array",
+                        "description": (
+                            "校准观测：每项 {id,x,y}，id 来自 calibration_reference，"
+                            "x/y 为你所见画面中该校准线左上角的像素（与 annotations 同坐标系）。至少 2 条。"
+                        ),
+                        "items": {"type": "object"},
+                    },
                     "annotations": {
                         "type": "array",
                         "description": (
-                            "标注列表。常用字段：type, x/y/width/height 或 points, "
-                            "fill/outline/color, opacity(0~1 或 0~100), line_width(描边线宽)。"
+                            "标注列表。**定位优先用 `cells`**：`{\"type\":\"rect\",\"cells\":[编号,...],\"outline\":\"#ff0000\"}`，"
+                            "后端按编号网格确定性出框（需配合 cell_grid 预览 + 相同 cell_cols/cell_rows）。"
+                            "其它字段：type, x/y/width/height 或 points, fill/outline/color, opacity(0~1 或 0~100), line_width。"
                             "半透明遮罩用 type=overlay|mask|highlight + fill + opacity。"
                         ),
                         "items": {"type": "object"},
@@ -2529,16 +2586,53 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "math_calculate",
-            "description": "安全数学/科学计算工具。支持表达式计算（math 模块常用函数与常量）、数字统计和常见单位换算。不会执行任意 Python 代码。",
+            "description": (
+                "安全数学/科学计算（math + **NumPy** + **SymPy**）。"
+                "支持标量表达式、数组统计、单位换算、**数据集批量计算**与符号运算。\n\n"
+                "**批量计算（推荐）**：`operation=batch`，提供 `dataset` + `expression`（或 `algorithm`）：\n"
+                "- 行模式：`dataset=[{x:1,y:2,bonus:0.1}, …]`，`expression=\"x*y+bonus\"` → 返回 `results` 与 `dataset_with_results`\n"
+                "- 列向量模式：`dataset={x:[1,2,3], y:[4,5,6]}`，同一表达式向量化求值（大数据更快）\n"
+                "- 可选 `output_column` 指定结果列名\n\n"
+                "**其它 operation**：`eval` 标量；`stats` 数组统计；`unit_convert` 单位；"
+                "`numpy` 数组表达式（可传 `numbers`）；`symbolic` 符号（simplify/expand/factor/diff/integrate/solve/limit/subs）。\n"
+                "勿执行任意 Python；复杂公式优先用本工具而非心算。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "operation": {"type": "string", "enum": ["eval", "stats", "unit_convert"], "description": "eval=表达式计算；stats=统计；unit_convert=单位换算"},
-                    "expression": {"type": "string", "description": "数学表达式，如 sqrt(5000), 6.6743e-11 * 6.42e23 * 1000 / (1e7**2)"},
-                    "numbers": {"type": "array", "items": {"type": "number"}, "description": "stats 统计用数字数组"},
+                    "operation": {
+                        "type": "string",
+                        "enum": ["eval", "stats", "unit_convert", "numpy", "batch", "batch_vector", "symbolic"],
+                        "description": "eval|stats|unit_convert|numpy|batch|batch_vector|symbolic",
+                    },
+                    "expression": {"type": "string", "description": "数学/符号表达式，或 batch 的算法公式（引用 dataset 列名）"},
+                    "algorithm": {"type": "string", "description": "同 expression，batch 时可用此别名"},
+                    "dataset": {
+                        "description": (
+                            "batch 数据集：行数组 [{field: value}] 或列字典 {col: [v1,v2,...]}；"
+                            "最多 10000 行 / 64 列"
+                        ),
+                    },
+                    "data": {"description": "dataset 别名"},
+                    "mode": {"type": "string", "enum": ["auto", "rows", "vector"], "description": "batch 模式，默认 auto"},
+                    "output_column": {"type": "string", "description": "batch 结果列名，默认 result"},
+                    "numbers": {"type": "array", "items": {"type": "number"}, "description": "stats/numpy 用数字数组"},
                     "value": {"type": "number", "description": "unit_convert 输入数值"},
-                    "from_unit": {"type": "string", "description": "源单位，如 m/km/cm/mm/kg/g/N/kN/lb/ft/in/C/F/K"},
+                    "from_unit": {"type": "string", "description": "源单位"},
                     "to_unit": {"type": "string", "description": "目标单位"},
+                    "symbolic_op": {
+                        "type": "string",
+                        "enum": ["simplify", "expand", "factor", "diff", "integrate", "solve", "limit", "subs"],
+                        "description": "symbolic 子操作",
+                    },
+                    "variables": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "symbolic 符号变量名列表",
+                    },
+                    "wrt": {"type": "string", "description": "diff/integrate/limit 对哪个变量"},
+                    "point": {"description": "limit 趋近点"},
+                    "substitutions": {"type": "object", "description": "subs 代入，如 {\"x\": 1, \"y\": 2}"},
                 },
                 "required": ["operation"],
             },
@@ -10636,27 +10730,12 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
         if name == "math_calculate":
-            op = (arguments.get("operation") or "").strip().lower()
-            if op == "eval":
-                expr = str(arguments.get("expression") or "")
-                result = _safe_math_eval(expr)
-                return json.dumps({"success": True, "expression": expr, "result": result}, ensure_ascii=False)
-            if op == "stats":
-                nums = [float(x) for x in (arguments.get("numbers") or [])]
-                if not nums:
-                    return json.dumps({"success": False, "error": "numbers 不能为空"}, ensure_ascii=False)
-                payload = {
-                    "count": len(nums), "sum": sum(nums), "min": min(nums), "max": max(nums),
-                    "mean": statistics.fmean(nums), "median": statistics.median(nums),
-                    "stdev": statistics.stdev(nums) if len(nums) >= 2 else 0.0,
-                    "pstdev": statistics.pstdev(nums),
-                }
-                return json.dumps({"success": True, "stats": payload}, ensure_ascii=False)
-            if op == "unit_convert":
-                value = float(arguments.get("value"))
-                result = _convert_unit(value, str(arguments.get("from_unit") or ""), str(arguments.get("to_unit") or ""))
-                return json.dumps({"success": True, "value": value, "from_unit": arguments.get("from_unit"), "to_unit": arguments.get("to_unit"), "result": result}, ensure_ascii=False)
-            return json.dumps({"success": False, "error": "operation 不支持"}, ensure_ascii=False)
+            from services.math_compute import run_math_calculate
+            try:
+                out = await asyncio.to_thread(run_math_calculate, arguments or {})
+                return json.dumps(out, ensure_ascii=False)
+            except Exception as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
         if name == "data_query":
             op = (arguments.get("operation") or "").strip().lower()
@@ -12618,7 +12697,9 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 resolve_attachment_file as _resolve_attachment_file,
                 humanize_size as _humanize_size,
                 attachment_relative_path as _attachment_relative_path,
+                read_image_pixel_size as _read_image_pixel_size,
             )
+            from services.vision_image import inline_vision_dimension_info as _inline_vision_dimension_info
             uuid_s = (arguments.get("uuid") or "").strip()
             if not uuid_s:
                 return json.dumps({"success": False, "error": "缺少 uuid"}, ensure_ascii=False)
@@ -12661,6 +12742,21 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 "ai_description_model": cached_model,
                 "ai_description_updated_at": cached_updated,
             }
+            if kind == "image":
+                dims = _read_image_pixel_size(path)
+                if dims:
+                    meta["width"] = dims[0]
+                    meta["height"] = dims[1]
+                    meta["original_width"] = dims[0]
+                    meta["original_height"] = dims[1]
+                try:
+                    dim_info = _inline_vision_dimension_info(
+                        await asyncio.to_thread(path.read_bytes),
+                        mime=(row.get("mime_type") or "image/png"),
+                    )
+                    meta.update({k: v for k, v in dim_info.items() if v is not None})
+                except OSError:
+                    pass
             if kind in ("text", "markdown"):
                 try:
                     raw = await asyncio.to_thread(path.read_bytes)
@@ -12731,16 +12827,17 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                         ),
                     }, ensure_ascii=False)
                 if as_data_url:
-                    from services.vision_image import encode_image_bytes_for_vision_data_url
+                    from services.vision_image import build_inline_vision_meta
 
                     try:
                         raw = await asyncio.to_thread(path.read_bytes)
                     except OSError as exc:
                         return json.dumps({"success": False, "error": f"读取失败: {exc}"}, ensure_ascii=False)
-                    data_url, _mime_out, jpeg_len = encode_image_bytes_for_vision_data_url(
+                    data_url, _mime_out, jpeg_len, dim_meta = build_inline_vision_meta(
                         raw,
                         mime=(row.get("mime_type") or "image/png"),
                     )
+                    meta.update({k: v for k, v in (dim_meta or {}).items() if v is not None})
                     resp = {
                         "success": True,
                         "attachment": meta,
@@ -12749,6 +12846,26 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                         "vision_jpeg_bytes": jpeg_len,
                         "data_url_chars": len(data_url),
                     }
+                    ow = meta.get("original_width") or meta.get("width")
+                    oh = meta.get("original_height") or meta.get("height")
+                    vw = meta.get("vision_width")
+                    vh = meta.get("vision_height")
+                    coord_hint = (
+                        f"原图 {ow}×{oh}px；edit 输出用原图坐标。"
+                        if ow and oh
+                        else "edit 标注请用原图坐标（见 attachment.width/height）。"
+                    )
+                    mv_w = meta.get("model_view_width")
+                    mv_h = meta.get("model_view_height")
+                    if mv_w and mv_h and ow and oh and (int(mv_w) != int(ow) or int(mv_h) != int(oh)):
+                        coord_hint += (
+                            f" 模型视图 {mv_w}×{mv_h}px；若按所见估坐标，edit 传 reference_width={mv_w}, reference_height={mv_h}。"
+                        )
+                    elif vw and vh and ow and oh and (int(vw) != int(ow) or int(vh) != int(oh)):
+                        coord_hint += (
+                            f" 识图 {vw}×{vh}px；若按所见估坐标，edit 传 reference_width={vw}, reference_height={vh}。"
+                        )
+                    resp["coordinate_hint"] = coord_hint
                     # 若同时存在缓存描述，一并带出，便于 AI 对比/更新
                     if cached_desc:
                         resp["ai_description"] = cached_desc
@@ -12872,7 +12989,21 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 save_bytes_as_chat_attachment as _save_bytes_as_chat_attachment,
                 attachment_relative_path as _attachment_relative_path,
             )
-            from services.image_edit import apply_image_edits as _apply_image_edits
+            from services.image_calibration import (
+                build_calibration_plan as _build_calibration_plan,
+                build_percent_grid_annotations as _build_percent_grid_annotations,
+                build_cell_grid_plan as _build_cell_grid_plan,
+                cells_to_bbox as _cells_to_bbox,
+                parse_global_transform as _parse_global_transform,
+                apply_calibration_transform_to_annotations as _apply_affine_anns,
+                resolve_annotation_transform as _resolve_annotation_transform,
+                CALIBRATION_MIN_POINTS as _CAL_MIN,
+            )
+            from services.image_edit import (
+                apply_image_edits as _apply_image_edits,
+                read_image_pixel_size_from_bytes as _read_image_pixel_size_from_bytes,
+            )
+            from services.vision_image import inline_vision_dimension_info as _inline_vision_dimension_info
 
             uuid_s = (arguments.get("uuid") or "").strip()
             if not uuid_s:
@@ -12898,6 +13029,274 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             anns = arguments.get("annotations")
             if anns is not None and not isinstance(anns, list):
                 anns = None
+            cal_obs = arguments.get("calibration_observations")
+            if cal_obs is not None and not isinstance(cal_obs, list):
+                cal_obs = None
+            calibration_probe = arguments.get("calibration_probe") in (True, "true", 1, "1")
+            grid_overlay = arguments.get("grid_overlay") in (True, "true", 1, "1")
+            cell_grid = arguments.get("cell_grid") in (True, "true", 1, "1")
+            cell_cols = arguments.get("cell_cols")
+            cell_rows = arguments.get("cell_rows")
+            coordinate_space = arguments.get("coordinate_space")
+
+            src_size = _read_image_pixel_size_from_bytes(raw)
+            src_w, src_h = src_size if src_size else (None, None)
+            if (calibration_probe or cal_obs or grid_overlay or cell_grid) and (not src_w or not src_h):
+                return json.dumps({"success": False, "error": "无法读取原图尺寸，标注校准失败"}, ensure_ascii=False)
+
+            cal_reference, cal_draw_anns = (
+                _build_calibration_plan(src_w, src_h) if src_w and src_h else ([], [])
+            )
+
+            if cell_grid:
+                try:
+                    cell_anns, grid_meta = _build_cell_grid_plan(src_w, src_h, cell_cols, cell_rows)
+                    cell_bytes, mime = await asyncio.to_thread(
+                        _apply_image_edits,
+                        raw,
+                        rotate=arguments.get("rotate") or 0,
+                        crop=crop,
+                        scale=arguments.get("scale"),
+                        annotations=cell_anns,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    return json.dumps({"success": False, "error": f"编号网格预览生成失败: {exc}"}, ensure_ascii=False)
+                cell_name = (arguments.get("output_name") or "").strip() or "cell-grid.png"
+                if not cell_name.lower().endswith(".png"):
+                    cell_name = f"{cell_name.rsplit('.', 1)[0] if '.' in cell_name else cell_name}.png"
+                sid = arguments.get("session_id")
+                if sid is None:
+                    sid = row.get("session_id")
+                try:
+                    sid = int(sid) if sid is not None else None
+                except (TypeError, ValueError):
+                    sid = row.get("session_id")
+                try:
+                    saved = await _save_bytes_as_chat_attachment(
+                        user, cell_bytes, original_name=cell_name, mime=mime, session_id=sid,
+                    )
+                except ValueError as exc:
+                    return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)
+                url = saved.get("url") or f"/api/ai/attachments/{saved.get('uuid')}"
+                title = saved.get("name") or cell_name
+                try:
+                    from services.vision_image import build_inline_vision_meta as _bivm
+                    _preview_url, _, _, _ = _bivm(cell_bytes, mime=mime)
+                except Exception:  # noqa: BLE001
+                    _preview_url = None
+                return json.dumps({
+                    "success": True,
+                    "mode": "cell_grid",
+                    "source_uuid": uuid_s,
+                    "attachment": saved,
+                    "markdown_image": f"![{title}]({url})",
+                    "data_url": _preview_url,
+                    "source_width": src_w,
+                    "source_height": src_h,
+                    "grid": {"cols": grid_meta["cols"], "rows": grid_meta["rows"], "count": grid_meta["count"]},
+                    "hint": (
+                        f"**请查看上面返回的 data_url**：图已被切成 {grid_meta['cols']}×{grid_meta['rows']}={grid_meta['count']} 个编号小格"
+                        "（红字编号在每格左上角，1 起从左到右、从上到下）。"
+                        "对每个要标注的目标，**只需说出它覆盖了哪些格子编号**，然后调用本工具并在 annotations 里用 "
+                        '`{"type":"rect","cells":[编号,...],"outline":"#ff0000"}`（不要给 x/y/坐标）。'
+                        "后端会把这些格子并成精确像素框。务必传相同的 cell_cols/cell_rows。"
+                    ),
+                }, ensure_ascii=False)
+
+            if grid_overlay:
+                try:
+                    grid_anns = _build_percent_grid_annotations(src_w, src_h)
+                    grid_bytes, mime = await asyncio.to_thread(
+                        _apply_image_edits,
+                        raw,
+                        rotate=arguments.get("rotate") or 0,
+                        crop=crop,
+                        scale=arguments.get("scale"),
+                        annotations=grid_anns,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    return json.dumps({"success": False, "error": f"刻度网格预览生成失败: {exc}"}, ensure_ascii=False)
+                grid_name = (arguments.get("output_name") or "").strip() or "grid-overlay.png"
+                if not grid_name.lower().endswith(".png"):
+                    grid_name = f"{grid_name.rsplit('.', 1)[0] if '.' in grid_name else grid_name}.png"
+                sid = arguments.get("session_id")
+                if sid is None:
+                    sid = row.get("session_id")
+                try:
+                    sid = int(sid) if sid is not None else None
+                except (TypeError, ValueError):
+                    sid = row.get("session_id")
+                try:
+                    saved = await _save_bytes_as_chat_attachment(
+                        user, grid_bytes, original_name=grid_name, mime=mime, session_id=sid,
+                    )
+                except ValueError as exc:
+                    return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)
+                url = saved.get("url") or f"/api/ai/attachments/{saved.get('uuid')}"
+                title = saved.get("name") or grid_name
+                try:
+                    from services.vision_image import build_inline_vision_meta as _bivm
+                    _preview_url, _, _, _ = _bivm(grid_bytes, mime=mime)
+                except Exception:  # noqa: BLE001
+                    _preview_url = None
+                return json.dumps({
+                    "success": True,
+                    "mode": "grid_overlay",
+                    "source_uuid": uuid_s,
+                    "attachment": saved,
+                    "markdown_image": f"![{title}]({url})",
+                    "data_url": _preview_url,
+                    "source_width": src_w,
+                    "source_height": src_h,
+                    "hint": (
+                        "**请查看上面返回的 data_url（带 0–100 百分比刻度的预览图）**：横轴红字=X%，纵轴红字=Y%。"
+                        "对照刻度读出每个目标的左上角(x,y)和宽高(width,height)百分比，"
+                        "然后用 coordinate_space=\"percent\" + annotations（x/y/width/height 均为 0–100）再次调用本工具输出标注图。"
+                    ),
+                }, ensure_ascii=False)
+
+            if calibration_probe:
+                try:
+                    probe_bytes, mime = await asyncio.to_thread(
+                        _apply_image_edits,
+                        raw,
+                        rotate=arguments.get("rotate") or 0,
+                        crop=crop,
+                        scale=arguments.get("scale"),
+                        annotations=cal_draw_anns,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    return json.dumps({"success": False, "error": f"校准探测图生成失败: {exc}"}, ensure_ascii=False)
+                probe_name = (arguments.get("output_name") or "").strip() or "calibration-probe.png"
+                if not probe_name.lower().endswith(".png"):
+                    probe_name = f"{probe_name.rsplit('.', 1)[0] if '.' in probe_name else probe_name}.png"
+                sid = arguments.get("session_id")
+                if sid is None:
+                    sid = row.get("session_id")
+                try:
+                    sid = int(sid) if sid is not None else None
+                except (TypeError, ValueError):
+                    sid = row.get("session_id")
+                try:
+                    saved = await _save_bytes_as_chat_attachment(
+                        user,
+                        probe_bytes,
+                        original_name=probe_name,
+                        mime=mime,
+                        session_id=sid,
+                    )
+                except ValueError as exc:
+                    return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)
+                url = saved.get("url") or f"/api/ai/attachments/{saved.get('uuid')}"
+                title = saved.get("name") or probe_name
+                try:
+                    from services.vision_image import build_inline_vision_meta as _bivm
+                    _preview_url, _, _, _ = _bivm(probe_bytes, mime=mime)
+                except Exception:  # noqa: BLE001
+                    _preview_url = None
+                return json.dumps({
+                    "success": True,
+                    "mode": "calibration_probe",
+                    "source_uuid": uuid_s,
+                    "attachment": saved,
+                    "markdown_image": f"![{title}]({url})",
+                    "data_url": _preview_url,
+                    "source_width": src_w,
+                    "source_height": src_h,
+                    "calibration_reference": cal_reference,
+                    "hint": (
+                        "**请查看上面返回的 data_url（带角标 ①②③④ 的预览图）**，读取每个角标左上角在你所见画面中的 x,y，"
+                        f"至少 {_CAL_MIN} 条不同 id，填入 calibration_observations 后再调用本工具输出最终标注图。"
+                    ),
+                }, ensure_ascii=False)
+
+            ref_w = arguments.get("reference_width")
+            ref_h = arguments.get("reference_height")
+            try:
+                ref_w = int(ref_w) if ref_w is not None else None
+            except (TypeError, ValueError):
+                ref_w = None
+            try:
+                ref_h = int(ref_h) if ref_h is not None else None
+            except (TypeError, ValueError):
+                ref_h = None
+            try:
+                offset_x = float(arguments.get("offset_x") or 0)
+            except (TypeError, ValueError):
+                offset_x = 0.0
+            try:
+                offset_y = float(arguments.get("offset_y") or 0)
+            except (TypeError, ValueError):
+                offset_y = 0.0
+            use_original = arguments.get("use_original_coordinates") in (True, "true", 1, "1")
+
+            dim_info = _inline_vision_dimension_info(raw, mime=(row.get("mime_type") or "")) if src_w and src_h else {}
+            scaled_anns = anns
+            coord_note = ""
+            transform_meta = None
+            # 单元网格法：带 cells 的标注由后端按编号确定性换算为像素框，绕过坐标变换
+            cell_pixel_anns: list[dict] = []
+            coord_anns: list[dict] = anns or []
+            cells_used = 0
+            if anns and src_w and src_h and any(isinstance(a, dict) and a.get("cells") for a in anns):
+                _, cell_grid_meta = _build_cell_grid_plan(src_w, src_h, cell_cols, cell_rows)
+                coord_anns = []
+                for a in anns:
+                    if isinstance(a, dict) and a.get("cells"):
+                        box = _cells_to_bbox(a.get("cells"), cell_grid_meta)
+                        if box:
+                            merged = {k: v for k, v in a.items() if k not in ("cells", "x", "y", "width", "height", "w", "h")}
+                            merged.setdefault("type", "rect")
+                            merged.update(box)
+                            cell_pixel_anns.append(merged)
+                            cells_used += 1
+                    else:
+                        coord_anns.append(a)
+            # 全局微调：整组标注相对布局准、仅整体缩放/平移有偏差时，在坐标系换算前统一校正
+            global_transform = _parse_global_transform(arguments.get("global_transform"))
+            global_note = ""
+            if global_transform and coord_anns:
+                gsx, gsy, gox, goy = global_transform
+                coord_anns = _apply_affine_anns(coord_anns, gsx, gsy, gox, goy) or coord_anns
+                global_note = f"全局微调 scale=({gsx:.3f},{gsy:.3f}) offset=({gox:+.2f},{goy:+.2f})"
+            if coord_anns and src_w and src_h:
+                scaled_anns, coord_note, transform_meta = _resolve_annotation_transform(
+                    coord_anns,
+                    src_w,
+                    src_h,
+                    dim_info,
+                    cal_reference,
+                    cal_obs,
+                    coordinate_space=coordinate_space,
+                    reference_width=ref_w,
+                    reference_height=ref_h,
+                    offset_x=offset_x,
+                    offset_y=offset_y,
+                    use_original=use_original,
+                )
+                if global_note:
+                    coord_note = (global_note + "；" + coord_note) if coord_note else global_note
+                    if isinstance(transform_meta, dict):
+                        transform_meta["global_transform"] = {"scale_x": global_transform[0], "scale_y": global_transform[1], "offset_x": global_transform[2], "offset_y": global_transform[3]}
+                if scaled_anns is None:
+                    return json.dumps({
+                        "success": False,
+                        "error": f"校准失败：至少需要 {_CAL_MIN} 条有效 calibration_observations",
+                        "calibration_reference": cal_reference,
+                        "hint": "可先 calibration_probe=true 获取角标参考图，或省略观测由后端 auto 推断（精度较低）。",
+                    }, ensure_ascii=False)
+            else:
+                scaled_anns = []
+            # 合并单元网格法生成的精确像素框
+            if cell_pixel_anns:
+                scaled_anns = list(scaled_anns or []) + cell_pixel_anns
+                if cells_used:
+                    _note = f"单元网格 {cell_cols or 12}×{cell_rows or 8}：{cells_used} 个目标按编号确定性出框"
+                    coord_note = (coord_note + "；" + _note) if coord_note else _note
+                    if not isinstance(transform_meta, dict):
+                        transform_meta = {}
+                    transform_meta["cell_grid_used"] = cells_used
+
             try:
                 edited, mime = await asyncio.to_thread(
                     _apply_image_edits,
@@ -12905,11 +13304,12 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     rotate=arguments.get("rotate") or 0,
                     crop=crop,
                     scale=arguments.get("scale"),
-                    annotations=anns,
+                    annotations=scaled_anns,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("edit_chat_attachment_image failed uuid=%s err=%s", uuid_s, exc)
                 return json.dumps({"success": False, "error": f"图片编辑失败: {exc}"}, ensure_ascii=False)
+            out_size = _read_image_pixel_size_from_bytes(edited)
             orig_name = row.get("original_name") or "image.png"
             out_name = (arguments.get("output_name") or "").strip() or f"edited-{orig_name}"
             if not out_name.lower().endswith(".png"):
@@ -12934,13 +13334,41 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             url = saved.get("url") or f"/api/ai/attachments/{saved.get('uuid')}"
             title = saved.get("name") or out_name
             markdown_image = f"![{title}]({url})"
+            try:
+                from services.vision_image import build_inline_vision_meta as _bivm
+                _result_url, _, _, _ = _bivm(edited, mime=mime)
+            except Exception:  # noqa: BLE001
+                _result_url = None
+            hint = (
+                "**先查看上面返回的 data_url（标注后的实际效果图），核对所有框/标记的位置**：\n"
+                "- 若**所有框整体一起偏移/偏大偏小**（相对位置对、但整组平移或缩放不准）：**不要逐个改框**，只需调 `global_transform` 做宏观校正，"
+                "例如整组右移就加 `offset_x`、整组偏大就把 `scale` 调小（percent 坐标下 offset 单位是百分点）；保持 annotations 不变再次调用本工具。\n"
+                "- 若只是个别框不准：单独调那一个 annotation 的坐标。\n"
+                "最多迭代 2–3 次，定位合理后再把 markdown_image 插入回复给用户。原图 uuid 不变。"
+            )
+            if isinstance(transform_meta, dict) and transform_meta.get("recommend_calibration_probe"):
+                hint = (
+                    "标注整体可能偏移（框集中在左右边距）。优先用 `global_transform` 整体平移/缩放校正（见下）。" + hint
+                )
             return json.dumps({
                 "success": True,
                 "source_uuid": uuid_s,
                 "attachment": saved,
                 "fs_path": saved.get("fs_path") or _attachment_relative_path(saved),
                 "markdown_image": markdown_image,
-                "hint": "请在回复正文中插入 markdown_image，让用户看到标注后的图片；原图 uuid 不变。",
+                "data_url": _result_url,
+                "source_width": src_w,
+                "source_height": src_h,
+                "output_width": out_size[0] if out_size else None,
+                "output_height": out_size[1] if out_size else None,
+                "coordinate_transform": coord_note or None,
+                "transform_meta": transform_meta,
+                "applied_global_transform": (
+                    {"scale_x": global_transform[0], "scale_y": global_transform[1],
+                     "offset_x": global_transform[2], "offset_y": global_transform[3]}
+                    if global_transform else None
+                ),
+                "hint": hint,
             }, ensure_ascii=False)
 
         if name == "list_chat_attachments":
