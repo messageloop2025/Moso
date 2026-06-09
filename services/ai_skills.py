@@ -2119,7 +2119,8 @@ TOOLS = [
                 "- 图片：**若附件已有 `ai_description`（此前轮次 AI 已识别并保存的扩展信息），默认只返回这段描述文本，不再返回 data_url**，"
                 "节省上下文；若你需要重新识别（比如用户追问局部/细节而描述未覆盖，或用户明确要求「看原图」），传 `force_reload=true` 强制返回 `data_url`；"
                 "若附件尚无描述，则默认返回 `data_url`（已自动缩放压缩的 JPEG data URL，适配网关 input 长度上限）。\n"
-                "- 大图小目标：可传 `region` 裁剪局部高清图，或传 `tile_grid` 生成分块列表并读取某一块；返回 `region_meta`，"
+                "- 大图/看不清/小目标：不要回答「图片太大/我看不到」后停止。先用 `force_reload=true` 读压缩整图粗识别；"
+                "若整图仍看不清，可传 `tile_grid` 生成分块并按 `tile_id` 逐块读取，或传 `region` 裁剪局部高清图；返回 `region_meta`，"
                 "后续精确标注时把局部坐标连同该 `region_meta` 传给 `edit_chat_attachment_image.source_region` 回填原图。\n"
                 "- 首次识别图片后，请**主动调用 `save_image_description(uuid=..., description=...)`** 把提取到的内容（OCR 文本 + 主要视觉元素 + 结构化信息）"
                 "写回附件行，后续轮次才能跳过重读原图。\n"
@@ -2138,8 +2139,8 @@ TOOLS = [
                     "region": {"type": "object", "description": "可选局部区域 {x,y,width,height} 或 {left,top,right,bottom}；用于大图小目标精看局部"},
                     "region_coordinate_space": {
                         "type": "string",
-                        "enum": ["pixel", "percent", "norm", "norm1000"],
-                        "description": "region 的坐标系，默认 pixel；percent=0–100 相对原图；norm=0–1；norm1000=0–1000",
+                        "enum": ["auto", "pixel", "percent", "norm", "norm1000"],
+                        "description": "region 的坐标系，默认 auto；percent=0–100 相对原图；norm=0–1；norm1000=0–1000；pixel=原图像素",
                     },
                     "pad_ratio": {"type": "number", "description": "裁剪 region 时向四周扩展比例，默认 0.08，避免粗定位框太紧"},
                     "tile_grid": {"type": "object", "description": "可选分块配置 {rows,cols,overlap_ratio}；用于不确定目标在哪时逐块查找"},
@@ -2228,10 +2229,12 @@ TOOLS = [
                 "网页截图左右白边大时用 `coordinate_space=\"percent_content\"`（相对内容区 0–100）。\n"
                 "5. **兜底预览（首轮默认勿用）**：`grid_overlay` / `cell_grid` / `calibration_probe` 只在一次关键点标注后仍明显不准时使用，会增加轮次。\n"
                 "6. **少遮挡**：需要区域时才用 `type=rect` 细框（只设 outline、不设 fill）；单行菜单/按钮 height 约 **3–5%**。"
+                "如果你定位到的是目标**中心点**而不是左上角，必须传 `anchor=\"center\"`（或 `center_x/center_y`），"
+                "后端会自动换算左上角；不要把中心点直接当 `x/y` 左上角。"
                 "**禁止**用 highlight/overlay 实心大块遮罩标单个菜单项。默认 `tight_boxes=true` 会收紧过大框。\n"
                 "7. 正常结果若返回 `deliver_now=true`，立即交付 `markdown_image`，不要再调工具；若 `visual_review_required=true` 先看 data_url，准确才交付；若 `should_retry=true`，仅原样复用 annotations 并微调 `global_transform` 一次。\n"
-                "8. **大图小目标**：先用 read_chat_attachment 读整图粗定位；若目标很小或不确定，调用 read_chat_attachment(region=...) 或 tile_grid 获取局部高清图；"
-                "局部图识别出的 annotations 要连同 read 返回的 `region_meta` 作为 `source_region` 传回本工具，后端会自动回填原图坐标。\n"
+                "8. **小文字/图标必走局部精修**：整图发给模型会被压到约 768px，小目标在整图上估的 percent 不准。要标小文字/字段名/图标/按钮时，先在整图粗估 region，再用 read_chat_attachment(region=...) 取局部高清图（后端会自动放大局部图让你看清），在放大图里读出中心 percent；不确定位置时用 tile_grid 逐块看。"
+                "局部图识别出的 annotations 连同 read 返回的 `region_meta` 作为 `source_region` 传回本工具，后端自动回填原图坐标（用 percent 不受放大影响）。\n"
                 "9. **勿**传 `use_original_coordinates`、**勿**自己心算像素缩放、**勿**逐个目标单独修。\n\n"
                 "**透明度**：每项可设 `opacity`（0~1 或 0~100）；颜色可用 `#RRGGBBAA`。\n\n"
                 "**annotations 类型**：crosshair、target/ring、callout、pin/marker、rect/ellipse/polygon、overlay/mask/highlight、line、text。\n"
@@ -2261,7 +2264,7 @@ TOOLS = [
                     },
                     "auto_global_transform": {
                         "type": "boolean",
-                        "description": "默认 true：后端自动搜索整组 scale+offset 宏观校正（相对布局对、整组偏时可免 AI 手调 global_transform）。传 false 关闭。",
+                        "description": "默认 true：3 个及以上目标时后端自动搜索整组 scale+offset 宏观校正（相对布局对、整组偏时可免 AI 手调 global_transform）。1-2 个目标不会自动校正，传 false 可显式关闭。",
                     },
                     "grid_overlay": {
                         "type": "boolean",
@@ -2306,6 +2309,13 @@ TOOLS = [
                         "description": (
                             "局部精识别回填原图用。传 read_chat_attachment(region=...) 返回的 region_meta；"
                             "此时 annotations 坐标相对该局部图，后端会按 source_region 自动映射回原图。"
+                        ),
+                    },
+                    "source_region_vision_meta": {
+                        "type": "object",
+                        "description": (
+                            "可选：read_chat_attachment(region=...) 返回的 region_vision_meta。"
+                            "当局部 annotations 使用 pixel 坐标时，后端用其中 model_view_width/height 或 vision_width/height 把局部所见像素缩放回原图区域。"
                         ),
                     },
                     "offset_x": {
@@ -12924,7 +12934,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                         raw_for_vision, region_meta = crop_image_region(
                             raw,
                             region_arg,
-                            coordinate_space=(arguments.get("region_coordinate_space") or "pixel"),
+                            coordinate_space=(arguments.get("region_coordinate_space") or "auto"),
                             pad_ratio=pad,
                         )
                         mode = "region"
@@ -12979,17 +12989,25 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                             f" 识图 {vw}×{vh}px；若按所见估坐标，edit 传 reference_width={vw}, reference_height={vh}。"
                         )
                     if region_meta:
+                        _mag = region_meta.get("magnify") or 1.0
+                        _mag_note = (
+                            f" 本局部图已放大 {_mag:.2f}× 便于你看清细节（用 percent 给坐标不受放大影响）。"
+                            if isinstance(_mag, (int, float)) and _mag > 1.01
+                            else ""
+                        )
                         coord_hint = (
                             f"这是原图局部区域：原图 {ow}×{oh}px，区域 left={region_meta.get('x')} top={region_meta.get('y')} "
                             f"width={region_meta.get('width')} height={region_meta.get('height')}。"
                             "局部图中的位置请作为局部坐标处理；最终标注原图时，将本响应的 region_meta 作为 "
                             "`edit_chat_attachment_image.source_region` 传回，后端会自动回填原图坐标。"
+                            + _mag_note
                         )
                     resp["coordinate_hint"] = coord_hint
                     if region_meta:
                         resp["backfill_hint"] = (
                             "精识别后调用 edit_chat_attachment_image：uuid 仍用原图 uuid，传 source_region=本响应 region_meta，"
-                            "annotations 用局部图坐标；coordinate_space 可用 percent（0–100 相对局部图）或 pixel（局部像素）。"
+                            "最好用 coordinate_space=percent（0–100 相对局部图）。若使用 pixel 局部坐标，请同时传 "
+                            "source_region_vision_meta=本响应 region_vision_meta，后端会按模型所见尺寸缩放回原图区域。"
                         )
                     # 若同时存在缓存描述，一并带出，便于 AI 对比/更新
                     if cached_desc:
@@ -13152,6 +13170,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 detect_content_bounds as _detect_content_bounds,
                 apply_calibration_transform_to_annotations as _apply_affine_anns,
                 clamp_tight_box_sizes as _clamp_tight_box_sizes,
+                normalize_box_anchor_to_top_left as _normalize_box_anchor_to_top_left,
                 resolve_annotation_transform as _resolve_annotation_transform,
                 CALIBRATION_MIN_POINTS as _CAL_MIN,
             )
@@ -13412,9 +13431,20 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                             cells_used += 1
                     else:
                         coord_anns.append(a)
+            anchor_notes: list[str] = []
+            if coord_anns:
+                coord_anns, anchor_notes = _normalize_box_anchor_to_top_left(coord_anns)
             # 全局微调：整组标注相对布局准、仅整体缩放/平移有偏差时，在坐标系换算前统一校正
             global_transform = _parse_global_transform(arguments.get("global_transform"))
-            source_region = arguments.get("source_region") if isinstance(arguments.get("source_region"), dict) else None
+            source_region_arg = arguments.get("source_region") if isinstance(arguments.get("source_region"), dict) else None
+            source_region = source_region_arg
+            source_region_vision_meta = arguments.get("source_region_vision_meta") if isinstance(arguments.get("source_region_vision_meta"), dict) else None
+            if source_region and isinstance(source_region.get("region_meta"), dict):
+                source_region_vision_meta = source_region.get("region_vision_meta") if isinstance(source_region.get("region_vision_meta"), dict) else source_region_vision_meta
+                source_region = source_region.get("region_meta")
+            elif source_region and isinstance(source_region.get("source_region"), dict):
+                source_region_vision_meta = source_region
+                source_region = source_region.get("source_region")
             content_bounds = None
             auto_gt_flag = arguments.get("auto_global_transform")
             auto_gt_on = auto_gt_flag is None or auto_gt_flag in (True, "true", 1, "1")
@@ -13424,7 +13454,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 content_bounds = _detect_content_bounds(raw)
             global_note = ""
             auto_space_switch = ""
-            if not source_region and not global_transform and auto_gt_on and coord_anns and len(coord_anns) >= 2 and src_w and src_h:
+            if not source_region and not global_transform and auto_gt_on and coord_anns and len(coord_anns) >= 3 and src_w and src_h:
                 auto_res = _estimate_auto_global_transform(
                     coord_anns, src_w, src_h, space=coordinate_space or "percent", raw=raw,
                 )
@@ -13463,11 +13493,28 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     max_height=max_box_h,
                     enabled=True,
                 )
+            if anchor_notes:
+                clamp_notes = anchor_notes + clamp_notes
             if source_region and coord_anns and src_w and src_h:
+                ref_w = None
+                ref_h = None
+                if isinstance(source_region_vision_meta, dict):
+                    ref_w = (
+                        source_region_vision_meta.get("model_view_width")
+                        or source_region_vision_meta.get("vision_width")
+                        or source_region_vision_meta.get("region_width")
+                    )
+                    ref_h = (
+                        source_region_vision_meta.get("model_view_height")
+                        or source_region_vision_meta.get("vision_height")
+                        or source_region_vision_meta.get("region_height")
+                    )
                 scaled_anns = _map_local_annotations_to_original(
                     coord_anns,
                     source_region,
                     coordinate_space=coordinate_space or "percent",
+                    reference_width=ref_w,
+                    reference_height=ref_h,
                 ) or []
                 coord_note = (
                     f"局部区域回填 → 原图：x={source_region.get('x', source_region.get('left'))} "
@@ -13478,6 +13525,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 transform_meta = {
                     "method": "source_region",
                     "source_region": source_region,
+                    "source_region_vision_meta": source_region_vision_meta,
                     "space": coordinate_space or "percent",
                 }
                 if clamp_notes:

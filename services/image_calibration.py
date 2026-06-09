@@ -91,19 +91,85 @@ def clamp_tight_box_sizes(
             out.append(item)
             continue
         changed = False
+        old_w = _float(item.get(wkey), 0) if wkey else 0.0
+        old_h = _float(item.get(hkey), 0) if hkey else 0.0
+        old_x = _float(item.get("x"), 0)
+        old_y = _float(item.get("y"), 0)
+        cx = old_x + old_w / 2.0
+        cy = old_y + old_h / 2.0
         if wkey:
-            ow = _float(item.get(wkey), 0)
+            ow = old_w
             if ow > mw:
                 item[wkey] = round(mw, 4)
                 changed = True
         if hkey:
-            oh = _float(item.get(hkey), 0)
+            oh = old_h
             if oh > mh:
                 item[hkey] = round(mh, 4)
                 changed = True
         if changed:
+            if "x" in item and wkey:
+                item["x"] = round(cx - _float(item.get(wkey), old_w) / 2.0, 4)
+            if "y" in item and hkey:
+                item["y"] = round(cy - _float(item.get(hkey), old_h) / 2.0, 4)
             label = item.get("label") or item.get("text") or kind
             notes.append(f"{label}: 框尺寸已收紧至 max {mw:.1f}×{mh:.1f}")
+        out.append(item)
+    return out, notes
+
+
+def normalize_box_anchor_to_top_left(annotations: list[dict] | None) -> tuple[list[dict] | None, list[str]]:
+    """把矩形类标注的中心锚点语义统一转成左上角 x/y。
+
+    rect/highlight 的绘制约定是 x/y = 左上角。视觉模型经常先找到目标中心点，
+    若把中心点直接放进 x/y 会导致框整体偏右下；显式声明 anchor/origin/position=center
+    或传 center_x/center_y 时，这里先做确定性换算。
+    """
+    if not annotations:
+        return annotations, []
+    rect_types = {"rect", "rectangle", "box", "overlay", "mask", "highlight", "ellipse", "circle"}
+    center_values = {"center", "centre", "middle", "中心", "中心点"}
+    notes: list[str] = []
+    out: list[dict] = []
+    for ann in annotations:
+        if not isinstance(ann, dict):
+            continue
+        item = dict(ann)
+        kind = (item.get("type") or "rect").strip().lower()
+        if kind not in rect_types:
+            out.append(item)
+            continue
+        wkey = "width" if "width" in item else ("w" if "w" in item else None)
+        hkey = "height" if "height" in item else ("h" if "h" in item else None)
+        if not wkey or not hkey:
+            out.append(item)
+            continue
+        w = _float(item.get(wkey), 0)
+        h = _float(item.get(hkey), 0)
+        if w <= 0 or h <= 0:
+            out.append(item)
+            continue
+        anchor = str(
+            item.get("anchor")
+            or item.get("origin")
+            or item.get("position")
+            or item.get("xy_anchor")
+            or item.get("box_anchor")
+            or ""
+        ).strip().lower()
+        has_center_xy = item.get("center_x") is not None or item.get("center_y") is not None
+        center_anchor = anchor in center_values or has_center_xy
+        if not center_anchor:
+            out.append(item)
+            continue
+        cx = _float(item.get("center_x", item.get("anchor_x", item.get("x"))), 0)
+        cy = _float(item.get("center_y", item.get("anchor_y", item.get("y"))), 0)
+        item["x"] = round(cx - w / 2.0, 4)
+        item["y"] = round(cy - h / 2.0, 4)
+        item["anchor"] = "top-left"
+        item["_center_anchor_normalized"] = True
+        label = item.get("label") or item.get("text") or kind
+        notes.append(f"{label}: 已按中心点换算为左上角")
         out.append(item)
     return out, notes
 
@@ -236,7 +302,9 @@ def estimate_auto_global_transform(
 
     返回 (sx, sy, ox, oy, 选用的坐标系, content_bounds)；若无改善返回 None。
     """
-    if not annotations or src_w <= 0 or src_h <= 0 or len(annotations) < 2:
+    # 少于 3 个目标时，自动宏观校正缺少足够几何约束，容易把本来正确的
+    # 百分比坐标错误平移/切到 percent_content；这种场景应走显式坐标或人工 global_transform。
+    if not annotations or src_w <= 0 or src_h <= 0 or len(annotations) < 3:
         return None
     cb = content_bounds
     if cb is None and raw:

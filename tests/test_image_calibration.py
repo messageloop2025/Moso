@@ -18,6 +18,7 @@ from services.image_calibration import (
     parse_global_transform,
     pick_best_auto_transform,
     resolve_annotation_transform,
+    normalize_box_anchor_to_top_left,
 )
 
 
@@ -42,6 +43,19 @@ def test_estimate_auto_global_shift_left_cluster():
     sx, sy, ox, oy, sp, _ = res
     assert ox > 2.0
     assert sp == "percent"
+
+
+def test_auto_global_transform_requires_three_annotations():
+    anns = [
+        {"type": "rect", "x": 14, "y": 17, "width": 8, "height": 4},
+        {"type": "rect", "x": 4, "y": 4, "width": 8, "height": 5},
+    ]
+    assert estimate_auto_global_transform(anns, 1000, 500, space="percent") is None
+    out, _, meta = resolve_annotation_transform(anns, 1000, 500, {}, [], None, coordinate_space="percent")
+    assert meta["method"] == "explicit_space"
+    assert out[0]["x"] == 140
+    assert out[0]["width"] == 80
+    assert out[1]["height"] == 25
 
 
 def test_percent_content_mapping():
@@ -74,6 +88,29 @@ def test_percent_space_deterministic():
     assert out[0]["y"] == 500
     assert out[0]["width"] == 200
     assert out[0]["height"] == 200
+
+
+def test_center_anchor_normalizes_to_top_left_before_percent_mapping():
+    anns = [{"type": "rect", "x": 50, "y": 50, "width": 10, "height": 4, "anchor": "center"}]
+    normalized, notes = normalize_box_anchor_to_top_left(anns)
+    assert normalized[0]["x"] == 45
+    assert normalized[0]["y"] == 48
+    assert notes
+    out, _, _ = apply_normalized_space(normalized, 1000, 500, "percent")
+    assert out[0]["x"] == 450
+    assert out[0]["y"] == 240
+    assert out[0]["width"] == 100
+    assert out[0]["height"] == 20
+
+
+def test_tight_box_clamp_preserves_center():
+    anns = [{"type": "rect", "x": 10, "y": 20, "width": 30, "height": 10}]
+    out, notes = clamp_tight_box_sizes(anns, space="percent", max_width=18, max_height=5.5)
+    assert notes
+    assert out[0]["width"] == 18
+    assert out[0]["height"] == 5.5
+    assert out[0]["x"] == 16
+    assert out[0]["y"] == 22.25
 
 
 def test_percent_space_converts_keypoint_fields():

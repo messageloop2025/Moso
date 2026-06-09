@@ -23,7 +23,7 @@ def _sample_png(width: int = 1000, height: int = 800) -> bytes:
 
 def test_normalize_region_percent_to_pixels():
     region = normalize_region_to_pixels({"x": 10, "y": 20, "width": 30, "height": 40}, 1000, 800, "percent")
-    assert region == {
+    assert {k: region[k] for k in ("x", "y", "width", "height", "left", "top", "right", "bottom", "coordinate_space")} == {
         "x": 100,
         "y": 160,
         "width": 300,
@@ -44,9 +44,19 @@ def test_normalize_region_norm1000_to_pixels():
     assert region["height"] == 400
 
 
+def test_normalize_region_auto_prefers_percent_for_small_values():
+    region = normalize_region_to_pixels({"x": 10, "y": 20, "width": 30, "height": 40}, 1000, 800, "auto")
+    assert region["x"] == 100
+    assert region["y"] == 160
+    assert region["input_coordinate_space"] == "percent"
+
+
 def test_crop_image_region_returns_region_meta():
     raw = _sample_png()
-    cropped, meta = crop_image_region(raw, {"x": 10, "y": 20, "width": 30, "height": 40}, coordinate_space="percent")
+    # 关闭放大时，裁剪输出与区域像素一致
+    cropped, meta = crop_image_region(
+        raw, {"x": 10, "y": 20, "width": 30, "height": 40}, coordinate_space="percent", magnify_min_side=0,
+    )
     img = Image.open(io.BytesIO(cropped))
     assert img.size == (300, 320)
     assert meta["x"] == 100
@@ -55,6 +65,30 @@ def test_crop_image_region_returns_region_meta():
     assert meta["height"] == 320
     assert meta["source_width"] == 1000
     assert meta["source_height"] == 800
+    assert meta["magnify"] == 1.0
+
+
+def test_crop_image_region_magnifies_small_crop():
+    raw = _sample_png()
+    cropped, meta = crop_image_region(
+        raw, {"x": 10, "y": 20, "width": 20, "height": 10}, coordinate_space="percent", magnify_min_side=1024,
+    )
+    img = Image.open(io.BytesIO(cropped))
+    # 区域元信息仍记录原图像素，放大只作用于渲染尺寸
+    assert meta["width"] == 200
+    assert meta["height"] == 80
+    assert meta["magnify"] > 1.0
+    assert max(img.size) >= 800
+    assert img.size == (meta["rendered_width"], meta["rendered_height"])
+
+
+def test_magnified_crop_percent_backfill_unaffected():
+    # 放大后用 percent 回填，结果应与未放大时完全一致（分辨率无关）
+    region_meta = {"x": 100, "y": 160, "width": 200, "height": 80, "magnify": 3.2}
+    anns = [{"type": "crosshair", "x": 50, "y": 50}]
+    out = map_local_annotations_to_original(anns, region_meta, coordinate_space="percent")
+    assert out[0]["x"] == 200
+    assert out[0]["y"] == 200
 
 
 def test_map_local_percent_annotations_to_original():
@@ -76,6 +110,20 @@ def test_map_local_percent_annotations_to_original():
     assert out[2]["anchor_y"] == 320
     assert out[2]["label_x"] == 280
     assert out[2]["label_y"] == 384
+
+
+def test_map_local_pixel_annotations_with_reference_dimensions():
+    region_meta = {"x": 100, "y": 160, "width": 300, "height": 320}
+    anns = [{"type": "target", "x": 150, "y": 80}]
+    out = map_local_annotations_to_original(
+        anns,
+        region_meta,
+        coordinate_space="pixel",
+        reference_width=600,
+        reference_height=640,
+    )
+    assert out[0]["x"] == 175
+    assert out[0]["y"] == 200
 
 
 def test_build_tile_regions_cover_image_with_overlap():

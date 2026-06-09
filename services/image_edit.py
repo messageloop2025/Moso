@@ -387,6 +387,21 @@ def _bbox_rect(ann: dict) -> tuple[int, int, int, int] | None:
     h = _int(ann.get("height", ann.get("h")), 0)
     if w <= 0 or h <= 0:
         return None
+    anchor = str(
+        ann.get("anchor")
+        or ann.get("origin")
+        or ann.get("position")
+        or ann.get("xy_anchor")
+        or ann.get("box_anchor")
+        or ""
+    ).strip().lower()
+    if anchor in ("center", "centre", "middle", "中心", "中心点"):
+        x -= w // 2
+        y -= h // 2
+    if ann.get("center_x") is not None:
+        x = _int(ann.get("center_x"), x) - w // 2
+    if ann.get("center_y") is not None:
+        y = _int(ann.get("center_y"), y) - h // 2
     return (x, y, x + w, y + h)
 
 
@@ -397,6 +412,21 @@ def _bbox_ellipse(ann: dict) -> tuple[int, int, int, int] | None:
     h = _int(ann.get("height", ann.get("h")), w or 0)
     if w <= 0:
         return None
+    anchor = str(
+        ann.get("anchor")
+        or ann.get("origin")
+        or ann.get("position")
+        or ann.get("xy_anchor")
+        or ann.get("box_anchor")
+        or ""
+    ).strip().lower()
+    if anchor in ("center", "centre", "middle", "中心", "中心点"):
+        x -= w // 2
+        y -= (h or w) // 2
+    if ann.get("center_x") is not None:
+        x = _int(ann.get("center_x"), x) - w // 2
+    if ann.get("center_y") is not None:
+        y = _int(ann.get("center_y"), y) - (h or w) // 2
     return (x, y, x + w, y + (h or w))
 
 

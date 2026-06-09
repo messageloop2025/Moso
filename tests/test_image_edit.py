@@ -100,6 +100,28 @@ def test_rect_fill_with_opacity_percent():
     assert b > 100
 
 
+def test_rect_center_anchor_draws_around_center():
+    raw = _blank_png(120, 80)
+    out, _ = apply_image_edits(
+        raw,
+        annotations=[
+            {
+                "type": "rect",
+                "x": 60,
+                "y": 40,
+                "width": 20,
+                "height": 10,
+                "anchor": "center",
+                "outline": "#ff0000",
+                "line_width": 1,
+            }
+        ],
+    )
+    img = Image.open(__import__("io").BytesIO(out)).convert("RGBA")
+    assert img.getpixel((50, 35))[0] > 200
+    assert img.getpixel((60, 40))[:3] == (240, 240, 240)
+
+
 def test_chinese_text_annotation_renders():
     path = discover_cjk_font_path(log=False)
     if not path:

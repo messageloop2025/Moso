@@ -24,7 +24,7 @@ def normalize_region_to_pixels(
     region: dict | None,
     src_w: int,
     src_h: int,
-    coordinate_space: str | None = "pixel",
+    coordinate_space: str | None = "auto",
     *,
     pad_ratio: float = 0.0,
 ) -> dict | None:
@@ -35,7 +35,7 @@ def normalize_region_to_pixels(
     """
     if not isinstance(region, dict) or src_w <= 0 or src_h <= 0:
         return None
-    space = (coordinate_space or "pixel").strip().lower()
+    space = (coordinate_space or "auto").strip().lower()
     if "left" in region or "top" in region or "right" in region or "bottom" in region:
         x = _float(region.get("left", region.get("x")), 0)
         y = _float(region.get("top", region.get("y")), 0)
@@ -48,6 +48,16 @@ def normalize_region_to_pixels(
         y = _float(region.get("y"), 0)
         w = _float(region.get("width", region.get("w")), src_w)
         h = _float(region.get("height", region.get("h")), src_h)
+    if space in ("auto", ""):
+        vals = [x, y, w, h]
+        if all(0.0 <= v <= 1.0 for v in vals):
+            space = "norm"
+        elif 0.0 <= x <= 100.0 and 0.0 <= y <= 100.0 and 0.0 < w <= 100.0 and 0.0 < h <= 100.0 and x + w <= 110.0 and y + h <= 110.0:
+            space = "percent"
+        elif 0.0 <= x <= 1000.0 and 0.0 <= y <= 1000.0 and 0.0 < w <= 1000.0 and 0.0 < h <= 1000.0 and x + w <= 1100.0 and y + h <= 1100.0:
+            space = "norm1000"
+        else:
+            space = "pixel"
     if space in ("percent", "pct", "percentage", "%"):
         x, y, w, h = x / 100.0 * src_w, y / 100.0 * src_h, w / 100.0 * src_w, h / 100.0 * src_h
     elif space in ("norm", "normalized", "unit", "ratio", "fraction", "0-1", "0..1", "0~1"):
@@ -79,6 +89,7 @@ def normalize_region_to_pixels(
         "right": right,
         "bottom": bottom,
         "coordinate_space": "pixel",
+        "input_coordinate_space": space,
     }
 
 
@@ -120,8 +131,14 @@ def crop_image_region(
     *,
     coordinate_space: str | None = "pixel",
     pad_ratio: float = 0.0,
+    magnify_min_side: int = 1024,
+    magnify_max_factor: float = 4.0,
 ) -> tuple[bytes, dict]:
-    """从原图裁剪局部区域，返回 (png_bytes, region_meta)。"""
+    """从原图裁剪局部区域，返回 (png_bytes, region_meta)。
+
+    小裁剪块会按 LANCZOS 放大到 ``magnify_min_side`` 长边（上限 ``magnify_max_factor`` 倍），
+    让视觉模型能看清细节、精确定位。由于回填用百分比（分辨率无关），放大不影响坐标换算。
+    """
     from PIL import Image
 
     im = Image.open(io.BytesIO(raw))
@@ -133,9 +150,25 @@ def crop_image_region(
         pixel = normalize_region_to_pixels({"x": 0, "y": 0, "width": src_w, "height": src_h}, src_w, src_h)
     assert pixel is not None
     cropped = im.crop((pixel["left"], pixel["top"], pixel["right"], pixel["bottom"]))
+    cw, ch = cropped.size
+    magnify = 1.0
+    target = max(0, int(magnify_min_side or 0))
+    if target and cw > 0 and ch > 0:
+        long_side = max(cw, ch)
+        if long_side < target:
+            magnify = min(float(magnify_max_factor or 1.0), target / float(long_side))
+            if magnify > 1.001:
+                cropped = cropped.resize(
+                    (max(1, int(round(cw * magnify))), max(1, int(round(ch * magnify)))),
+                    Image.LANCZOS,
+                )
     out = io.BytesIO()
     cropped.save(out, format="PNG", optimize=True)
-    return out.getvalue(), _region_meta(pixel, src_w, src_h)
+    meta = _region_meta(pixel, src_w, src_h)
+    meta["magnify"] = round(magnify, 4)
+    meta["rendered_width"] = cropped.size[0]
+    meta["rendered_height"] = cropped.size[1]
+    return out.getvalue(), meta
 
 
 def map_local_annotations_to_original(
@@ -143,6 +176,8 @@ def map_local_annotations_to_original(
     region_meta: dict | None,
     *,
     coordinate_space: str | None = "percent",
+    reference_width: int | float | None = None,
+    reference_height: int | float | None = None,
 ) -> list[dict] | None:
     """把局部图上的 annotations 映射回原图像素坐标。"""
     if not annotations:
@@ -161,7 +196,9 @@ def map_local_annotations_to_original(
     elif space in ("norm1000", "0-1000", "0~1000", "thousand"):
         sx, sy, ox, oy = rw / 1000.0, rh / 1000.0, rx, ry
     else:
-        sx, sy, ox, oy = 1.0, 1.0, rx, ry
+        ref_w = _float(reference_width, rw)
+        ref_h = _float(reference_height, rh)
+        sx, sy, ox, oy = rw / max(1.0, ref_w), rh / max(1.0, ref_h), rx, ry
 
     out: list[dict] = []
     for ann in annotations:

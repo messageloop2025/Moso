@@ -77,5 +77,8 @@ def test_cropped_region_can_be_compressed_for_vision():
     data, mime, size, meta = compress_image_bytes_for_vision(cropped, mime="image/png", max_b64_chars=80_000)
     assert mime == "image/jpeg"
     assert size == len(data)
-    assert meta["original_width"] == region_meta["width"]
-    assert meta["original_height"] == region_meta["height"]
+    # 小裁剪块会被放大以便模型看清；渲染尺寸记录在 region_meta，区域像素仍为原图坐标
+    assert region_meta["magnify"] >= 1.0
+    assert meta["original_width"] == region_meta["rendered_width"]
+    assert meta["original_height"] == region_meta["rendered_height"]
+    assert region_meta["rendered_width"] >= region_meta["width"]

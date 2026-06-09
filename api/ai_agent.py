@@ -1312,6 +1312,54 @@ def _sanitize_legacy_invalid_vision_data_urls(messages: list[dict]) -> int:
     return fixed
 
 
+def _messages_indicate_image_attachment_or_degradation(messages: list[dict]) -> bool:
+    """当前上下文是否明显包含图片附件/视觉降级任务。"""
+    for m in messages or []:
+        c = (m or {}).get("content")
+        if isinstance(c, list):
+            for p in c:
+                if isinstance(p, dict) and p.get("type") == "image_url":
+                    return True
+        if not isinstance(c, str):
+            continue
+        if "【系统提示 · 视觉降级】" in c or "image_url 段已被移除" in c:
+            return True
+        if "📎 附件" in c and ("kind=image" in c or "image ·" in c or "image)" in c):
+            return True
+        if "read_chat_attachment" in c and ("data_url" in c or "图片" in c):
+            return True
+    return False
+
+
+def _looks_like_image_blind_reply(text: str) -> bool:
+    """模型没有用工具而直接回答看不到图时，拦截并继续执行。"""
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    markers = (
+        "看不到图片",
+        "看不到图",
+        "无法看到图片",
+        "无法查看图片",
+        "不能查看图片",
+        "不能直接查看图片",
+        "无法直接查看图片",
+        "无法直接访问图片",
+        "我无法查看",
+        "我不能查看",
+        "我看不到",
+        "图片太大",
+        "图片过大",
+        "图像过大",
+        "只有一个缩略图",
+        "仅有缩略图",
+        "没有图片内容",
+        "无法获取图片内容",
+        "请重新上传",
+    )
+    return any(m in t for m in markers)
+
+
 def _deduplicate_vision_base64_in_messages(messages: list[dict]) -> dict:
     """把 messages 中"非最后一次"出现的图像 base64 替换为极短占位。
 
@@ -4183,17 +4231,17 @@ Markdown / Skills 渐进阅读（与 aihelp 相同章节模型）：
   2. 清单里某条 image 附件**没有**已识别内容（多出现在本轮新上传的图，或本会话第一次遇到该图）：当前用户消息通常已经把这张图的 `image_url` 段内联好，你能直接看到像素。**看完之后第一件事**是调 `save_image_description(uuid="...", description="...")` 把你对这张图的 OCR/视觉要点/结构化信息写回附件行，之后的轮次就不需要再吃图像 token。
   3. 如果你是视觉模型却只看到 `image_url` 段的占位（可能是网关丢弃）或需要更精细地重读，可以调 `read_chat_attachment(uuid="...")`；该工具在有缓存描述时默认返回描述文本；传 `force_reload=true` 才返回原图 `data_url`。
   4. 当用户本轮消息里带"重新识别 / 再看一遍 / 看原图 / 重新分析图"等关键词时，后端会强制把原图再次内联，请基于新观察**覆盖**已有描述（再次调用 `save_image_description`）。
-  5. **严禁**仅凭元信息（mime/size/kind）或"我看不到图"来搪塞——现在多轮体系里你要么有缓存描述，要么有内联像素，总有一条路能回答。
+  5. **严禁**仅凭元信息（mime/size/kind）或"我看不到图/图片太大"来搪塞——现在多轮体系里你要么有缓存描述，要么有内联像素，总有一条路能回答。若上游视觉降级、只剩缩略图、或你看不清原图，下一步必须调用 `read_chat_attachment(uuid=..., force_reload=true)`；不要向用户解释限制后停止。
   6. 若用户要求在图上**画框/高亮/标注目标**，调用 **`edit_chat_attachment_image`**。默认采用「找关键点 + 小标记 + 一次性批量标注 + 宏观校正」，不要先画大范围框：
      a. **默认 1 次调用**：看原图先找全目标关键点，一次性传完整 annotations，`coordinate_space="percent"`（0–100），`auto_global_transform=true`，`tight_boxes=true`。
      b. **关键点优先**：UI 菜单/按钮/图标用 `type="crosshair"` 或 `type="callout"` 标中心/锚点；通用图片关键点用 `type="target"`/`ring`。这些类型只给 x/y 或 anchor_x/anchor_y，**不要估 width/height**。
      c. **单位规则**：`coordinate_space="percent"` 时，x/y、anchor_x/anchor_y、label_x/label_y、x1/y1/x2/y2 等位置字段都必须是 0–100 百分比；工具会统一转换为像素。不要把百分比当像素传，也不要自己心算缩放。radius/arm_length/gap_radius 是最终像素大小，只控制标记视觉尺寸。
-     d. **大图小目标流程**：如果目标在大图中很小，不能只靠整图压缩后的坐标精标。先粗看整图估 region；再调用 `read_chat_attachment(region=..., region_coordinate_space="percent"|"pixel")` 获取局部高清图。若粗区域不确定，用 `read_chat_attachment(tile_grid={rows,cols,overlap_ratio}, tile_id=...)` 逐块查看。
+     d. **大图小目标流程（精度关键）**：整图发给视觉模型时会被压到约 768px 长边，截图上的小文字/图标位置在整图上**估不准**（常偏几十像素）。因此要标“某个小文字、字段名、图标、按钮”这类小目标时，**不要只靠整图估的 percent 直接精标**：先在整图上粗估目标所在 region；再调用 `read_chat_attachment(uuid=..., region={x,y,width,height}, region_coordinate_space="percent")` 取局部高清图（后端会自动放大该局部图，让你看清细节），在放大后的局部图里读出目标中心的 percent；若粗区域不确定，用 `read_chat_attachment(tile_grid={rows,cols,overlap_ratio}, tile_id=...)` 逐块查看。整图压缩后看不清也不能停在"图片太大/看不到"。
      e. **局部回填**：局部图中识别出的坐标是局部坐标。最终调用 `edit_chat_attachment_image` 时，`uuid` 仍用原图 uuid，传 `source_region=read_chat_attachment` 返回的 `region_meta`，annotations 使用局部图坐标，后端会回填到原图。不要自己心算局部坐标到原图。
      f. **UI 文本目标**：用户说“选中/标记主机名、标题、字段名、菜单文字”等小文本时，优先用 `crosshair` 或 `callout` 指向文字中心/基线；不要用实心矩形遮罩。单个文字目标必须看返回的 `data_url` 确认位置后才交付。
      g. **语义目标先确认**：用户说“标记狗/人/按钮/菜单”等时，必须先在心里确认目标实例的视觉特征和所在区域，再标它的中心点。若图片里有搜索框、导航栏、缩略图列表等，**不要标搜索框/输入框/标题栏**，除非用户明确要求标这些 UI 控件；对象类目标应标内容区里真实可见的对象实例（例如狗图片缩略图中的狗），不是搜索词或按钮。
      h. **不确定就问，不要乱标**：如果无法确定哪个可见实例是目标，先向用户确认或说明看不清；不要为了完成工具调用而猜一个无关位置。
-     i. **区域框仅兜底**：只有用户明确要圈范围时才用 `rect` 细框（只设 outline，不设 fill）；单行菜单/按钮 height 约 3–5%。禁止用实心 highlight/overlay 大块遮罩标单个菜单项或对象。
+     i. **区域框仅兜底**：只有用户明确要圈范围时才用 `rect` 细框（只设 outline，不设 fill）；单行菜单/按钮 height 约 3–5%。`rect` 的默认 `x/y` 是左上角；如果你找到的是目标中心点，必须传 `anchor="center"` 或 `center_x/center_y`，后端会换算左上角，禁止把中心点直接当左上角。禁止用实心 highlight/overlay 大块遮罩标单个菜单项或对象。
      j. **停止条件**：工具返回 `deliver_now=true` 时，立即插入 `markdown_image` 回复用户，**不要再次调用工具**，也不要逐个目标微调。若返回 `visual_review_required=true`，必须先看 `data_url`：准确才交付，不准最多修一次。
      k. **最多一次修正**：仅当返回 `should_retry=true`、`visual_review_required=true` 且视觉确认不准、或用户明确不满意时，才允许第二次调用；整体偏移时原样复用 annotations 只改 `global_transform`；语义对象标错时改成 crosshair/target/callout 指向真实目标中心。
      l. `grid_overlay` / `cell_grid` / `calibration_probe` 是标注兜底预览，默认首轮勿用；大图找小目标优先用 read_chat_attachment 的 region/tile_grid。
@@ -5142,6 +5190,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                     round_had_tool_call = False
                     round_had_ui_action = False
                     short_final_retry_used = False
+                    image_blind_tool_retry_used = False
                     for round_idx in range(agent_max_steps):
                         round_tools = await resolve_chat_tools(
                             get_tools_for_scope(session_scope, user),
@@ -5954,6 +6003,34 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                             continue
 
                         content = extract_message_content(msg) or ""
+                        if (
+                            not round_had_tool_call
+                            and not image_blind_tool_retry_used
+                            and _messages_indicate_image_attachment_or_degradation(messages)
+                            and _looks_like_image_blind_reply(content)
+                        ):
+                            image_blind_tool_retry_used = True
+                            logger.info(
+                                "Agent image blind reply intercepted; forcing read_chat_attachment workflow session_id=%s",
+                                session_id,
+                            )
+                            messages.append({"role": "assistant", "content": content or ""})
+                            messages.append({
+                                "role": "user",
+                                "content": (
+                                    "你上一条没有真正读取图片。当前任务涉及图片时，禁止回答“看不到/图片太大”后停止。"
+                                    "请立即调用 `read_chat_attachment(uuid=..., force_reload=true)` 获取压缩后的 data_url 做粗识别；"
+                                    "如果整图仍看不清小目标，请调用 `read_chat_attachment(tile_grid={\"rows\":2,\"cols\":2,\"overlap_ratio\":0.12}, tile_id=1)` "
+                                    "并继续按 tile_id 逐块查看，或用 `region` 裁剪局部高清图。"
+                                    "完成识别后再回答用户；不要要求用户重新上传。"
+                                ),
+                            })
+                            yield _sse({
+                                "content": (
+                                    "\n\n*（检测到没有真正读取图片，正在自动改用附件读取/分块识别流程继续分析…）*\n\n"
+                                )
+                            })
+                            continue
                         if (
                             round_had_tool_call
                             and not short_final_retry_used
