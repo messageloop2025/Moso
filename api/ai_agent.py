@@ -4187,13 +4187,15 @@ Markdown / Skills 渐进阅读（与 aihelp 相同章节模型）：
   6. 若用户要求在图上**画框/高亮/标注目标**，调用 **`edit_chat_attachment_image`**。默认采用「找关键点 + 小标记 + 一次性批量标注 + 宏观校正」，不要先画大范围框：
      a. **默认 1 次调用**：看原图先找全目标关键点，一次性传完整 annotations，`coordinate_space="percent"`（0–100），`auto_global_transform=true`，`tight_boxes=true`。
      b. **关键点优先**：UI 菜单/按钮/图标用 `type="crosshair"` 或 `type="callout"` 标中心/锚点；通用图片关键点用 `type="target"`/`ring`。这些类型只给 x/y 或 anchor_x/anchor_y，**不要估 width/height**。
-     c. **语义目标先确认**：用户说“标记狗/人/按钮/菜单”等时，必须先在心里确认目标实例的视觉特征和所在区域，再标它的中心点。若图片里有搜索框、导航栏、缩略图列表等，**不要标搜索框/输入框/标题栏**，除非用户明确要求标这些 UI 控件；对象类目标应标内容区里真实可见的对象实例（例如狗图片缩略图中的狗），不是搜索词或按钮。
-     d. **不确定就问，不要乱标**：如果无法确定哪个可见实例是目标，先向用户确认或说明看不清；不要为了完成工具调用而猜一个无关位置。
-     e. **区域框仅兜底**：只有用户明确要圈范围时才用 `rect` 细框（只设 outline，不设 fill）；单行菜单/按钮 height 约 3–5%。禁止用实心 highlight/overlay 大块遮罩标单个菜单项或对象。
-     f. **停止条件**：工具返回 `deliver_now=true` 时，立即插入 `markdown_image` 回复用户，**不要再次调用工具**，也不要逐个目标微调。
-     g. **最多一次修正**：仅当返回 `should_retry=true` 或用户明确不满意时，才允许第二次调用；第二次必须原样复用 annotations，只改 `global_transform`（或 percent/percent_content 坐标系），禁止逐个目标改 x/y。
-     h. `grid_overlay` / `cell_grid` / `calibration_probe` 是兜底预览，默认首轮勿用；只有一次关键点标注仍失败且用户继续要求精修时才使用，且不要连续开启预览。
-     i. **禁止**传 `use_original_coordinates`、**禁止**自己心算像素缩放。
+     c. **单位规则**：`coordinate_space="percent"` 时，x/y、anchor_x/anchor_y、label_x/label_y、x1/y1/x2/y2 等位置字段都必须是 0–100 百分比；工具会统一转换为像素。不要把百分比当像素传，也不要自己心算缩放。radius/arm_length/gap_radius 是最终像素大小，只控制标记视觉尺寸。
+     d. **UI 文本目标**：用户说“选中/标记主机名、标题、字段名、菜单文字”等小文本时，优先用 `crosshair` 或 `callout` 指向文字中心/基线；不要用实心矩形遮罩。单个文字目标必须看返回的 `data_url` 确认位置后才交付。
+     e. **语义目标先确认**：用户说“标记狗/人/按钮/菜单”等时，必须先在心里确认目标实例的视觉特征和所在区域，再标它的中心点。若图片里有搜索框、导航栏、缩略图列表等，**不要标搜索框/输入框/标题栏**，除非用户明确要求标这些 UI 控件；对象类目标应标内容区里真实可见的对象实例（例如狗图片缩略图中的狗），不是搜索词或按钮。
+     f. **不确定就问，不要乱标**：如果无法确定哪个可见实例是目标，先向用户确认或说明看不清；不要为了完成工具调用而猜一个无关位置。
+     g. **区域框仅兜底**：只有用户明确要圈范围时才用 `rect` 细框（只设 outline，不设 fill）；单行菜单/按钮 height 约 3–5%。禁止用实心 highlight/overlay 大块遮罩标单个菜单项或对象。
+     h. **停止条件**：工具返回 `deliver_now=true` 时，立即插入 `markdown_image` 回复用户，**不要再次调用工具**，也不要逐个目标微调。若返回 `visual_review_required=true`，必须先看 `data_url`：准确才交付，不准最多修一次。
+     i. **最多一次修正**：仅当返回 `should_retry=true`、`visual_review_required=true` 且视觉确认不准、或用户明确不满意时，才允许第二次调用；整体偏移时原样复用 annotations 只改 `global_transform`；语义对象标错时改成 crosshair/target/callout 指向真实目标中心。
+     j. `grid_overlay` / `cell_grid` / `calibration_probe` 是兜底预览，默认首轮勿用；只有一次关键点标注仍失败且用户继续要求精修时才使用，且不要连续开启预览。
+     k. **禁止**传 `use_original_coordinates`、**禁止**自己心算像素缩放。
 - **文本 / Markdown 附件**：调用 `read_chat_attachment(uuid="...")` 取 `content`（可用 `max_chars` 控制截断长度，默认 40000）。
 - **Office / PDF 附件**（清单中 kind 为 document，如 .docx/.pptx/.xlsx/.pdf）：同样调用 `read_chat_attachment`；后端用 MarkItDown 转为 Markdown 后返回 `content`（`converted_from_markitdown: true`）。分析合同、报表、幻灯片前应先读取全文再作答。
 - 附件沙箱：附件落盘在用户个人目录，`read_chat_attachment` / `save_image_description` / `edit_chat_attachment_image` 仅允许当前用户访问自己上传的附件；读取他人目录用 fs_* 会被拒绝。

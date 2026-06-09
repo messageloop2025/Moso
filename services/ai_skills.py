@@ -2209,15 +2209,17 @@ TOOLS = [
                 "1. **最佳（强烈推荐）**：一次性标出**所有**目标，用 `coordinate_space=\"percent\"`，关键点只给 x/y（0–100）。"
                 "UI 菜单/按钮/图标中心优先 `type=\"crosshair\"` 或 `type=\"callout\"`；通用图片关键点优先 `type=\"target\"`/`ring`。"
                 "不要为单个目标估大矩形范围。\n"
-                "2. **语义定位必须先确认**：用户要求标记狗/人/物体时，先确认内容区里真实可见的目标实例，标对象中心点；"
+                "2. **小文本目标**：用户要求选中/标记主机名、字段名、标题、菜单文字时，优先用 `crosshair` 或 `callout` 指文字中心/基线；"
+                "不要用实心矩形遮罩。单个文字或矩形类标注会返回 `visual_review_required=true`，必须先看 data_url 确认再交付。\n"
+                "3. **语义定位必须先确认**：用户要求标记狗/人/物体时，先确认内容区里真实可见的目标实例，标对象中心点；"
                 "不要把搜索框、输入框、标题栏、搜索词或按钮误当作目标。若无法确定目标在哪，先问用户，不要乱标。\n"
-                "3. **全局微调**：默认 `auto_global_transform=true`，后端会自动搜索整组 scale+offset；也可手动传 `global_transform`。"
+                "4. **全局微调**：默认 `auto_global_transform=true`，后端会自动搜索整组 scale+offset；也可手动传 `global_transform`。"
                 "网页截图左右白边大时用 `coordinate_space=\"percent_content\"`（相对内容区 0–100）。\n"
-                "4. **兜底预览（首轮默认勿用）**：`grid_overlay` / `cell_grid` / `calibration_probe` 只在一次关键点标注后仍明显不准时使用，会增加轮次。\n"
-                "5. **少遮挡**：需要区域时才用 `type=rect` 细框（只设 outline、不设 fill）；单行菜单/按钮 height 约 **3–5%**。"
+                "5. **兜底预览（首轮默认勿用）**：`grid_overlay` / `cell_grid` / `calibration_probe` 只在一次关键点标注后仍明显不准时使用，会增加轮次。\n"
+                "6. **少遮挡**：需要区域时才用 `type=rect` 细框（只设 outline、不设 fill）；单行菜单/按钮 height 约 **3–5%**。"
                 "**禁止**用 highlight/overlay 实心大块遮罩标单个菜单项。默认 `tight_boxes=true` 会收紧过大框。\n"
-                "6. 正常结果若返回 `deliver_now=true`，立即交付 `markdown_image`，不要再调工具；若 `should_retry=true`，仅原样复用 annotations 并微调 `global_transform` 一次。\n"
-                "7. **勿**传 `use_original_coordinates`、**勿**自己心算像素缩放、**勿**逐个目标单独修。\n\n"
+                "7. 正常结果若返回 `deliver_now=true`，立即交付 `markdown_image`，不要再调工具；若 `visual_review_required=true` 先看 data_url，准确才交付；若 `should_retry=true`，仅原样复用 annotations 并微调 `global_transform` 一次。\n"
+                "8. **勿**传 `use_original_coordinates`、**勿**自己心算像素缩放、**勿**逐个目标单独修。\n\n"
                 "**透明度**：每项可设 `opacity`（0~1 或 0~100）；颜色可用 `#RRGGBBAA`。\n\n"
                 "**annotations 类型**：crosshair、target/ring、callout、pin/marker、rect/ellipse/polygon、overlay/mask/highlight、line、text。\n"
                 "仅可编辑当前用户自己的 image 类附件。"
@@ -2240,6 +2242,8 @@ TOOLS = [
                             "annotations 的坐标系。**首选 percent**（0–100 相对整图）；"
                             "网页/截图左右有大白边时用 **percent_content**（0–100 相对检测到的内容区）；"
                             "norm=0–1；norm1000=0–1000；pixel=原图像素。"
+                            "该坐标系会作用于所有位置字段：x/y、x1/y1/x2/y2、anchor_x/anchor_y、label_x/label_y、left/top/right/bottom。"
+                            "视觉尺寸字段 radius/arm_length/gap_radius/ring_width 仍按最终像素理解，用于控制标记大小。"
                         ),
                     },
                     "auto_global_transform": {
@@ -2313,7 +2317,9 @@ TOOLS = [
                         "description": (
                             "标注列表。**默认关键点模式**：一次列全所有目标，优先 `{\"type\":\"crosshair\",\"x\":12.5,\"y\":24}` "
                             "或 `{\"type\":\"target\",\"x\":50,\"y\":45}`。`callout` 用 anchor_x/anchor_y 指目标、label_x/label_y 放文字。"
+                            "若 coordinate_space=\"percent\"，这些位置字段必须是 0–100 百分比；后端会统一转换成像素，不要自己把百分比当像素传。"
                             "标对象时 x/y 必须落在真实可见对象中心，不要落在搜索框、输入框、标题栏或搜索按钮上。"
+                            "标主机名/字段名/标题等小文本时，x/y 或 anchor_x/anchor_y 应落在文字中心/基线，不要落到浏览器地址栏或页面上方空白。"
                             "需要区域时才用 rect 的 x/y/width/height 且只设 outline；勿用实心 highlight 标菜单。"
                             "兜底才用 `cells`：`{\"type\":\"rect\",\"cells\":[编号,...],\"outline\":\"#ff0000\"}`。"
                             "其它字段：type, x/y/anchor_x/anchor_y/label_x/label_y/width/height 或 points, fill/outline/color, opacity(0~1 或 0~100), line_width, radius, arm_length, gap_radius。"
@@ -13430,18 +13436,33 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             except Exception:  # noqa: BLE001
                 _result_url = None
             point_types = {"crosshair", "hair", "target", "ring", "callout", "pin", "marker", "point"}
+            rect_like_types = {"rect", "rectangle", "box", "overlay", "mask", "highlight", "ellipse", "circle"}
             annotation_count = len(anns or [])
             point_annotation_count = sum(
                 1
                 for a in (anns or [])
                 if isinstance(a, dict) and (str(a.get("type") or "").strip().lower() in point_types)
             )
-            should_retry = bool(
+            rect_like_count = sum(
+                1
+                for a in (anns or [])
+                if isinstance(a, dict) and (str(a.get("type") or "rect").strip().lower() in rect_like_types)
+            )
+            likely_transform_error = bool(
                 isinstance(transform_meta, dict)
                 and (transform_meta.get("likely_offset_error") or transform_meta.get("recommend_calibration_probe"))
             )
-            deliver_now = not should_retry
-            retry_mode = "global_transform_only" if should_retry else None
+            # 单个目标、文字/UI 小目标、矩形/遮罩类标注最容易出现“位置看似合理但语义目标错/整体偏高”。
+            # 这类结果需要模型看 data_url 做一次确认，不能直接 deliver_now。
+            visual_review_required = bool(annotation_count <= 1 or rect_like_count > 0)
+            should_retry = likely_transform_error
+            deliver_now = not should_retry and not visual_review_required
+            if should_retry:
+                retry_mode = "global_transform_only"
+            elif visual_review_required:
+                retry_mode = "visual_check_then_deliver_or_one_retry"
+            else:
+                retry_mode = None
             suggested_global_transform = (
                 {"scale_x": global_transform[0], "scale_y": global_transform[1],
                  "offset_x": global_transform[2], "offset_y": global_transform[3]}
@@ -13452,11 +13473,18 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     "后端坐标换算与自动校正已完成，`deliver_now=true`。"
                     "请立即把 `markdown_image` 插入回复交付；不要再次调用本工具，不要逐个目标微调。"
                 )
-            else:
+            elif should_retry:
                 hint = (
                     "检测到标注可能存在整组偏移，`should_retry=true`。"
                     "只允许最后再调用一次：原样复用本次 annotations，仅调整 `global_transform`（或 percent/percent_content 坐标系），"
                     "禁止逐个目标修改 x/y，禁止再开 grid_overlay/cell_grid/calibration_probe。"
+                )
+            else:
+                hint = (
+                    "这是单目标或矩形/遮罩类高风险标注，`deliver_now=false` 且需要先查看 `data_url`。"
+                    "若红框/标记已经准确覆盖用户要求的语义目标，再交付 `markdown_image`；"
+                    "若整体偏高/偏低，最多再调用一次并只调 `global_transform`；"
+                    "若标到了错误对象（如把主机名标成地址栏/搜索框），最多再调用一次，改为 crosshair/target/callout 标真实目标中心，避免实心矩形。"
                 )
             return json.dumps({
                 "success": True,
@@ -13480,8 +13508,10 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 "deliver_now": deliver_now,
                 "should_retry": should_retry,
                 "retry_mode": retry_mode,
+                "visual_review_required": visual_review_required,
                 "annotation_count": annotation_count,
                 "point_annotation_count": point_annotation_count,
+                "rect_like_count": rect_like_count,
                 "hint": hint,
             }, ensure_ascii=False)
 

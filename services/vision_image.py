@@ -118,6 +118,95 @@ def build_inline_vision_meta(
     return url, mime_out, jpeg_len, dim_meta
 
 
+def compress_image_bytes_for_vision(
+    raw: bytes,
+    *,
+    mime: Optional[str] = None,
+    max_b64_chars: Optional[int] = None,
+) -> tuple[bytes, str, int, dict]:
+    """将图片压缩成适合视觉模型内联的 JPEG bytes。
+
+    返回 (image_bytes, mime_used, byte_len, dimension_meta)。dimension_meta 含：
+    original_width/original_height、vision_width/vision_height、vision_scale_x/vision_scale_y，
+    以及 encode_max_side / encode_quality / encoded_url_chars。
+
+    max_b64_chars 对应最终 data URL 长度上限；本函数按同一限制选择压缩档位，
+    但不生成 data URL，便于其它工具复用压缩后的二进制。
+    """
+    cap = max_b64_chars if max_b64_chars is not None else vision_inline_max_b64_chars()
+    mime_in = (mime or "image/png").strip() or "image/png"
+    empty_meta: dict = {}
+
+    try:
+        from PIL import Image
+    except Exception as exc:
+        logger.warning("vision_image: Pillow 不可用，返回原图 bytes err=%s", exc)
+        return raw, mime_in, len(raw), empty_meta
+
+    try:
+        im = Image.open(io.BytesIO(raw))
+        im.load()
+    except Exception as exc:
+        logger.warning("vision_image: 无法解码图片，返回原图 bytes err=%s", exc)
+        return raw, mime_in, len(raw), empty_meta
+
+    if im.mode not in ("RGB", "L"):
+        im = im.convert("RGB")
+    w, h = im.size
+    longest_src = max(w, h) or 1
+    dim_meta = build_dimension_meta(w, h, w, h)
+
+    best_data: bytes | None = None
+    best_meta = dim_meta
+    best_url_chars = 0
+
+    for max_side, quality in _VISION_ENCODE_STAGES:
+        im_work = im
+        vw, vh = w, h
+        if longest_src > max_side:
+            vw, vh = resize_to_max_side(w, h, max_side)
+            im_work = im.resize((vw, vh), Image.LANCZOS)
+        buf = io.BytesIO()
+        im_work.save(buf, format="JPEG", quality=int(quality), optimize=True)
+        data = buf.getvalue()
+        url_chars = len("data:image/jpeg;base64,") + len(base64.b64encode(data).decode("ascii"))
+        stage_meta = build_dimension_meta(w, h, vw, vh)
+        stage_meta.update({
+            "encode_max_side": max_side,
+            "encode_quality": int(quality),
+            "encoded_url_chars": url_chars,
+            "encoded_bytes": len(data),
+        })
+        if url_chars <= cap:
+            if len(raw) != len(data) or url_chars > len(raw) * 4 // 3 + 64:
+                logger.info(
+                    "vision_image: 已压缩 raw=%d -> jpeg=%d url_chars=%d side<=%d q=%d vision=%dx%d orig=%dx%d",
+                    len(raw),
+                    len(data),
+                    url_chars,
+                    max_side,
+                    quality,
+                    vw,
+                    vh,
+                    w,
+                    h,
+                )
+            return data, "image/jpeg", len(data), stage_meta
+        if best_data is None or url_chars < best_url_chars:
+            best_data = data
+            best_meta = stage_meta
+            best_url_chars = url_chars
+
+    logger.warning(
+        "vision_image: 阶梯压缩后仍超限 cap=%d best_url_chars=%d raw=%d",
+        cap,
+        best_url_chars,
+        len(raw),
+    )
+    data = best_data or b""
+    return data, "image/jpeg", len(data), best_meta
+
+
 def encode_image_bytes_for_vision_data_url(
     raw: bytes,
     *,
@@ -129,74 +218,12 @@ def encode_image_bytes_for_vision_data_url(
     返回 (data_url, mime_used, jpeg_byte_len, dimension_meta)。
     dimension_meta 含 original_width/height 与 vision_width/height（模型所见像素）。
     """
-    cap = max_b64_chars if max_b64_chars is not None else vision_inline_max_b64_chars()
     mime_in = (mime or "image/png").strip() or "image/png"
-    empty_meta: dict = {}
-
-    try:
-        from PIL import Image
-    except Exception as exc:
-        logger.warning("vision_image: Pillow 不可用，原样 base64 err=%s", exc)
-        url = f"data:{mime_in};base64," + base64.b64encode(raw).decode("ascii")
-        return url, mime_in, len(raw), empty_meta
-
-    try:
-        im = Image.open(io.BytesIO(raw))
-        im.load()
-    except Exception as exc:
-        logger.warning("vision_image: 无法解码图片 err=%s", exc)
-        url = f"data:{mime_in};base64," + base64.b64encode(raw).decode("ascii")
-        return url, mime_in, len(raw), empty_meta
-
-    if im.mode not in ("RGB", "L"):
-        im = im.convert("RGB")
-    w, h = im.size
-    longest_src = max(w, h) or 1
-    dim_meta = build_dimension_meta(w, h, w, h)
-
-    best_url: str | None = None
-    best_jpeg = 0
-    best_meta = dim_meta
-
-    for max_side, quality in _VISION_ENCODE_STAGES:
-        im_work = im
-        vw, vh = w, h
-        if longest_src > max_side:
-            vw, vh = resize_to_max_side(w, h, max_side)
-            im_work = im.resize((vw, vh), Image.LANCZOS)
-        buf = io.BytesIO()
-        im_work.save(buf, format="JPEG", quality=int(quality), optimize=True)
-        data = buf.getvalue()
-        b64 = base64.b64encode(data).decode("ascii")
-        url = f"data:image/jpeg;base64,{b64}"
-        stage_meta = build_dimension_meta(w, h, vw, vh)
-        if len(url) <= cap:
-            if len(raw) != len(data) or len(url) > len(raw) * 4 // 3 + 64:
-                logger.info(
-                    "vision_image: 已压缩 raw=%d -> jpeg=%d url_chars=%d side<=%d q=%d vision=%dx%d orig=%dx%d",
-                    len(raw),
-                    len(data),
-                    len(url),
-                    max_side,
-                    quality,
-                    vw,
-                    vh,
-                    w,
-                    h,
-                )
-            return url, "image/jpeg", len(data), stage_meta
-        if best_url is None or len(url) < len(best_url):
-            best_url = url
-            best_jpeg = len(data)
-            best_meta = stage_meta
-
-    logger.warning(
-        "vision_image: 阶梯压缩后仍超限 cap=%d best_url_chars=%d raw=%d",
-        cap,
-        len(best_url or ""),
-        len(raw),
+    data, mime_out, byte_len, dim_meta = compress_image_bytes_for_vision(
+        raw, mime=mime_in, max_b64_chars=max_b64_chars
     )
-    return best_url or "data:image/jpeg;base64,", "image/jpeg", best_jpeg, best_meta
+    url = f"{'data:' + mime_out + ';base64,'}" + base64.b64encode(data).decode("ascii")
+    return url, mime_out, byte_len, dim_meta
 
 
 def reencode_data_url_for_vision(data_url: str, *, max_b64_chars: Optional[int] = None) -> str | None:

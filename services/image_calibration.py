@@ -197,10 +197,16 @@ def _annotations_to_pixels(
             if not isinstance(ann, dict):
                 continue
             item = dict(ann)
-            for key in ("x", "x1", "left"):
+            for key in ("x", "x1", "left", "anchor_x", "label_x"):
                 if key in item and item[key] is not None:
                     item[key] = int(round(cx + _float(item[key]) / 100.0 * cw))
-            for key in ("y", "y1", "top"):
+            for key in ("y", "y1", "top", "anchor_y", "label_y"):
+                if key in item and item[key] is not None:
+                    item[key] = int(round(cy + _float(item[key]) / 100.0 * ch))
+            for key in ("x2", "right"):
+                if key in item and item[key] is not None:
+                    item[key] = int(round(cx + _float(item[key]) / 100.0 * cw))
+            for key in ("y2", "bottom"):
                 if key in item and item[key] is not None:
                     item[key] = int(round(cy + _float(item[key]) / 100.0 * ch))
             for key in ("width", "w"):
@@ -585,13 +591,13 @@ def apply_calibration_transform_to_annotations(
         if not isinstance(ann, dict):
             continue
         item = dict(ann)
-        for key in ("x", "x1", "left"):
+        for key in ("x", "x1", "left", "anchor_x", "label_x"):
             if key in item and item[key] is not None:
                 item[key] = int(round(sx * _float(item[key]) + ox))
         for key in ("x2", "right"):
             if key in item and item[key] is not None:
                 item[key] = int(round(sx * _float(item[key]) + ox))
-        for key in ("y", "y1", "top"):
+        for key in ("y", "y1", "top", "anchor_y", "label_y"):
             if key in item and item[key] is not None:
                 item[key] = int(round(sy * _float(item[key]) + oy))
         for key in ("y2", "bottom"):
@@ -624,10 +630,10 @@ def _annotation_centers(annotations: list[dict]) -> list[tuple[float, float]]:
     for ann in annotations:
         if not isinstance(ann, dict):
             continue
-        x = _float(ann.get("x"), 0)
-        y = _float(ann.get("y"), 0)
-        w = _float(ann.get("width", ann.get("w")), 20)
-        h = _float(ann.get("height", ann.get("h")), 20)
+        x = _float(ann.get("anchor_x", ann.get("x")), 0)
+        y = _float(ann.get("anchor_y", ann.get("y")), 0)
+        w = _float(ann.get("width", ann.get("w")), 0)
+        h = _float(ann.get("height", ann.get("h")), 0)
         centers.append((x + w / 2, y + h / 2))
     return centers
 
@@ -650,8 +656,8 @@ def _margin_fractions(
     left = 0
     right = 0
     for ann in transformed:
-        x = _float(ann.get("x"), 0)
-        y = _float(ann.get("y"), 0)
+        x = _float(ann.get("anchor_x", ann.get("x")), 0)
+        y = _float(ann.get("anchor_y", ann.get("y")), 0)
         w = max(1.0, _float(ann.get("width", ann.get("w")), 1))
         h = max(1.0, _float(ann.get("height", ann.get("h")), 1))
         cx = x + w / 2
@@ -680,8 +686,8 @@ def _score_transform(
     centers: list[tuple[float, float]] = []
     in_bounds = 0
     for ann in transformed:
-        x = _float(ann.get("x"), 0)
-        y = _float(ann.get("y"), 0)
+        x = _float(ann.get("anchor_x", ann.get("x")), 0)
+        y = _float(ann.get("anchor_y", ann.get("y")), 0)
         w = max(1.0, _float(ann.get("width", ann.get("w")), 1))
         h = max(1.0, _float(ann.get("height", ann.get("h")), 1))
         cx, cy = x + w / 2, y + h / 2
@@ -714,8 +720,14 @@ def _optimize_transform_offset(
     best_ox, best_oy, best_score = 0.0, 0.0, _score_transform(annotations, src_w, src_h, sx, sy, 0.0, 0.0)
     if not annotations:
         return best_ox, best_oy, best_score
-    xs = [_float(a.get("x"), 0) + _float(a.get("width", a.get("w")), 20) / 2 for a in annotations if isinstance(a, dict)]
-    ys = [_float(a.get("y"), 0) + _float(a.get("height", a.get("h")), 20) / 2 for a in annotations if isinstance(a, dict)]
+    xs = [
+        _float(a.get("anchor_x", a.get("x")), 0) + _float(a.get("width", a.get("w")), 0) / 2
+        for a in annotations if isinstance(a, dict)
+    ]
+    ys = [
+        _float(a.get("anchor_y", a.get("y")), 0) + _float(a.get("height", a.get("h")), 0) / 2
+        for a in annotations if isinstance(a, dict)
+    ]
     if not xs:
         return best_ox, best_oy, best_score
     cx_obs = sum(xs) / len(xs)
@@ -812,6 +824,12 @@ def _annotation_max_extent(annotations: list[dict]) -> tuple[float, float]:
         h = _float(ann.get("height", ann.get("h")), 0)
         max_x = max(max_x, x + w, _float(ann.get("x2"), 0))
         max_y = max(max_y, y + h, _float(ann.get("y2"), 0))
+        for key in ("anchor_x", "label_x"):
+            if ann.get(key) is not None:
+                max_x = max(max_x, _float(ann.get(key)))
+        for key in ("anchor_y", "label_y"):
+            if ann.get(key) is not None:
+                max_y = max(max_y, _float(ann.get(key)))
     return max_x, max_y
 
 

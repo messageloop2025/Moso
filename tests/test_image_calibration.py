@@ -76,6 +76,50 @@ def test_percent_space_deterministic():
     assert out[0]["height"] == 200
 
 
+def test_percent_space_converts_keypoint_fields():
+    anns = [
+        {
+            "type": "callout",
+            "anchor_x": 25,
+            "anchor_y": 50,
+            "label_x": 30,
+            "label_y": 40,
+            "x2": 75,
+            "y2": 80,
+            "radius": 8,
+        }
+    ]
+    out, _, _ = apply_normalized_space(anns, 2000, 1000, "percent")
+    assert out[0]["anchor_x"] == 500
+    assert out[0]["anchor_y"] == 500
+    assert out[0]["label_x"] == 600
+    assert out[0]["label_y"] == 400
+    assert out[0]["x2"] == 1500
+    assert out[0]["y2"] == 800
+    # 视觉尺寸仍按像素控制标记大小，不随 percent 坐标放大成巨型标记。
+    assert out[0]["radius"] == 8
+
+
+def test_percent_content_converts_keypoint_fields():
+    anns = [{"type": "callout", "anchor_x": 50, "anchor_y": 25, "label_x": 60, "label_y": 35}]
+    cb = {"x": 100, "y": 50, "width": 800, "height": 400}
+    out, _, _ = apply_normalized_space(anns, 1024, 547, "percent_content", cb)
+    assert out[0]["anchor_x"] == 500
+    assert out[0]["anchor_y"] == 150
+    assert out[0]["label_x"] == 580
+    assert out[0]["label_y"] == 190
+
+
+def test_global_transform_adjusts_keypoint_fields_before_percent_mapping():
+    anns = [{"type": "callout", "anchor_x": 10, "anchor_y": 20, "label_x": 15, "label_y": 25}]
+    gsx, gsy, gox, goy = parse_global_transform({"scale": 1.1, "offset_x": 10, "offset_y": -2})
+    adjusted = apply_calibration_transform_to_annotations(anns, gsx, gsy, gox, goy)
+    assert adjusted[0]["anchor_x"] == 21
+    assert adjusted[0]["anchor_y"] == 20
+    assert adjusted[0]["label_x"] == 26
+    assert adjusted[0]["label_y"] == 26
+
+
 def test_normalized_space_divisor_variants():
     assert normalized_space_divisor("percent") == 100.0
     assert normalized_space_divisor("norm") == 1.0
