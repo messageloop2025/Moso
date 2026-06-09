@@ -2119,6 +2119,8 @@ TOOLS = [
                 "- 图片：**若附件已有 `ai_description`（此前轮次 AI 已识别并保存的扩展信息），默认只返回这段描述文本，不再返回 data_url**，"
                 "节省上下文；若你需要重新识别（比如用户追问局部/细节而描述未覆盖，或用户明确要求「看原图」），传 `force_reload=true` 强制返回 `data_url`；"
                 "若附件尚无描述，则默认返回 `data_url`（已自动缩放压缩的 JPEG data URL，适配网关 input 长度上限）。\n"
+                "- 大图小目标：可传 `region` 裁剪局部高清图，或传 `tile_grid` 生成分块列表并读取某一块；返回 `region_meta`，"
+                "后续精确标注时把局部坐标连同该 `region_meta` 传给 `edit_chat_attachment_image.source_region` 回填原图。\n"
                 "- 首次识别图片后，请**主动调用 `save_image_description(uuid=..., description=...)`** 把提取到的内容（OCR 文本 + 主要视觉元素 + 结构化信息）"
                 "写回附件行，后续轮次才能跳过重读原图。\n"
                 "- 仅可读取**当前用户自己**的附件，其他用户或越权 UUID 一律拒绝。\n"
@@ -2133,6 +2135,15 @@ TOOLS = [
                     "as_data_url": {"type": "boolean", "description": "图片是否返回 base64 data URL，默认 true；传 false 时仅返回元信息（用于配合 prefer_description 只拿描述）"},
                     "prefer_description": {"type": "boolean", "description": "图片是否优先返回 `ai_description` 扩展信息（默认 true）；设 false 会同时返回 data_url + description（更耗 token）"},
                     "force_reload": {"type": "boolean", "description": "强制忽略已缓存的 `ai_description`，重新返回原图 data_url（默认 false）。仅在用户明确要求重新识别/看原图，或已有描述与当前问题严重不匹配时使用"},
+                    "region": {"type": "object", "description": "可选局部区域 {x,y,width,height} 或 {left,top,right,bottom}；用于大图小目标精看局部"},
+                    "region_coordinate_space": {
+                        "type": "string",
+                        "enum": ["pixel", "percent", "norm", "norm1000"],
+                        "description": "region 的坐标系，默认 pixel；percent=0–100 相对原图；norm=0–1；norm1000=0–1000",
+                    },
+                    "pad_ratio": {"type": "number", "description": "裁剪 region 时向四周扩展比例，默认 0.08，避免粗定位框太紧"},
+                    "tile_grid": {"type": "object", "description": "可选分块配置 {rows,cols,overlap_ratio}；用于不确定目标在哪时逐块查找"},
+                    "tile_id": {"type": "integer", "description": "tile_grid 模式下要返回 data_url 的分块编号（1 起）；省略时默认第 1 块"},
                 },
                 "required": ["uuid"],
             },
@@ -2219,7 +2230,9 @@ TOOLS = [
                 "6. **少遮挡**：需要区域时才用 `type=rect` 细框（只设 outline、不设 fill）；单行菜单/按钮 height 约 **3–5%**。"
                 "**禁止**用 highlight/overlay 实心大块遮罩标单个菜单项。默认 `tight_boxes=true` 会收紧过大框。\n"
                 "7. 正常结果若返回 `deliver_now=true`，立即交付 `markdown_image`，不要再调工具；若 `visual_review_required=true` 先看 data_url，准确才交付；若 `should_retry=true`，仅原样复用 annotations 并微调 `global_transform` 一次。\n"
-                "8. **勿**传 `use_original_coordinates`、**勿**自己心算像素缩放、**勿**逐个目标单独修。\n\n"
+                "8. **大图小目标**：先用 read_chat_attachment 读整图粗定位；若目标很小或不确定，调用 read_chat_attachment(region=...) 或 tile_grid 获取局部高清图；"
+                "局部图识别出的 annotations 要连同 read 返回的 `region_meta` 作为 `source_region` 传回本工具，后端会自动回填原图坐标。\n"
+                "9. **勿**传 `use_original_coordinates`、**勿**自己心算像素缩放、**勿**逐个目标单独修。\n\n"
                 "**透明度**：每项可设 `opacity`（0~1 或 0~100）；颜色可用 `#RRGGBBAA`。\n\n"
                 "**annotations 类型**：crosshair、target/ring、callout、pin/marker、rect/ellipse/polygon、overlay/mask/highlight、line、text。\n"
                 "仅可编辑当前用户自己的 image 类附件。"
@@ -2287,6 +2300,13 @@ TOOLS = [
                     "reference_height": {
                         "type": "number",
                         "description": "标注坐标所依据的参考图高度（通常为内联识图 vision_height）",
+                    },
+                    "source_region": {
+                        "type": "object",
+                        "description": (
+                            "局部精识别回填原图用。传 read_chat_attachment(region=...) 返回的 region_meta；"
+                            "此时 annotations 坐标相对该局部图，后端会按 source_region 自动映射回原图。"
+                        ),
                     },
                     "offset_x": {
                         "type": "number",
@@ -12845,8 +12865,11 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     resp["hint"] = f"Markdown 内容已按 max_chars={max_chars} 截断；可调大 max_chars 或分段分析。"
                 return json.dumps(resp, ensure_ascii=False)
             if kind == "image":
+                region_arg = arguments.get("region") if isinstance(arguments.get("region"), dict) else None
+                tile_grid_arg = arguments.get("tile_grid") if isinstance(arguments.get("tile_grid"), dict) else None
+                region_requested = bool(region_arg or tile_grid_arg)
                 # 有缓存描述 & 未强制重读：优先只返回描述文本，省掉 base64 开销
-                if cached_desc and prefer_description and not force_reload:
+                if cached_desc and prefer_description and not force_reload and not region_requested:
                     return json.dumps({
                         "success": True,
                         "attachment": meta,
@@ -12859,24 +12882,83 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     }, ensure_ascii=False)
                 if as_data_url:
                     from services.vision_image import build_inline_vision_meta
+                    from services.vision_region import build_tile_regions, crop_image_region
 
                     try:
                         raw = await asyncio.to_thread(path.read_bytes)
                     except OSError as exc:
                         return json.dumps({"success": False, "error": f"读取失败: {exc}"}, ensure_ascii=False)
+                    raw_for_vision = raw
+                    region_meta = None
+                    tiles = None
+                    mode = "image"
+                    src_w = int(meta.get("original_width") or meta.get("width") or 0)
+                    src_h = int(meta.get("original_height") or meta.get("height") or 0)
+                    if tile_grid_arg and src_w and src_h:
+                        try:
+                            rows_n = int(tile_grid_arg.get("rows") or arguments.get("tile_rows") or 2)
+                        except (TypeError, ValueError):
+                            rows_n = 2
+                        try:
+                            cols_n = int(tile_grid_arg.get("cols") or arguments.get("tile_cols") or 2)
+                        except (TypeError, ValueError):
+                            cols_n = 2
+                        try:
+                            overlap = float(tile_grid_arg.get("overlap_ratio", arguments.get("overlap_ratio", 0.08)))
+                        except (TypeError, ValueError):
+                            overlap = 0.08
+                        tiles = build_tile_regions(src_w, src_h, rows_n, cols_n, overlap)
+                        try:
+                            tile_id = int(arguments.get("tile_id") or tile_grid_arg.get("tile_id") or 1)
+                        except (TypeError, ValueError):
+                            tile_id = 1
+                        selected = next((t for t in tiles if int(t.get("tile_id") or 0) == tile_id), None) or (tiles[0] if tiles else None)
+                        if selected:
+                            raw_for_vision, region_meta = crop_image_region(raw, selected, coordinate_space="pixel", pad_ratio=0.0)
+                            mode = "tile_region"
+                    elif region_arg:
+                        try:
+                            pad = float(arguments.get("pad_ratio", 0.08))
+                        except (TypeError, ValueError):
+                            pad = 0.08
+                        raw_for_vision, region_meta = crop_image_region(
+                            raw,
+                            region_arg,
+                            coordinate_space=(arguments.get("region_coordinate_space") or "pixel"),
+                            pad_ratio=pad,
+                        )
+                        mode = "region"
                     data_url, _mime_out, jpeg_len, dim_meta = build_inline_vision_meta(
-                        raw,
+                        raw_for_vision,
                         mime=(row.get("mime_type") or "image/png"),
                     )
-                    meta.update({k: v for k, v in (dim_meta or {}).items() if v is not None})
+                    if region_meta:
+                        region_vision_meta = dict(dim_meta or {})
+                        region_vision_meta["source_region"] = region_meta
+                    else:
+                        region_vision_meta = None
+                        meta.update({k: v for k, v in (dim_meta or {}).items() if v is not None})
                     resp = {
                         "success": True,
+                        "mode": mode,
                         "attachment": meta,
                         "data_url": data_url,
                         "bytes": int(row.get("size_bytes") or 0) or len(raw),
                         "vision_jpeg_bytes": jpeg_len,
                         "data_url_chars": len(data_url),
                     }
+                    if region_meta:
+                        resp["source_width"] = region_meta.get("source_width")
+                        resp["source_height"] = region_meta.get("source_height")
+                        resp["region_meta"] = region_meta
+                        resp["region_vision_meta"] = region_vision_meta
+                    if tiles:
+                        resp["tile_grid"] = {
+                            "rows": max((int(t.get("row") or 0) for t in tiles), default=0) + 1,
+                            "cols": max((int(t.get("col") or 0) for t in tiles), default=0) + 1,
+                            "count": len(tiles),
+                        }
+                        resp["tiles"] = tiles
                     ow = meta.get("original_width") or meta.get("width")
                     oh = meta.get("original_height") or meta.get("height")
                     vw = meta.get("vision_width")
@@ -12896,14 +12978,54 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                         coord_hint += (
                             f" 识图 {vw}×{vh}px；若按所见估坐标，edit 传 reference_width={vw}, reference_height={vh}。"
                         )
+                    if region_meta:
+                        coord_hint = (
+                            f"这是原图局部区域：原图 {ow}×{oh}px，区域 left={region_meta.get('x')} top={region_meta.get('y')} "
+                            f"width={region_meta.get('width')} height={region_meta.get('height')}。"
+                            "局部图中的位置请作为局部坐标处理；最终标注原图时，将本响应的 region_meta 作为 "
+                            "`edit_chat_attachment_image.source_region` 传回，后端会自动回填原图坐标。"
+                        )
                     resp["coordinate_hint"] = coord_hint
+                    if region_meta:
+                        resp["backfill_hint"] = (
+                            "精识别后调用 edit_chat_attachment_image：uuid 仍用原图 uuid，传 source_region=本响应 region_meta，"
+                            "annotations 用局部图坐标；coordinate_space 可用 percent（0–100 相对局部图）或 pixel（局部像素）。"
+                        )
                     # 若同时存在缓存描述，一并带出，便于 AI 对比/更新
                     if cached_desc:
                         resp["ai_description"] = cached_desc
                         resp["hint"] = "已返回原图 data_url；如描述需要更新，请基于最新观察调用 `save_image_description` 覆盖旧值。"
+                    elif region_meta:
+                        resp["hint"] = "已返回局部高清图 data_url；识别出小目标后请用 region_meta 回填原图坐标再标注。"
                     else:
                         resp["hint"] = "首次识读该图。分析完成后**请立即调用 `save_image_description(uuid=..., description=...)`** 保存扩展信息，后续多轮将自动复用，避免反复消耗图像 token。"
                     return json.dumps(resp, ensure_ascii=False)
+                if tile_grid_arg:
+                    from services.vision_region import build_tile_regions
+
+                    src_w = int(meta.get("original_width") or meta.get("width") or 0)
+                    src_h = int(meta.get("original_height") or meta.get("height") or 0)
+                    try:
+                        rows_n = int(tile_grid_arg.get("rows") or arguments.get("tile_rows") or 2)
+                    except (TypeError, ValueError):
+                        rows_n = 2
+                    try:
+                        cols_n = int(tile_grid_arg.get("cols") or arguments.get("tile_cols") or 2)
+                    except (TypeError, ValueError):
+                        cols_n = 2
+                    try:
+                        overlap = float(tile_grid_arg.get("overlap_ratio", arguments.get("overlap_ratio", 0.08)))
+                    except (TypeError, ValueError):
+                        overlap = 0.08
+                    tiles = build_tile_regions(src_w, src_h, rows_n, cols_n, overlap) if src_w and src_h else []
+                    return json.dumps({
+                        "success": True,
+                        "mode": "tile_grid",
+                        "attachment": meta,
+                        "tile_grid": {"rows": rows_n, "cols": cols_n, "count": len(tiles), "overlap_ratio": overlap},
+                        "tiles": tiles,
+                        "hint": "已返回分块列表；指定 tile_id 并保持 as_data_url=true 可读取某一块局部图。",
+                    }, ensure_ascii=False)
                 # 既不要 data_url，又没有缓存描述：仅返回元信息
                 return json.dumps({
                     "success": True,
@@ -13037,6 +13159,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 apply_image_edits as _apply_image_edits,
                 read_image_pixel_size_from_bytes as _read_image_pixel_size_from_bytes,
             )
+            from services.vision_region import map_local_annotations_to_original as _map_local_annotations_to_original
             from services.vision_image import inline_vision_dimension_info as _inline_vision_dimension_info
 
             uuid_s = (arguments.get("uuid") or "").strip()
@@ -13291,6 +13414,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                         coord_anns.append(a)
             # 全局微调：整组标注相对布局准、仅整体缩放/平移有偏差时，在坐标系换算前统一校正
             global_transform = _parse_global_transform(arguments.get("global_transform"))
+            source_region = arguments.get("source_region") if isinstance(arguments.get("source_region"), dict) else None
             content_bounds = None
             auto_gt_flag = arguments.get("auto_global_transform")
             auto_gt_on = auto_gt_flag is None or auto_gt_flag in (True, "true", 1, "1")
@@ -13300,7 +13424,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 content_bounds = _detect_content_bounds(raw)
             global_note = ""
             auto_space_switch = ""
-            if not global_transform and auto_gt_on and coord_anns and len(coord_anns) >= 2 and src_w and src_h:
+            if not source_region and not global_transform and auto_gt_on and coord_anns and len(coord_anns) >= 2 and src_w and src_h:
                 auto_res = _estimate_auto_global_transform(
                     coord_anns, src_w, src_h, space=coordinate_space or "percent", raw=raw,
                 )
@@ -13339,7 +13463,27 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     max_height=max_box_h,
                     enabled=True,
                 )
-            if coord_anns and src_w and src_h:
+            if source_region and coord_anns and src_w and src_h:
+                scaled_anns = _map_local_annotations_to_original(
+                    coord_anns,
+                    source_region,
+                    coordinate_space=coordinate_space or "percent",
+                ) or []
+                coord_note = (
+                    f"局部区域回填 → 原图：x={source_region.get('x', source_region.get('left'))} "
+                    f"y={source_region.get('y', source_region.get('top'))} "
+                    f"w={source_region.get('width', source_region.get('region_width'))} "
+                    f"h={source_region.get('height', source_region.get('region_height'))}"
+                )
+                transform_meta = {
+                    "method": "source_region",
+                    "source_region": source_region,
+                    "space": coordinate_space or "percent",
+                }
+                if clamp_notes:
+                    coord_note = "；".join(clamp_notes) + "；" + coord_note
+                    transform_meta["clamp_notes"] = clamp_notes
+            elif coord_anns and src_w and src_h:
                 scaled_anns, coord_note, transform_meta = _resolve_annotation_transform(
                     coord_anns,
                     src_w,

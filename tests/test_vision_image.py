@@ -13,6 +13,7 @@ from services.vision_image import (
     encode_image_bytes_for_vision_data_url,
     resize_to_max_side,
 )
+from services.vision_region import crop_image_region
 
 
 def test_effective_model_view_low_is_512_max_side():
@@ -64,3 +65,17 @@ def test_data_url_encoder_reuses_compressed_bytes_meta():
     assert mime == "image/jpeg"
     assert size == meta["encoded_bytes"]
     assert len(url) <= 80_000
+
+
+def test_cropped_region_can_be_compressed_for_vision():
+    raw = _sample_png(2000, 1200)
+    cropped, region_meta = crop_image_region(
+        raw,
+        {"x": 40, "y": 20, "width": 20, "height": 30},
+        coordinate_space="percent",
+    )
+    data, mime, size, meta = compress_image_bytes_for_vision(cropped, mime="image/png", max_b64_chars=80_000)
+    assert mime == "image/jpeg"
+    assert size == len(data)
+    assert meta["original_width"] == region_meta["width"]
+    assert meta["original_height"] == region_meta["height"]
