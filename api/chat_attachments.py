@@ -67,29 +67,17 @@ _UNSAFE_NAME_RE = re.compile(r"[\x00-\x1f\x7f\\/:*?\"<>|]+")
 
 
 def _get_user_chats_root(user: dict) -> Path:
-    """返回当前用户的聊天附件根目录：web/fs/<safe_username>/<CHAT_SUBDIR>/。
-
-    通过 filesystem.get_user_fs_root 获取用户 fs 根目录（已做 _safe_username 处理），
-    再拼 chats 子目录；相比旧的 <BASE_DIR>/chats/<username>/，好处是用户在 /api/fs
-    面板里也能看到、下载自己的附件，且越权校验逻辑与其它 fs 操作保持一致。
-    """
+    """返回当前用户的聊天附件根目录：web/fs/<safe_username>/<CHAT_SUBDIR>/。"""
     fs_root = get_user_fs_root(user)
     root = fs_root / CHAT_SUBDIR
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
-# 日期子目录安全校验：仅允许 'YYYY/MM/DD'、'YYYY/MM' 或空；其它一律当空处理。
 _DATE_SUBDIR_RE = re.compile(r"^\d{4}(/\d{2}){0,2}$")
 
 
 def _today_subdir() -> str:
-    """返回今日 UTC 日期作为三级子目录，形如 '2026/04/22'。
-
-    选择 UTC 的理由：SQLite CURRENT_TIMESTAMP 也是 UTC，新附件写入的 subdir 与 db
-    `created_at` 字段归属的日期保持一致，历史数据迁移脚本（019）按 created_at 回填时
-    不会错位；业务上用户看到的日期组织最多偏差几小时，可以接受。
-    """
     return datetime.utcnow().strftime("%Y/%m/%d")
 
 
@@ -139,6 +127,19 @@ def _ext_from_name_or_mime(name: str, mime: str) -> str:
     return ".bin"
 
 
+def attachment_relative_path(row: dict) -> str:
+    """相对用户 web/fs 根目录的路径，如 chats/2026/06/09/<uuid>.png。"""
+    subdir = _sanitize_subdir(row.get("storage_subdir") or "")
+    ext = _ext_from_name_or_mime(
+        row.get("original_name") or row.get("name") or "",
+        row.get("mime_type") or row.get("mime") or "",
+    )
+    uuid_s = (row.get("uuid") or "").strip()
+    if subdir:
+        return f"{CHAT_SUBDIR}/{subdir}/{uuid_s}{ext}"
+    return f"{CHAT_SUBDIR}/{uuid_s}{ext}"
+
+
 def _resolve_attachment_path(user: dict, uuid_str: str, ext: str, subdir: str = "") -> Path:
     """按 uuid + ext + 可选日期子目录组装落盘路径，并强制落在当前用户 chats 根下。
 
@@ -184,6 +185,7 @@ def _attachment_row_to_dict(row: dict) -> dict:
         "storage_subdir": row.get("storage_subdir") or "",
         "created_at": row.get("created_at"),
         "url": f"/api/ai/attachments/{row.get('uuid')}",
+        "fs_path": attachment_relative_path(row),
     }
 
 
@@ -600,7 +602,11 @@ def build_attachment_message_suffix(attachments: list[dict]) -> str:
         kind = a.get("kind") or "binary"
         size = humanize_size(a.get("size_bytes") or a.get("size") or 0)
         uuid_s = a.get("uuid") or ""
+        fs_path = attachment_relative_path(a)
         lines.append(f"- `{name}`（{kind} · {size}）· uuid: `{uuid_s}`")
+        lines.append(
+            f"  · **落地路径**（用户文件根下，可用 `fs_read_file` / 文件系统面板 / `read_chat_attachment`）：`{fs_path}`"
+        )
         desc = (a.get("ai_description") or "").strip()
         if desc and (kind or "").lower() == "image":
             # 过长描述按 1500 字裁一刀，避免把附件清单撑爆；AI 需要完整内容再调工具拉全文

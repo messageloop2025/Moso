@@ -240,7 +240,12 @@
       "bundleN": "Bundle · {{n}} 个文件",
       "downloadTgz": "下载为 .tgz",
       "entry": "入口: {{path}}",
-      "preview": "预览"
+      "preview": "预览",
+      "fsPath": "落地路径",
+      "zoomIn": "放大",
+      "zoomOut": "缩小",
+      "rotate": "旋转 90°",
+      "resetView": "重置"
     },
     "diagram": {
       "renderFailed": "图形渲染失败",

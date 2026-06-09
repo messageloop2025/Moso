@@ -1214,6 +1214,7 @@ function edgeopsInstallChatAttachments(opts) {
             it.kind = a.kind || kind;
             it.mime = a.mime || it.mime;
             it.size = a.size || it.size;
+            it.fs_path = a.fs_path || '';
             it.uploading = false;
             if (it.kind === 'image' && !it.thumbUrl) it.thumbUrl = (API && API.buildChatAttachmentUrl) ? API.buildChatAttachmentUrl(a.uuid) : (a.url || '');
             renderChips();
@@ -1317,7 +1318,7 @@ function edgeopsInstallChatAttachments(opts) {
         /** 返回已成功上传、可附带发送的附件元信息（供消息气泡内直接预览用）。*/
         getReadyAttachments: function() {
             return state.items.filter(function(i) { return i.uuid && !i.error && !i.uploading; }).map(function(i) {
-                return { uuid: i.uuid, name: i.name, kind: i.kind, size: i.size, mime: i.mime };
+                return { uuid: i.uuid, name: i.name, kind: i.kind, size: i.size, mime: i.mime, fs_path: i.fs_path || '' };
             });
         },
         hasPending: function() {
@@ -1342,19 +1343,24 @@ function edgeopsInstallChatAttachments(opts) {
  */
 function edgeopsRenderAttachmentsInline(attachments) {
     if (!attachments || !attachments.length) return '';
-    var html = '<div class="chat-user-attachments" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px">';
+    var html = '<div class="chat-user-attachments" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:8px">';
     attachments.forEach(function(a) {
         var url = (API && API.buildChatAttachmentUrl) ? API.buildChatAttachmentUrl(a.uuid) : ('/api/ai/attachments/' + encodeURIComponent(a.uuid));
         var name = esc(a.name || t('ui.attach.unnamed'));
+        var fsPath = esc(a.fs_path || '');
+        html += '<div class="chat-user-attachment-item">';
         if (a.kind === 'image') {
-            html += '<a href="' + url + '" target="_blank" title="' + name + '"><img class="chat-attachment-image-inline" src="' + url + '" alt="' + name + '"></a>';
+            html += '<img class="chat-attachment-image-inline chat-attachment-previewable" src="' + url + '" alt="' + name + '" title="' + name + '" data-preview-url="' + url + '" role="button" tabindex="0">';
         } else {
-            var icon = a.kind === 'markdown' ? 'M' : (a.kind === 'text' ? 'T' : '📄');
-            html += '<a class="chat-attachment-chip" href="' + url + '" target="_blank" style="text-decoration:none;color:inherit">' +
-                    '<span class="chip-icon">' + esc(icon) + '</span>' +
-                    '<span class="chip-label">' + name + '</span>' +
-                    '</a>';
+            html += '<a class="chat-attachment-chip chat-attachment-downloadable" href="' + url + '" data-download-url="' + url + '" data-download-name="' + name + '" title="' + name + '">'
+                    + '<span class="chip-icon">' + esc(a.kind === 'markdown' ? 'M' : (a.kind === 'text' ? 'T' : '📄')) + '</span>'
+                    + '<span class="chip-label">' + name + '</span>'
+                    + '</a>';
         }
+        if (fsPath) {
+            html += '<div class="chat-attachment-fs-path" title="' + fsPath + '"><span class="chat-attachment-fs-label">' + esc(t('ui.attach.fsPath')) + '</span><code>' + fsPath + '</code></div>';
+        }
+        html += '</div>';
     });
     html += '</div>';
     return html;
@@ -1382,23 +1388,21 @@ function edgeopsEnhanceAttachmentList(rootEl) {
         if (li.querySelector('.chat-attachment-image-inline') || li.querySelector('.chat-attachment-dl-link')) continue;
         if (isImage) {
             var img = document.createElement('img');
-            img.className = 'chat-attachment-image-inline';
+            img.className = 'chat-attachment-image-inline chat-attachment-previewable';
             img.src = url;
             img.alt = uuid;
             img.loading = 'lazy';
-            var link = document.createElement('a');
-            link.href = url;
-            link.target = '_blank';
-            link.setAttribute('data-attachment-enhanced', '1');
-            link.appendChild(img);
+            img.setAttribute('data-preview-url', url);
+            img.setAttribute('role', 'button');
+            img.tabIndex = 0;
             li.appendChild(document.createElement('br'));
-            li.appendChild(link);
+            li.appendChild(img);
         } else {
             var a = document.createElement('a');
             a.href = url;
-            a.target = '_blank';
             a.textContent = t('ui.attach.downloadBracket');
-            a.className = 'chat-attachment-dl-link';
+            a.className = 'chat-attachment-dl-link chat-attachment-downloadable';
+            a.setAttribute('data-download-url', url);
             a.style.marginLeft = '6px';
             li.appendChild(a);
         }
@@ -1516,10 +1520,13 @@ function edgeopsEnhanceChatAttachmentLinks(rootEl) {
         wrap.className = 'chat-fetched-image-wrap';
         wrap.style.marginTop = '8px';
         var img = document.createElement('img');
-        img.className = 'chat-attachment-image-inline chat-md-inline-image';
+        img.className = 'chat-attachment-image-inline chat-md-inline-image chat-attachment-previewable';
         img.src = imgUrl;
         img.alt = (a.textContent || '').trim() || 'image';
         img.loading = 'lazy';
+        img.setAttribute('data-preview-url', imgUrl);
+        img.setAttribute('role', 'button');
+        img.tabIndex = 0;
         wrap.appendChild(img);
         if (a.parentNode) a.parentNode.insertBefore(wrap, a.nextSibling);
     });
@@ -1536,6 +1543,36 @@ function edgeopsEnhanceChatAttachmentLinks(rootEl) {
         e.preventDefault();
         try { edgeopsEnhanceArtifactLinks(scope); } catch (_e) {}
     }, true);
+})();
+
+(function edgeopsInstallChatAttachmentInteraction() {
+    if (window._edgeopsChatAttachmentInteraction) return;
+    window._edgeopsChatAttachmentInteraction = true;
+    document.addEventListener('click', function(e) {
+        var img = e.target && e.target.closest && e.target.closest('.chat-attachment-previewable, .chat-md-inline-image');
+        if (img && img.closest('.chat-message, .message-content, .chat-fetched-image-wrap, .chat-user-attachments, .chat-cot-panel')) {
+            e.preventDefault();
+            e.stopPropagation();
+            var url = img.getAttribute('data-preview-url') || img.getAttribute('src') || '';
+            edgeopsOpenChatAttachmentPreview(url, img.alt || img.title || '');
+            return;
+        }
+        var dl = e.target && e.target.closest && e.target.closest('.chat-attachment-downloadable, .chat-attachment-dl-link');
+        if (dl && dl.closest('.chat-message, .message-content, .chat-user-attachments')) {
+            var dlUrl = dl.getAttribute('data-download-url') || dl.getAttribute('href') || '';
+            if (!dlUrl || dlUrl.indexOf('/api/ai/attachments/') < 0) return;
+            e.preventDefault();
+            edgeopsDownloadChatAttachment(dlUrl, dl.getAttribute('data-download-name') || '');
+        }
+    }, true);
+    document.addEventListener('keydown', function(e) {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        var img = e.target && e.target.closest && e.target.closest('.chat-attachment-previewable');
+        if (!img) return;
+        e.preventDefault();
+        var url = img.getAttribute('data-preview-url') || img.getAttribute('src') || '';
+        edgeopsOpenChatAttachmentPreview(url, img.alt || '');
+    });
 })();
 
 /**
@@ -1652,6 +1689,83 @@ function edgeopsCloseArtifactPreview() {
         document.removeEventListener('keydown', window._edgeopsArtifactPreviewKeyHandler);
         window._edgeopsArtifactPreviewKeyHandler = null;
     }
+}
+
+function edgeopsCloseChatAttachmentPreview() {
+    var el = document.getElementById('edgeopsChatAttachmentPreviewOverlay');
+    if (el && el.parentNode) el.parentNode.removeChild(el);
+    if (window._edgeopsChatAttachmentPreviewKeyHandler) {
+        document.removeEventListener('keydown', window._edgeopsChatAttachmentPreviewKeyHandler);
+        window._edgeopsChatAttachmentPreviewKeyHandler = null;
+    }
+}
+
+/** 聊天附件大图预览：缩放/旋转/下载（用户上传与 AI 输出图片共用）。 */
+function edgeopsOpenChatAttachmentPreview(url, title) {
+    if (!url) return;
+    edgeopsCloseChatAttachmentPreview();
+    url = (typeof edgeopsRewriteChatAttachmentUrl === 'function') ? (edgeopsRewriteChatAttachmentUrl(url) || url) : url;
+    title = title || t('ui.attach.preview');
+    var scale = 1;
+    var rotation = 0;
+    var overlay = document.createElement('div');
+    overlay.id = 'edgeopsChatAttachmentPreviewOverlay';
+    overlay.className = 'modal-overlay edgeops-chat-attach-preview-overlay';
+    overlay.innerHTML = ''
+        + '<div class="modal edgeops-chat-attach-preview-modal">'
+        + '<div class="modal-header edgeops-chat-attach-preview-header">'
+        + '<h3 class="edgeops-chat-attach-preview-title"></h3>'
+        + '<div class="edgeops-chat-attach-preview-toolbar">'
+        + '<button type="button" class="btn btn-sm" data-act="zoom-out" title="' + esc(t('ui.attach.zoomOut')) + '">−</button>'
+        + '<button type="button" class="btn btn-sm" data-act="zoom-in" title="' + esc(t('ui.attach.zoomIn')) + '">+</button>'
+        + '<button type="button" class="btn btn-sm" data-act="rotate" title="' + esc(t('ui.attach.rotate')) + '">↻</button>'
+        + '<button type="button" class="btn btn-sm" data-act="reset" title="' + esc(t('ui.attach.resetView')) + '">' + esc(t('ui.attach.resetView')) + '</button>'
+        + '<a class="btn btn-sm edgeops-chat-attach-preview-download" href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(t('artifact.download')) + '</a>'
+        + '<button type="button" class="modal-close edgeops-chat-attach-preview-close" aria-label="' + esc(t('artifact.close')) + '">&times;</button>'
+        + '</div></div>'
+        + '<div class="modal-body edgeops-chat-attach-preview-body">'
+        + '<div class="edgeops-chat-attach-preview-stage"><img class="edgeops-chat-attach-preview-img" alt=""></div>'
+        + '</div></div>';
+    document.body.appendChild(overlay);
+    overlay.querySelector('.edgeops-chat-attach-preview-title').textContent = title;
+    overlay.querySelector('.edgeops-chat-attach-preview-title').title = title;
+    var img = overlay.querySelector('.edgeops-chat-attach-preview-img');
+    function applyTransform() {
+        img.style.transform = 'scale(' + scale + ') rotate(' + rotation + 'deg)';
+    }
+    img.onload = function() { applyTransform(); };
+    img.onerror = function() {
+        overlay.querySelector('.edgeops-chat-attach-preview-body').innerHTML =
+            '<div class="edgeops-artifact-preview-error">' + esc(t('artifact.imageLoadFailed')) + '</div>';
+    };
+    img.src = url;
+    overlay.querySelector('.edgeops-chat-attach-preview-close').addEventListener('click', edgeopsCloseChatAttachmentPreview);
+    overlay.addEventListener('click', function(ev) { if (ev.target === overlay) edgeopsCloseChatAttachmentPreview(); });
+    overlay.querySelectorAll('[data-act]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            var act = btn.getAttribute('data-act');
+            if (act === 'zoom-in') scale = Math.min(5, scale + 0.25);
+            else if (act === 'zoom-out') scale = Math.max(0.25, scale - 0.25);
+            else if (act === 'rotate') rotation = (rotation + 90) % 360;
+            else if (act === 'reset') { scale = 1; rotation = 0; }
+            applyTransform();
+        });
+    });
+    window._edgeopsChatAttachmentPreviewKeyHandler = function(ev) { if (ev.key === 'Escape') edgeopsCloseChatAttachmentPreview(); };
+    document.addEventListener('keydown', window._edgeopsChatAttachmentPreviewKeyHandler);
+}
+
+function edgeopsDownloadChatAttachment(url, filename) {
+    if (!url) return;
+    url = (typeof edgeopsRewriteChatAttachmentUrl === 'function') ? (edgeopsRewriteChatAttachmentUrl(url) || url) : url;
+    var a = document.createElement('a');
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    if (filename) a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
 }
 
 function edgeopsOpenArtifactPreview(uuid, meta) {
@@ -5532,10 +5646,13 @@ function edgeopsCotAppendMcpFetchedImages(container, previewRaw) {
         wrap.className = 'chat-fetched-image-wrap ai-cot-fetched-image';
         wrap.style.marginTop = '8px';
         var img = document.createElement('img');
-        img.className = 'chat-attachment-image-inline';
+        img.className = 'chat-attachment-image-inline chat-attachment-previewable';
         img.src = url;
         img.alt = a.name || 'image';
         img.loading = 'lazy';
+        img.setAttribute('data-preview-url', url);
+        img.setAttribute('role', 'button');
+        img.tabIndex = 0;
         wrap.appendChild(img);
         container.appendChild(wrap);
     });

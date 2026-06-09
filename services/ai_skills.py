@@ -2201,6 +2201,55 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "edit_chat_attachment_image",
+            "description": (
+                "对用户在聊天中上传的**图片附件**做简单编辑并保存为**新附件**（不覆盖原图）。"
+                "可用于画红框、半透明高亮遮罩、画线、填色、插入文字，或旋转/裁剪/缩放。\n\n"
+                "**典型流程**：先用 `read_chat_attachment(uuid, force_reload=true)` 确认图片尺寸与目标区域坐标，"
+                "再调用本工具；回复正文插入返回的 `markdown_image`。\n\n"
+                "**坐标系**：左上角 (0,0)，单位像素；若同时传 crop/rotate/scale，先变换画布再绘制 annotations。\n\n"
+                "**透明度**：每项可设 `opacity`（0~1 小数，或 1~100 百分比）；"
+                "也可在颜色里用 `#RRGGBBAA`；二者同时存在时以 `opacity` 为准。\n\n"
+                "**annotations 类型**：\n"
+                "- `rect` / `ellipse` / `polygon`：`outline` 描边 + 可选 `fill` 填充（配合 `opacity` 做半透明）\n"
+                "- `overlay` / `mask` / `highlight`：**半透明色块遮罩**（默认黄色 opacity≈0.35，可改 `fill`/`opacity`）；"
+                "可选 `shape`: rect|ellipse|polygon；可选 `outline` 描边\n"
+                "- `line`：x1,y1,x2,y2,color,opacity,width\n"
+                "- `text`：x,y,text,color,opacity,size\n\n"
+                "**示例**（圈出区域并加半透明红遮罩）："
+                "`[{type:rect,x:10,y:20,width:180,height:24,outline:#ff0000,line_width:3},"
+                "{type:overlay,x:8,y:18,width:184,height:28,fill:#ff0000,opacity:0.25}]`\n"
+                "仅可编辑当前用户自己的 image 类附件。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "uuid": {"type": "string", "description": "源图片附件 UUID"},
+                    "output_name": {"type": "string", "description": "新文件名，默认 edited-<原名>.png"},
+                    "rotate": {"type": "number", "description": "顺时针旋转角度（度），默认 0"},
+                    "crop": {
+                        "type": "object",
+                        "description": "裁剪区域：x/y/width/height 或 left/top/right/bottom",
+                    },
+                    "scale": {"type": "number", "description": "等比缩放倍数，如 0.5 或 2.0"},
+                    "annotations": {
+                        "type": "array",
+                        "description": (
+                            "标注列表。常用字段：type, x/y/width/height 或 points, "
+                            "fill/outline/color, opacity(0~1 或 0~100), line_width(描边线宽)。"
+                            "半透明遮罩用 type=overlay|mask|highlight + fill + opacity。"
+                        ),
+                        "items": {"type": "object"},
+                    },
+                    "session_id": {"type": "integer", "description": "可选；绑定到新附件的会话 id"},
+                },
+                "required": ["uuid"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_chat_attachments",
             "description": "列出当前用户已上传到 AI 聊天的附件（可按 session_id 过滤），便于 AI 了解可读取的参考材料；仅返回本人附件。",
             "parameters": {
@@ -12568,6 +12617,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 load_attachments_for_user as _load_attachments_for_user,
                 resolve_attachment_file as _resolve_attachment_file,
                 humanize_size as _humanize_size,
+                attachment_relative_path as _attachment_relative_path,
             )
             uuid_s = (arguments.get("uuid") or "").strip()
             if not uuid_s:
@@ -12606,6 +12656,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 "size_human": _humanize_size(row.get("size_bytes") or 0),
                 "kind": kind,
                 "url": f"/api/ai/attachments/{row.get('uuid')}",
+                "fs_path": _attachment_relative_path(row),
                 "has_ai_description": bool(cached_desc),
                 "ai_description_model": cached_model,
                 "ai_description_updated_at": cached_updated,
@@ -12814,7 +12865,87 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 "hint": "描述已保存为该图片的扩展信息；后续轮次将默认以此文本形式出现在 📎 附件清单与 read_chat_attachment 返回里，你不必再重读原图。",
             }, ensure_ascii=False)
 
+        if name == "edit_chat_attachment_image":
+            from api.chat_attachments import (
+                load_attachments_for_user as _load_attachments_for_user,
+                resolve_attachment_file as _resolve_attachment_file,
+                save_bytes_as_chat_attachment as _save_bytes_as_chat_attachment,
+                attachment_relative_path as _attachment_relative_path,
+            )
+            from services.image_edit import apply_image_edits as _apply_image_edits
+
+            uuid_s = (arguments.get("uuid") or "").strip()
+            if not uuid_s:
+                return json.dumps({"success": False, "error": "缺少 uuid"}, ensure_ascii=False)
+            db = await get_db()
+            rows = await _load_attachments_for_user(db, user["id"], [uuid_s])
+            if not rows:
+                return json.dumps({"success": False, "error": "附件不存在或无权访问"}, ensure_ascii=False)
+            row = rows[0]
+            if (row.get("kind") or "").lower() != "image":
+                return json.dumps({"success": False, "error": "edit_chat_attachment_image 只作用于图片附件"}, ensure_ascii=False)
+            username = (user.get("username") or "default")
+            src_path = _resolve_attachment_file(row, username)
+            if not src_path.exists() or not src_path.is_file():
+                return json.dumps({"success": False, "error": "源图片文件已丢失"}, ensure_ascii=False)
+            try:
+                raw = await asyncio.to_thread(src_path.read_bytes)
+            except OSError as exc:
+                return json.dumps({"success": False, "error": f"读取失败: {exc}"}, ensure_ascii=False)
+            crop = arguments.get("crop")
+            if crop is not None and not isinstance(crop, dict):
+                crop = None
+            anns = arguments.get("annotations")
+            if anns is not None and not isinstance(anns, list):
+                anns = None
+            try:
+                edited, mime = await asyncio.to_thread(
+                    _apply_image_edits,
+                    raw,
+                    rotate=arguments.get("rotate") or 0,
+                    crop=crop,
+                    scale=arguments.get("scale"),
+                    annotations=anns,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("edit_chat_attachment_image failed uuid=%s err=%s", uuid_s, exc)
+                return json.dumps({"success": False, "error": f"图片编辑失败: {exc}"}, ensure_ascii=False)
+            orig_name = row.get("original_name") or "image.png"
+            out_name = (arguments.get("output_name") or "").strip() or f"edited-{orig_name}"
+            if not out_name.lower().endswith(".png"):
+                out_name = f"{out_name.rsplit('.', 1)[0] if '.' in out_name else out_name}.png"
+            sid = arguments.get("session_id")
+            if sid is None:
+                sid = row.get("session_id")
+            try:
+                sid = int(sid) if sid is not None else None
+            except (TypeError, ValueError):
+                sid = row.get("session_id")
+            try:
+                saved = await _save_bytes_as_chat_attachment(
+                    user,
+                    edited,
+                    original_name=out_name,
+                    mime=mime,
+                    session_id=sid,
+                )
+            except ValueError as exc:
+                return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)
+            url = saved.get("url") or f"/api/ai/attachments/{saved.get('uuid')}"
+            title = saved.get("name") or out_name
+            markdown_image = f"![{title}]({url})"
+            return json.dumps({
+                "success": True,
+                "source_uuid": uuid_s,
+                "attachment": saved,
+                "fs_path": saved.get("fs_path") or _attachment_relative_path(saved),
+                "markdown_image": markdown_image,
+                "hint": "请在回复正文中插入 markdown_image，让用户看到标注后的图片；原图 uuid 不变。",
+            }, ensure_ascii=False)
+
         if name == "list_chat_attachments":
+            from api.chat_attachments import attachment_relative_path as _attachment_relative_path
+
             db = await get_db()
             session_id = arguments.get("session_id")
             try:
@@ -12853,6 +12984,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     "storage_subdir": d.get("storage_subdir") or "",
                     "created_at": d.get("created_at"),
                     "url": f"/api/ai/attachments/{d.get('uuid')}",
+                    "fs_path": _attachment_relative_path(d),
                 })
             return json.dumps({"success": True, "attachments": items}, ensure_ascii=False)
 

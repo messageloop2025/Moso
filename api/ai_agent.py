@@ -4084,15 +4084,20 @@ Markdown / Skills 渐进阅读（与 aihelp 相同章节模型）：
 
 聊天附件（用户在聊天输入框中上传或粘贴的图片/文本/Markdown 等）：
 - 用户消息末尾若出现「📎 附件」清单（每行形如 `` - `name.ext`（kind · size）· uuid: `XXXX` ``），表示本轮有若干附件可供参考。
+- 清单中每条附件会附带 **落地路径**（相对用户文件根，如 `chats/2026/06/09/<uuid>.png`）。可用 `fs_read_file` 读文本类附件，或用 `read_chat_attachment` / `edit_chat_attachment_image` 处理图片。
 - **图片（关键流程）**——默认"只解读最后一次聊天的新图，复用已识别内容"：
   1. 清单里某条 image 附件若**已带一段 `**AI 已识别内容**` 引用块**，说明此前轮次已由 AI 解读并保存了扩展信息。**后续直接基于这段文本作答即可，非必要不要再读原图**（不要调 `read_chat_attachment` 除非该描述明显不够用）。
   2. 清单里某条 image 附件**没有**已识别内容（多出现在本轮新上传的图，或本会话第一次遇到该图）：当前用户消息通常已经把这张图的 `image_url` 段内联好，你能直接看到像素。**看完之后第一件事**是调 `save_image_description(uuid="...", description="...")` 把你对这张图的 OCR/视觉要点/结构化信息写回附件行，之后的轮次就不需要再吃图像 token。
   3. 如果你是视觉模型却只看到 `image_url` 段的占位（可能是网关丢弃）或需要更精细地重读，可以调 `read_chat_attachment(uuid="...")`；该工具在有缓存描述时默认返回描述文本；传 `force_reload=true` 才返回原图 `data_url`。
   4. 当用户本轮消息里带"重新识别 / 再看一遍 / 看原图 / 重新分析图"等关键词时，后端会强制把原图再次内联，请基于新观察**覆盖**已有描述（再次调用 `save_image_description`）。
   5. **严禁**仅凭元信息（mime/size/kind）或"我看不到图"来搪塞——现在多轮体系里你要么有缓存描述，要么有内联像素，总有一条路能回答。
+  6. 若用户要求在图上**画框/高亮/半透明遮罩**（如圈出 IP、荧光笔标记、暗色蒙层），调用 **`edit_chat_attachment_image(uuid=..., annotations=[...])`**。"
+                "描边用 `rect`+`outline`；区域半透明填充用 `overlay`/`mask`/`highlight`+`fill`+`opacity`（0.2~0.5 常见）；"
+                "可组合多条 annotation（如先 overlay 再 rect 描边）。坐标基于原图像素，可先 `read_chat_attachment(force_reload=true)` 确认尺寸；"
+                "生成后在回复中插入返回的 `markdown_image`。"
 - **文本 / Markdown 附件**：调用 `read_chat_attachment(uuid="...")` 取 `content`（可用 `max_chars` 控制截断长度，默认 40000）。
 - **Office / PDF 附件**（清单中 kind 为 document，如 .docx/.pptx/.xlsx/.pdf）：同样调用 `read_chat_attachment`；后端用 MarkItDown 转为 Markdown 后返回 `content`（`converted_from_markitdown: true`）。分析合同、报表、幻灯片前应先读取全文再作答。
-- 附件沙箱：附件落盘在用户个人目录，`read_chat_attachment` / `save_image_description` 仅允许当前用户访问自己上传的附件，严禁通过 fs_*、local_fs_* 尝试读取他人目录。
+- 附件沙箱：附件落盘在用户个人目录，`read_chat_attachment` / `save_image_description` / `edit_chat_attachment_image` 仅允许当前用户访问自己上传的附件；读取他人目录用 fs_* 会被拒绝。
 - 使用建议：本轮有新图 → 看完立刻 save_image_description；后续轮次 → 直接看清单里的"AI 已识别内容"回答；用户说"重新识别/看原图" → 再内联一次并覆盖描述；`list_chat_attachments` 可查看当前会话已积累的附件。
 
 **工具大结果溢出（`[[EDGEOPS_CHAT_DATA ...]]`）**：

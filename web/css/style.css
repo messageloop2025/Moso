@@ -3160,6 +3160,76 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
     margin: 4px 4px 4px 0;
     vertical-align: middle;
     border: 1px solid var(--border);
+    cursor: zoom-in;
+}
+.chat-user-attachment-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-width: min(100%, 320px);
+}
+.chat-attachment-fs-path {
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--text-muted);
+    word-break: break-all;
+}
+.chat-attachment-fs-path code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    color: var(--text-secondary);
+    background: rgba(15, 23, 42, 0.45);
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+.chat-attachment-fs-label {
+    margin-right: 4px;
+}
+.edgeops-chat-attach-preview-overlay {
+    z-index: 10050;
+}
+.edgeops-chat-attach-preview-modal {
+    width: min(96vw, 1100px);
+    max-height: 92vh;
+    display: flex;
+    flex-direction: column;
+}
+.edgeops-chat-attach-preview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+.edgeops-chat-attach-preview-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.edgeops-chat-attach-preview-body {
+    flex: 1;
+    min-height: 240px;
+    overflow: auto;
+    background: rgba(2, 6, 23, 0.55);
+}
+.edgeops-chat-attach-preview-stage {
+    min-height: 240px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+.edgeops-chat-attach-preview-img {
+    max-width: none;
+    max-height: none;
+    transform-origin: center center;
+    transition: transform 0.15s ease;
+    border-radius: 6px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+.chat-attachment-downloadable {
+    cursor: pointer;
 }
 
 /* ── AI Action 消息 ── */

@@ -240,7 +240,12 @@
       "bundleN": "Bundle · {{n}} files",
       "downloadTgz": "Download as .tgz",
       "entry": "Entry: {{path}}",
-      "preview": "Preview"
+      "preview": "Preview",
+      "fsPath": "Path",
+      "zoomIn": "Zoom in",
+      "zoomOut": "Zoom out",
+      "rotate": "Rotate 90°",
+      "resetView": "Reset"
     },
     "diagram": {
       "renderFailed": "Diagram failed to render",

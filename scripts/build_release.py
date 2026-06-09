@@ -116,8 +116,9 @@ FROM python:3.11-slim
 WORKDIR /app
 
 RUN apt-get update \\
-    && apt-get install -y --no-install-recommends libmagic1 \\
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends libmagic1 fonts-wqy-zenhei \\
+    && rm -rf /var/lib/apt/lists/* \\
+    && test -f /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc
 
 COPY requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \\
@@ -125,6 +126,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \\
     && python -c "from markitdown import MarkItDown; print('markitdown OK')"
 
 COPY . /app
+
+RUN python -c "from services.image_edit import assert_cjk_font_ready; assert_cjk_font_ready()"
 
 ARG EDGEOPS_VERSION={version}
 ENV EDGEOPS_VERSION=${{EDGEOPS_VERSION}}
