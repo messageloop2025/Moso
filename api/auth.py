@@ -453,7 +453,7 @@ async def register(req: RegisterRequest):
         )
         if one:
             u0 = (one[0]["username"] or "").strip().lower()
-            r0 = (one[0].get("role") or "").strip().lower()
+            r0 = (one[0]["role"] or "").strip().lower()
             if u0 == "admin" and r0 == "admin":
                 role = "admin"
 

@@ -288,7 +288,7 @@ async def update_scheduled_task(task_id: int, body: ScheduledTaskUpdate, user=De
                 (task_id, user["id"]),
             )
             if crow:
-                ce = (crow[0].get("cron_expr") or "").strip()
+                ce = (crow[0]["cron_expr"] or "").strip()
                 nr = _next_run_from_cron(ce) if ce else None
                 updates.append("next_run_at = ?")
                 params.append(nr.strftime("%Y-%m-%d %H:%M:%S") if nr else None)

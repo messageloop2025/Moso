@@ -9596,7 +9596,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                         (task_id, user["id"]),
                     )
                     if crow:
-                        ce = (crow[0].get("cron_expr") or "").strip()
+                        ce = (crow[0]["cron_expr"] or "").strip()
                         from services.scheduler import _next_run_from_cron
                         nr = _next_run_from_cron(ce) if ce else None
                         updates.append("next_run_at = ?")
