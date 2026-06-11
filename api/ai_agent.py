@@ -24,7 +24,13 @@ SYSTEM_AI_USAGE_LIMIT = getattr(_config, "SYSTEM_AI_USAGE_LIMIT", 200)
 from database import get_db
 from api.auth import get_current_user, require_admin, _is_admin_role
 from api.hosts import normalize_host_aliases_in_dict
-from api.terminal import get_terminal_buffer_for_user, get_current_host_id_for_user, normalize_terminal_scope_id
+from api.terminal import (
+    get_terminal_buffer_for_user,
+    get_current_host_id_for_user,
+    get_terminal_session_meta_for_user,
+    get_terminals_for_user,
+    normalize_terminal_scope_id,
+)
 from services.ai_skills import (
     TOOLS,
     _get_host_row,
@@ -2149,6 +2155,37 @@ def _compact_terminal_context(text: str, max_lines: int = 400, max_line_len: int
             ln = ln[:head] + "…" + ln[-tail:]
         out_lines.append(ln)
     return "\n".join(out_lines).strip()
+
+
+def _build_ssh_terminals_mapping_ctx(user_id: int, scope_id: str) -> str:
+    """注入 slot → 主机映射，便于 AI 在多控制台场景下选对目标。"""
+    items = get_terminals_for_user(user_id, scope_id=scope_id)
+    if not items:
+        return "（当前无已连接的 SSH 控制台）"
+    return json.dumps(items, ensure_ascii=False)
+
+
+def _build_terminal_buffer_ctx(
+    user_id: int,
+    scope_id: str,
+    preferred_slot: int | None,
+) -> tuple[str, bool]:
+    """返回 (terminal_ctx, connected)。"""
+    buf, connected = get_terminal_buffer_for_user(user_id, slot=preferred_slot, scope_id=scope_id)
+    if not connected:
+        return "（当前聊天区域没有 AI 可用的 SSH 控制台；用户创建的控制台不会被 AI 读取或操作）", False
+    meta = get_terminal_session_meta_for_user(user_id, slot=preferred_slot, scope_id=scope_id)
+    header = ""
+    if meta:
+        aliases = meta.get("host_aliases") or []
+        alias_s = f", aliases={','.join(aliases)}" if aliases else ""
+        header = (
+            f"（以下缓冲来自 slot={meta.get('slot')}, host_id={meta.get('host_id')}, "
+            f"name={meta.get('host_name')}, ip={meta.get('host_ip')}:{meta.get('host_port')}"
+            f"{alias_s}, created_by={meta.get('created_by')}）\n"
+        )
+    body = _compact_terminal_context(buf) if buf else "（控制台暂无输出）"
+    return header + body, True
 
 
 def _cap_items_by_json_size(items: list[dict], max_chars: int, min_items: int = 1) -> list[dict]:
@@ -4785,11 +4822,10 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
     )
     hosts_ctx = json.dumps(compact_hosts, ensure_ascii=False)
     groups_ctx = json.dumps(compact_groups, ensure_ascii=False)
-    terminal_buf, terminal_connected = get_terminal_buffer_for_user(user["id"], slot=preferred_terminal_slot, scope_id=terminal_scope_id)
-    if not terminal_connected:
-        terminal_ctx = "（当前聊天区域没有 AI 可用的 SSH 控制台；用户创建的控制台不会被 AI 读取或操作）"
-    else:
-        terminal_ctx = _compact_terminal_context(terminal_buf) if terminal_buf else "（控制台暂无输出）"
+    terminals_mapping_ctx = _build_ssh_terminals_mapping_ctx(user["id"], terminal_scope_id)
+    terminal_ctx, terminal_connected = _build_terminal_buffer_ctx(
+        user["id"], terminal_scope_id, preferred_terminal_slot
+    )
 
     host_knowledge_ctx = ""
     current_host_id = get_current_host_id_for_user(user["id"], scope_id=terminal_scope_id, slot=preferred_terminal_slot)
@@ -4868,7 +4904,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         user_message=req.message,
         session_scope=session_scope,
         session_host_id=session_host_id,
-        has_terminal=terminal_connected and bool(terminal_buf),
+        has_terminal=terminal_connected,
         context_size=context_size,
     )
     # 按配置/自动估算的上下文大小分段截断，防止溢出
@@ -4930,7 +4966,10 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
 ## 主机分组
 {groups_ctx}
 {host_knowledge_ctx}{host_prompt_ctx}
-## 当前用户控制台最近输出（仅供内部参考，切勿在回复中引用或泄露密码；**本段为滚动缓冲的末尾片段，排障与 sudo 判断以最后几行为准**；仅当末尾出现 [sudo] password for / Password: 等提示时才 send_to_terminal 发密码）
+## 当前 SSH 控制台映射（slot → 主机；AI 工具仅可操作 created_by=ai 的控制台）
+{terminals_mapping_ctx}
+
+## 当前用户控制台最近输出（仅供内部参考，切勿在回复中引用或泄露密码；**本段为滚动缓冲的末尾片段，排障与 sudo 判断以最后几行为准**；仅当末尾出现 [sudo] password for / Password: 等提示时才 send_to_terminal 发密码；操作前请对照上方映射确认 slot 与 host_id）
 {terminal_ctx}
 """
     if not assistant_enabled:

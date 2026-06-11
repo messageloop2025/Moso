@@ -58,6 +58,7 @@ from api.terminal import (
     send_to_user_terminal,
     get_terminal_buffer_for_user,
     get_terminals_for_user,
+    get_terminal_session_meta_for_user,
     add_pending_console_creation,
     close_console as terminal_close_console,
     normalize_terminal_scope_id,
@@ -5942,6 +5943,21 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             items = get_terminals_for_user(user["id"], scope_id=terminal_scope_id)
             return [it for it in items if (it.get("created_by") or "") == "ai"]
 
+        def terminal_meta_for_slot(slot: int | None) -> dict | None:
+            return get_terminal_session_meta_for_user(user["id"], slot, terminal_scope_id)
+
+        def attach_terminal_host_fields(out: dict, slot: int | None) -> dict:
+            meta = terminal_meta_for_slot(slot)
+            if meta:
+                out["host_id"] = meta.get("host_id")
+                out["host_name"] = meta.get("host_name") or ""
+                out["host_ip"] = meta.get("host_ip") or ""
+                out["host_port"] = meta.get("host_port") or 22
+                out["host_aliases"] = meta.get("host_aliases") or []
+                out["created_by"] = meta.get("created_by") or "ai"
+                out["connected"] = meta.get("connected")
+            return out
+
         def resolve_ai_slot(requested_slot) -> tuple[int | None, str | None]:
             items = ssh_ai_terminals()
             if not items:
@@ -7553,11 +7569,12 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     },
                     ensure_ascii=False,
                 )
-            return json.dumps({
+            return json.dumps(attach_terminal_host_fields({
                 "success": True,
                 "message": "已发送到 AI 控制台",
+                "slot": slot,
                 "ui_action": {"action": "switch_console", "slot": slot, "scope": "ai"},
-            }, ensure_ascii=False)
+            }, slot), ensure_ascii=False)
 
         if name == "connect_terminal":
             host_id = arguments.get("host_id")
@@ -7571,6 +7588,10 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             return json.dumps({
                 "success": True,
                 "message": "已请求前端连接控制台；后续 send_to_terminal / get_terminal_buffer 若尚未建连会自动等待最多约 5 秒再读写。",
+                "host_id": int(host_id),
+                "host_name": (row.get("name") or "").strip(),
+                "host_ip": (row.get("host") or "").strip(),
+                "host_port": int(row.get("port") or 22),
                 "ui_action": {"action": "connect_terminal", "host_id": host_id},
             }, ensure_ascii=False)
 
@@ -7594,7 +7615,11 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             add_pending_console_creation(user["id"], int(host_id), "ai", scope_id=terminal_scope_id)
             return json.dumps({
                 "success": True,
-                "message": f"已请求创建新控制台并连接主机 {host_id}，请稍候，新控制台将出现在控制台区域（由 AI 创建，会显示为「控制台 N (AI)」，AI 可关闭）",
+                "message": f"已请求创建新控制台并连接主机 {host_id}，请稍候，新控制台将出现在控制台区域（标签格式：host_id-host_name-slot (AI)，AI 可关闭）",
+                "host_id": int(host_id),
+                "host_name": (row.get("name") or "").strip(),
+                "host_ip": (row.get("host") or "").strip(),
+                "host_port": int(row.get("port") or 22),
             }, ensure_ascii=False)
 
         if name == "close_console":
@@ -9946,7 +9971,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     tail_only=tail_only,
                     max_lines=max_lines,
                 )
-            out = {"success": True, "buffer": buf, "connected": connected, "slot": slot}
+            out = attach_terminal_host_fields({"success": True, "buffer": buf, "connected": connected, "slot": slot}, slot)
             if abbreviated:
                 out["abbreviated"] = True
                 out["total_lines"] = total_lines

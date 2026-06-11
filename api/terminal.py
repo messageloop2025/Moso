@@ -286,12 +286,37 @@ def get_terminal_buffer_for_user(user_id: int, slot: int | None = None, scope_id
 
 def get_current_host_id_for_user(user_id: int, scope_id: str | None = None, slot: int | None = None) -> int | None:
     """供 Agent 内部调用：返回指定控制台（默认 0）所连接的主机 ID。"""
+    meta = get_terminal_session_meta_for_user(user_id, slot=slot, scope_id=scope_id)
+    if not meta:
+        return None
+    return meta.get("host_id")
+
+
+def get_terminal_session_meta_for_user(
+    user_id: int, slot: int | None = None, scope_id: str | None = None
+) -> dict | None:
+    """供 Agent / UI 调用：返回指定控制台 slot 与主机映射等元数据。"""
+    if slot is None:
+        slot = TERMINAL_SLOT_AI
+    else:
+        slot = max(0, min(int(slot), 31))
     scope_id = normalize_terminal_scope_id(scope_id)
-    slot = TERMINAL_SLOT_AI if slot is None else max(0, min(slot, 31))
     session = _user_sessions.get((user_id, scope_id, slot))
     if not session:
         return None
-    return session.get("host_id")
+    ch = session.get("channel")
+    return {
+        "slot": slot,
+        "scope_id": scope_id,
+        "host_id": session.get("host_id"),
+        "host_name": session.get("host_name") or "",
+        "host_ip": session.get("host_ip") or "",
+        "host_port": session.get("host_port") or 22,
+        "host_aliases": session.get("host_aliases") or [],
+        "host_type": session.get("host_type") or "",
+        "created_by": session.get("created_by") or "user",
+        "connected": ch is not None and not ch.exit_status_ready(),
+    }
 
 
 def get_terminals_for_user(user_id: int, scope_id: str | None = None) -> list[dict]:

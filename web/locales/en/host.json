@@ -165,6 +165,7 @@
     "cotResultLabel": "Result preview",
     "newConsole": "+ New console",
     "consoleTabLabel": "Console {{slot}} ({{who}})",
+    "consoleTabLabelConnected": "{{hostId}}-{{hostName}}-{{slot}} ({{who}})",
     "whoUser": "user",
     "whoAi": "AI",
     "closeConsoleTitle": "Close this console",

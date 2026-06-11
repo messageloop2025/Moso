@@ -165,6 +165,7 @@
     "cotResultLabel": "响应摘要",
     "newConsole": "+ 新建控制台",
     "consoleTabLabel": "控制台 {{slot}} ({{who}})",
+    "consoleTabLabelConnected": "{{hostId}}-{{hostName}}-{{slot}} ({{who}})",
     "whoUser": "用户",
     "whoAi": "AI",
     "closeConsoleTitle": "关闭此控制台",

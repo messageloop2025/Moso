@@ -7102,6 +7102,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         if (!rec) return;
         edgeopsOpenSshConsole(rec, {
             hostId: hostId,
+            hostName: hostName,
             slot: slot,
             createdBy: createdBy,
             scopeId: hostTerminalScopeId,
@@ -7132,7 +7133,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         tabLabel.type = 'button';
         tabLabel.className = 'terminal-tab-btn ai-console-tab' + (hostAiConsoles.length === 0 ? ' active' : '');
         tabLabel.style.marginRight = '0';
-        tabLabel.textContent = t('hostAi.consoleTabLabel', { slot: slot, who: who });
+        tabLabel.textContent = edgeopsFormatConsoleTabLabel({ slot: slot, createdBy: createdBy });
         tabWrap.appendChild(tabLabel);
         var closeBtn = document.createElement('button');
         closeBtn.type = 'button';
@@ -7622,6 +7623,38 @@ function edgeopsWriteConsoleChunk(rec, chunk) {
     }
 }
 
+function edgeopsSanitizeConsoleHostName(name) {
+    var s = String(name || '').trim();
+    if (!s) return 'host';
+    return s.replace(/[\s\/\\:|]+/g, '-').replace(/-+/g, '-').slice(0, 48) || 'host';
+}
+
+function edgeopsFormatConsoleTabLabel(opts) {
+    opts = opts || {};
+    var slot = opts.slot != null ? opts.slot : 0;
+    var who = opts.createdBy === 'ai' ? t('hostAi.whoAi') : t('hostAi.whoUser');
+    var hostId = opts.hostId;
+    if (hostId != null && hostId !== '' && !opts.disconnected) {
+        var hn = edgeopsSanitizeConsoleHostName(opts.hostName || ('host-' + hostId));
+        return t('hostAi.consoleTabLabelConnected', { hostId: hostId, hostName: hn, slot: slot, who: who });
+    }
+    return t('hostAi.consoleTabLabel', { slot: slot, who: who });
+}
+
+function edgeopsRefreshConsoleTabLabel(rec, extra) {
+    if (!rec || !rec.tabBtn) return;
+    extra = extra || {};
+    if (extra.hostName) rec.hostName = extra.hostName;
+    if (extra.hostId != null && extra.hostId !== '') rec.hostId = String(extra.hostId);
+    rec.tabBtn.textContent = edgeopsFormatConsoleTabLabel({
+        slot: rec.slot,
+        createdBy: rec.createdBy,
+        hostId: rec.hostId,
+        hostName: rec.hostName,
+        disconnected: extra.disconnected
+    });
+}
+
 function edgeopsOpenSshConsole(rec, options) {
     if (!rec || !options || !options.hostId || !API.token) return null;
     var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -7629,6 +7662,7 @@ function edgeopsOpenSshConsole(rec, options) {
     var ws = new WebSocket(wsUrl);
     rec.ws = ws;
     rec.hostId = String(options.hostId);
+    if (options.hostName) rec.hostName = options.hostName;
     if (rec.connectBtn) rec.connectBtn.disabled = true;
     if (rec.statusEl) rec.statusEl.textContent = t('hostAi.tabStatusConnecting');
     var firstMsg = true;
@@ -7680,6 +7714,7 @@ function edgeopsOpenSshConsole(rec, options) {
                     if (rec.connectBtn) rec.connectBtn.style.display = 'none';
                     if (rec.disconnectBtn) rec.disconnectBtn.style.display = 'inline-block';
                     if (rec.statusEl) rec.statusEl.textContent = t('hostAi.tabStatusConnected');
+                    edgeopsRefreshConsoleTabLabel(rec, { hostId: options.hostId, hostName: options.hostName || rec.hostName });
                     if (typeof options.onReady === 'function') options.onReady(rec, ws);
                 }
             } catch (err) {}
@@ -8053,7 +8088,7 @@ function renderAIPage() {
         tabLabel.type = 'button';
         tabLabel.className = 'terminal-tab-btn ai-console-tab' + (aiConsoles.length === 0 ? ' active' : '');
         tabLabel.style.marginRight = '0';
-        tabLabel.textContent = t('hostAi.consoleTabLabel', { slot: slot, who: who });
+        tabLabel.textContent = edgeopsFormatConsoleTabLabel({ slot: slot, createdBy: createdBy });
         tabWrap.appendChild(tabLabel);
         var closeBtn = document.createElement('button');
         closeBtn.type = 'button';
@@ -8168,8 +8203,22 @@ function renderAIPage() {
         hostId = String(hostId);
         var rec = aiConsoles.filter(function(c) { return c.slot === slot; })[0];
         if (!rec) return;
+        var hostName = '';
+        if (rec.hostPicker && rec.hostPicker.findHost) {
+            var picked = rec.hostPicker.findHost(hostId);
+            if (picked) hostName = picked.name || '';
+        }
+        if (!hostName && aiAssistantHostsCache) {
+            for (var hi = 0; hi < aiAssistantHostsCache.length; hi++) {
+                if (String(aiAssistantHostsCache[hi].id) === hostId) {
+                    hostName = aiAssistantHostsCache[hi].name || '';
+                    break;
+                }
+            }
+        }
         edgeopsOpenSshConsole(rec, {
             hostId: hostId,
+            hostName: hostName,
             slot: slot,
             createdBy: createdBy,
             scopeId: aiTerminalScopeId,
