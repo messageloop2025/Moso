@@ -80,8 +80,9 @@ def current_depth() -> int:
 
 
 async def _resolve_ai_settings(db, user_id: int) -> dict[str, Any]:
-    """复用 task_runner 的读取逻辑；避免循环 import。"""
-    from services.task_runner import _get_user_ai_settings  # noqa: WPS433
+    """与主聊天一致：优先当前激活 Profile。"""
+    from api.ai_agent import _get_user_ai_settings  # noqa: WPS433
+
     return await _get_user_ai_settings(db, user_id)
 
 
@@ -174,6 +175,27 @@ async def run_sub_ai(
         browser_ui_locale=(browser_ui_locale or "").strip() or None,
     )
     final_system += f"\n\n{_lang_block}"
+    try:
+        from api.ai_agent import _build_active_model_runtime_ctx, _resolve_context_budget_chars
+
+        try:
+            _ctx_cfg = int(settings.get("ai_context_size") or "0")
+        except (TypeError, ValueError):
+            _ctx_cfg = 0
+        _ctx_budget = _resolve_context_budget_chars(_ctx_cfg, settings)
+        final_system += "\n\n" + await _build_active_model_runtime_ctx(
+            db,
+            int(user["id"]),
+            settings=settings,
+            base_url=base_url,
+            provider=provider,
+            model=model,
+            context_configured=_ctx_cfg,
+            context_budget_chars=_ctx_budget,
+            trial_info=None,
+        )
+    except Exception:
+        pass
     if context_hint:
         final_system += f"\n\n# 上下文\n{context_hint.strip()}"
     final_system += (

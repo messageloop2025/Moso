@@ -25,11 +25,13 @@ from database import get_db
 from api.auth import get_current_user, require_admin, _is_admin_role
 from api.hosts import normalize_host_aliases_in_dict
 from api.terminal import (
+    format_terminals_mapping_for_prompt,
     get_terminal_buffer_for_user,
     get_current_host_id_for_user,
     get_terminal_session_meta_for_user,
     get_terminals_for_user,
     normalize_terminal_scope_id,
+    terminals_snapshot_for_ai,
 )
 from services.ai_skills import (
     TOOLS,
@@ -148,7 +150,7 @@ async def _can_access_host_with_shares(db, host_row: dict | None, user: dict) ->
     return bool(rows)
 
 # 单条会话消息保存长度上限（字符），避免超长回复被截断导致前端展示不全
-AI_MESSAGE_SAVE_MAX = 200_000
+AI_MESSAGE_SAVE_MAX = getattr(_config, "AI_MESSAGE_SAVE_MAX", 200_000)
 
 # UI Action 哨兵：把 ask_user_choice 等交互卡随 assistant 文本一起持久化，
 # 让 loadSession 重新渲染时也能还原选择卡，避免「一闪而过」。
@@ -159,9 +161,11 @@ UI_ACTION_SENTINEL_SUFFIX = " -->"
 # 工具调用 / 推理步骤轨迹：随 assistant 落库，前端历史消息可折叠还原「调用流程」。
 TOOL_TRACE_SENTINEL_PREFIX = "<!-- EDGEOPS:TOOL_TRACE:v1 "
 TOOL_TRACE_SENTINEL_SUFFIX = " -->"
-# 嵌入前控制体积，避免单条消息过大
-TOOL_TRACE_MAX_STEPS = 80
-TOOL_TRACE_MAX_JSON_CHARS = 120_000
+# 嵌入前控制体积，避免单条消息过大（实际值见 config.TOOL_TRACE_*）
+TOOL_TRACE_MAX_STEPS = 5000
+TOOL_TRACE_MAX_JSON_CHARS = 400_000
+TOOL_TRACE_MAX_CHUNKS = 24
+TOOL_TRACE_PERSIST_PREVIEW_CHARS = 1200
 
 # 运行中会话控制：支持在 tool_call 执行期间插入 stop/pause/supplement/choice 指令。
 _SESSION_RUNTIME_CONTROL_QUEUES: dict[int, asyncio.Queue] = {}
@@ -586,27 +590,63 @@ def _embed_ui_actions_into_content(content: str, ui_actions: list[dict]) -> str:
 
 
 def _embed_tool_trace_into_content(content: str, trace_steps: list[dict] | None) -> str:
-    """把本轮工具调用 / 推理步骤序列嵌入 assistant content（单条 BASE64 JSON）。"""
+    """把本轮工具调用 / 推理步骤序列嵌入 assistant content（可多块 BASE64 JSON）。"""
     if not trace_steps:
         return content
-    steps = trace_steps[-TOOL_TRACE_MAX_STEPS:]
+    import config as _cfg
+
+    max_steps = int(getattr(_cfg, "TOOL_TRACE_MAX_STEPS", TOOL_TRACE_MAX_STEPS) or TOOL_TRACE_MAX_STEPS)
+    max_json = int(getattr(_cfg, "TOOL_TRACE_MAX_JSON_CHARS", TOOL_TRACE_MAX_JSON_CHARS) or TOOL_TRACE_MAX_JSON_CHARS)
+    max_chunks = int(getattr(_cfg, "TOOL_TRACE_MAX_CHUNKS", TOOL_TRACE_MAX_CHUNKS) or TOOL_TRACE_MAX_CHUNKS)
+    save_max = int(getattr(_cfg, "AI_MESSAGE_SAVE_MAX", AI_MESSAGE_SAVE_MAX) or AI_MESSAGE_SAVE_MAX)
+    total = len(trace_steps)
+    steps = trace_steps[-max_steps:] if max_steps > 0 else list(trace_steps)
+    dropped_head = max(0, total - len(steps))
     import base64 as _b64
 
-    payload = {"v": 1, "steps": steps}
-    try:
-        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        while len(raw) > TOOL_TRACE_MAX_JSON_CHARS and len(steps) > 2:
-            # 优先丢弃最前的步骤，保留近期调用
-            steps = steps[-(len(steps) // 2) :]
-            payload = {"v": 1, "steps": steps}
-            raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        if len(raw) > TOOL_TRACE_MAX_JSON_CHARS:
-            return content
-        b64 = _b64.b64encode(raw.encode("utf-8")).decode("ascii")
-    except Exception:
+    chunks: list[list[dict]] = []
+    buf: list[dict] = []
+    for step in steps:
+        trial = buf + [step]
+        meta = {"v": 1, "steps": trial}
+        if dropped_head:
+            meta["dropped_head"] = dropped_head
+        raw = json.dumps(meta, ensure_ascii=False, separators=(",", ":"))
+        if len(raw) > max_json and buf:
+            chunks.append(buf)
+            buf = [step]
+            if len(chunks) >= max_chunks:
+                break
+        else:
+            buf = trial
+    if buf and len(chunks) < max_chunks:
+        chunks.append(buf)
+    if not chunks:
         return content
-    sep = "\n\n" if (content and not content.endswith("\n")) else ""
-    return content + sep + TOOL_TRACE_SENTINEL_PREFIX + b64 + TOOL_TRACE_SENTINEL_SUFFIX
+
+    embedded = 0
+    for chunk in chunks:
+        meta = {"v": 1, "steps": chunk}
+        if dropped_head:
+            meta["dropped_head"] = dropped_head
+        if embedded + len(chunk) < len(steps):
+            meta["partial"] = True
+        raw = json.dumps(meta, ensure_ascii=False, separators=(",", ":"))
+        if len(raw) > max_json:
+            continue
+        b64 = _b64.b64encode(raw.encode("utf-8")).decode("ascii")
+        sep = "\n\n" if (content and not content.endswith("\n")) else ""
+        candidate = content + sep + TOOL_TRACE_SENTINEL_PREFIX + b64 + TOOL_TRACE_SENTINEL_SUFFIX
+        if len(candidate) > save_max:
+            omitted = len(steps) - embedded
+            if omitted > 0:
+                note = f"\n\n*（工具轨迹过长，另有约 {omitted} 步未写入聊天记录；可在运行日志 operation_logs 查看工具详情）*"
+                if len(content) + len(note) <= save_max:
+                    content = content + note
+            break
+        content = candidate
+        embedded += len(chunk)
+    return content
 
 
 def _fingerprint_ask_user_choice(ui_action: dict) -> str:
@@ -2157,12 +2197,32 @@ def _compact_terminal_context(text: str, max_lines: int = 400, max_line_len: int
     return "\n".join(out_lines).strip()
 
 
-def _build_ssh_terminals_mapping_ctx(user_id: int, scope_id: str) -> str:
-    """注入 slot → 主机映射，便于 AI 在多控制台场景下选对目标。"""
-    items = get_terminals_for_user(user_id, scope_id=scope_id)
-    if not items:
-        return "（当前无已连接的 SSH 控制台）"
-    return json.dumps(items, ensure_ascii=False)
+def _build_ssh_terminals_mapping_ctx(
+    user_id: int, scope_id: str, preferred_slot: int | None = None
+) -> str:
+    """注入 slot → 主机映射与连接状态，便于 AI 在多控制台场景下选对目标。"""
+    return format_terminals_mapping_for_prompt(user_id, scope_id, preferred_slot)
+
+
+def _resolve_ai_buffer_slot(
+    user_id: int, scope_id: str, preferred_slot: int | None
+) -> int | None:
+    """优先 AI 可操作控制台读取 buffer；用户活动 tab 仅在其为 AI 控制台时使用。"""
+    scope_id = normalize_terminal_scope_id(scope_id)
+    snap = terminals_snapshot_for_ai(user_id, scope_id, preferred_slot)
+    ai_slots = {int(t["slot"]) for t in snap["ai_terminals"] if t.get("slot") is not None}
+    if preferred_slot is not None and preferred_slot in ai_slots:
+        return preferred_slot
+    connected = [
+        int(t["slot"])
+        for t in snap["ai_terminals"]
+        if t.get("connected") and t.get("slot") is not None
+    ]
+    if connected:
+        return min(connected)
+    if ai_slots:
+        return min(ai_slots)
+    return preferred_slot if preferred_slot is not None else None
 
 
 def _build_terminal_buffer_ctx(
@@ -2171,10 +2231,18 @@ def _build_terminal_buffer_ctx(
     preferred_slot: int | None,
 ) -> tuple[str, bool]:
     """返回 (terminal_ctx, connected)。"""
-    buf, connected = get_terminal_buffer_for_user(user_id, slot=preferred_slot, scope_id=scope_id)
-    if not connected:
-        return "（当前聊天区域没有 AI 可用的 SSH 控制台；用户创建的控制台不会被 AI 读取或操作）", False
-    meta = get_terminal_session_meta_for_user(user_id, slot=preferred_slot, scope_id=scope_id)
+    buf_slot = _resolve_ai_buffer_slot(user_id, scope_id, preferred_slot)
+    if buf_slot is None:
+        snap = terminals_snapshot_for_ai(user_id, scope_id, preferred_slot)
+        if snap["user_terminals"] and not snap["ai_terminals"]:
+            return (
+                "（当前仅有用户创建的控制台；AI 须用 connect_terminal/create_console 创建 AI 控制台后再 send_to_terminal。"
+                "用户控制台输出不会注入此处。）",
+                False,
+            )
+        return "（当前无 AI 可操作 SSH 控制台；请先 list_terminals 或 connect_terminal(host_id)）", False
+    buf, connected = get_terminal_buffer_for_user(user_id, slot=buf_slot, scope_id=scope_id)
+    meta = get_terminal_session_meta_for_user(user_id, slot=buf_slot, scope_id=scope_id)
     header = ""
     if meta:
         aliases = meta.get("host_aliases") or []
@@ -2182,10 +2250,13 @@ def _build_terminal_buffer_ctx(
         header = (
             f"（以下缓冲来自 slot={meta.get('slot')}, host_id={meta.get('host_id')}, "
             f"name={meta.get('host_name')}, ip={meta.get('host_ip')}:{meta.get('host_port')}"
-            f"{alias_s}, created_by={meta.get('created_by')}）\n"
+            f"{alias_s}, created_by={meta.get('created_by')}, connected={connected}）\n"
         )
-    body = _compact_terminal_context(buf) if buf else "（控制台暂无输出）"
-    return header + body, True
+    if not connected:
+        body = "（该 slot 会话尚未就绪或已断开；可 list_terminals 查看状态，或等待后 get_terminal_buffer(slot) 重试）"
+    else:
+        body = _compact_terminal_context(buf) if buf else "（控制台暂无输出）"
+    return header + body, connected
 
 
 def _cap_items_by_json_size(items: list[dict], max_chars: int, min_items: int = 1) -> list[dict]:
@@ -2260,6 +2331,99 @@ def _resolve_context_budget_chars(context_size: int, settings: dict) -> int:
     else:
         budget = CONTEXT_SIZE_DEFAULT
     return max(AUTO_CONTEXT_MIN, min(AUTO_CONTEXT_MAX, budget))
+
+
+async def _build_active_model_runtime_ctx(
+    db,
+    user_id: int,
+    *,
+    settings: dict,
+    base_url: str,
+    provider: str,
+    model: str,
+    context_configured: int,
+    context_budget_chars: int,
+    context_budget_before_vision: int | None = None,
+    trial_info: dict | None = None,
+) -> str:
+    """注入当前运行时 LLM 身份与上下文预算，供 AI 回答「你是什么模型」等问题。"""
+    from services.ai_model_profiles import DEFAULT_PROFILE_NAME, get_active_profile_row
+
+    prof = await get_active_profile_row(db, user_id)
+    if prof:
+        pname = (prof.get("name") or "").strip() or DEFAULT_PROFILE_NAME
+        profile_label = f"{pname} (profile_id={int(prof['id'])})"
+    else:
+        profile_label = "（未使用 Profile，沿用 user_ai_config / 全局默认）"
+
+    window_tokens = _infer_model_window_tokens(provider, model)
+    if context_configured > 0:
+        ctx_desc = (
+            f"用户配置 context_size={context_configured:,} 字符；"
+            f"本轮文本 budget={context_budget_chars:,} 字符"
+        )
+    else:
+        ctx_desc = (
+            f"context_size=0（自动估算）：按 provider/model 推断窗口约 {window_tokens:,} tokens，"
+            f"本轮文本 budget={context_budget_chars:,} 字符"
+        )
+    if (
+        context_budget_before_vision is not None
+        and context_budget_before_vision > context_budget_chars
+    ):
+        ctx_desc += f"（识图预留前为 {context_budget_before_vision:,} 字符）"
+
+    user_key = (settings.get("ai_api_key") or "").strip()
+    if user_key:
+        key_source = "用户自有 API Key"
+    elif trial_info is not None:
+        lim = trial_info.get("limit", SYSTEM_AI_USAGE_LIMIT)
+        used = trial_info.get("used", 0)
+        rem = trial_info.get("remaining", max(0, lim - used))
+        key_source = f"系统共享 API Key（配额 {used}/{lim}，剩余 {rem}）"
+    elif not require_api_key(provider, user_key):
+        key_source = f"当前 provider（{provider or 'auto'}）无需 API Key"
+    else:
+        key_source = "未配置用户 Key（具体以本轮能否调用为准）"
+
+    vision_on = (settings.get("ai_vision_enabled") or "true").strip().lower() != "false"
+    try:
+        agent_steps = max(
+            1,
+            min(
+                AGENT_MAX_STEPS_CAP,
+                int(settings.get("ai_agent_max_steps") or 0) or AGENT_MAX_STEPS,
+            ),
+        )
+    except (TypeError, ValueError):
+        agent_steps = AGENT_MAX_STEPS
+    try:
+        asst_rounds = max(
+            1,
+            min(
+                ASSISTANT_MAX_ROUNDS_CAP,
+                int(settings.get("ai_assistant_max_rounds") or 0) or ASSISTANT_MAX_ROUNDS,
+            ),
+        )
+    except (TypeError, ValueError):
+        asst_rounds = ASSISTANT_MAX_ROUNDS
+
+    pd = _config.PRODUCT_DISPLAY
+    return f"""## 当前运行时模型身份（内部事实；用户询问「你是什么模型/上下文多大」时可如实回答）
+你是 **{pd}** 平台的 AI 运维助手（产品名「毛竹 / Moso」）；**实际推理由外部大模型 API 完成**。
+不要自称 OpenAI、Anthropic、阿里云等厂商官方助手；应说明当前接入的 model id、provider 与上下文预算。
+
+- **激活配置 Profile**：{profile_label}
+- **API model id（本轮请求）**：`{model or '（未配置）'}`
+- **Provider**：`{provider or 'auto'}`
+- **Base URL**：`{base_url or '（未配置）'}`
+- **上下文预算**：{ctx_desc}
+- **估算模型窗口**：约 {window_tokens:,} tokens（平台启发式，非 API 实时返回值）
+- **识图（多模态）**：{'已开启' if vision_on else '已关闭'}
+- **Agent 最大步数 / 辅助 AI 轮数**：{agent_steps} / {asst_rounds}
+- **API Key 来源**：{key_source}
+
+勿编造未列出的参数；若用户追问精确 token 窗口而上方仅为估算，应如实说明。"""
 
 
 def _tool_result_message_limit(context_size: int) -> int:
@@ -2623,31 +2787,41 @@ async def _fetch_setting_value(db, key: str) -> str:
 
 
 async def _get_user_ai_settings(db, user_id: int) -> dict:
-    """获取指定用户的 AI 配置：优先 user_ai_config，缺项用全局 settings 补全。返回键为 ai_* 的字典。"""
+    """获取指定用户的 AI 配置：优先当前激活 Profile，缺项用全局 settings 补全。返回键为 ai_* 的字典。"""
+    from services.ai_model_profiles import (
+        ensure_profiles_schema,
+        get_active_profile_row,
+        profile_row_to_settings,
+    )
+
     keys = [
         "ai_api_key", "ai_base_url", "ai_model", "ai_system_prompt",
         "ai_auto_approve", "ai_assistant_enabled", "ai_context_size",
         "ai_agent_max_steps", "ai_assistant_max_rounds", "ai_provider",
         "ai_vision_enabled",
     ]
-    out = {}
-    row = await db.execute_fetchall("SELECT * FROM user_ai_config WHERE user_id = ?", (user_id,))
-    if row:
-        r = dict(row[0])
-        out["ai_api_key"] = (r.get("api_key") or "").strip()
-        out["ai_base_url"] = (r.get("base_url") or "").strip()
-        out["ai_model"] = (r.get("model") or "").strip()
-        out["ai_system_prompt"] = (r.get("system_prompt") or "").strip()
-        out["ai_auto_approve"] = (r.get("auto_approve") or "false").strip().lower()
-        out["ai_assistant_enabled"] = (r.get("assistant_enabled") or "false").strip().lower()
-        out["ai_context_size"] = (r.get("context_size") or "0").strip()
-        out["ai_agent_max_steps"] = (r.get("agent_max_steps") or "").strip()
-        out["ai_assistant_max_rounds"] = (r.get("assistant_max_rounds") or "").strip()
-        out["ai_provider"] = (r.get("provider") or "").strip()
-        # 视觉开关：旧库未迁移 / 老行未设置时兜底为 'true'（默认启用），与 022 迁移保持一致
-        _vision_raw = (r.get("vision_enabled") if "vision_enabled" in r else None)
-        out["ai_vision_enabled"] = ((_vision_raw or "true").strip().lower() or "true")
-        out["ai_output_locale"] = (r.get("ai_output_locale") or "").strip()
+    out: dict = {}
+    await ensure_profiles_schema(db)
+    prof = await get_active_profile_row(db, user_id)
+    if prof:
+        out = profile_row_to_settings(prof)
+    else:
+        row = await db.execute_fetchall("SELECT * FROM user_ai_config WHERE user_id = ?", (user_id,))
+        if row:
+            r = dict(row[0])
+            out["ai_api_key"] = (r.get("api_key") or "").strip()
+            out["ai_base_url"] = (r.get("base_url") or "").strip()
+            out["ai_model"] = (r.get("model") or "").strip()
+            out["ai_system_prompt"] = (r.get("system_prompt") or "").strip()
+            out["ai_auto_approve"] = (r.get("auto_approve") or "false").strip().lower()
+            out["ai_assistant_enabled"] = (r.get("assistant_enabled") or "false").strip().lower()
+            out["ai_context_size"] = (r.get("context_size") or "0").strip()
+            out["ai_agent_max_steps"] = (r.get("agent_max_steps") or "").strip()
+            out["ai_assistant_max_rounds"] = (r.get("assistant_max_rounds") or "").strip()
+            out["ai_provider"] = (r.get("provider") or "").strip()
+            _vision_raw = (r.get("vision_enabled") if "vision_enabled" in r else None)
+            out["ai_vision_enabled"] = ((_vision_raw or "true").strip().lower() or "true")
+            out["ai_output_locale"] = (r.get("ai_output_locale") or "").strip()
     for k in keys:
         if k not in out or out[k] == "":
             if k == "ai_provider":
@@ -2685,6 +2859,46 @@ class AIConfigRequest(BaseModel):
     # 无法从单条用户消息判断语言时，作为默认回复语言（en / zh-CN）；空=走站点与界面语言链路
     output_locale: str = ""
     user_id: int | None = None  # 仅管理员：指定要更新的用户 ID，不传则更新当前用户
+
+
+class AIModelProfileCreateRequest(BaseModel):
+    name: str
+    api_key: str = ""
+    base_url: str = ""
+    model: str = ""
+    system_prompt: str = ""
+    auto_approve: bool = False
+    assistant_enabled: bool = False
+    context_size: int = 0
+    provider: str = ""
+    agent_max_steps: int = 0
+    assistant_max_rounds: int = 0
+    vision_enabled: bool = True
+    output_locale: str = ""
+    user_id: int | None = None
+
+
+class AIModelProfileUpdateRequest(BaseModel):
+    name: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    model: str | None = None
+    system_prompt: str | None = None
+    auto_approve: bool | None = None
+    assistant_enabled: bool | None = None
+    context_size: int | None = None
+    provider: str | None = None
+    agent_max_steps: int | None = None
+    assistant_max_rounds: int | None = None
+    vision_enabled: bool | None = None
+    output_locale: str | None = None
+    user_id: int | None = None
+
+
+class AIModelProfileImportRequest(BaseModel):
+    config: str | dict | list
+    mode: str = "incremental"  # incremental | overwrite
+    user_id: int | None = None
 
 
 class ChatRequest(BaseModel):
@@ -2851,6 +3065,8 @@ def _format_empty_assistant_summary(output_locale: str = "zh-CN") -> str:
 async def get_ai_config(user_id: int | None = None, user=Depends(get_current_user)):
     """获取 AI 配置。当前用户始终可获取自己的配置；管理员可传 user_id 获取指定用户的配置。"""
     import config
+    from services.ai_model_profiles import get_active_profile_id, list_profiles
+
     db = await get_db()
     target_id = user["id"]
     if user_id is not None and _is_admin_role(user.get("role")):
@@ -2881,17 +3097,282 @@ async def get_ai_config(user_id: int | None = None, user=Depends(get_current_use
     model_types = getattr(config, "MODEL_TYPES", [])
     context_size_options = getattr(config, "CONTEXT_SIZE_OPTIONS", [0, 4000, 8000, 16000, 32000])
     context_size_max = getattr(config, "CONTEXT_SIZE_MAX", 8 * 1024 * 1024)
+    prof_items, _ = await list_profiles(db, target_id)
     return {
         "success": True,
         "config": result,
         "model_types": model_types,
         "context_size_options": context_size_options,
         "context_size_max": context_size_max,
-        # 暴露默认与硬上限给前端展示与校验
         "agent_max_steps_default": getattr(config, "AGENT_MAX_STEPS", 100),
         "assistant_max_rounds_default": getattr(config, "ASSISTANT_MAX_ROUNDS", 100),
         "agent_max_steps_cap": getattr(config, "AGENT_MAX_STEPS_CAP", 1000),
         "assistant_max_rounds_cap": getattr(config, "ASSISTANT_MAX_ROUNDS_CAP", 1000),
+        "active_profile_id": await get_active_profile_id(db, target_id),
+        "profiles": prof_items,
+    }
+
+
+def _profile_fields_from_ai_config_request(req: AIConfigRequest) -> dict:
+    provider = (getattr(req, "provider", None) or "").strip()
+    if provider not in ("aliyun", "ollama", "openai"):
+        provider = ""
+    ctx = max(0, getattr(req, "context_size", 0))
+    import config as _cfg
+    ctx_max = getattr(_cfg, "CONTEXT_SIZE_MAX", 8 * 1024 * 1024)
+    if ctx > ctx_max:
+        ctx = ctx_max
+    agent_cap = getattr(_cfg, "AGENT_MAX_STEPS_CAP", 1000)
+    rounds_cap = getattr(_cfg, "ASSISTANT_MAX_ROUNDS_CAP", 1000)
+    raw_steps = max(0, int(getattr(req, "agent_max_steps", 0) or 0))
+    raw_rounds = max(0, int(getattr(req, "assistant_max_rounds", 0) or 0))
+    if raw_steps > agent_cap:
+        raw_steps = agent_cap
+    if raw_rounds > rounds_cap:
+        raw_rounds = rounds_cap
+    out_loc = (getattr(req, "output_locale", None) or "").strip()
+    if out_loc not in ("", "en", "zh-CN"):
+        out_loc = ""
+    return {
+        "api_key": (req.api_key or "").strip(),
+        "base_url": (req.base_url or "").strip().rstrip("/"),
+        "model": (req.model or "").strip(),
+        "system_prompt": (req.system_prompt or "").strip(),
+        "auto_approve": req.auto_approve,
+        "assistant_enabled": getattr(req, "assistant_enabled", False),
+        "context_size": ctx,
+        "provider": provider,
+        "agent_max_steps": raw_steps,
+        "assistant_max_rounds": raw_rounds,
+        "vision_enabled": getattr(req, "vision_enabled", True),
+        "output_locale": out_loc,
+    }
+
+
+def _resolve_profile_target_user(user: dict, user_id: int | None) -> int:
+    target_id = user["id"]
+    if user_id is not None and _is_admin_role(user.get("role")):
+        target_id = int(user_id)
+    return target_id
+
+
+def _profile_config_response(row: dict) -> dict:
+    from services.ai_model_profiles import profile_row_to_settings
+
+    s = profile_row_to_settings(row)
+    return {
+        "id": int(row["id"]),
+        "name": (row.get("name") or "").strip(),
+        "api_key": s.get("ai_api_key") or "",
+        "base_url": s.get("ai_base_url") or "",
+        "model": s.get("ai_model") or "",
+        "system_prompt": s.get("ai_system_prompt") or "",
+        "auto_approve": (s.get("ai_auto_approve") or "false").lower() == "true",
+        "assistant_enabled": (s.get("ai_assistant_enabled") or "false").lower() == "true",
+        "context_size": int(s.get("ai_context_size") or "0"),
+        "provider": s.get("ai_provider") or "",
+        "agent_max_steps": int(s.get("ai_agent_max_steps") or "0") if (s.get("ai_agent_max_steps") or "").strip() else 0,
+        "assistant_max_rounds": int(s.get("ai_assistant_max_rounds") or "0") if (s.get("ai_assistant_max_rounds") or "").strip() else 0,
+        "vision_enabled": (s.get("ai_vision_enabled") or "true").lower() != "false",
+        "output_locale": s.get("ai_output_locale") or "",
+        "updated_at": row.get("updated_at"),
+    }
+
+
+@router.get("/profiles")
+async def list_ai_model_profiles(user_id: int | None = None, user=Depends(get_current_user)):
+    """列出当前用户的模型配置组；管理员可传 user_id。"""
+    from services.ai_model_profiles import list_profiles as _list_profiles
+
+    db = await get_db()
+    target_id = _resolve_profile_target_user(user, user_id)
+    if user_id is not None and _is_admin_role(user.get("role")):
+        rows = await db.execute_fetchall("SELECT id FROM users WHERE id = ?", (target_id,))
+        if not rows:
+            raise HTTPException(status_code=404, detail="用户不存在")
+    items, active_id = await _list_profiles(db, target_id)
+    return {"success": True, "profiles": items, "active_profile_id": active_id}
+
+
+@router.get("/profiles/export")
+async def export_ai_model_profiles(
+    profile_id: int | None = None,
+    user_id: int | None = None,
+    user=Depends(get_current_user),
+):
+    """导出当前用户全部或单条模型配置为 JSON。"""
+    from services.ai_model_profiles import export_profiles_payload
+
+    db = await get_db()
+    target_id = _resolve_profile_target_user(user, user_id)
+    if user_id is not None and _is_admin_role(user.get("role")):
+        rows = await db.execute_fetchall("SELECT id FROM users WHERE id = ?", (target_id,))
+        if not rows:
+            raise HTTPException(status_code=404, detail="用户不存在")
+    try:
+        payload = await export_profiles_payload(db, target_id, profile_id=profile_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    import json
+
+    return {
+        "success": True,
+        "config": payload,
+        "json": json.dumps(payload, ensure_ascii=False, indent=2),
+        "count": len(payload.get("profiles") or []),
+    }
+
+
+@router.post("/profiles/import")
+async def import_ai_model_profiles(req: AIModelProfileImportRequest, user=Depends(get_current_user)):
+    """从 JSON 导入模型配置；incremental=仅增量，overwrite=同名覆盖。"""
+    from services.ai_model_profiles import import_profiles as _import_profiles
+
+    db = await get_db()
+    target_id = _resolve_profile_target_user(user, req.user_id)
+    if req.user_id is not None and _is_admin_role(user.get("role")):
+        rows = await db.execute_fetchall("SELECT id FROM users WHERE id = ?", (target_id,))
+        if not rows:
+            raise HTTPException(status_code=404, detail="用户不存在")
+    mode = (req.mode or "incremental").strip().lower()
+    if mode not in ("incremental", "overwrite"):
+        raise HTTPException(status_code=400, detail="mode 须为 incremental 或 overwrite")
+    try:
+        result = await _import_profiles(db, target_id, req.config, mode=mode)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"success": True, **result}
+
+
+@router.get("/profiles/{profile_id}")
+async def get_ai_model_profile(
+    profile_id: int,
+    user_id: int | None = None,
+    user=Depends(get_current_user),
+):
+    """获取单组模型配置详情（含完整字段，供编辑表单使用）。"""
+    from services.ai_model_profiles import get_active_profile_id, get_profile_row
+
+    db = await get_db()
+    target_id = _resolve_profile_target_user(user, user_id)
+    row = await get_profile_row(db, target_id, profile_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="配置不存在")
+    return {
+        "success": True,
+        "profile": _profile_config_response(row),
+        "active_profile_id": await get_active_profile_id(db, target_id),
+    }
+
+
+@router.post("/profiles")
+async def create_ai_model_profile(req: AIModelProfileCreateRequest, user=Depends(get_current_user)):
+    from services.ai_model_profiles import create_profile
+
+    db = await get_db()
+    target_id = _resolve_profile_target_user(user, req.user_id)
+    if req.user_id is not None and _is_admin_role(user.get("role")):
+        rows = await db.execute_fetchall("SELECT id FROM users WHERE id = ?", (target_id,))
+        if not rows:
+            raise HTTPException(status_code=404, detail="用户不存在")
+    try:
+        fields = _profile_fields_from_ai_config_request(
+            AIConfigRequest(
+                api_key=req.api_key,
+                base_url=req.base_url,
+                model=req.model,
+                system_prompt=req.system_prompt,
+                auto_approve=req.auto_approve,
+                assistant_enabled=req.assistant_enabled,
+                context_size=req.context_size,
+                provider=req.provider,
+                agent_max_steps=req.agent_max_steps,
+                assistant_max_rounds=req.assistant_max_rounds,
+                vision_enabled=req.vision_enabled,
+                output_locale=req.output_locale,
+            )
+        )
+        row = await create_profile(db, target_id, req.name, fields)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"success": True, "profile": _profile_config_response(row)}
+
+
+@router.put("/profiles/{profile_id}")
+async def update_ai_model_profile(
+    profile_id: int,
+    req: AIModelProfileUpdateRequest,
+    user=Depends(get_current_user),
+):
+    from services.ai_model_profiles import get_profile_row, update_profile
+
+    db = await get_db()
+    target_id = _resolve_profile_target_user(user, req.user_id)
+    row = await get_profile_row(db, target_id, profile_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="配置不存在")
+    patch: dict = {}
+    for key in (
+        "api_key", "base_url", "model", "system_prompt", "provider", "output_locale",
+    ):
+        val = getattr(req, key, None)
+        if val is not None:
+            patch[key] = val
+    for key in ("auto_approve", "assistant_enabled", "vision_enabled"):
+        val = getattr(req, key, None)
+        if val is not None:
+            patch[key] = val
+    if req.context_size is not None:
+        patch["context_size"] = max(0, int(req.context_size))
+    if req.agent_max_steps is not None:
+        patch["agent_max_steps"] = max(0, int(req.agent_max_steps))
+    if req.assistant_max_rounds is not None:
+        patch["assistant_max_rounds"] = max(0, int(req.assistant_max_rounds))
+    try:
+        updated = await update_profile(db, target_id, profile_id, patch, name=req.name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"success": True, "profile": _profile_config_response(updated)}
+
+
+@router.delete("/profiles/{profile_id}")
+async def delete_ai_model_profile(
+    profile_id: int,
+    user_id: int | None = None,
+    user=Depends(get_current_user),
+):
+    from services.ai_model_profiles import delete_profile, list_profiles
+
+    db = await get_db()
+    target_id = _resolve_profile_target_user(user, user_id)
+    try:
+        await delete_profile(db, target_id, profile_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    items, active_id = await list_profiles(db, target_id)
+    return {"success": True, "profiles": items, "active_profile_id": active_id}
+
+
+@router.post("/profiles/{profile_id}/activate")
+async def activate_ai_model_profile(
+    profile_id: int,
+    user_id: int | None = None,
+    user=Depends(get_current_user),
+):
+    from services.ai_model_profiles import activate_profile, list_profiles as _list_profiles
+
+    db = await get_db()
+    target_id = _resolve_profile_target_user(user, user_id)
+    try:
+        await activate_profile(db, target_id, profile_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    items, active_id = await _list_profiles(db, target_id)
+    return {
+        "success": True,
+        "message": "已切换当前模型配置",
+        "profiles": items,
+        "active_profile_id": active_id,
     }
 
 
@@ -2966,11 +3447,18 @@ async def get_trial_status(user_id: int | None = None, user=Depends(get_current_
         if not rows:
             raise HTTPException(status_code=404, detail="用户不存在")
     # 是否已配置自己的 KEY（有则不受共享 Key 次数限制）
-    rows = await db.execute_fetchall(
-        "SELECT api_key, base_url FROM user_ai_config WHERE user_id = ?", (target_id,)
-    )
-    own_key = bool(rows and (rows[0]["api_key"] or "").strip())
-    own_base = bool(rows and (rows[0]["base_url"] or "").strip())
+    from services.ai_model_profiles import get_active_profile_row
+
+    prof = await get_active_profile_row(db, target_id)
+    if prof:
+        own_key = bool((prof.get("api_key") or "").strip())
+        own_base = bool((prof.get("base_url") or "").strip())
+    else:
+        rows = await db.execute_fetchall(
+            "SELECT api_key, base_url FROM user_ai_config WHERE user_id = ?", (target_id,)
+        )
+        own_key = bool(rows and (rows[0]["api_key"] or "").strip())
+        own_base = bool(rows and (rows[0]["base_url"] or "").strip())
     used = await _peek_system_ai_usage(db, target_id)
     limit = SYSTEM_AI_USAGE_LIMIT
     remaining = max(0, limit - used)
@@ -3069,7 +3557,7 @@ async def unlock_trial_mode(user_id: int, user=Depends(require_admin)):
 
 @router.post("/config")
 async def update_ai_config(req: AIConfigRequest, user=Depends(get_current_user)):
-    """更新 AI 配置。当前用户可更新自己的；管理员可在请求体中传 user_id 更新指定用户的配置。"""
+    """更新 AI 配置（写入当前激活 Profile）。当前用户可更新自己的；管理员可传 user_id。"""
     db = await get_db()
     target_id = user["id"]
     if getattr(req, "user_id", None) is not None and _is_admin_role(user.get("role")):
@@ -3077,27 +3565,10 @@ async def update_ai_config(req: AIConfigRequest, user=Depends(get_current_user))
         rows = await db.execute_fetchall("SELECT id FROM users WHERE id = ?", (target_id,))
         if not rows:
             raise HTTPException(status_code=404, detail="用户不存在")
-    provider = (getattr(req, "provider", None) or "").strip()
-    if provider not in ("aliyun", "ollama", "openai"):
-        provider = ""
-    ctx = max(0, getattr(req, "context_size", 0))
-    import config as _cfg
-    ctx_max = getattr(_cfg, "CONTEXT_SIZE_MAX", 8 * 1024 * 1024)
-    if ctx > ctx_max:
-        ctx = ctx_max
-    # agent_max_steps / assistant_max_rounds：0 表示"未设、用全局默认"，>0 时按硬上限截断
-    agent_cap = getattr(_cfg, "AGENT_MAX_STEPS_CAP", 1000)
-    rounds_cap = getattr(_cfg, "ASSISTANT_MAX_ROUNDS_CAP", 1000)
-    raw_steps = max(0, int(getattr(req, "agent_max_steps", 0) or 0))
-    raw_rounds = max(0, int(getattr(req, "assistant_max_rounds", 0) or 0))
-    if raw_steps > agent_cap:
-        raw_steps = agent_cap
-    if raw_rounds > rounds_cap:
-        raw_rounds = rounds_cap
-    vision_val = "true" if getattr(req, "vision_enabled", True) else "false"
-    out_loc = (getattr(req, "output_locale", None) or "").strip()
-    if out_loc not in ("", "en", "zh-CN"):
-        out_loc = ""
+    from services.ai_model_profiles import upsert_active_profile_from_config
+
+    fields = _profile_fields_from_ai_config_request(req)
+    await upsert_active_profile_from_config(db, target_id, fields)
     await db.execute(
         """INSERT INTO user_ai_config (user_id, api_key, base_url, model, system_prompt, auto_approve, assistant_enabled, context_size, agent_max_steps, assistant_max_rounds, provider, vision_enabled, ai_output_locale, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -3109,18 +3580,18 @@ async def update_ai_config(req: AIConfigRequest, user=Depends(get_current_user))
            provider=excluded.provider, vision_enabled=excluded.vision_enabled, ai_output_locale=excluded.ai_output_locale, updated_at=CURRENT_TIMESTAMP""",
         (
             target_id,
-            (req.api_key or "").strip(),
-            (req.base_url or "").strip().rstrip("/"),
-            (req.model or "").strip(),
-            (req.system_prompt or "").strip(),
-            "true" if req.auto_approve else "false",
-            "true" if getattr(req, "assistant_enabled", False) else "false",
-            str(ctx),
-            str(raw_steps) if raw_steps > 0 else "",
-            str(raw_rounds) if raw_rounds > 0 else "",
-            provider,
-            vision_val,
-            out_loc,
+            fields["api_key"],
+            fields["base_url"],
+            fields["model"],
+            fields["system_prompt"],
+            "true" if fields["auto_approve"] else "false",
+            "true" if fields["assistant_enabled"] else "false",
+            str(fields["context_size"]),
+            str(fields["agent_max_steps"]) if fields["agent_max_steps"] > 0 else "",
+            str(fields["assistant_max_rounds"]) if fields["assistant_max_rounds"] > 0 else "",
+            fields["provider"],
+            "true" if fields["vision_enabled"] else "false",
+            fields["output_locale"],
         ),
     )
     await db.commit()
@@ -4135,7 +4606,7 @@ def _build_system_prompt() -> str:
 2. 涉及安装、配置、部署、排障等运维操作时，先调用 get_best_practices(category 或 keyword) 查询是否有现成推荐方法；若有则优先参考最佳实践再执行，并在回复中可简要说明参考了哪条实践。
 3. 定位目标主机：优先调用 **search_hosts**（参数 `query` 必填，可加 `group_id`、`tag_ids`、`regex`、`limit`）做快速检索；也可调用 **list_hosts**（参数 **q** 或 **search** 按名称、IP/域名、端口、描述、**用途备注 remark**、**别名 aliases**、**标签 tag_names**、系统类型或数字 id 模糊搜索；可与 **group_id**、**tag_ids** 联用；有搜索时可用 **limit** 限制条数），或 **get_host_groups_tree(host_q=...)** 在分组树中只保留匹配主机。优先把条件一次性放进一条 `search_hosts`（如 query + group_id + tag_ids + regex），减少多次来回查询。用户口语称呼某台机器时，优先用 **别名/标签** 搜索，并配合 **search_hosts_by_prompt** 检索主机提示词中的功能/服务描述。需要为主机添加或修改别名、用途说明时，用 **update_host(host_id, aliases=[...], remark="...")**（主机详情会话中 host_id 即当前机）。需要按标签批量时，先用 **list_host_tags** 拿标签 ID，再用 **batch_create(scope_type="tag", scope_value=[...], tag_match_mode="any|all")**（any=任一标签，all=需同时命中全部标签）。再结合「当前主机列表」上下文按 id、name、host、aliases 确认。列表中每台主机可能包含 host_type、host_version、host_shell、host_package_manager。**主机维度会话**在「当前会话范围」内会注入 **主机系统环境**摘要（系统、默认 Shell、包管理）；请优先按摘要选择 apt/dnf/yum/brew、bash/zsh/cmd 等，勿凭感觉猜；缺项或不放心时可 **detect_host_os** 或在界面「检查类型」更新后再操作。创建主机时，重复判断仅在同一用户下生效：其他用户已存在同 host:port 也不影响当前用户创建。
 3.1 凭证使用规则：对“当前用户权限范围内”的主机（包含用户自有主机与已分享给该用户的主机），可直接调用系统已保存的主机凭证（用户名/密码或私钥）执行操作，不要在凭证已存在时反复向用户索要登录密码；仅当系统内确无可用凭证或认证失败且需要新凭证时，再向用户请求补充。
-4. 需要在该主机上使用控制台（如 send_to_terminal）或用户要求在该机操作时：若当前控制台未连接或已断开，应先调用 connect_terminal(host_id) 触发前端自动连接；服务端在 send_to_terminal / get_terminal_buffer 时若会话尚未就绪会自动等待最多约 5 秒再读写，但仍勿假设「一发即连」。若已连接则可用 send_to_terminal 或 ssh_execute。向终端发送中断、挂起等控制键：send_to_terminal(slot, \"<Ctrl+C>\") 发送 Ctrl+C，\"<Ctrl+Z>\" 挂起，\"<Ctrl+D>\" EOF，\"<Ctrl+L>\" 清屏等（占位符不区分大小写）。**sudo 命令发送后必须先 get_terminal_buffer 确认是否出现密码提示，禁止在未见提示时紧跟发送密码**（详见下方「sudo 与密码」）。
+4. 需要在该主机上使用控制台（如 send_to_terminal）或用户要求在该机操作时：**先 list_terminals** 确认 scope 内已有 slot 与 host_id 映射；若该 host_id 已有 **connected** 的 AI 控制台则**复用其 slot**，禁止重复 connect_terminal/create_console。仅当确实无可用 AI 控制台时才 connect_terminal(host_id)。服务端在 send_to_terminal / get_terminal_buffer 时若会话尚未就绪会自动等待最多约 **12** 秒再读写。若已连接则 send_to_terminal(slot, …) 或 ssh_execute。向终端发送中断、挂起等控制键：send_to_terminal(slot, \"<Ctrl+C>\") 等。**sudo 命令发送后必须先 get_terminal_buffer 确认是否出现密码提示**（详见下方「sudo 与密码」）。
 4.1 当用户要求“两机传文件/目录”时，先检测 A->B 与 B->A 的 22 端口可达性（确定主动方），再优先用基于 SSH 的直连方法（scp/rsync/sshfs）传输；若直连不可达或失败，再回退 relay_file_between_hosts：由毛竹服务端 SFTP 先拉到用户 web/fs 再推到目标机（调用卡显示进度）。
 5. 等待命令执行结果时，用 get_terminal_buffer(slot, next_poll_in_seconds=N) 可显式控制下次读取前的等待秒数（N 仅限 1～3600）。**服务端也会自动推断等待**：send_to_terminal 发出 apt/make/curl 等长命令后，或 buffer 末尾仍见安装/下载/编译进度时，即使用户未传 N 也会安排倒计时再进入下一轮，避免空转轮询。你仍可传 N 拉长等待；输出已回到 shell 提示符且无明显进度时自动不再等待。**终端/命令行/日志以 buffer 末尾为准**（最新结果、报错、sudo 提示、进度条在尾部）。**默认 tail_only=true**：超长时仅返回最后 max_lines 行（默认 40），不保留最早输出；需要开头上下文时 tail_only=false（前 2+后 33 行）或 full_output=true。
 5.0 **输出省略策略（读工具结果时）**：**终端 buffer、ssh_execute 的 stdout/stderr、list_logs** → 只看**末尾**；get_terminal_buffer 日常轮询保持 tail_only=true（默认）。**fs_read_file / read_chat_data 读文件、配置、清单** → 优先看**开头**（read_chat_data 用 mode=head；看文件尾部用 mode=tail）。不要对终端输出只根据开头几行下结论。
@@ -4822,13 +5293,19 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
     )
     hosts_ctx = json.dumps(compact_hosts, ensure_ascii=False)
     groups_ctx = json.dumps(compact_groups, ensure_ascii=False)
-    terminals_mapping_ctx = _build_ssh_terminals_mapping_ctx(user["id"], terminal_scope_id)
+    terminals_mapping_ctx = _build_ssh_terminals_mapping_ctx(
+        user["id"], terminal_scope_id, preferred_terminal_slot
+    )
     terminal_ctx, terminal_connected = _build_terminal_buffer_ctx(
         user["id"], terminal_scope_id, preferred_terminal_slot
     )
 
     host_knowledge_ctx = ""
-    current_host_id = get_current_host_id_for_user(user["id"], scope_id=terminal_scope_id, slot=preferred_terminal_slot)
+    current_host_id = get_current_host_id_for_user(
+        user["id"], scope_id=terminal_scope_id, slot=_resolve_ai_buffer_slot(
+            user["id"], terminal_scope_id, preferred_terminal_slot
+        )
+    )
     if current_host_id is not None:
         rows = await db.execute_fetchall(
             "SELECT content FROM ai_host_knowledge WHERE host_id = ? AND user_id = ?",
@@ -4947,10 +5424,29 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         global_output_locale=_global_ol,
         browser_ui_locale=_ui_raw,
     )
+    try:
+        _ctx_cfg = int(settings.get("ai_context_size") or "0")
+    except (TypeError, ValueError):
+        _ctx_cfg = 0
+    _runtime_model = normalize_model(provider, settings.get("ai_model") or "")
+    _model_runtime_ctx = await _build_active_model_runtime_ctx(
+        db,
+        user["id"],
+        settings=settings,
+        base_url=base_url,
+        provider=provider,
+        model=_runtime_model,
+        context_configured=_ctx_cfg,
+        context_budget_chars=context_size,
+        context_budget_before_vision=context_size_raw,
+        trial_info=trial_info,
+    )
     full_system = f"""{system_prompt}
 
 {_PROMPT_ENTITY_RESOLUTION_RULES}
 {output_lang_block}
+{_model_runtime_ctx}
+
 {_build_chat_output_format_rules()}
 {_build_html_libs_prompt_section()}
 
@@ -5570,7 +6066,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                     yield _sse({"cot": {"phase": "pre_tool", "kind": "reasoning_end"}})
                                     pre_tool_text_streamed = _fallback_text
                             try:
-                                _cot_snap = (pre_tool_text_streamed or "")[:12_000]
+                                _cot_snap = (pre_tool_text_streamed or "")[:4000]
                                 if _cot_snap.strip():
                                     pending_tool_trace.append(
                                         {"type": "cot", "phase": "pre_tool", "text": _cot_snap}
@@ -5864,6 +6360,10 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                 })
                                 try:
                                     _rp = _tool_result_preview(tool_result) or ""
+                                    _trace_preview_cap = int(
+                                        getattr(_config, "TOOL_TRACE_PERSIST_PREVIEW_CHARS", TOOL_TRACE_PERSIST_PREVIEW_CHARS)
+                                        or TOOL_TRACE_PERSIST_PREVIEW_CHARS
+                                    )
                                     pending_tool_trace.append(
                                         {
                                             "type": "tool",
@@ -5871,7 +6371,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                             "tool": fn_name,
                                             "action": "completed" if is_success else "failed",
                                             "args": fn_args_preview,
-                                            "result_preview": _rp[:12_000],
+                                            "result_preview": _rp[: max(200, _trace_preview_cap)],
                                         }
                                     )
                                 except Exception:
@@ -6368,15 +6868,16 @@ async def run_ops_integration_chat_complete(
 
     provider = _effective_provider(settings, base_url)
     api_key = (settings.get("ai_api_key") or "").strip()
+    trial_info: dict | None = None
     if require_api_key(provider, api_key) and not api_key:
         system_key, system_base = await _get_system_key_and_base(db)
         if _allow_system_shared_api_key(system_key, system_base, resolved_base_url=base_url):
-            trial = await _consume_system_ai_usage(db, user["id"])
-            if trial.get("exhausted"):
+            trial_info = await _consume_system_ai_usage(db, user["id"])
+            if trial_info.get("exhausted"):
                 return {
                     "success": False,
-                    "error": f"系统共享 Key 调用配额已用尽（上限 {trial.get('limit', SYSTEM_AI_USAGE_LIMIT)} 次），请配置自有 API Key 以解除次数限制，或联系管理员重置配额计数",
-                    "trial": trial,
+                    "error": f"系统共享 Key 调用配额已用尽（上限 {trial_info.get('limit', SYSTEM_AI_USAGE_LIMIT)} 次），请配置自有 API Key 以解除次数限制，或联系管理员重置配额计数",
+                    "trial": trial_info,
                     "session_id": session_id,
                 }
             api_key = system_key
@@ -6389,6 +6890,7 @@ async def run_ops_integration_chat_complete(
                 "session_id": session_id,
             }
 
+    provider = _effective_provider(settings, base_url)
     sid = session_id
 
     if not sid:
@@ -6675,6 +7177,22 @@ async def run_ops_integration_chat_complete(
         global_output_locale=_ig_ol,
         browser_ui_locale=_iui,
     )
+    _ops_ctx_before_vision = context_size
+    if _ops_vision_chars > 0:
+        _ops_ctx_before_vision = _ctx_before
+    _integ_runtime_model = normalize_model(provider, settings.get("ai_model") or "")
+    _integ_model_runtime_ctx = await _build_active_model_runtime_ctx(
+        db,
+        user["id"],
+        settings=settings,
+        base_url=base_url,
+        provider=provider,
+        model=_integ_runtime_model,
+        context_configured=raw_ctx,
+        context_budget_chars=context_size,
+        context_budget_before_vision=_ops_ctx_before_vision if _ops_vision_chars > 0 else None,
+        trial_info=trial_info,
+    )
     system_prompt = (settings.get("ai_system_prompt") or "").strip() or _build_system_prompt()
     system_prompt = _sanitize_system_prompt_local_scope(system_prompt, session_scope=session_scope, user=user)
     if session_host_id:
@@ -6694,6 +7212,8 @@ async def run_ops_integration_chat_complete(
 
 {_PROMPT_ENTITY_RESOLUTION_RULES}
 {_integ_lang}
+{_integ_model_runtime_ctx}
+
 {_OPS_INTEGRATION_MODE_RULES}
 {_build_html_libs_prompt_section()}
 ## 当前会话 ID

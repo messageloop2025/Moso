@@ -37,6 +37,7 @@
 | [filesystem.md](filesystem.md) | 文件系统 `web/fs` 步骤手册（脚本、模板、上传材料、`chats/` 附件与成果物） |
 | [batch.md](batch.md) | 批量操作步骤手册（巡检、上传、脚本、重启） |
 | [ai-assistant.md](ai-assistant.md) | AI 助手使用与配置（低交互、运行中补充、聊天附件含 Office/PDF、流式分块 Markdown、会话级提示词、终端边界、Markdown/公式/图形化输出） |
+| [model-config.md](model-config.md) | **模型配置**：多组 Profile、激活切换、导入导出、字段说明 |
 | [external-integration.md](external-integration.md) | **外部智能体集成**：API Token、OpenClaw、Hermes、Cursor MCP；**反向接入**——个人 MCP（`/mcp-servers`）与个人 Agent Skills（`/skills`） |
 | [maintenance.md](maintenance.md) | 维护历史步骤手册（记录、分类、复盘） |
 | [feedback.md](feedback.md) | 反馈与登录留言板步骤手册（用户提交、管理员审核与回复、邮件通知） |
@@ -62,6 +63,7 @@
 | 想快速知道这个系统怎么用 | [operations-manual.md](operations-manual.md) |
 | 想新增主机并连接 SSH | [credentials.md](credentials.md)、[hosts.md](hosts.md) |
 | 想整理服务器树或做分组批量 | [host-groups.md](host-groups.md)、[batch.md](batch.md) |
+| 想配置或切换 AI 模型（多组 Profile） | [model-config.md](model-config.md)、[ai-assistant.md](ai-assistant.md) |
 | 想让 AI 帮你运维，或在 AI 执行中补充/暂停/停止 | [ai-assistant.md](ai-assistant.md)、[terminal.md](terminal.md) |
 | 想用 OpenClaw / Cursor / 外部 Agent 调 毛竹 | [external-integration.md](external-integration.md) |
 | 想给 毛竹 的 AI 接入自己的 MCP 服务器（filesystem/Notion 等） | [external-integration.md](external-integration.md)（反向集成 · MCP）、导航「MCP 配置」 |

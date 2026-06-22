@@ -163,6 +163,7 @@
     "cotArgsLabel": "Arguments",
     "cotStreamLabel": "Stream output",
     "cotResultLabel": "Result preview",
+    "toolTraceDroppedHead": "{{n}} earlier step(s) were not saved to chat history due to size limits (showing persisted portion only).",
     "newConsole": "+ New console",
     "consoleTabLabel": "Console {{slot}} ({{who}})",
     "consoleTabLabelConnected": "{{hostId}}-{{hostName}}-{{slot}} ({{who}})",

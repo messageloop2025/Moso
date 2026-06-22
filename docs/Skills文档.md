@@ -435,7 +435,7 @@
 - **GET /api/ai/skills**：返回上述工具的名称与描述列表，与 Agent 实际使用的 TOOLS 一致。
 - **GET /api/skills**、**GET /api/skills/{skill_id}**：读写数据库 `skills` 表，用于扩展/提示词类技能，与 TOOLS 可并存。
 - **GET/POST /api/user-skills**：每用户 Agent Skills（须 `skills_enabled`）；与上表全局 `skills` 表、内置 TOOLS 三者并存。
-- AI 模型与接口：支持在配置中选择**模型类型**（阿里云 DashScope / Ollama / OpenAI）或自定义地址与模型；可配置**上下文长度**（字符数上限，0=不限制，支持到 8MB，前端可手工输入）。通过 `config.py`（MODEL_TYPES、CONTEXT_SIZE_OPTIONS、CONTEXT_SIZE_MAX）与 `services/llm_adapter.py` 统一适配；详见《软件设计文档》第 6 节与系统设置中的「我的 AI 配置」。
+- AI 模型与接口：支持在「模型配置」中选择**模型类型**（阿里云 DashScope / Ollama / OpenAI）或自定义地址与模型；可配置**上下文长度**（字符数上限，0=不限制，支持到 8MB，前端可手工输入）。通过 `config.py`（MODEL_TYPES、CONTEXT_SIZE_OPTIONS、CONTEXT_SIZE_MAX）与 `services/llm_adapter.py` 统一适配；详见《软件设计文档》第 6 节与侧栏「模型配置」页。
 
 ---
 

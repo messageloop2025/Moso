@@ -517,6 +517,20 @@ async def _migrate_user_ai_config_output_locale(db: aiosqlite.Connection):
         await db.commit()
 
 
+async def _migrate_user_ai_model_profiles(db: aiosqlite.Connection):
+    """多组模型 Profile + active_profile_id；旧 user_ai_config 迁移为「默认配置」Profile。"""
+    from services.ai_model_profiles import ensure_profiles_schema
+
+    await ensure_profiles_schema(db)
+
+
+async def _migrate_user_ai_model_profiles_default_name(db: aiosqlite.Connection):
+    """将历史 Profile 名「默认」统一为「默认配置」。"""
+    from services.ai_model_profiles import normalize_default_profile_names
+
+    await normalize_default_profile_names(db)
+
+
 async def _migrate_settings_ai_output_locale(db: aiosqlite.Connection):
     """站点级默认 AI 输出语言（空=不强制，回退到浏览器/兜底）。"""
     try:
@@ -1459,11 +1473,13 @@ async def _ensure_full_schema_safety_net(db: aiosqlite.Connection) -> None:
         ("ai_host_knowledge", _migrate_ai_host_knowledge),
         ("ai_host_prompts", _migrate_ai_host_prompts),
         ("best_practices", _migrate_best_practices),
-        # 仅 _migrate_* 才建的 8 张表
+        # 仅 _migrate_* 才建的表（含 user_ai_model_profiles 等）
         ("user_ai_config", _migrate_user_ai_config),
         ("user_ai_config.provider 列", _migrate_user_ai_config_provider),
         ("user_ai_config.vision_enabled 列", _migrate_user_ai_config_vision),
         ("user_ai_config.ai_output_locale 列", _migrate_user_ai_config_output_locale),
+        ("user_ai_model_profiles", _migrate_user_ai_model_profiles),
+        ("user_ai_model_profiles 默认配置名", _migrate_user_ai_model_profiles_default_name),
         ("settings: ai_output_locale 默认", _migrate_settings_ai_output_locale),
         ("user_system_ai_usage", _migrate_user_system_ai_usage),
         ("password_reset_tokens", _migrate_password_reset_tokens),
@@ -1507,7 +1523,7 @@ _REQUIRED_TABLES: tuple[str, ...] = (
     # AI 工作流模板 / 最佳实践
     "ai_workflow_templates", "best_practices",
     # 每用户 AI 配置 / 系统额度
-    "user_ai_config", "user_system_ai_usage",
+    "user_ai_config", "user_ai_model_profiles", "user_system_ai_usage",
     # 邮件 / 找回 / 验证码
     "user_mail_config", "password_reset_tokens", "email_verification_codes",
     # 用户搜索服务配置（GitHub / IQS / ...）
@@ -1579,6 +1595,9 @@ async def _check_db_schema(db: aiosqlite.Connection) -> None:
         ("user_ai_config", "provider"),
         ("user_ai_config", "vision_enabled"),
         ("user_ai_config", "ai_output_locale"),
+        ("user_ai_config", "active_profile_id"),
+        ("user_ai_model_profiles", "user_id"),
+        ("user_ai_model_profiles", "name"),
         ("users", "email"),
         ("users", "failed_login_attempts"),
         ("users", "locked_until"),
@@ -1601,7 +1620,7 @@ _FRESH_INSTALL_BEST_PRACTICE_SEEDS: tuple[tuple[str, str, str, str], ...] = (
 - 默认管理员 **admin** / **admin123** 仅用于首次登录，请立刻在界面中修改密码。
 
 ## AI（可选）
-- 在「系统设置」中配置全局 AI Key / 模型 / 地址，或由各用户配置个人 AI。
+- 在侧栏「模型配置」（`/model-config`）填写 Base URL / API Key / 模型；管理员可在系统设置写全局默认值。
 - **系统提示词（ai_system_prompt）留空** 时，产品使用代码内置的完整毛竹（Moso）主助手提示词（与版本同步更新）；仅当您需要**完全自定义**主助手行为时，再在设置中填写全文覆盖。
 
 ## 邮件与其它
@@ -1747,6 +1766,8 @@ async def run_initial_schema(db: aiosqlite.Connection) -> None:
     await _migrate_user_ai_config_provider(db)
     await _migrate_user_ai_config_vision(db)
     await _migrate_user_ai_config_output_locale(db)
+    await _migrate_user_ai_model_profiles(db)
+    await _migrate_user_ai_model_profiles_default_name(db)
     await _migrate_settings_ai_output_locale(db)
     await _migrate_user_system_ai_usage(db)
     await _migrate_users_login_lockout(db)

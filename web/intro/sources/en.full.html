@@ -90,7 +90,7 @@
                         · <strong>Alibaba Cloud DashScope</strong> (Qwen family—common in China)<br>
                         · <strong>Ollama on your network</strong> (data does not leave the intranet)<br>
                         · <strong>OpenAI or any compatible API</strong><br>
-                        Admins can write defaults in <strong>global settings</strong>; each user can set Base URL + API key + model in <strong>My AI config</strong>. <strong>Until you add your own key, a shared system key is used (default 2000 calls, configurable)</strong>; after you configure your own key, <strong>the usage cap is removed</strong> and counting stops.
+                        Admins can write defaults in <strong>global settings</strong>; each user sets Base URL + API key + model in sidebar <strong>Model config</strong> (multiple profiles, one active). <strong>Until you add your own key, a shared system key is used (default 2000 calls, configurable)</strong>; after you configure your own key, <strong>the usage cap is removed</strong> and counting stops.
                     </p>
                 </div>
                 <div class="card start-step">
@@ -509,7 +509,7 @@
                     <p>Password, key, or key generation in one place; masked in the UI; hosts only store credential ids; you can add a new credential to the list on the fly.</p></div>
 
                 <div class="card reveal"><div class="icon">🖲️</div><h3>AI assistant UI</h3>
-                    <p>Multi-tab chat, history, and auto-titled sessions; Markdown with <strong>incremental streaming layout</strong> (closed code blocks and tables render as they complete); Mermaid, Markmap, and ECharts; <strong>clickable choice cards</strong> (persisted after refresh). <strong>My AI config</strong> toggles <strong>image understanding</strong> (multimodal inline).</p></div>
+                    <p>Multi-tab chat, history, and auto-titled sessions; Markdown with <strong>incremental streaming layout</strong> (closed code blocks and tables render as they complete); Mermaid, Markmap, and ECharts; <strong>clickable choice cards</strong> (persisted after refresh). <strong>Model config</strong> toggles <strong>image understanding</strong> (multimodal inline) and supports multiple named profiles.</p></div>
 
                 <div class="card reveal"><div class="icon">📎</div><h3>Chat attachments</h3>
                     <p>The input supports <strong>multi-file</strong> paste and drag-and-drop: text, images, and <strong>PDF / Office</strong> (docx, pptx, xlsx, pdf, …) under <code>web/fs/&lt;you&gt;/chats/YYYY/MM/DD/&lt;uuid&gt;.&lt;ext&gt;</code>. Office/PDF is converted to Markdown via <strong>MarkItDown</strong> on the server; the model reads it with <code>read_chat_attachment</code>. Images can use <code>save_image_description</code> for multi-turn summaries.</p></div>
@@ -631,7 +631,7 @@
                         <li>ssh_channels</li>
                         <li>triggered_tasks / runs / messages</li>
                         <li>scheduled_tasks / runs / messages</li>
-                        <li>user_ai_config / user_mail_config</li>
+                        <li>user_ai_config / user_ai_model_profiles / user_mail_config</li>
                         <li>api_tokens / password_reset / email_verification</li>
                         <li>local_shell_sessions / logs</li>
                         <li>operation_logs / user_login_events</li>
@@ -780,7 +780,7 @@
                     <summary>How do I start?</summary>
                     <p>
                         ① Register and sign in (email optional + captcha) →
-                        <strong>② ⚠️ The most important step: in “System settings → My AI config”, fill in Base URL / key / model—<u>without this, nothing else works</u></strong> →
+                        <strong>② ⚠️ The most important step: open sidebar «Model config» and fill in Base URL / key / model—<u>without this, nothing else works</u></strong> →
                         ③ Open “AI assistant” in the header and say, e.g., “Add a host 10.0.0.12 for me”—credentials, hosts, tags, batch jobs, and tasks can be handled in natural language;
                         ④ (Optional) you can also use the “Host management” menu and build each item by hand.
                         <br><br>

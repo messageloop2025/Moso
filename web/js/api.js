@@ -398,6 +398,28 @@ var API = {
 
     getAIConfig: function(userId) { return this.get('/ai/config' + (userId != null ? '?user_id=' + parseInt(userId, 10) : '')); },
     updateAIConfig: function(data) { return this.post('/ai/config', data); },
+    listAIProfiles: function(userId) { return this.get('/ai/profiles' + (userId != null ? '?user_id=' + parseInt(userId, 10) : '')); },
+    getAIProfile: function(id, userId) {
+        var q = userId != null ? ('?user_id=' + parseInt(userId, 10)) : '';
+        return this.get('/ai/profiles/' + parseInt(id, 10) + q);
+    },
+    createAIProfile: function(data) { return this.post('/ai/profiles', data); },
+    updateAIProfile: function(id, data) { return this.put('/ai/profiles/' + parseInt(id, 10), data); },
+    deleteAIProfile: function(id, userId) {
+        var q = userId != null ? ('?user_id=' + parseInt(userId, 10)) : '';
+        return this.delete('/ai/profiles/' + parseInt(id, 10) + q);
+    },
+    activateAIProfile: function(id, userId) {
+        var q = userId != null ? ('?user_id=' + parseInt(userId, 10)) : '';
+        return this.post('/ai/profiles/' + parseInt(id, 10) + '/activate' + q, {});
+    },
+    exportAIProfiles: function(profileId, userId) {
+        var q = [];
+        if (profileId != null) q.push('profile_id=' + parseInt(profileId, 10));
+        if (userId != null) q.push('user_id=' + parseInt(userId, 10));
+        return this.get('/ai/profiles/export' + (q.length ? '?' + q.join('&') : ''));
+    },
+    importAIProfiles: function(data) { return this.post('/ai/profiles/import', data); },
     getUserMailConfig: function() { return this.get('/user-mail-config'); },
     updateUserMailConfig: function(data) { return this.put('/user-mail-config', data); },
 

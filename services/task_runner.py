@@ -10,7 +10,13 @@ from datetime import datetime
 import httpx
 
 from database import get_db
-from api.ai_agent import _compact_tool_result_for_messages, _tool_result_message_limit
+from api.ai_agent import (
+    _build_active_model_runtime_ctx,
+    _compact_tool_result_for_messages,
+    _get_user_ai_settings,
+    _resolve_context_budget_chars,
+    _tool_result_message_limit,
+)
 from services.user_mail import effective_scheduled_task_notify_email_to, parse_notify_emails, send_mail_as_user
 from services.ai_skills import TOOLS, execute_tool, get_tools_for_scope
 from services.chat_tool_spill import spill_and_wrap_tool_message
@@ -132,38 +138,6 @@ async def _trigger_on_scheduled_finish(db, user_id: int, scheduled_task_id: int,
         logger.info("Triggered task %s run_id=%s by scheduled task %s %s", tid, run_id, scheduled_task_id, status)
 
 
-async def _get_user_ai_settings(db, user_id: int) -> dict:
-    """获取用户 AI 配置（与 ai_agent 一致）。"""
-    keys = [
-        "ai_api_key", "ai_base_url", "ai_model", "ai_system_prompt",
-        "ai_auto_approve", "ai_context_size", "ai_agent_max_steps", "ai_provider",
-    ]
-    out = {}
-    row = await db.execute_fetchall("SELECT * FROM user_ai_config WHERE user_id = ?", (user_id,))
-    if row:
-        r = dict(row[0])
-        out["ai_api_key"] = (r.get("api_key") or "").strip()
-        out["ai_base_url"] = (r.get("base_url") or "").strip()
-        out["ai_model"] = (r.get("model") or "").strip()
-        out["ai_system_prompt"] = (r.get("system_prompt") or "").strip()
-        out["ai_auto_approve"] = (r.get("auto_approve") or "false").strip().lower()
-        out["ai_context_size"] = (r.get("context_size") or "0").strip()
-        out["ai_agent_max_steps"] = (r.get("agent_max_steps") or "").strip()
-        out["ai_provider"] = (r.get("provider") or "").strip()
-        out["ai_output_locale"] = (r.get("ai_output_locale") or "").strip()
-    for k in keys:
-        if k not in out or out[k] == "":
-            if k == "ai_provider":
-                out[k] = ""
-                continue
-            rows = await db.execute_fetchall("SELECT value FROM settings WHERE key = ?", (k,))
-            val = (rows[0]["value"] if rows else "") or ("0" if k == "ai_context_size" else "")
-            if k == "ai_api_key":
-                val = ""
-            out[k] = val
-    return out
-
-
 async def _run_agent_loop(
     task_id: int,
     task_content: str,
@@ -205,6 +179,23 @@ async def _run_agent_loop(
         user_output_locale=_uol,
         global_output_locale=_gol,
         browser_ui_locale=None,
+    )
+    model = normalize_model(provider, settings.get("ai_model") or "")
+    try:
+        _ctx_cfg = int(settings.get("ai_context_size") or "0")
+    except (TypeError, ValueError):
+        _ctx_cfg = 0
+    _ctx_budget = _resolve_context_budget_chars(_ctx_cfg, settings)
+    system_content += "\n\n" + await _build_active_model_runtime_ctx(
+        db,
+        int(user["id"]),
+        settings=settings,
+        base_url=base_url,
+        provider=provider,
+        model=model,
+        context_configured=_ctx_cfg,
+        context_budget_chars=_ctx_budget,
+        trial_info=None,
     )
     user_content = f"## 任务内容\n{task_content}\n\n## 指令\n{instruction or '无'}\n\n请开始执行并汇报结果。"
     tools = get_tools_for_scope("task", user)

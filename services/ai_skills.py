@@ -61,7 +61,10 @@ from api.terminal import (
     get_terminal_session_meta_for_user,
     add_pending_console_creation,
     close_console as terminal_close_console,
+    find_ai_terminal_for_host,
+    format_terminal_tab_label,
     normalize_terminal_scope_id,
+    terminals_snapshot_for_ai,
     wait_for_terminal_session_ready,
 )
 from api.filesystem import (
@@ -637,12 +640,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "send_to_terminal",
-            "description": "向指定 AI 控制台注入输入（如命令或按键）。仅可操作 AI 创建的 SSH 控制台。若文本未以换行结尾，后端会自动补回车。支持控制键占位符 <Ctrl+C> 等。执行 sudo 时：本工具一次只发一条内容；发完 sudo 命令后必须先 get_terminal_buffer，仅当输出末尾出现 [sudo] password for / Password: 等提示时才另一次调用本工具发送密码——禁止 sudo 后立即跟发密码，禁止未确认提示就发密码。可先 list_terminals 查看 slot。",
+            "description": "向指定 AI 控制台注入输入（如命令或按键）。仅可操作 AI 创建的 SSH 控制台。操作前先 list_terminals；同一 host 已有 connected 的 AI 控制台时复用其 slot。未指定 slot 时可按 host_id 自动匹配。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "text": {"type": "string", "description": "要发送到控制台的文本（命令、或经 get_terminal_buffer 确认出现 sudo 密码提示后的密码等）；勿与 sudo 命令同次发送密码；可含 <Ctrl+C> 等控制键占位符"},
-                    "slot": {"type": "integer", "description": "控制台槽位，0=默认控制台，1、2、3…=其他控制台。不传则发往默认控制台。"},
+                    "slot": {"type": "integer", "description": "控制台槽位（0、1、2…）；不传则按 host_id 或默认 AI slot"},
+                    "host_id": {"type": "integer", "description": "可选：按主机 ID 自动选择 AI 控制台 slot"},
                 },
                 "required": ["text"],
             },
@@ -652,7 +656,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "connect_terminal",
-            "description": "请求前端为 AI 创建一个新控制台并连接至指定主机。AI 连接服务器必须使用本工具，会创建「AI 创建」的控制台，不会占用或使用用户创建的控制台。创建后可通过 send_to_terminal(slot) 向该控制台发命令，通过 close_console(slot) 关闭。服务端在 send_to_terminal / get_terminal_buffer 时若尚未建连会自动等待最多约 5 秒再读写，但仍建议 connect_terminal 后不要立即假设已连接。",
+            "description": "请求前端连接指定主机的 AI 控制台。若该 host_id 已有 AI 控制台（含握手中/已连接）则复用现有 slot，不会重复创建。无可用控制台时才新建。创建/连接后 send_to_terminal / get_terminal_buffer 最多等待约 12 秒就绪。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -666,7 +670,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "list_terminals",
-            "description": "查询当前聊天区域内可供 AI 使用的 SSH 控制台列表。只返回 AI 创建的控制台，不返回用户创建的控制台。返回每个控制台的 slot（槽位）、host_id、host_name、host_aliases、host_ip、host_port、created_by、connected。用于多机协同前了解“终端与服务器”的映射关系，再配合 send_to_terminal(slot) 向指定控制台发送命令。",
+            "description": "查询当前聊天区域内 AI 可操作的 SSH 控制台列表（含 tab_label、connected、host 映射）。只返回 AI 创建的控制台。多控制台/多主机场景下**必须先调用**再 send_to_terminal。",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -674,7 +678,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "create_console",
-            "description": "请求在 AI 助手页面上动态创建一个新的控制台并连接指定主机。用于多机协同：需要同时操作多台服务器时，可先 create_console(host_id) 创建多个控制台，再通过 send_to_terminal(slot, text) 向不同 slot 发送命令。创建的控制台由 AI 创建，AI 可通过 close_console(slot) 关闭。",
+            "description": "在 AI 助手页创建并连接新控制台（多机协同时使用）。若该 host_id 已有 AI 控制台则复用现有 slot，不重复创建。每台 host 通常保留一个 AI slot，除非用户明确要求多个并行 session。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1779,7 +1783,8 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "slot": {"type": "integer", "description": "控制台槽位，0=默认，1、2、3…=其他控制台。不传则读默认控制台。"},
+                    "slot": {"type": "integer", "description": "控制台槽位（0、1、2…）；不传则按 host_id 或默认 AI slot"},
+                    "host_id": {"type": "integer", "description": "可选：按主机 ID 自动选择 AI 控制台 slot"},
                     "full_output": {"type": "boolean", "description": "为 true 时返回完整输出，忽略 tail_only/max_lines。"},
                     "tail_only": {"type": "boolean", "description": "默认 true：超过 max_lines 时仅返回最后 max_lines 行（推荐日常轮询）。false 则保留前 2 行 + 后 33 行。"},
                     "max_lines": {"type": "integer", "description": "tail_only 或省略模式下的最大行数，默认 40，范围 10～200。"},
@@ -5958,23 +5963,50 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 out["connected"] = meta.get("connected")
             return out
 
-        def resolve_ai_slot(requested_slot) -> tuple[int | None, str | None]:
+        def attach_terminals_snapshot(out: dict) -> dict:
+            snap = terminals_snapshot_for_ai(user["id"], terminal_scope_id, default_terminal_slot)
+            out["terminals"] = snap["ai_terminals"]
+            out["terminal_scope_id"] = snap["scope_id"]
+            out["user_terminals_readonly"] = snap["user_terminals"]
+            return out
+
+        def resolve_ai_slot(requested_slot, host_id_hint=None) -> tuple[int | None, str | None]:
             items = ssh_ai_terminals()
-            if not items:
-                return None, "当前聊天区域没有 AI 创建的 SSH 控制台，请先使用 connect_terminal / create_console 创建后再操作"
             ai_slots = {int(it["slot"]): it for it in items if it.get("slot") is not None}
+            if host_id_hint is not None:
+                try:
+                    match = find_ai_terminal_for_host(user["id"], int(host_id_hint), terminal_scope_id)
+                    if match and match.get("slot") is not None:
+                        slot_id = int(match["slot"])
+                        if requested_slot is None or requested_slot == slot_id:
+                            return slot_id, None
+                except (TypeError, ValueError):
+                    pass
+            if not items:
+                snap = terminals_snapshot_for_ai(user["id"], terminal_scope_id, default_terminal_slot)
+                hint = ""
+                if snap["user_terminals"]:
+                    hint = "（界面有用户控制台但 AI 不可操作，请 connect_terminal 创建 AI 控制台）"
+                return None, f"当前 scope 内没有 AI 创建的 SSH 控制台，请先 list_terminals 或 connect_terminal(host_id){hint}"
             if requested_slot is not None:
                 try:
                     requested_slot = int(requested_slot)
                 except (TypeError, ValueError):
                     return None, "slot 须为整数"
                 if requested_slot not in ai_slots:
-                    return None, "AI 只能操作 AI 创建的 SSH 控制台，不能使用用户创建的控制台"
+                    labels = ", ".join(
+                        f"slot={s}({format_terminal_tab_label(ai_slots[s])})" for s in sorted(ai_slots.keys())
+                    )
+                    return None, f"slot {requested_slot} 不是 AI 控制台或不存在。可用：{labels}"
                 return requested_slot, None
             if default_terminal_slot is not None and default_terminal_slot in ai_slots:
                 return default_terminal_slot, None
-            ordered = sorted(ai_slots.keys())
-            return (ordered[0] if ordered else None), None
+            connected = sorted(
+                s for s, it in ai_slots.items() if it.get("connected")
+            )
+            if connected:
+                return connected[0], None
+            return min(ai_slots.keys()), None
 
         if name in LOCAL_ONLY_TOOLS:
             scope_val = (scope or "default").strip().lower() or "default"
@@ -7554,27 +7586,28 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     "message": "已发送到本机控制台",
                     "ui_action": {"action": "switch_console", "slot": slot, "scope": "local"},
                 }, ensure_ascii=False)
-            slot, slot_err = resolve_ai_slot(slot)
+            slot, slot_err = resolve_ai_slot(slot, arguments.get("host_id"))
             if slot_err:
-                return json.dumps({"success": False, "error": slot_err}, ensure_ascii=False)
+                return json.dumps(attach_terminals_snapshot({"success": False, "error": slot_err}), ensure_ascii=False)
             ok = send_to_user_terminal(user["id"], text, slot, scope_id=terminal_scope_id)
             if not ok:
                 await wait_for_terminal_session_ready(user["id"], slot, terminal_scope_id)
                 ok = send_to_user_terminal(user["id"], text, slot, scope_id=terminal_scope_id)
             if not ok:
                 return json.dumps(
-                    {
+                    attach_terminals_snapshot({
                         "success": False,
-                        "error": "该 AI 控制台未连接或已关闭（已等待约 5 秒仍未就绪）。请确认前端已执行 connect_terminal 并完成 SSH 连接，或稍后重试。",
-                    },
+                        "error": "该 AI 控制台未连接或已关闭（已等待约 12 秒仍未就绪）。请 list_terminals 查看 connected 状态，或 connect_terminal 后重试。",
+                        "slot": slot,
+                    }),
                     ensure_ascii=False,
                 )
-            return json.dumps(attach_terminal_host_fields({
+            return json.dumps(attach_terminals_snapshot(attach_terminal_host_fields({
                 "success": True,
                 "message": "已发送到 AI 控制台",
                 "slot": slot,
                 "ui_action": {"action": "switch_console", "slot": slot, "scope": "ai"},
-            }, slot), ensure_ascii=False)
+            }, slot)), ensure_ascii=False)
 
         if name == "connect_terminal":
             host_id = arguments.get("host_id")
@@ -7585,23 +7618,45 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 return json.dumps({"success": False, "error": f"主机 ID={host_id} 不存在"}, ensure_ascii=False)
             if not await _can_access_host_with_shares(row, user):
                 return json.dumps({"success": False, "error": "无权操作该主机"}, ensure_ascii=False)
-            return json.dumps({
+            existing = find_ai_terminal_for_host(user["id"], int(host_id), terminal_scope_id)
+            if existing:
+                slot_id = int(existing["slot"])
+                return json.dumps(attach_terminals_snapshot({
+                    "success": True,
+                    "reused": True,
+                    "message": f"主机 {host_id} 已有 AI 控制台 slot={slot_id}（tab={existing.get('tab_label')}，connected={existing.get('connected')}），已复用，未新建。",
+                    "slot": slot_id,
+                    "host_id": int(host_id),
+                    "host_name": (row.get("name") or "").strip(),
+                    "host_ip": (row.get("host") or "").strip(),
+                    "host_port": int(row.get("port") or 22),
+                    "connected": existing.get("connected"),
+                    "ui_action": {"action": "switch_console", "slot": slot_id, "scope": "ai"},
+                }), ensure_ascii=False)
+            return json.dumps(attach_terminals_snapshot({
                 "success": True,
-                "message": "已请求前端连接控制台；后续 send_to_terminal / get_terminal_buffer 若尚未建连会自动等待最多约 5 秒再读写。",
+                "message": "已请求前端连接新 AI 控制台；后续 send_to_terminal / get_terminal_buffer 最多等待约 12 秒就绪。",
                 "host_id": int(host_id),
                 "host_name": (row.get("name") or "").strip(),
                 "host_ip": (row.get("host") or "").strip(),
                 "host_port": int(row.get("port") or 22),
                 "ui_action": {"action": "connect_terminal", "host_id": host_id},
-            }, ensure_ascii=False)
+            }), ensure_ascii=False)
 
         if name == "list_terminals":
             if (scope or "").strip().lower() == "local":
                 from api import local_host
                 items = local_host.get_local_terminals_for_user(user["id"])
                 return json.dumps({"success": True, "terminals": items}, ensure_ascii=False)
-            items = ssh_ai_terminals()
-            return json.dumps({"success": True, "terminals": items, "note": "仅返回 AI 创建的 SSH 控制台；用户创建的控制台不会暴露给 AI"}, ensure_ascii=False)
+            snap = terminals_snapshot_for_ai(user["id"], terminal_scope_id, default_terminal_slot)
+            return json.dumps({
+                "success": True,
+                "terminal_scope_id": snap["scope_id"],
+                "terminals": snap["ai_terminals"],
+                "user_terminals_readonly": snap["user_terminals"],
+                "preferred_slot": snap.get("preferred_slot"),
+                "note": "terminals 为 AI 可操作项；user_terminals_readonly 仅供对照，不可 send_to_terminal",
+            }, ensure_ascii=False)
 
         if name == "create_console":
             host_id = arguments.get("host_id")
@@ -7612,15 +7667,26 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 return json.dumps({"success": False, "error": f"主机 ID={host_id} 不存在"}, ensure_ascii=False)
             if not await _can_access_host_with_shares(row, user):
                 return json.dumps({"success": False, "error": "无权操作该主机"}, ensure_ascii=False)
+            existing = find_ai_terminal_for_host(user["id"], int(host_id), terminal_scope_id)
+            if existing:
+                slot_id = int(existing["slot"])
+                return json.dumps(attach_terminals_snapshot({
+                    "success": True,
+                    "reused": True,
+                    "message": f"主机 {host_id} 已有 AI 控制台 slot={slot_id}，已复用，未重复创建。",
+                    "slot": slot_id,
+                    "host_id": int(host_id),
+                    "connected": existing.get("connected"),
+                }), ensure_ascii=False)
             add_pending_console_creation(user["id"], int(host_id), "ai", scope_id=terminal_scope_id)
-            return json.dumps({
+            return json.dumps(attach_terminals_snapshot({
                 "success": True,
-                "message": f"已请求创建新控制台并连接主机 {host_id}，请稍候，新控制台将出现在控制台区域（标签格式：host_id-host_name-slot (AI)，AI 可关闭）",
+                "message": f"已请求创建新控制台并连接主机 {host_id}（标签：host_id-host_name-slot (AI)）",
                 "host_id": int(host_id),
                 "host_name": (row.get("name") or "").strip(),
                 "host_ip": (row.get("host") or "").strip(),
                 "host_port": int(row.get("port") or 22),
-            }, ensure_ascii=False)
+            }), ensure_ascii=False)
 
         if name == "close_console":
             slot = arguments.get("slot")
@@ -9954,9 +10020,9 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     await local_host.wait_for_local_terminal_ready(user["id"], slot)
                     buf, connected = local_host.get_local_terminal_buffer(user["id"], slot)
             else:
-                slot, slot_err = resolve_ai_slot(slot)
+                slot, slot_err = resolve_ai_slot(slot, arguments.get("host_id"))
                 if slot_err:
-                    return json.dumps({"success": False, "error": slot_err}, ensure_ascii=False)
+                    return json.dumps(attach_terminals_snapshot({"success": False, "error": slot_err}), ensure_ascii=False)
                 buf, connected = get_terminal_buffer_for_user(user["id"], slot, scope_id=terminal_scope_id)
                 if not connected:
                     await wait_for_terminal_session_ready(user["id"], slot, terminal_scope_id)
@@ -9971,7 +10037,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     tail_only=tail_only,
                     max_lines=max_lines,
                 )
-            out = attach_terminal_host_fields({"success": True, "buffer": buf, "connected": connected, "slot": slot}, slot)
+            out = attach_terminals_snapshot(attach_terminal_host_fields({"success": True, "buffer": buf, "connected": connected, "slot": slot}, slot))
             if abbreviated:
                 out["abbreviated"] = True
                 out["total_lines"] = total_lines

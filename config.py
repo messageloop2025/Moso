@@ -9,7 +9,7 @@ PRODUCT_NAME_ZH = "毛竹"
 PRODUCT_NAME_EN = "Moso"
 PRODUCT_DISPLAY = f"{PRODUCT_NAME_ZH}（{PRODUCT_NAME_EN}）"  # AI 提示词中的产品指称
 
-VERSION = os.getenv("EDGEOPS_VERSION", "1.4.2")
+VERSION = os.getenv("EDGEOPS_VERSION", "1.4.3")
 
 # 数据库 / Database
 DATABASE_PATH = os.getenv("EDGEOPS_DB", str(BASE_DIR / "edgeops.db"))
@@ -103,6 +103,13 @@ AI_CHAT_HTTP_READ_TIMEOUT_SEC = float(os.getenv("EDGEOPS_AI_CHAT_HTTP_READ_TIMEO
 # LLM 单次请求遇 httpx 超时后的**额外**重试次数（不含首次）。例如 3 表示最多共 4 次尝试。
 # Extra attempts after a timeout (not counting the first request). 3 => up to 4 tries total.
 AI_CHAT_LLM_TIMEOUT_RETRIES = max(0, int(os.getenv("EDGEOPS_AI_CHAT_LLM_TIMEOUT_RETRIES", "3")))
+# 单条 ai_chat_messages.content 保存上限（字符）；长任务工具轨迹会嵌入同条 assistant 消息
+AI_MESSAGE_SAVE_MAX = int(os.getenv("EDGEOPS_AI_MESSAGE_SAVE_MAX", "2000000"))
+# 工具调用轨迹（TOOL_TRACE 哨兵）持久化：最多步数、单块 JSON 体积、最多块数、预览截断
+TOOL_TRACE_MAX_STEPS = int(os.getenv("EDGEOPS_TOOL_TRACE_MAX_STEPS", "5000"))
+TOOL_TRACE_MAX_JSON_CHARS = int(os.getenv("EDGEOPS_TOOL_TRACE_MAX_JSON_CHARS", "400000"))
+TOOL_TRACE_MAX_CHUNKS = int(os.getenv("EDGEOPS_TOOL_TRACE_MAX_CHUNKS", "24"))
+TOOL_TRACE_PERSIST_PREVIEW_CHARS = int(os.getenv("EDGEOPS_TOOL_TRACE_PERSIST_PREVIEW_CHARS", "1200"))
 # ClawOps / 集成聊天（/api/integration/ops-chat/complete）保护项：
 # Integration ops-chat safeguards:
 # 为防止因自动压缩导致能力下降，可单独提高最小上下文与工具结果可见长度。

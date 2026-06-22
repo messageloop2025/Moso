@@ -394,13 +394,21 @@ token 来自解锁邮件链接。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | /ai/config | AI 配置。当前用户获取自己的；**管理员可传 query user_id 获取指定用户的配置**。返回 config、model_types、context_size_options 等 |
+| GET | /ai/config | 当前**激活**模型配置的元数据与表单选项。返回 `config`（来自激活 Profile，缺项用全局 settings 补全）、`model_types`、`context_size_options`、`profiles`（摘要列表）、`active_profile_id` 等。**管理员可传 query user_id**。 |
+| GET | /ai/profiles | 列出当前用户的模型配置组（摘要：id、name、model、provider、api_key_set、is_active）。**管理员可传 user_id** |
+| GET | /ai/profiles/export | 导出全部或单条 Profile 为 JSON（query: **profile_id?**、**user_id?** 管理员） |
+| POST | /ai/profiles/import | 从 JSON 导入（body: `config`、`mode`: `incremental` 跳过同名 / `overwrite` 覆盖同名） |
+| GET | /ai/profiles/{profile_id} | 获取单组配置详情（含完整字段，供编辑） |
+| POST | /ai/profiles | 新建 Profile（body: `name` + 与 `/ai/config` 相同字段） |
+| PUT | /ai/profiles/{profile_id} | 更新 Profile |
+| DELETE | /ai/profiles/{profile_id} | 删除 Profile（至少保留一组） |
+| POST | /ai/profiles/{profile_id}/activate | 设为当前激活配置 |
 | GET | /ai/config/system | **仅管理员**：获取系统默认 AI 配置（来自全局设置），用于「将系统配置应用到用户」等 |
 | POST | /ai/config/apply-system | **仅管理员**：将系统默认 AI 配置写入指定用户。query: **user_id** |
 | GET | /ai/config/trial | 查询系统共享 Key 配额状态（路径名仍为 `trial`）。无 query 查自己；**管理员可传 user_id 查任意用户**。返回 `{user_id, has_own_key, used, limit, remaining, exhausted, system_key_available}` |
 | POST | /ai/config/trial/reset | **仅管理员**：清零指定用户的系统共享 Key 调用计数。query: **user_id** |
 | POST | /ai/config/trial/unlock | **仅管理员**：将系统默认 AI 配置写入指定用户并清零共享 Key 计数；之后该用户按自有配置调用，不再受共享 Key 次数限制。query: **user_id** |
-| POST | /ai/config | 更新 AI 配置。当前用户更新自己的；**管理员可在请求体中传 user_id 更新指定用户的配置**。请求体可含 context_size（0=不限制）等 |
+| POST | /ai/config | 更新**当前激活** Profile 的字段（无激活项时创建「默认配置」）。**管理员可在请求体中传 user_id**。请求体可含 context_size（0=不限制）等 |
 | GET | /ai/sessions | 会话列表（query: **host_id?**；有 host_id 仅返回该主机会话，无则仅返回全局会话；每项含 `low_interaction_mode`） |
 | POST | /ai/sessions | 新建会话（query: title?；body 可选 **host_id**，用于主机详情页 AI 运维） |
 | GET | /ai/sessions/{session_id} | 会话详情（含 `low_interaction_mode`） |
@@ -460,7 +468,7 @@ token 来自解锁邮件链接。
 
 **非流式错误**（请求未进入流式前即返回）：  
 - **400**：未配置服务地址或 API Key（Ollama 可留空 Key）；未配置时若系统已配置 AI_API_KEY/AI_BASE_URL，则自动使用系统共享 Key 并计入该用户配额。**用户配置了自己的 KEY 则不受此计数限制。**  
-- **403**：仅 `/api/ai/summarize-host-prompt*`、`/api/ai/sessions/{id}/summarize-title` 等**一次性操作**在共享 Key 配额用尽时返回。提示文案与线上一致，大意：配额已达上限（默认 2000 次），请在「我的 AI 配置」填写自有 Key 以解除次数限制，或联系管理员重置计数 / 写入系统默认配置。
+- **403**：仅 `/api/ai/summarize-host-prompt*`、`/api/ai/sessions/{id}/summarize-title` 等**一次性操作**在共享 Key 配额用尽时返回。提示文案与线上一致，大意：配额已达上限（默认 2000 次），请在「模型配置」填写自有 Key 以解除次数限制，或联系管理员重置计数 / 写入系统默认配置。
 - **使用共享 Key 时的额外 SSE 事件**：`POST /api/ai/chat` 若走系统共享 Key，会在流开头多推 `{"trial_info": {"exhausted": false, "used": N, "limit": 2000, "remaining": R}}`（字段名仍为 `trial_info`），且 AI 本轮首条 assistant 回复前会自动追加 Markdown 横幅展示已用/剩余。
 - **配额用尽时**：`POST /api/ai/chat` **不再返回 403**，而是直接用固定 Markdown 文案流式回复（持久化到 `ai_chat_messages`），SSE 里 `trial_info.exhausted = true`；正文引导用户配置自有模型或联系管理员。
 - **管理员操作方式**：
@@ -468,7 +476,7 @@ token 来自解锁邮件链接。
     - **重置共享 Key 计数**（`POST /ai/config/trial/reset?user_id=<id>`，等效 `reset_user_system_ai_usage`）；
     - **写入系统配置并解除次数限制**（`POST /ai/config/trial/unlock?user_id=<id>`，等效 `apply_system_ai_config_to_user` + 清零计数）。
   - AI：可调用上述两技能完成等价操作。
-- **普通用户自查**：`GET /ai/config/trial` 返回配额状态；「我的 AI 配置」页顶部横幅同步展示额度或「已使用自有 Key」类提示。
+- **普通用户自查**：`GET /ai/config/trial` 返回配额状态；「模型配置」页顶部横幅同步展示额度或「已使用自有 Key」类提示。
 
 ---
 

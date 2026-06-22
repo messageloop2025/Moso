@@ -34,7 +34,7 @@ _pending_console_creations: dict[tuple[int, str], list[dict]] = {}
 BUFFER_MAX = 262144
 TERMINAL_SLOT_AI = 0  # 默认控制台槽位（不可关闭）
 # connect_terminal 后前端建立 WebSocket+SSH 需时间；AI 连续 tool 调用时服务端在 send/read 前等待就绪
-TERMINAL_CONNECT_WAIT_MAX_SEC = 5.0
+TERMINAL_CONNECT_WAIT_MAX_SEC = 12.0
 TERMINAL_CONNECT_POLL_SEC = 0.25
 
 
@@ -273,6 +273,107 @@ async def wait_for_terminal_session_ready(
     return False
 
 
+def format_terminal_tab_label(item: dict) -> str:
+    """与前端 Tab 一致：host_id-host_name-slot (AI|用户)。"""
+    hid = item.get("host_id")
+    hid_s = str(hid) if hid is not None else "?"
+    name = (item.get("host_name") or item.get("host_ip") or "?").strip() or "?"
+    slot = item.get("slot", 0)
+    who = "AI" if (item.get("created_by") or "") == "ai" else "用户"
+    return f"{hid_s}-{name}-{slot} ({who})"
+
+
+def _enrich_terminal_item(item: dict) -> dict:
+    out = dict(item)
+    out["tab_label"] = format_terminal_tab_label(item)
+    return out
+
+
+def find_ai_terminal_for_host(user_id: int, host_id: int, scope_id: str | None = None) -> dict | None:
+    """查找指定 host 上 AI 已创建的控制台；优先返回已连接项。"""
+    try:
+        host_id = int(host_id)
+    except (TypeError, ValueError):
+        return None
+    scope_id = normalize_terminal_scope_id(scope_id)
+    matches = [
+        _enrich_terminal_item(it)
+        for it in get_terminals_for_user(user_id, scope_id)
+        if (it.get("created_by") or "") == "ai" and it.get("host_id") == host_id
+    ]
+    if not matches:
+        return None
+    connected = [it for it in matches if it.get("connected")]
+    pool = connected or matches
+    return min(pool, key=lambda x: int(x.get("slot") or 0))
+
+
+def terminals_snapshot_for_ai(
+    user_id: int,
+    scope_id: str | None = None,
+    preferred_slot: int | None = None,
+) -> dict:
+    """供 system prompt 与 list_terminals 工具共用的终端快照。"""
+    scope_id = normalize_terminal_scope_id(scope_id)
+    ai_items: list[dict] = []
+    user_items: list[dict] = []
+    for it in get_terminals_for_user(user_id, scope_id):
+        enriched = _enrich_terminal_item(it)
+        if (it.get("created_by") or "") == "ai":
+            ai_items.append(enriched)
+        else:
+            user_items.append(enriched)
+    return {
+        "scope_id": scope_id,
+        "preferred_slot": preferred_slot,
+        "ai_terminals": ai_items,
+        "user_terminals": user_items,
+        "ai_operable_count": len(ai_items),
+    }
+
+
+def format_terminals_mapping_for_prompt(
+    user_id: int,
+    scope_id: str | None = None,
+    preferred_slot: int | None = None,
+) -> str:
+    """生成注入 system prompt 的可读终端映射（含状态与选用规则）。"""
+    snap = terminals_snapshot_for_ai(user_id, scope_id, preferred_slot)
+    lines = [
+        f"terminal_scope_id={snap['scope_id']}（list_terminals / send_to_terminal / get_terminal_buffer 均在此 scope）",
+    ]
+    if preferred_slot is not None:
+        lines.append(
+            f"界面当前活动 slot={preferred_slot}（若为 AI 控制台则优先使用；用户控制台仅作只读参考）"
+        )
+    ai = snap["ai_terminals"]
+    if not ai:
+        lines.append(
+            "【AI 可操作控制台】当前无。需要时 connect_terminal(host_id) 或 create_console(host_id)；"
+            "若界面已有 AI 标签页但此处仍为空，先 list_terminals 确认，或等待 WebSocket 就绪（读写前最多约 12 秒）。"
+        )
+    else:
+        lines.append("【AI 可操作控制台】send_to_terminal / get_terminal_buffer / close_console 仅能使用下列 slot：")
+        for t in ai:
+            st = "已连接" if t.get("connected") else "未连接/握手中"
+            lines.append(
+                f"  slot={t['slot']} tab={t['tab_label']} host_id={t.get('host_id')} "
+                f"ip={t.get('host_ip')}:{t.get('host_port')} status={st}"
+            )
+    user = snap["user_terminals"]
+    if user:
+        lines.append("【用户控制台】AI 不可操作；同一 host 已有用户控制台时勿重复 create_console：")
+        for t in user:
+            st = "已连接" if t.get("connected") else "未连接"
+            lines.append(f"  slot={t['slot']} tab={t['tab_label']} host_id={t.get('host_id')} status={st}")
+    lines.append(
+        "规则：① 操作前先 list_terminals；② 同一 host_id 已有 connected 的 AI 控制台时复用其 slot，禁止重复 connect_terminal/create_console；"
+        "③ 多机协同时每台 host 通常一个 AI slot，除非用户明确要求多个并行 session；"
+        "④ send_to_terminal/get_terminal_buffer 失败时先看返回里的 terminals 快照，勿立刻 ssh_execute 替代。"
+    )
+    return "\n".join(lines)
+
+
 def get_terminal_buffer_for_user(user_id: int, slot: int | None = None, scope_id: str | None = None) -> tuple[str, bool]:
     """供 Agent 内部调用：返回指定控制台的 (buffer 文本, 是否已连接)。slot 为空则用默认 (0)。"""
     if slot is None:
@@ -281,7 +382,9 @@ def get_terminal_buffer_for_user(user_id: int, slot: int | None = None, scope_id
     session = _user_sessions.get((user_id, scope_id, slot))
     if not session:
         return "", False
-    return "".join(session["buffer"]), True
+    ch = session.get("channel")
+    connected = ch is not None and not ch.exit_status_ready()
+    return "".join(session["buffer"]), connected
 
 
 def get_current_host_id_for_user(user_id: int, scope_id: str | None = None, slot: int | None = None) -> int | None:

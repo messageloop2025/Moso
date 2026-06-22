@@ -163,6 +163,7 @@
     "cotArgsLabel": "参数",
     "cotStreamLabel": "执行输出",
     "cotResultLabel": "响应摘要",
+    "toolTraceDroppedHead": "另有 {{n}} 个较早步骤因体积限制未写入聊天记录（当前显示的是已保存部分）。",
     "newConsole": "+ 新建控制台",
     "consoleTabLabel": "控制台 {{slot}} ({{who}})",
     "consoleTabLabelConnected": "{{hostId}}-{{hostName}}-{{slot}} ({{who}})",

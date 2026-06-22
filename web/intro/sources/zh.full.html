@@ -88,7 +88,7 @@
                         · <strong>阿里云 DashScope</strong>（qwen 系列，国内推荐）<br>
                         · <strong>Ollama 本地</strong>（数据不出内网）<br>
                         · <strong>OpenAI / 任意兼容接口</strong><br>
-                        管理员可在「全局设置」写默认；每个用户也能在「我的 AI 配置」里填 Base URL + API Key + Model。<strong>未填自有 Key 时暂用系统共享 Key（默认 2000 次配额，可配置）</strong>；配置了自己的 KEY 后 <strong>解除次数限制</strong>，不再计数。
+                        管理员可在「全局设置」写默认；每个用户在侧栏「模型配置」里填 Base URL + API Key + Model（可建多组并切换当前使用）。<strong>未填自有 Key 时暂用系统共享 Key（默认 2000 次配额，可配置）</strong>；配置了自己的 KEY 后 <strong>解除次数限制</strong>，不再计数。
                     </p>
                 </div>
                 <div class="card start-step">
@@ -509,7 +509,7 @@
                     <p>密码/密钥/生成密钥三合一；脱敏显示；主机仅引用凭证 ID；支持临时新建凭证直接加入清单。</p></div>
 
                 <div class="card reveal"><div class="icon">🖲️</div><h3>AI 助手界面</h3>
-                    <p>多 Tab 聊天、会话历史、AI 自动取名；Markdown 与<strong>流式分块排版</strong>（代码块/表格闭合即渲染）；Mermaid/Markmap/ECharts；<strong>可点按钮式选择卡</strong>（持久化与刷新还原）。「我的 AI 配置」可开关<strong>支持图像识别</strong>（多模态内联）。</p></div>
+                    <p>多 Tab 聊天、会话历史、AI 自动取名；Markdown 与<strong>流式分块排版</strong>（代码块/表格闭合即渲染）；Mermaid/Markmap/ECharts；<strong>可点按钮式选择卡</strong>（持久化与刷新还原）。「模型配置」可开关<strong>支持图像识别</strong>（多模态内联），并支持多组 Profile 快速切换。</p></div>
 
                 <div class="card reveal"><div class="icon">📎</div><h3>聊天附件上传</h3>
                     <p>输入框支持<strong>多文件</strong>粘贴/拖拽：文本与图片，以及 <strong>PDF / Office</strong>（docx/pptx/xlsx/pdf 等）。落盘 <code>web/fs/&lt;你&gt;/chats/YYYY/MM/DD/&lt;uuid&gt;.&lt;ext&gt;</code>；Office/PDF 由服务端 <strong>MarkItDown</strong> 转 Markdown，AI 经 <code>read_chat_attachment</code> 读取；图片可 <code>save_image_description</code> 写入摘要供多轮复用。</p></div>
@@ -631,7 +631,7 @@
                         <li>ssh_channels</li>
                         <li>triggered_tasks / runs / messages</li>
                         <li>scheduled_tasks / runs / messages</li>
-                        <li>user_ai_config / user_mail_config</li>
+                        <li>user_ai_config / user_ai_model_profiles / user_mail_config</li>
                         <li>api_tokens / password_reset / email_verification</li>
                         <li>local_shell_sessions / logs</li>
                         <li>operation_logs / user_login_events</li>
@@ -780,7 +780,7 @@
                     <summary>如何开始？</summary>
                     <p>
                         ① 注册登录（邮箱可选 + 验证码）→
-                        <strong>② ⚠️ 最重要：进入"系统设置 → 我的 AI 配置"填好 Base URL / Key / 模型；<u>没这一步后面什么都用不了</u></strong> →
+                        <strong>② ⚠️ 最重要：打开侧栏「模型配置」填好 Base URL / Key / 模型；<u>没这一步后面什么都用不了</u></strong> →
                         ③ 打开顶部"AI 助手"，直接对它说"帮我添加一台 10.0.0.12 的主机"——凭证、主机、标签、批量、任务都交给 AI 用自然语言搞定；
                         ④（可选）若偏好手动操作，也可以走"主机管理"菜单逐项建立。
                         <br><br>

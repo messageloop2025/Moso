@@ -88,7 +88,7 @@
                         · <strong>阿里云 DashScope</strong>（qwen 系列，国内推荐）<br>
                         · <strong>Ollama 本地</strong>（数据不出内网）<br>
                         · <strong>OpenAI / 任意兼容接口</strong><br>
-                        管理员可在「全局设置」写默认；每个用户也能在「我的 AI 配置」里填 Base URL + API Key + Model。<strong>未填自有 Key 时暂用系统共享 Key（默认 2000 次配额，可配置）</strong>；配置了自己的 KEY 后 <strong>解除次数限制</strong>，不再计数。
+                        管理员可在「全局设置」写默认；每个用户在侧栏「模型配置」里填 Base URL + API Key + Model。<strong>未填自有 Key 时暂用系统共享 Key（默认 2000 次配额，可配置）</strong>；配置了自己的 KEY 后 <strong>解除次数限制</strong>，不再计数。
                     </p>
                 </div>
                 <div class="card start-step">
@@ -507,7 +507,7 @@
                     <p>密码/密钥/生成密钥三合一；脱敏显示；主机仅引用凭证 ID；支持临时新建凭证直接加入清单。</p></div>
 
                 <div class="card reveal"><div class="icon">🖲️</div><h3>AI 助手界面</h3>
-                    <p>多 Tab 聊天、会话历史、AI 自动取名；Markdown 渲染 + Mermaid/Markmap/ECharts 图表渲染；<strong>可点按钮式选择卡</strong>（支持持久化与刷新还原）。用户可在「我的 AI 配置」中开关<strong>支持图像识别</strong>（多模态内联），便于对接仅文本或视觉模型。</p></div>
+                    <p>多 Tab 聊天、会话历史、AI 自动取名；Markdown 渲染 + Mermaid/Markmap/ECharts 图表渲染；<strong>可点按钮式选择卡</strong>（支持持久化与刷新还原）。用户可在「模型配置」中开关<strong>支持图像识别</strong>（多模态内联），便于对接仅文本或视觉模型。</p></div>
 
                 <div class="card reveal"><div class="icon">📎</div><h3>聊天附件上传</h3>
                     <p>聊天输入框支持<strong>多文件 / 多图</strong>粘贴与上传（md/txt/json/csv/log/html + png/jpg/gif/svg 等），落到每用户 <code>web/fs/&lt;你&gt;/chats/YYYY/MM/DD/&lt;uuid&gt;.&lt;ext&gt;</code>；AI 通过 <code>read_chat_attachment</code> 读文本或取图；看图后可用 <code>save_image_description</code> 把要点写入附件<strong>扩展信息</strong>，多轮对话优先复用文字摘要，减轻上下文与网关长度压力。</p></div>
@@ -778,7 +778,7 @@
                     <summary>如何开始？</summary>
                     <p>
                         ① 注册登录（邮箱可选 + 验证码）→
-                        <strong>② ⚠️ 最重要：进入"系统设置 → 我的 AI 配置"填好 Base URL / Key / 模型；<u>没这一步后面什么都用不了</u></strong> →
+                        <strong>② ⚠️ 最重要：打开侧栏「模型配置」填好 Base URL / Key / 模型；<u>没这一步后面什么都用不了</u></strong> →
                         ③ 打开顶部"AI 助手"，直接对它说"帮我添加一台 10.0.0.12 的主机"——凭证、主机、标签、批量、任务都交给 AI 用自然语言搞定；
                         ④（可选）若偏好手动操作，也可以走"主机管理"菜单逐项建立。
                         <br><br>

@@ -324,7 +324,7 @@
       "helpResetAfter": "：只清零共享 Key 调用次数，用户仍可能未填自有 Key；等效于 AI 技能",
       "boldUnlock": "写入系统配置",
       "helpUnlockAfter": "：把系统默认 AI 配置（Key/URL/Model）复制写入该用户的 user_ai_config，之后按自有 Key 计费、不再受共享 Key 次数限制；等效于",
-      "helpUnlockSuffix": "用户也可自行在「我的 AI 配置」填写 Key。"
+      "helpUnlockSuffix": "用户也可自行在「模型配置」填写 Key。"
     },
     "activeHosts": {
       "tabExpand": "点击展开活动主机",

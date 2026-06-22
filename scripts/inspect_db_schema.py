@@ -22,7 +22,14 @@ EXPECTED_TABLE_COLUMNS = {
     "hosts": ["id", "name", "host", "port", "credential_id", "username", "auth_type", "host_type", "host_version", "created_by"],
     "operation_logs": ["id", "user_id", "operation", "params", "result", "source", "details", "created_at"],
     "ai_chat_sessions": ["id", "user_id", "host_id", "title", "session_prompt", "session_scope", "low_interaction_mode"],
-    "user_ai_config": ["user_id", "api_key", "base_url", "model", "provider"],
+    "user_ai_config": [
+        "user_id", "api_key", "base_url", "model", "provider",
+        "vision_enabled", "ai_output_locale", "active_profile_id",
+    ],
+    "user_ai_model_profiles": [
+        "id", "user_id", "name", "api_key", "base_url", "model",
+        "provider", "vision_enabled", "ai_output_locale",
+    ],
     "credentials": ["id", "type", "code", "name", "username", "password_enc", "private_key_enc", "created_by"],
     "host_groups": ["id", "name", "parent_id", "created_by"],
     "host_tags": ["id", "name", "color", "created_by"],

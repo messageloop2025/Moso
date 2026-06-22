@@ -78,6 +78,7 @@ function edgeopsBuildLayoutHtml() {
         + '<div class="nav-item" data-href="' + (isAdmin() ? '/feedback/admin' : '/feedback') + '"><span class="icon">&#128172;</span><span class="nav-item-text">' + (isAdmin() ? t('nav.feedbackAdmin') : t('nav.feedback')) + '</span><span id="feedbackUnreadBadge" class="nav-badge" style="display:none"></span></div>'
         + (isAdmin() ? '<div class="nav-item" data-href="/feedback/admin/login-board"><span class="icon">&#128488;</span><span class="nav-item-text">' + t('nav.loginBoard') + '</span></div>' : '')
         + '<div class="nav-item" data-href="/settings"><span class="icon">&#9998;</span><span class="nav-item-text">' + t('nav.settings') + '</span></div>'
+        + '<div class="nav-item" data-href="/model-config"><span class="icon">&#9881;</span><span class="nav-item-text">' + t('nav.modelConfig') + '</span></div>'
         + '<div class="nav-item" data-href="/logs"><span class="icon">&#9776;</span><span class="nav-item-text">' + t('nav.logs') + '</span></div>'
         + '<div class="nav-divider"></div>'
         + '<a class="nav-item" href="/intro/" target="_blank" rel="noopener" style="text-decoration:none;color:inherit" title="' + esc(t('nav.productIntroTitle')) + '"><span class="icon">&#9432;</span><span class="nav-item-text">' + t('nav.productIntro') + '</span></a>'
@@ -2182,7 +2183,8 @@ function edgeopsExtractToolTrace(content) {
         return { cleanContent: raw, toolTrace: null };
     }
     var pattern = /<!--\s*EDGEOPS:TOOL_TRACE:v1\s+([A-Za-z0-9+/=]+)\s*-->/g;
-    var trace = null;
+    var allSteps = [];
+    var droppedHead = 0;
     var cleaned = raw.replace(pattern, function(_m, b64) {
         try {
             var bin = atob(b64);
@@ -2190,10 +2192,15 @@ function edgeopsExtractToolTrace(content) {
             for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
             var json = new TextDecoder('utf-8').decode(bytes);
             var obj = JSON.parse(json);
-            if (obj && obj.v === 1 && obj.steps && obj.steps.length) trace = obj;
+            if (obj && obj.v === 1 && obj.steps && obj.steps.length) {
+                if (obj.dropped_head) droppedHead = Math.max(droppedHead, parseInt(obj.dropped_head, 10) || 0);
+                allSteps = allSteps.concat(obj.steps);
+            }
         } catch (e) { /* ignore */ }
         return '';
     });
+    var trace = allSteps.length ? { v: 1, steps: allSteps } : null;
+    if (trace && droppedHead > 0) trace.dropped_head = droppedHead;
     return { cleanContent: cleaned.replace(/\s+$/, ''), toolTrace: trace };
 }
 
@@ -2214,9 +2221,19 @@ function edgeopsCotCollapsePanelAfterStream(toolsEl) {
 }
 
 /** 历史消息：按持久化的 steps 回放工具 / 推理面板 */
-function edgeopsReplayPersistedToolTrace(toolsEl, steps) {
+function edgeopsReplayPersistedToolTrace(toolsEl, steps, opts) {
     if (!toolsEl || !steps || !steps.length) return;
+    opts = opts || {};
     toolsEl.innerHTML = '';
+    if (opts.droppedHead && opts.droppedHead > 0) {
+        var note = document.createElement('div');
+        note.className = 'form-hint';
+        note.style.cssText = 'margin:0 0 8px;font-size:12px;color:var(--text-muted)';
+        note.textContent = typeof t === 'function'
+            ? t('hostAi.toolTraceDroppedHead', { n: opts.droppedHead })
+            : ('Earlier ' + opts.droppedHead + ' trace step(s) were not persisted.');
+        toolsEl.appendChild(note);
+    }
     for (var i = 0; i < steps.length; i++) {
         var s = steps[i];
         if (!s || !s.type) continue;
@@ -2408,7 +2425,9 @@ function edgeopsRenderSessionMessages(box, msgs, formatter, sessionId, options) 
             if (p.toolTrace && p.toolTrace.steps && p.toolTrace.steps.length) {
                 var tpEl = node.querySelector('.ai-reply-tools');
                 if (tpEl) {
-                    edgeopsReplayPersistedToolTrace(tpEl, p.toolTrace.steps);
+                    edgeopsReplayPersistedToolTrace(tpEl, p.toolTrace.steps, {
+                        droppedHead: p.toolTrace.dropped_head || 0
+                    });
                     var rt = node.querySelector('.ai-reply-text');
                     if (rt) try { edgeopsEnhanceChatMessageArtifacts(rt); } catch (_ert) {}
                 }
@@ -6476,7 +6495,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         + '</div>'
         + '<div class="layout-splitter-vertical" data-layout="host" data-split="terminal" title="' + esc(t('hostAi.splitterTitle')) + '"></div>'
         + '<div class="chat-container ai-chat-container ai-layout-chat" id="hostAiLayoutChat" style="flex:1;min-width:0">'
-        + '<div class="host-ai-chat-bar"><button type="button" class="btn btn-sm" id="hostAiSessionPromptBtn" title="' + esc(t('hostAi.barSessionPromptTitle')) + '">' + esc(t('hostAi.barSessionPrompt')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptBtn" title="' + esc(t('hostAi.barHostPromptTitle')) + '">' + esc(t('hostAi.barHostPrompt')) + '</button><button type="button" class="btn btn-sm" id="hostAiClearChat">' + esc(t('hostAi.clearChat')) + '</button><span class="host-ai-clear-n"><input type="number" id="hostAiClearN" min="1" value="10" style="width:84px">' + esc(t('hostAi.clearN')) + '</span><button type="button" class="btn btn-sm" id="hostAiClearLastN">' + esc(t('hostAi.clearGtN')) + '</button><button type="button" class="btn btn-sm" id="hostAiExportMd" title="' + esc(t('hostAi.exportMdTitle')) + '">' + esc(t('hostAi.exportMd')) + '</button><button type="button" class="btn btn-sm" id="hostAiToggleTerminalBtn">' + esc(t('hostAi.hideTerminal')) + '</button><button type="button" class="btn btn-sm btn-primary" id="hostAiNewSession">' + esc(t('hostAi.newSession')) + '</button></div>'
+        + '<div class="host-ai-chat-bar"><label class="ai-profile-quick-switch" style="display:inline-flex;align-items:center;margin-right:8px"><select class="form-control form-control-sm" title="' + esc(t('modelConfig.quickSwitchLabel')) + '" id="hostAiProfileQuickSwitch" style="max-width:220px;min-width:140px"></select></label><button type="button" class="btn btn-sm" id="hostAiSessionPromptBtn" title="' + esc(t('hostAi.barSessionPromptTitle')) + '">' + esc(t('hostAi.barSessionPrompt')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptBtn" title="' + esc(t('hostAi.barHostPromptTitle')) + '">' + esc(t('hostAi.barHostPrompt')) + '</button><button type="button" class="btn btn-sm" id="hostAiClearChat">' + esc(t('hostAi.clearChat')) + '</button><span class="host-ai-clear-n"><input type="number" id="hostAiClearN" min="1" value="10" style="width:84px">' + esc(t('hostAi.clearN')) + '</span><button type="button" class="btn btn-sm" id="hostAiClearLastN">' + esc(t('hostAi.clearGtN')) + '</button><button type="button" class="btn btn-sm" id="hostAiExportMd" title="' + esc(t('hostAi.exportMdTitle')) + '">' + esc(t('hostAi.exportMd')) + '</button><button type="button" class="btn btn-sm" id="hostAiToggleTerminalBtn">' + esc(t('hostAi.hideTerminal')) + '</button><button type="button" class="btn btn-sm btn-primary" id="hostAiNewSession">' + esc(t('hostAi.newSession')) + '</button></div>'
         + '<div id="hostAiSessionPromptModal" class="modal-overlay" style="display:none"><div class="modal modal-session-prompt"><div class="modal-header"><span>' + esc(t('hostAi.sessionPromptTitle')) + '</span><button type="button" class="modal-close" id="hostAiSessionPromptClose">&times;</button></div><div class="modal-body"><div class="session-prompt-toolbar"><button type="button" class="btn btn-sm active" id="hostAiSessionPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm" id="hostAiSessionPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button></div><div id="hostAiSessionPromptEditWrap"><textarea id="hostAiSessionPromptText" class="form-control" rows="6" placeholder="' + esc(t('hostAi.sessionPromptPlaceholder')) + '"></textarea></div><div id="hostAiSessionPromptPreview" class="session-prompt-preview" style="display:none"></div><div class="modal-actions" style="margin-top:8px"><button type="button" class="btn btn-sm btn-primary" id="hostAiSessionPromptSave">' + esc(t('hostAi.sessionPromptSave')) + '</button><button type="button" class="btn btn-sm" id="hostAiSessionPromptSummarize" title="' + esc(t('hostAi.sessionSummarizeReplaceTitle')) + '">' + esc(t('hostDetail.promptSummarize')) + '</button><button type="button" class="btn btn-sm" id="hostAiSessionPromptAppend" title="' + esc(t('hostAi.sessionSummarizeAppendTitle')) + '">' + esc(t('hostDetail.promptAppend')) + '</button><button type="button" class="btn btn-sm" id="hostAiSessionPromptCancel">' + esc(t('hostAi.sessionPromptClose')) + '</button></div></div></div></div>'
         + '<div id="hostAiHostPromptModal" class="modal-overlay" style="display:none"><div class="modal modal-session-prompt"><div class="modal-header"><span>' + esc(t('hostAi.hostPromptModalTitle')) + '</span><button type="button" class="modal-close" id="hostAiHostPromptClose">&times;</button></div><div class="modal-body"><div class="text-muted" style="margin-bottom:6px;font-size:12px">' + hostModalHint + '</div><div class="session-prompt-toolbar"><button type="button" class="btn btn-sm active" id="hostAiHostPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button></div><div id="hostAiHostPromptEditWrap"><textarea id="hostAiHostPromptText" class="form-control" rows="10" placeholder="' + esc(t('hostAi.hostPromptModalTextareaPh')) + '"></textarea></div><div id="hostAiHostPromptPreview" class="session-prompt-preview" style="display:none"></div><div class="modal-actions" style="margin-top:8px"><button type="button" class="btn btn-sm btn-primary" id="hostAiHostPromptSave">' + esc(t('hostDetail.promptSave')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptSummarize" title="' + esc(t('hostAi.hostSummarizeReplaceTitle')) + '">' + esc(t('hostDetail.promptSummarize')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptAppend" title="' + esc(t('hostAi.hostSummarizeAppendTitle')) + '">' + esc(t('hostDetail.promptAppend')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptCancel">' + esc(t('hostAi.sessionPromptClose')) + '</button></div></div></div></div>'
         + '<div class="chat-messages" id="hostAiMessages"></div>'
@@ -6486,6 +6505,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         var _hm = document.getElementById('hostAiMessages');
         if (_hm) edgeopsBindChatStickToBottom(_hm);
     })();
+    edgeopsMountAiProfileQuickSwitch(document.getElementById('hostAiProfileQuickSwitch'));
     var sessionId = null;
     var openSessionPromptModal = null;
     var hostAiFirstLoad = true;
@@ -7208,10 +7228,27 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         if (autoConnect) connectHostConsole(slot, createdBy);
         return rec;
     }
+    function findHostAiConsoleByHost(hid, createdBy) {
+        createdBy = createdBy || 'ai';
+        return hostAiConsoles.filter(function(c) {
+            return c.createdBy === createdBy && String(c.hostId) === String(hid);
+        })[0] || null;
+    }
+    function ensureHostAiConsole(hid, createdBy) {
+        var existing = findHostAiConsoleByHost(hid, createdBy);
+        if (existing) {
+            if (canHostAiAutoSwitchTo(existing.slot)) activateHostConsole(existing.slot, false);
+            if (!existing.ws || existing.ws.readyState !== WebSocket.OPEN) {
+                connectHostConsole(existing.slot, existing.createdBy || createdBy);
+            }
+            return existing;
+        }
+        return addHostConsole(getNextHostConsoleSlot(), createdBy, true);
+    }
     function runHostConsoleUIAction(ua) {
         if (!ua) return;
         if (ua.action === 'connect_terminal' && ua.host_id === parseInt(hostId, 10)) {
-            addHostConsole(getNextHostConsoleSlot(), 'ai', true);
+            ensureHostAiConsole(parseInt(hostId, 10), 'ai');
             showToast(t('toast.creatingAiConsole'));
             return;
         }
@@ -7243,6 +7280,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
                 var pendingHostId = item.host_id != null ? parseInt(item.host_id, 10) : parseInt(item.hostId, 10);
                 var createdBy = item.created_by || 'ai';
                 if (!pendingHostId || pendingHostId !== parseInt(hostId, 10)) return;
+                if (findHostAiConsoleByHost(pendingHostId, createdBy)) return;
                 addHostConsole(getNextHostConsoleSlot(), createdBy, true);
             });
         }).catch(function() {});
@@ -7992,7 +8030,7 @@ function renderAIPage() {
         + '</div>'
         + '<div class="layout-splitter-vertical" data-layout="ai" data-split="terminal" title="' + esc(t('hostAi.splitterTitle')) + '"></div>'
         + '<div class="chat-container ai-chat-container ai-layout-chat" id="aiLayoutChat">'
-        + '<div class="host-ai-chat-bar"><button type="button" class="btn btn-sm" id="aiSessionPromptBtn" title="' + esc(t('hostAi.barSessionPromptTitle')) + '">' + esc(t('ai.promptButtonShort')) + '</button><button type="button" class="btn btn-sm" id="aiClearChat">' + esc(t('hostAi.clearChat')) + '</button><span class="host-ai-clear-n"><input type="number" id="aiClearN" min="1" value="10" style="width:84px">' + esc(t('hostAi.clearN')) + '</span><button type="button" class="btn btn-sm" id="aiClearLastN">' + esc(t('hostAi.clearGtN')) + '</button><button type="button" class="btn btn-sm" id="aiExportMd" title="' + esc(t('hostAi.exportMdTitle')) + '">' + esc(t('hostAi.exportMd')) + '</button><button type="button" class="btn btn-sm" id="aiToggleTerminalBtn">' + esc(t('hostAi.hideTerminal')) + '</button><button type="button" class="btn btn-sm mobile-ai-inline-only" id="aiMobileInlineTerminalBtn">' + esc(t('ai.collapseInlineTerminal')) + '</button><button type="button" class="btn btn-sm btn-primary" id="aiNewSessionTop">' + esc(t('hostAi.newSession')) + '</button></div>'
+        + '<div class="host-ai-chat-bar"><label class="ai-profile-quick-switch" style="display:inline-flex;align-items:center;margin-right:8px"><select class="form-control form-control-sm" title="' + esc(t('modelConfig.quickSwitchLabel')) + '" id="aiProfileQuickSwitch" style="max-width:220px;min-width:140px"></select></label><button type="button" class="btn btn-sm" id="aiSessionPromptBtn" title="' + esc(t('hostAi.barSessionPromptTitle')) + '">' + esc(t('ai.promptButtonShort')) + '</button><button type="button" class="btn btn-sm" id="aiClearChat">' + esc(t('hostAi.clearChat')) + '</button><span class="host-ai-clear-n"><input type="number" id="aiClearN" min="1" value="10" style="width:84px">' + esc(t('hostAi.clearN')) + '</span><button type="button" class="btn btn-sm" id="aiClearLastN">' + esc(t('hostAi.clearGtN')) + '</button><button type="button" class="btn btn-sm" id="aiExportMd" title="' + esc(t('hostAi.exportMdTitle')) + '">' + esc(t('hostAi.exportMd')) + '</button><button type="button" class="btn btn-sm" id="aiToggleTerminalBtn">' + esc(t('hostAi.hideTerminal')) + '</button><button type="button" class="btn btn-sm mobile-ai-inline-only" id="aiMobileInlineTerminalBtn">' + esc(t('ai.collapseInlineTerminal')) + '</button><button type="button" class="btn btn-sm btn-primary" id="aiNewSessionTop">' + esc(t('hostAi.newSession')) + '</button></div>'
         + '<div id="aiSessionPromptModal" class="modal-overlay" style="display:none"><div class="modal modal-session-prompt"><div class="modal-header"><span>' + esc(t('hostAi.sessionPromptTitle')) + '</span><button type="button" class="modal-close" id="aiSessionPromptClose">&times;</button></div><div class="modal-body"><div class="session-prompt-toolbar"><button type="button" class="btn btn-sm active" id="aiSessionPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm" id="aiSessionPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button></div><div id="aiSessionPromptEditWrap"><textarea id="aiSessionPromptText" class="form-control" rows="6" placeholder="' + esc(t('hostAi.sessionPromptPlaceholder')) + '"></textarea></div><div id="aiSessionPromptPreview" class="session-prompt-preview" style="display:none"></div><div class="modal-actions" style="margin-top:8px"><button type="button" class="btn btn-sm btn-primary" id="aiSessionPromptSave">' + esc(t('hostAi.sessionPromptSave')) + '</button><button type="button" class="btn btn-sm" id="aiSessionPromptSummarize" title="' + esc(t('hostAi.sessionSummarizeReplaceTitle')) + '">' + esc(t('hostDetail.promptSummarize')) + '</button><button type="button" class="btn btn-sm" id="aiSessionPromptAppend" title="' + esc(t('hostAi.sessionSummarizeAppendTitle')) + '">' + esc(t('hostDetail.promptAppend')) + '</button><button type="button" class="btn btn-sm" id="aiSessionPromptCancel">' + esc(t('hostAi.sessionPromptClose')) + '</button></div></div></div></div>'
         + '<div class="chat-messages" id="aiMessages"></div>'
         + '<div class="chat-input-area"><label class="chat-low-interaction-toggle" title="' + esc(t('hostAi.lowInteractionTitle')) + '"><input type="checkbox" id="aiLowInteractionToggle"> ' + esc(t('hostAi.lowInteractionLabel')) + '</label><textarea class="form-control chat-input-multiline" id="aiInput" rows="1" enterkeyhint="send" spellcheck="false"></textarea><button class="btn btn-primary" id="aiSend">' + esc(t('hostAi.send')) + '</button><button type="button" class="btn btn-sm" id="aiNewSessionBtn">' + esc(t('hostAi.newSession')) + '</button></div></div>'
@@ -8041,8 +8079,7 @@ function renderAIPage() {
     }
     function getAiPreferredTerminalSlot() {
         var active = getAiActiveConsole();
-        // 与界面当前标签一致：用户自建控制台也要用其 slot，否则后端会读到错误的终端缓冲 / host_id
-        if (active) return active.slot;
+        if (active && active.createdBy === 'ai') return active.slot;
         var aiConnected = aiConsoles.filter(function(c) { return c.createdBy === 'ai' && c.ws && c.ws.readyState === WebSocket.OPEN; })[0];
         if (aiConnected) return aiConnected.slot;
         var anyAi = aiConsoles.filter(function(c) { return c.createdBy === 'ai'; })[0];
@@ -8268,11 +8305,37 @@ function renderAIPage() {
     var noAutoSwitchEl = document.getElementById('aiConsoleNoAutoSwitch');
     if (noAutoSwitchEl) noAutoSwitchEl.onchange = function() { aiAutoSwitchConsole = !this.checked; };
     if (noAutoSwitchEl) noAutoSwitchEl.checked = !aiAutoSwitchConsole;
+    function findAiConsoleByHost(hid, createdBy) {
+        createdBy = createdBy || 'ai';
+        return aiConsoles.filter(function(c) {
+            return c.createdBy === createdBy && String(c.hostId) === String(hid);
+        })[0] || null;
+    }
+    function ensureAiConsole(hid, createdBy) {
+        var existing = findAiConsoleByHost(hid, createdBy);
+        if (existing) {
+            if (canAiAutoSwitchTo(existing.slot)) {
+                aiActiveConsoleSlot = existing.slot;
+                aiConsoles.forEach(function(c) {
+                    c.panelEl.style.display = c.slot === existing.slot ? 'flex' : 'none';
+                    c.panelEl.style.flexDirection = 'column';
+                    c.tabEl.classList.toggle('active', c.slot === existing.slot);
+                    if (c.tabBtn) c.tabBtn.classList.toggle('active', c.slot === existing.slot);
+                });
+                if (existing.refit) existing.refit();
+            }
+            if (!existing.ws || existing.ws.readyState !== WebSocket.OPEN) {
+                doConnectTerminal(String(hid), existing.slot, existing.createdBy || createdBy);
+            }
+            return existing;
+        }
+        addAiConsole(getNextSlot(), createdBy, parseInt(hid, 10));
+        return null;
+    }
     window.edgeopsRunUIAction = function(ua) {
         if (!ua) return;
         if (ua.action === 'connect_terminal' && ua.host_id) {
-            var hostId = String(ua.host_id);
-            addAiConsole(getNextSlot(), 'ai', parseInt(hostId, 10));
+            ensureAiConsole(parseInt(ua.host_id, 10), 'ai');
             showToast(t('toast.creatingAiConsoleUnicode'));
             return;
         }
@@ -8299,6 +8362,7 @@ function renderAIPage() {
                 var hostId = item.host_id != null ? item.host_id : item.hostId;
                 var createdBy = item.created_by || 'ai';
                 if (!hostId) return;
+                if (findAiConsoleByHost(hostId, createdBy)) return;
                 addAiConsole(getNextSlot(), createdBy, hostId);
             });
         }).catch(function() {});
@@ -9103,6 +9167,7 @@ function renderAIPage() {
     var aiInput = document.getElementById('aiInput');
     edgeopsInitChatTextarea(aiInput);
     edgeopsBindChatSubmit(aiInput, doSend);
+    edgeopsMountAiProfileQuickSwitch(document.getElementById('aiProfileQuickSwitch'));
     // 页面缓存恢复时对全部控制台做 refit
     (window._edgeopsRefitByPath = window._edgeopsRefitByPath || {})['/ai'] = function() {
         aiConsoles.forEach(function(c) { if (c.refit) c.refit(); });
@@ -11692,6 +11757,437 @@ function renderUserSkillsPage() {
     loadUserSkillsPage();
 }
 
+// ── 模型配置（多 Profile + 快速切换）──
+var _mcConfigMeta = null;
+var _aiProfileQuickSwitchBusy = false;
+
+function edgeopsFmtAiContextLabel(n) {
+    if (n === 0) return t('settings.context.unlimited');
+    return n >= 1024 * 1024 ? (n / (1024 * 1024)) + 'M' : (n >= 1000 ? (n / 1000) + 'k' : String(n));
+}
+
+function edgeopsAiConfigFormRows(idPrefix) {
+    var p = idPrefix;
+    return ''
+        + '<tr><td style="width:120px">' + esc(t('settings.aiForm.modelType')) + '</td><td><select class="form-control" id="' + p + 'ModelType" style="max-width:320px"><option value="">' + esc(t('settings.aiForm.modelTypeAuto')) + '</option></select></td></tr>'
+        + '<tr><td>' + esc(t('settings.aiForm.apiKey')) + '</td><td><input type="password" class="form-control" id="' + p + 'ApiKey" placeholder="' + esc(t('settings.aiForm.apiKeyPh')) + '"></td></tr>'
+        + '<tr><td>' + esc(t('settings.aiForm.baseUrl')) + '</td><td><input type="text" class="form-control" id="' + p + 'BaseUrl" placeholder="' + esc(t('settings.aiForm.baseUrlPh')) + '"></td></tr>'
+        + '<tr><td>' + esc(t('settings.aiForm.model')) + '</td><td><input type="text" class="form-control" id="' + p + 'Model" placeholder="' + esc(t('settings.aiForm.modelPh')) + '"></td></tr>'
+        + '<tr><td>' + esc(t('settings.aiForm.context')) + '</td><td><select class="form-control" id="' + p + 'ContextSize" style="max-width:180px"></select> <input type="number" class="form-control" id="' + p + 'ContextSizeManual" placeholder="' + esc(t('settings.aiForm.contextManualPh')) + '" min="0" max="8388608" step="1000" style="width:120px;display:inline-block;margin-left:4px"> <span class="inline-hint">' + t('settings.aiForm.contextHelp') + '</span></td></tr>'
+        + '<tr><td>' + esc(t('settings.aiForm.autoApprove')) + '</td><td><label><input type="checkbox" id="' + p + 'AutoApprove"> ' + esc(t('settings.aiForm.autoApproveLabel')) + '</label></td></tr>'
+        + '<tr><td>' + esc(t('settings.aiForm.vision')) + '</td><td><label><input type="checkbox" id="' + p + 'VisionEnabled" checked> ' + esc(t('settings.aiForm.visionLabel')) + '</label> <span class="inline-hint">' + t('settings.aiForm.visionHelp') + '</span></td></tr>'
+        + '<tr><td>' + esc(t('settings.aiForm.outputLocale')) + '</td><td><select class="form-control" id="' + p + 'OutputLocale" style="max-width:220px"><option value="">' + esc(t('settings.aiForm.outputLocaleAuto')) + '</option><option value="zh-CN">' + esc(t('settings.aiForm.outputLocaleZh')) + '</option><option value="en">' + esc(t('settings.aiForm.outputLocaleEn')) + '</option></select> <span class="inline-hint">' + t('settings.aiForm.outputLocaleHelp') + '</span></td></tr>'
+        + '<tr><td>' + esc(t('settings.aiForm.agentMax')) + '</td><td><input type="number" class="form-control" id="' + p + 'AgentMaxSteps" min="0" max="1000" step="1" placeholder="' + esc(t('settings.aiForm.agentPh')) + '" style="max-width:160px"> <span class="text-muted" id="' + p + 'AgentMaxStepsHint" style="margin-left:8px;font-size:12px"></span></td></tr>'
+        + '<tr><td>' + esc(t('settings.aiForm.assistantMax')) + '</td><td><input type="number" class="form-control" id="' + p + 'AssistantMaxRounds" min="0" max="1000" step="1" placeholder="' + esc(t('settings.aiForm.assistantPh')) + '" style="max-width:160px"> <span class="text-muted" id="' + p + 'AssistantMaxRoundsHint" style="margin-left:8px;font-size:12px"></span></td></tr>';
+}
+
+function edgeopsInitAiConfigFormMeta(idPrefix, meta) {
+    if (!meta) return;
+    var modelTypes = meta.model_types || [];
+    var contextOpts = meta.context_size_options || [0, 4000, 8000, 16000, 32000, 64000, 128000, 8388608];
+    var contextMax = meta.context_size_max || (8 * 1024 * 1024);
+    var amsCap = parseInt(meta.agent_max_steps_cap, 10) || 1000;
+    var amrCap = parseInt(meta.assistant_max_rounds_cap, 10) || 1000;
+    var amsDef = parseInt(meta.agent_max_steps_default, 10) || 100;
+    var amrDef = parseInt(meta.assistant_max_rounds_default, 10) || 100;
+    var typeEl = document.getElementById(idPrefix + 'ModelType');
+    var ctxEl = document.getElementById(idPrefix + 'ContextSize');
+    var ctxManualEl = document.getElementById(idPrefix + 'ContextSizeManual');
+    var amsEl = document.getElementById(idPrefix + 'AgentMaxSteps');
+    var amrEl = document.getElementById(idPrefix + 'AssistantMaxRounds');
+    if (typeEl) {
+        typeEl.innerHTML = '<option value="">' + esc(t('settings.aiForm.modelTypeAuto')) + '</option>';
+        modelTypes.forEach(function(mt) {
+            var opt = document.createElement('option');
+            opt.value = mt.id || '';
+            opt.textContent = tOr('settings.aiModelType.' + (mt.id || ''), mt.name || mt.id || '');
+            typeEl.appendChild(opt);
+        });
+    }
+    if (ctxEl) {
+        ctxEl.innerHTML = '';
+        contextOpts.forEach(function(n) {
+            var opt = document.createElement('option');
+            opt.value = String(n);
+            opt.textContent = edgeopsFmtAiContextLabel(n);
+            ctxEl.appendChild(opt);
+        });
+    }
+    if (ctxManualEl) {
+        ctxManualEl.max = contextMax;
+        ctxManualEl.placeholder = t('settings.context.manualOr', { m: (contextMax / (1024 * 1024)) });
+    }
+    if (amsEl) {
+        amsEl.max = amsCap;
+        var amsHint = document.getElementById(idPrefix + 'AgentMaxStepsHint');
+        if (amsHint) amsHint.textContent = t('settings.aiForm.agentHint', { def: amsDef, cap: amsCap });
+    }
+    if (amrEl) {
+        amrEl.max = amrCap;
+        var amrHint = document.getElementById(idPrefix + 'AssistantMaxRoundsHint');
+        if (amrHint) amrHint.textContent = t('settings.aiForm.assistantHint', { def: amrDef, cap: amrCap });
+    }
+}
+
+function edgeopsFillAiConfigForm(idPrefix, c, meta) {
+    c = c || {};
+    meta = meta || _mcConfigMeta || {};
+    var keyEl = document.getElementById(idPrefix + 'ApiKey');
+    var urlEl = document.getElementById(idPrefix + 'BaseUrl');
+    var modelEl = document.getElementById(idPrefix + 'Model');
+    var typeEl = document.getElementById(idPrefix + 'ModelType');
+    var ctxEl = document.getElementById(idPrefix + 'ContextSize');
+    var ctxManualEl = document.getElementById(idPrefix + 'ContextSizeManual');
+    var autoEl = document.getElementById(idPrefix + 'AutoApprove');
+    var visEl = document.getElementById(idPrefix + 'VisionEnabled');
+    var outLocEl = document.getElementById(idPrefix + 'OutputLocale');
+    var amsEl = document.getElementById(idPrefix + 'AgentMaxSteps');
+    var amrEl = document.getElementById(idPrefix + 'AssistantMaxRounds');
+    if (keyEl) keyEl.value = c.api_key || '';
+    if (urlEl) urlEl.value = c.base_url || '';
+    if (modelEl) modelEl.value = c.model || '';
+    if (autoEl) autoEl.checked = !!c.auto_approve;
+    if (visEl) visEl.checked = (c.vision_enabled === undefined) ? true : !!c.vision_enabled;
+    if (outLocEl) {
+        var _olv = c.output_locale || '';
+        if (_olv !== 'zh-CN' && _olv !== 'en') _olv = '';
+        outLocEl.value = _olv;
+    }
+    var ctxVal = parseInt(c.context_size, 10) || 0;
+    var contextOpts = (meta.context_size_options || [0, 4000, 8000, 16000, 32000, 64000, 128000, 8388608]);
+    var ctxOptsSet = {};
+    contextOpts.forEach(function(n) { ctxOptsSet[n] = true; });
+    if (ctxEl) {
+        if (!ctxOptsSet[ctxVal]) {
+            var curOpt = document.createElement('option');
+            curOpt.value = String(ctxVal);
+            curOpt.textContent = t('settings.context.current', { label: edgeopsFmtAiContextLabel(ctxVal) });
+            ctxEl.appendChild(curOpt);
+        }
+        ctxEl.value = String(ctxVal);
+    }
+    if (ctxManualEl) ctxManualEl.value = '';
+    if (typeEl) {
+        var prov = (c.provider || '').trim();
+        typeEl.value = (prov === 'aliyun' || prov === 'ollama' || prov === 'openai') ? prov : '';
+    }
+    var amsCap = parseInt(meta.agent_max_steps_cap, 10) || 1000;
+    var amrCap = parseInt(meta.assistant_max_rounds_cap, 10) || 1000;
+    if (amsEl) amsEl.value = (c.agent_max_steps && c.agent_max_steps > 0) ? String(c.agent_max_steps) : '';
+    if (amrEl) amrEl.value = (c.assistant_max_rounds && c.assistant_max_rounds > 0) ? String(c.assistant_max_rounds) : '';
+    if (amsEl) amsEl.max = amsCap;
+    if (amrEl) amrEl.max = amrCap;
+}
+
+function edgeopsCollectAiConfigPayload(idPrefix, meta) {
+    meta = meta || _mcConfigMeta || {};
+    var ctxEl = document.getElementById(idPrefix + 'ContextSize');
+    var ctxManualEl = document.getElementById(idPrefix + 'ContextSizeManual');
+    var ctxVal = 0;
+    if (ctxManualEl && ctxManualEl.value.trim() !== '') {
+        var v = parseInt(ctxManualEl.value, 10);
+        if (!isNaN(v) && v >= 0) ctxVal = Math.min(v, meta.context_size_max || (8 * 1024 * 1024));
+    }
+    if (ctxVal === 0 && ctxEl) ctxVal = parseInt(ctxEl.value, 10) || 0;
+    var typeEl = document.getElementById(idPrefix + 'ModelType');
+    var providerVal = (typeEl && typeEl.value) ? typeEl.value : '';
+    if (providerVal !== 'aliyun' && providerVal !== 'ollama' && providerVal !== 'openai') providerVal = '';
+    var amsCap = parseInt(meta.agent_max_steps_cap, 10) || 1000;
+    var amrCap = parseInt(meta.assistant_max_rounds_cap, 10) || 1000;
+    var amsRaw = ((document.getElementById(idPrefix + 'AgentMaxSteps') || {}).value || '').trim();
+    var amrRaw = ((document.getElementById(idPrefix + 'AssistantMaxRounds') || {}).value || '').trim();
+    var amsVal = amsRaw === '' ? 0 : Math.max(0, Math.min(amsCap, parseInt(amsRaw, 10) || 0));
+    var amrVal = amrRaw === '' ? 0 : Math.max(0, Math.min(amrCap, parseInt(amrRaw, 10) || 0));
+    var visEl = document.getElementById(idPrefix + 'VisionEnabled');
+    var outLocSave = ((document.getElementById(idPrefix + 'OutputLocale') || {}).value || '').trim();
+    if (outLocSave !== 'zh-CN' && outLocSave !== 'en') outLocSave = '';
+    return {
+        api_key: (document.getElementById(idPrefix + 'ApiKey') || {}).value || '',
+        base_url: (document.getElementById(idPrefix + 'BaseUrl') || {}).value || '',
+        model: (document.getElementById(idPrefix + 'Model') || {}).value || '',
+        context_size: Math.max(0, ctxVal),
+        provider: providerVal,
+        auto_approve: !!(document.getElementById(idPrefix + 'AutoApprove') && document.getElementById(idPrefix + 'AutoApprove').checked),
+        vision_enabled: visEl ? !!visEl.checked : true,
+        agent_max_steps: amsVal,
+        assistant_max_rounds: amrVal,
+        output_locale: outLocSave
+    };
+}
+
+function edgeopsMountAiProfileQuickSwitch(selectEl, userId, onActivated) {
+    if (!selectEl) return;
+    API.listAIProfiles(userId).then(function(r) {
+        var profiles = r.profiles || [];
+        var activeId = r.active_profile_id;
+        var lastVal = activeId != null ? String(activeId) : '';
+        selectEl.innerHTML = '';
+        if (!profiles.length) {
+            var emptyOpt = document.createElement('option');
+            emptyOpt.value = '';
+            emptyOpt.textContent = t('modelConfig.pageTitle');
+            selectEl.appendChild(emptyOpt);
+            return;
+        }
+        profiles.forEach(function(p) {
+            var opt = document.createElement('option');
+            opt.value = String(p.id);
+            var label = p.name || ('#' + p.id);
+            if (p.model) label += ' · ' + p.model;
+            if (p.is_active) label += ' ✓';
+            opt.textContent = label;
+            if (p.is_active || p.id === activeId) opt.selected = true;
+            selectEl.appendChild(opt);
+        });
+        if (selectEl.value) lastVal = selectEl.value;
+        selectEl.onchange = function() {
+            var pid = parseInt(selectEl.value, 10);
+            if (!pid || _aiProfileQuickSwitchBusy || String(pid) === lastVal) return;
+            _aiProfileQuickSwitchBusy = true;
+            API.activateAIProfile(pid, userId).then(function() {
+                lastVal = String(pid);
+                showToast(t('modelConfig.activated'));
+                if (typeof onActivated === 'function') onActivated(pid);
+            }).catch(function(err) {
+                selectEl.value = lastVal;
+                showToast(err.message || t('toast.saveFailed'), 'error');
+            }).finally(function() { _aiProfileQuickSwitchBusy = false; });
+        };
+    }).catch(function() {});
+}
+
+function _showModelProfileForm(profileId, reloadList) {
+    var isEdit = profileId != null && profileId !== '';
+    var modal = document.getElementById('mcProfileFormModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'mcProfileFormModal';
+        modal.className = 'modal-overlay';
+        modal.style.display = 'none';
+        document.body.appendChild(modal);
+    }
+    modal.innerHTML = ''
+        + '<div class="modal" style="max-width:720px;width:95%;display:flex;flex-direction:column;overflow:hidden">'
+        + '<div class="modal-header"><h3 id="mcProfileFormTitle"></h3><button type="button" class="modal-close" id="mcProfileFormClose">&times;</button></div>'
+        + '<div class="modal-body" style="flex:1;min-height:0;overflow-y:auto">'
+        + '<div class="form-group"><label>' + esc(t('modelConfig.namePh')) + '</label><input type="text" class="form-control" id="mcProfileName"></div>'
+        + '<table class="chat-md-table settings-table"><tbody>' + edgeopsAiConfigFormRows('mcCfg') + '</tbody></table>'
+        + '</div>'
+        + '<div class="modal-actions" style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">'
+        + '<button type="button" class="btn" id="mcProfileFormCancel">' + esc(t('common.cancel')) + '</button>'
+        + '<button type="button" class="btn btn-primary" id="mcProfileFormSave">' + esc(t('settings.aiForm.save')) + '</button>'
+        + '</div></div>';
+    document.getElementById('mcProfileFormTitle').textContent = isEdit ? t('modelConfig.editorTitle') : t('modelConfig.editorNewTitle');
+    edgeopsInitAiConfigFormMeta('mcCfg', _mcConfigMeta);
+    function closeModal() { modal.style.display = 'none'; }
+    document.getElementById('mcProfileFormClose').onclick = closeModal;
+    document.getElementById('mcProfileFormCancel').onclick = closeModal;
+    modal.onclick = function(ev) { if (ev.target === modal) closeModal(); };
+    var nameEl = document.getElementById('mcProfileName');
+    function fillAndShow(cfg, name) {
+        if (nameEl) nameEl.value = name || '';
+        edgeopsFillAiConfigForm('mcCfg', cfg || {}, _mcConfigMeta);
+        modal.style.display = 'flex';
+    }
+    if (isEdit) {
+        API.getAIProfile(profileId).then(function(r) {
+            var p = r.profile || {};
+            fillAndShow(p, p.name || '');
+        }).catch(function(err) {
+            showToast(err.message || t('toast.loadFailed'), 'error');
+        });
+    } else {
+        fillAndShow({}, '');
+    }
+    document.getElementById('mcProfileFormSave').onclick = function() {
+        var btn = this;
+        var nm = ((nameEl && nameEl.value) || '').trim();
+        if (!nm) { showToast(t('modelConfig.nameRequired'), 'error'); return; }
+        var payload = edgeopsCollectAiConfigPayload('mcCfg', _mcConfigMeta);
+        payload.name = nm;
+        btn.disabled = true;
+        var req = isEdit
+            ? API.updateAIProfile(profileId, payload)
+            : API.createAIProfile(payload);
+        req.then(function() {
+            showToast(isEdit ? t('modelConfig.saved') : t('modelConfig.created'));
+            closeModal();
+            if (typeof reloadList === 'function') reloadList();
+        }).catch(function(err) {
+            showToast(err.message || t('toast.saveFailed'), 'error');
+        }).finally(function() { btn.disabled = false; });
+    };
+}
+
+function mcSafeExportFilename(name) {
+    return String(name || 'profile').replace(/[^\w\u4e00-\u9fff.-]+/g, '_').slice(0, 80) || 'profile';
+}
+
+function mcExportProfiles(profileId, nameHint) {
+    API.exportAIProfiles(profileId).then(function(res) {
+        var n = res.count != null ? res.count : ((res.config && res.config.profiles) ? res.config.profiles.length : 0);
+        if (!n) { showToast(t('modelConfig.exportEmpty'), 'warning'); return; }
+        var uname = (API.user && API.user.username) ? API.user.username : 'user';
+        var fname = profileId != null
+            ? ('edgeops-model-' + mcSafeExportFilename(nameHint || profileId) + '.json')
+            : ('edgeops-models-' + mcSafeExportFilename(uname) + '.json');
+        downloadJsonFile(fname, res.config || res);
+        showToast(t('modelConfig.exportDone', { count: n }));
+    }).catch(function(err) {
+        showToast(err.message || t('toast.saveFailed'), 'error');
+    });
+}
+
+function loadModelConfigProfilesTable() {
+    var wrap = document.getElementById('mcProfilesTableWrap');
+    if (!wrap) return;
+    API.listAIProfiles().then(function(r) {
+        var profiles = r.profiles || [];
+        var activeId = r.active_profile_id;
+        if (!profiles.length) {
+            wrap.innerHTML = '<p class="text-muted">' + esc(t('common.none')) + '</p>';
+            return;
+        }
+        var rows = profiles.map(function(p) {
+            var badge = p.is_active ? ' <span class="badge" style="font-size:11px">' + esc(t('modelConfig.activeBadge')) + '</span>' : '';
+            return ''
+                + '<tr data-id="' + p.id + '">'
+                + '<td>' + esc(p.name || ('#' + p.id)) + badge + '</td>'
+                + '<td>' + esc(p.model || '—') + '</td>'
+                + '<td>' + esc(p.provider || '—') + '</td>'
+                + '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(p.base_url || '') + '">' + esc(p.base_url || '—') + '</td>'
+                + '<td>' + (p.api_key_set ? '✓' : '—') + '</td>'
+                + '<td style="white-space:nowrap">'
+                + (p.is_active ? '' : '<button type="button" class="btn btn-sm btn-primary mc-use-profile" data-id="' + p.id + '">' + esc(t('modelConfig.useProfile')) + '</button> ')
+                + '<button type="button" class="btn btn-sm mc-export-profile" data-id="' + p.id + '" data-name="' + esc(p.name || '') + '">' + esc(t('modelConfig.exportProfile')) + '</button> '
+                + '<button type="button" class="btn btn-sm mc-edit-profile" data-id="' + p.id + '">' + esc(t('modelConfig.editProfile')) + '</button> '
+                + '<button type="button" class="btn btn-sm btn-danger mc-del-profile" data-id="' + p.id + '" data-name="' + esc(p.name || '') + '">' + esc(t('modelConfig.deleteProfile')) + '</button>'
+                + '</td></tr>';
+        }).join('');
+        wrap.innerHTML = ''
+            + '<table class="chat-md-table settings-table"><thead><tr>'
+            + '<th>' + esc(t('modelConfig.profileListTitle')) + '</th><th>' + esc(t('settings.aiForm.model')) + '</th><th>' + esc(t('settings.aiForm.modelType')) + '</th><th>' + esc(t('settings.aiForm.baseUrl')) + '</th><th>' + esc(t('settings.aiForm.apiKey')) + '</th><th>' + esc(t('common.action')) + '</th>'
+            + '</tr></thead><tbody>' + rows + '</tbody></table>';
+        wrap.querySelectorAll('.mc-use-profile').forEach(function(btn) {
+            btn.onclick = function() {
+                var pid = parseInt(btn.getAttribute('data-id'), 10);
+                if (!pid) return;
+                API.activateAIProfile(pid).then(function() {
+                    showToast(t('modelConfig.activated'));
+                    loadModelConfigProfilesTable();
+                }).catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); });
+            };
+        });
+        wrap.querySelectorAll('.mc-edit-profile').forEach(function(btn) {
+            btn.onclick = function() {
+                _showModelProfileForm(parseInt(btn.getAttribute('data-id'), 10), loadModelConfigProfilesTable);
+            };
+        });
+        wrap.querySelectorAll('.mc-export-profile').forEach(function(btn) {
+            btn.onclick = function() {
+                mcExportProfiles(parseInt(btn.getAttribute('data-id'), 10), btn.getAttribute('data-name') || '');
+            };
+        });
+        wrap.querySelectorAll('.mc-del-profile').forEach(function(btn) {
+            btn.onclick = function() {
+                var pid = parseInt(btn.getAttribute('data-id'), 10);
+                var nm = btn.getAttribute('data-name') || '';
+                showConfirm(t('common.confirm'), t('modelConfig.deleteConfirm', { name: nm })).then(function(ok) {
+                    if (!ok) return;
+                    API.deleteAIProfile(pid).then(function() {
+                        showToast(t('modelConfig.deleted'));
+                        loadModelConfigProfilesTable();
+                    }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
+                });
+            };
+        });
+    }).catch(function(err) {
+        wrap.innerHTML = '<p class="text-danger">' + esc(err.message || t('toast.loadFailed')) + '</p>';
+    });
+}
+
+function renderModelConfigPage() {
+    renderLayout();
+    var el = getPageEl();
+    el.innerHTML = ''
+        + '<div class="topbar"><h2>' + esc(t('modelConfig.pageTitle')) + '</h2><div class="topbar-actions">'
+        + '<button type="button" class="btn btn-primary" id="mcNewProfileBtn">' + esc(t('modelConfig.newProfile')) + '</button>'
+        + '<button type="button" class="btn" id="mcExportAllBtn">' + esc(t('modelConfig.exportAll')) + '</button>'
+        + '<button type="button" class="btn" id="mcRefreshBtn">' + esc(t('common.refresh')) + '</button></div></div>'
+        + '<div class="page-content">'
+        + edgeopsPageIntroHtml(t('modelConfig.intro'), true)
+        + '<div id="aiTrialBanner" style="margin-bottom:12px"></div>'
+        + '<div class="card" style="margin-bottom:16px"><div class="card-header"><h3>' + esc(t('modelConfig.profileListTitle')) + '</h3></div>'
+        + '<div class="card-body" id="mcProfilesTableWrap">' + esc(t('common.loading')) + '</div></div>'
+        + '<div class="card"><div class="card-header"><h3>' + esc(t('modelConfig.importExportTitle')) + '</h3></div>'
+        + '<div class="card-body">'
+        + '<p class="form-hint">' + esc(t('modelConfig.importHint')) + '</p>'
+        + '<textarea id="mcImportJson" class="form-control" rows="8" placeholder="{&quot;profiles&quot;: [ ... ]}"></textarea>'
+        + '<div style="margin-top:8px;display:flex;flex-direction:column;gap:6px">'
+        + '<label><input type="radio" name="mcImportMode" value="incremental" checked> ' + esc(t('modelConfig.importModeIncremental')) + '</label>'
+        + '<label><input type="radio" name="mcImportMode" value="overwrite"> ' + esc(t('modelConfig.importModeOverwrite')) + '</label>'
+        + '</div>'
+        + '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+        + '<button type="button" class="btn btn-primary" id="mcImportBtn">' + esc(t('modelConfig.importBtn')) + '</button>'
+        + '<label class="btn btn-sm" style="margin:0;cursor:pointer"><input type="file" id="mcImportFile" accept=".json,application/json" style="display:none"> JSON</label>'
+        + '</div>'
+        + '<div id="mcImportResult" class="form-hint" style="margin-top:8px;margin-bottom:0"></div>'
+        + '</div></div>'
+        + '</div>';
+    document.getElementById('mcNewProfileBtn').onclick = function() {
+        _showModelProfileForm(null, loadModelConfigProfilesTable);
+    };
+    document.getElementById('mcExportAllBtn').onclick = function() { mcExportProfiles(null); };
+    document.getElementById('mcRefreshBtn').onclick = function() {
+        loadModelConfigProfilesTable();
+        loadMyTrialBanner();
+        showToast(t('toast.refreshed'));
+    };
+    var mcImportFile = document.getElementById('mcImportFile');
+    if (mcImportFile) {
+        mcImportFile.onchange = function() {
+            var f = mcImportFile.files && mcImportFile.files[0];
+            if (!f) return;
+            var reader = new FileReader();
+            reader.onload = function() {
+                var ta = document.getElementById('mcImportJson');
+                if (ta) ta.value = reader.result || '';
+            };
+            reader.readAsText(f, 'utf-8');
+            mcImportFile.value = '';
+        };
+    }
+    document.getElementById('mcImportBtn').onclick = function() {
+        var raw = (document.getElementById('mcImportJson').value || '').trim();
+        if (!raw) { showToast(t('modelConfig.importEmpty'), 'error'); return; }
+        var modeEl = document.querySelector('input[name="mcImportMode"]:checked');
+        var mode = (modeEl && modeEl.value) ? modeEl.value : 'incremental';
+        var btn = this;
+        btn.disabled = true;
+        API.importAIProfiles({ config: raw, mode: mode }).then(function(res) {
+            var msg = t('modelConfig.importDone', {
+                created: (res.created || []).length,
+                updated: (res.updated || []).length,
+                skipped: (res.skipped || []).length
+            });
+            if (res.errors && res.errors.length) {
+                msg += ' — ' + t('modelConfig.importErrors', { count: res.errors.length });
+            }
+            var resultEl = document.getElementById('mcImportResult');
+            if (resultEl) resultEl.textContent = msg;
+            showToast(msg);
+            loadModelConfigProfilesTable();
+        }).catch(function(err) {
+            showToast(err.message || t('toast.saveFailed'), 'error');
+        }).finally(function() { btn.disabled = false; });
+    };
+    API.getAIConfig().then(function(r) {
+        _mcConfigMeta = r;
+    }).catch(function() {});
+    loadModelConfigProfilesTable();
+    loadMyTrialBanner();
+}
+
 function renderSettings() {
     renderLayout();
     var el = getPageEl();
@@ -11711,21 +12207,6 @@ function renderSettings() {
         + '<button type="button" class="btn btn-primary" id="edgeopsSaveUiLocale">' + t('settings.saveDisplay') + '</button>'
         + '</div></div>'
         + '<div class="topbar"><h2>' + t('settings.pageTitle') + '</h2><div class="topbar-actions"><button type="button" class="btn" id="settingsPageRefreshBtn">' + esc(t('common.refresh')) + '</button></div></div><div class="page-content">'
-        + '<div class="card" style="margin-bottom:16px"><div class="card-header"><h3>' + esc(t('settings.aiForm.title')) + '</h3></div>'
-        + '<p class="section-intro">' + t('settings.aiForm.intro') + '</p>'
-        + '<div id="aiTrialBanner" style="margin:0 16px 12px"></div>'
-        + '<table class="chat-md-table settings-table" style="margin:0 16px 16px"><tbody>'
-        + '<tr><td style="width:120px">' + esc(t('settings.aiForm.modelType')) + '</td><td><select class="form-control" id="aiCfgModelType" style="max-width:320px"><option value="">' + esc(t('settings.aiForm.modelTypeAuto')) + '</option></select></td></tr>'
-        + '<tr><td>' + esc(t('settings.aiForm.apiKey')) + '</td><td><input type="password" class="form-control" id="aiCfgApiKey" placeholder="' + esc(t('settings.aiForm.apiKeyPh')) + '"></td></tr>'
-        + '<tr><td>' + esc(t('settings.aiForm.baseUrl')) + '</td><td><input type="text" class="form-control" id="aiCfgBaseUrl" placeholder="' + esc(t('settings.aiForm.baseUrlPh')) + '"></td></tr>'
-        + '<tr><td>' + esc(t('settings.aiForm.model')) + '</td><td><input type="text" class="form-control" id="aiCfgModel" placeholder="' + esc(t('settings.aiForm.modelPh')) + '"></td></tr>'
-        + '<tr><td>' + esc(t('settings.aiForm.context')) + '</td><td><select class="form-control" id="aiCfgContextSize" style="max-width:180px"></select> <input type="number" class="form-control" id="aiCfgContextSizeManual" placeholder="' + esc(t('settings.aiForm.contextManualPh')) + '" min="0" max="8388608" step="1000" style="width:120px;display:inline-block;margin-left:4px"> <span class="inline-hint">' + t('settings.aiForm.contextHelp') + '</span></td></tr>'
-        + '<tr><td>' + esc(t('settings.aiForm.autoApprove')) + '</td><td><label><input type="checkbox" id="aiCfgAutoApprove"> ' + esc(t('settings.aiForm.autoApproveLabel')) + '</label></td></tr>'
-        + '<tr><td>' + esc(t('settings.aiForm.vision')) + '</td><td><label><input type="checkbox" id="aiCfgVisionEnabled" checked> ' + esc(t('settings.aiForm.visionLabel')) + '</label> <span class="inline-hint">' + t('settings.aiForm.visionHelp') + '</span></td></tr>'
-        + '<tr><td>' + esc(t('settings.aiForm.outputLocale')) + '</td><td><select class="form-control" id="aiCfgOutputLocale" style="max-width:220px"><option value="">' + esc(t('settings.aiForm.outputLocaleAuto')) + '</option><option value="zh-CN">' + esc(t('settings.aiForm.outputLocaleZh')) + '</option><option value="en">' + esc(t('settings.aiForm.outputLocaleEn')) + '</option></select> <span class="inline-hint">' + t('settings.aiForm.outputLocaleHelp') + '</span></td></tr>'
-        + '<tr><td>' + esc(t('settings.aiForm.agentMax')) + '</td><td><input type="number" class="form-control" id="aiCfgAgentMaxSteps" min="0" max="1000" step="1" placeholder="' + esc(t('settings.aiForm.agentPh')) + '" style="max-width:160px"> <span class="text-muted" id="aiCfgAgentMaxStepsHint" style="margin-left:8px;font-size:12px">' + t('settings.aiForm.agentHint', { def: 100, cap: 1000 }) + '</span></td></tr>'
-        + '<tr><td>' + esc(t('settings.aiForm.assistantMax')) + '</td><td><input type="number" class="form-control" id="aiCfgAssistantMaxRounds" min="0" max="1000" step="1" placeholder="' + esc(t('settings.aiForm.assistantPh')) + '" style="max-width:160px"> <span class="text-muted" id="aiCfgAssistantMaxRoundsHint" style="margin-left:8px;font-size:12px">' + t('settings.aiForm.assistantHint', { def: 100, cap: 1000 }) + '</span></td></tr>'
-        + '<tr><td></td><td><button type="button" class="btn btn-primary" id="aiCfgSave">' + esc(t('settings.aiForm.save')) + '</button></td></tr></tbody></table></div>'
         + '<div class="card" style="margin-bottom:16px"><div class="card-header"><h3>' + esc(t('settings.mail.title')) + '</h3></div>'
         + '<p class="section-intro">' + t('settings.mail.intro') + '</p>'
         + '<p class="section-intro" id="userMailStatusHint"></p>'
@@ -11786,80 +12267,6 @@ function renderSettings() {
             location.reload();
         };
     }
-    API.getAIConfig().then(function(r) {
-        var c = r.config || {};
-        var modelTypes = r.model_types || [];
-        var contextOpts = r.context_size_options || [0, 4000, 8000, 16000, 32000, 64000, 128000, 8388608];
-        var contextMax = r.context_size_max || (8 * 1024 * 1024);
-        function fmtCtxSizeLabel(n) {
-            if (n === 0) return t('settings.context.unlimited');
-            return n >= 1024 * 1024 ? (n / (1024 * 1024)) + 'M' : (n >= 1000 ? (n / 1000) + 'k' : String(n));
-        }
-        var keyEl = document.getElementById('aiCfgApiKey');
-        var urlEl = document.getElementById('aiCfgBaseUrl');
-        var modelEl = document.getElementById('aiCfgModel');
-        var typeEl = document.getElementById('aiCfgModelType');
-        var ctxEl = document.getElementById('aiCfgContextSize');
-        var ctxManualEl = document.getElementById('aiCfgContextSizeManual');
-        var autoEl = document.getElementById('aiCfgAutoApprove');
-        if (keyEl) keyEl.value = c.api_key || '';
-        if (urlEl) urlEl.value = c.base_url || '';
-        if (modelEl) modelEl.value = c.model || '';
-        if (autoEl) autoEl.checked = !!c.auto_approve;
-        var visEl = document.getElementById('aiCfgVisionEnabled');
-        if (visEl) visEl.checked = (c.vision_enabled === undefined) ? true : !!c.vision_enabled;
-        var outLocEl = document.getElementById('aiCfgOutputLocale');
-        if (outLocEl) {
-            var _olv = c.output_locale || '';
-            if (_olv !== 'zh-CN' && _olv !== 'en') _olv = '';
-            outLocEl.value = _olv;
-        }
-        modelTypes.forEach(function(mt) {
-            var opt = document.createElement('option');
-            opt.value = mt.id || '';
-            opt.textContent = tOr('settings.aiModelType.' + (mt.id || ''), mt.name || mt.id || '');
-            if (typeEl) typeEl.appendChild(opt);
-        });
-        var ctxVal = parseInt(c.context_size, 10) || 0;
-        var ctxOptsSet = {};
-        contextOpts.forEach(function(n) { ctxOptsSet[n] = true; });
-        contextOpts.forEach(function(n) {
-            var opt = document.createElement('option');
-            opt.value = String(n);
-            opt.textContent = fmtCtxSizeLabel(n);
-            if (ctxEl) ctxEl.appendChild(opt);
-        });
-        if (ctxEl) {
-            if (!ctxOptsSet[ctxVal]) {
-                var curOpt = document.createElement('option');
-                curOpt.value = String(ctxVal);
-                curOpt.textContent = t('settings.context.current', { label: fmtCtxSizeLabel(ctxVal) });
-                ctxEl.appendChild(curOpt);
-            }
-            ctxEl.value = String(ctxVal);
-        }
-        if (ctxManualEl) { ctxManualEl.max = contextMax; ctxManualEl.placeholder = t('settings.context.manualOr', { m: (contextMax / (1024 * 1024)) }); }
-        if (typeEl) typeEl.value = (c.provider || '') === 'aliyun' || (c.provider || '') === 'ollama' || (c.provider || '') === 'openai' ? (c.provider || '') : '';
-        if (typeEl) typeEl.onchange = function() { /* 仅绑定调用方式，不填充 URL/模型 */ };
-        var amsEl = document.getElementById('aiCfgAgentMaxSteps');
-        var amrEl = document.getElementById('aiCfgAssistantMaxRounds');
-        var amsCap = parseInt(r.agent_max_steps_cap, 10) || 1000;
-        var amrCap = parseInt(r.assistant_max_rounds_cap, 10) || 1000;
-        var amsDef = parseInt(r.agent_max_steps_default, 10) || 100;
-        var amrDef = parseInt(r.assistant_max_rounds_default, 10) || 100;
-        if (amsEl) {
-            amsEl.max = amsCap;
-            amsEl.value = (c.agent_max_steps && c.agent_max_steps > 0) ? String(c.agent_max_steps) : '';
-            var amsHint = document.getElementById('aiCfgAgentMaxStepsHint');
-            if (amsHint) amsHint.textContent = t('settings.aiForm.agentHint', { def: amsDef, cap: amsCap });
-        }
-        if (amrEl) {
-            amrEl.max = amrCap;
-            amrEl.value = (c.assistant_max_rounds && c.assistant_max_rounds > 0) ? String(c.assistant_max_rounds) : '';
-            var amrHint = document.getElementById('aiCfgAssistantMaxRoundsHint');
-            if (amrHint) amrHint.textContent = t('settings.aiForm.assistantHint', { def: amrDef, cap: amrCap });
-        }
-    }).catch(function() {});
     var btnTok = document.getElementById('btnCreateApiToken');
     if (btnTok) {
         btnTok.onclick = function() {
@@ -11920,7 +12327,6 @@ function renderSettings() {
     loadUserApiTokens();
     loadUserMailSettings();
     loadSearchServicesSettings();
-    loadMyTrialBanner();
     var umSave = document.getElementById('userMailSave');
     if (umSave) {
         umSave.onclick = function() {
@@ -11949,47 +12355,6 @@ function renderSettings() {
             }).finally(function() { btn.disabled = false; });
         };
     }
-    document.getElementById('aiCfgSave').onclick = function() {
-        var btn = this;
-        var ctxEl = document.getElementById('aiCfgContextSize');
-        var ctxManualEl = document.getElementById('aiCfgContextSizeManual');
-        var ctxVal = 0;
-        if (ctxManualEl && ctxManualEl.value.trim() !== '') {
-            var v = parseInt(ctxManualEl.value, 10);
-            if (!isNaN(v) && v >= 0) ctxVal = Math.min(v, 8 * 1024 * 1024);
-        }
-        if (ctxVal === 0 && ctxEl) ctxVal = parseInt(ctxEl.value, 10) || 0;
-        var typeEl = document.getElementById('aiCfgModelType');
-        var providerVal = (typeEl && typeEl.value) ? typeEl.value : '';
-        if (providerVal !== 'aliyun' && providerVal !== 'ollama' && providerVal !== 'openai') providerVal = '';
-        var amsRaw = ((document.getElementById('aiCfgAgentMaxSteps') || {}).value || '').trim();
-        var amrRaw = ((document.getElementById('aiCfgAssistantMaxRounds') || {}).value || '').trim();
-        var amsVal = amsRaw === '' ? 0 : Math.max(0, Math.min(1000, parseInt(amsRaw, 10) || 0));
-        var amrVal = amrRaw === '' ? 0 : Math.max(0, Math.min(1000, parseInt(amrRaw, 10) || 0));
-        var visElSave = document.getElementById('aiCfgVisionEnabled');
-        var outLocSave = ((document.getElementById('aiCfgOutputLocale') || {}).value || '').trim();
-        if (outLocSave !== 'zh-CN' && outLocSave !== 'en') outLocSave = '';
-        var payload = {
-            api_key: (document.getElementById('aiCfgApiKey') || {}).value || '',
-            base_url: (document.getElementById('aiCfgBaseUrl') || {}).value || '',
-            model: (document.getElementById('aiCfgModel') || {}).value || '',
-            context_size: Math.max(0, ctxVal),
-            provider: providerVal,
-            auto_approve: !!(document.getElementById('aiCfgAutoApprove') && document.getElementById('aiCfgAutoApprove').checked),
-            vision_enabled: visElSave ? !!visElSave.checked : true,
-            agent_max_steps: amsVal,
-            assistant_max_rounds: amrVal,
-            output_locale: outLocSave
-        };
-        btn.disabled = true;
-        API.updateAIConfig(payload).then(function() {
-            showToast(t('toast.aiConfigSavedShort'));
-            btn.disabled = false;
-        }).catch(function(err) {
-            showToast(err.message || t('toast.saveFailed'), 'error');
-            btn.disabled = false;
-        });
-    };
     if (isAdmin()) {
         Promise.all([API.getSettings(), API.listUsers({ page: 1, page_size: 500 })]).then(function(results) {
             var data = results[0];
@@ -12277,7 +12642,7 @@ function renderLocalPage() {
         + '</div>'
         + '<div class="layout-splitter-vertical" data-layout="local" data-split="terminal" title="' + esc(t('ai.local.splitterTitle')) + '"></div>'
         + '<div class="chat-container ai-chat-container ai-layout-chat" id="localLayoutChat">'
-        + '<div class="host-ai-chat-bar"><button type="button" class="btn btn-sm" id="localAiSessionPromptBtn" title="' + esc(t('hostAi.barSessionPromptTitle')) + '">' + esc(t('ai.promptButtonShort')) + '</button><button type="button" class="btn btn-sm" id="localAiClearChat">' + esc(t('hostAi.clearChat')) + '</button><span class="host-ai-clear-n"><input type="number" id="localAiClearN" min="1" value="10" style="width:84px">' + esc(t('hostAi.clearN')) + '</span><button type="button" class="btn btn-sm" id="localAiClearLastN">' + esc(t('hostAi.clearGtN')) + '</button><button type="button" class="btn btn-sm" id="localAiExportMd">' + esc(t('hostAi.exportMd')) + '</button><button type="button" class="btn btn-sm" id="localAiToggleTerminalBtn">' + esc(t('hostAi.hideTerminal')) + '</button><button type="button" class="btn btn-sm btn-primary" id="localAiNewSession">' + esc(t('hostAi.newSession')) + '</button></div>'
+        + '<div class="host-ai-chat-bar"><label class="ai-profile-quick-switch" style="display:inline-flex;align-items:center;margin-right:8px"><select class="form-control form-control-sm" title="' + esc(t('modelConfig.quickSwitchLabel')) + '" id="localAiProfileQuickSwitch" style="max-width:220px;min-width:140px"></select></label><button type="button" class="btn btn-sm" id="localAiSessionPromptBtn" title="' + esc(t('hostAi.barSessionPromptTitle')) + '">' + esc(t('ai.promptButtonShort')) + '</button><button type="button" class="btn btn-sm" id="localAiClearChat">' + esc(t('hostAi.clearChat')) + '</button><span class="host-ai-clear-n"><input type="number" id="localAiClearN" min="1" value="10" style="width:84px">' + esc(t('hostAi.clearN')) + '</span><button type="button" class="btn btn-sm" id="localAiClearLastN">' + esc(t('hostAi.clearGtN')) + '</button><button type="button" class="btn btn-sm" id="localAiExportMd">' + esc(t('hostAi.exportMd')) + '</button><button type="button" class="btn btn-sm" id="localAiToggleTerminalBtn">' + esc(t('hostAi.hideTerminal')) + '</button><button type="button" class="btn btn-sm btn-primary" id="localAiNewSession">' + esc(t('hostAi.newSession')) + '</button></div>'
         + '<div id="localAiSessionPromptModal" class="modal-overlay" style="display:none"><div class="modal modal-session-prompt"><div class="modal-header"><span>' + esc(t('hostAi.sessionPromptTitle')) + '</span><button type="button" class="modal-close" id="localAiSessionPromptClose">&times;</button></div><div class="modal-body"><div class="session-prompt-toolbar"><button type="button" class="btn btn-sm active" id="localAiSessionPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm" id="localAiSessionPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button></div><div id="localAiSessionPromptEditWrap"><textarea id="localAiSessionPromptText" class="form-control" rows="6" placeholder="' + esc(t('hostAi.sessionPromptPlaceholder')) + '"></textarea></div><div id="localAiSessionPromptPreview" class="session-prompt-preview" style="display:none"></div><div class="modal-actions" style="margin-top:8px"><button type="button" class="btn btn-sm btn-primary" id="localAiSessionPromptSave">' + esc(t('hostAi.sessionPromptSave')) + '</button><button type="button" class="btn btn-sm" id="localAiSessionPromptCancel">' + esc(t('hostAi.sessionPromptClose')) + '</button></div></div></div></div>'
         + '<div class="chat-messages" id="localMessages"></div>'
         + '<div class="chat-input-area"><label class="chat-low-interaction-toggle" title="' + esc(t('hostAi.lowInteractionTitle')) + '"><input type="checkbox" id="localLowInteractionToggle"> ' + esc(t('hostAi.lowInteractionLabel')) + '</label><textarea class="form-control chat-input-multiline" id="localInput" rows="1" enterkeyhint="send" spellcheck="false"></textarea><button class="btn btn-primary" id="localSend">' + esc(t('hostAi.send')) + '</button><button type="button" class="btn btn-sm" id="localNewSessionBtn">' + esc(t('hostAi.newSession')) + '</button></div>'
@@ -12287,6 +12652,7 @@ function renderLocalPage() {
         var _lm = document.getElementById('localMessages');
         if (_lm) edgeopsBindChatStickToBottom(_lm);
     })();
+    edgeopsMountAiProfileQuickSwitch(document.getElementById('localAiProfileQuickSwitch'));
     var currentSessionId = null;
     var localAiFirstLoad = true;
     var localAiLogBuffer = [];
@@ -14921,6 +15287,8 @@ Router.register('/ai', renderAIPage);
 Router.register('/ai-mobile', renderAIMobilePage);
 Router.register('/mcp-servers', renderMcpConfigPage);
 Router.register('/skills', renderUserSkillsPage);
+Router.register('/model-config', renderModelConfigPage);
+Router.register('/settings/model-config', function() { Router.navigate('/model-config'); });
 Router.register('/settings', renderSettings);
 Router.register('/feedback', renderFeedbackPage);
 Router.register('/feedback/admin', renderFeedbackAdminPage);

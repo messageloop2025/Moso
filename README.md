@@ -81,7 +81,7 @@ AI 发展太快，想跟上节奏，却常常感到吃力。这个项目是我�
 - **文件系统**：`web/fs/<用户名>` 私有空间；远程 SFTP 浏览与编辑。
 - **本机管理**（管理员）：宿主机 shell、进程、文件。
 - **API Token**、**个人 SMTP**、**网页/代码搜索**配置、**仪表盘**、**操作日志**（按角色过滤）。
-- **系统设置**：全局项 +「我的 AI 配置」；管理员管理用户、邮件模板、共享 Key 配额等。
+- **系统设置**：全局项（显示语言、站点 SMTP 占位、搜索服务等）；**模型配置**（`/model-config`，每用户多组 AI Profile）；管理员管理用户、邮件模板、共享 Key 配额等。
 
 ## 技术栈
 
@@ -89,7 +89,7 @@ AI 发展太快，想跟上节奏，却常常感到吃力。这个项目是我�
 |----|------|
 | 后端 | FastAPI、aiosqlite、Paramiko（SSH/SFTP）、OpenAI 兼容 LLM 客户端 |
 | 前端 | 原生 JS SPA（无打包器）、深色主题 CSS、xterm.js、ECharts / Mermaid / Markmap |
-| 数据 | SQLite（WAL）、`database/migrations/` 版本化升级（当前 **schema v31**，脚本 **000–030**） |
+| 数据 | SQLite（WAL）、`database/migrations/` 版本化升级（当前 **schema v32**，脚本 **000–031**） |
 | 默认端口 | **8010**（与常见 8000 区分） |
 
 ## 快速开始
@@ -137,13 +137,13 @@ docker compose -f docker/docker-compose.yml up -d --build
 
 浏览器访问 `http://localhost:8010`，默认管理员：**admin** / **admin123**（首次建库后请尽快修改密码）。
 
-首次使用请在登录后配置 **「系统设置 → 我的 AI 配置」**（Base URL、API Key、模型）；无有效模型时 AI 助手与任务类能力不可用。
+首次使用请在登录后打开侧栏 **「模型配置」**（`/model-config`），填写 Base URL、API Key、模型；可创建多组配置并切换「当前使用」。无有效模型时 AI 助手与任务类能力不可用。
 
 ## 数据库：全新安装与升级
 
 | 场景 | 命令 |
 |------|------|
-| **全新空库**（含默认 admin，schema v31） | `python scripts/bootstrap_fresh_db.py`（已有库加 `--force`） |
+| **全新空库**（含默认 admin，schema v32） | `python scripts/bootstrap_fresh_db.py`（已有库加 `--force`） |
 | **已有库升级** | `python scripts/migrate_db.py` 或**直接启动应用**（启动时自动迁移） |
 | **应用启动策略** | 无库 / 空库 → 完整初始化；已识别 毛竹 库 → 仅跑未执行的迁移；指向含陌生表的 SQLite → **拒绝启动** |
 | **重新生成 fresh_install.sql** | 修改 `database/migrations/` 后：`python scripts/regenerate_fresh_install_sql.py` |

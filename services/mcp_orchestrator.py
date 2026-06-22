@@ -304,6 +304,27 @@ async def _run_sub_agent_task(task_id: int) -> None:
     if task.get("host_id"):
         system += f"优先操作 host_id={task['host_id']}。\n"
     system += f"\n任务指令：\n{instruction}\n"
+    try:
+        from api.ai_agent import _build_active_model_runtime_ctx, _resolve_context_budget_chars
+
+        try:
+            _ctx_cfg = int(settings.get("ai_context_size") or "0")
+        except (TypeError, ValueError):
+            _ctx_cfg = 0
+        _ctx_budget = _resolve_context_budget_chars(_ctx_cfg, settings)
+        system += "\n\n" + await _build_active_model_runtime_ctx(
+            db,
+            int(user["id"]),
+            settings=settings,
+            base_url=base_url,
+            provider=provider,
+            model=normalize_model(provider, settings.get("ai_model") or ""),
+            context_configured=_ctx_cfg,
+            context_budget_chars=_ctx_budget,
+            trial_info=None,
+        )
+    except Exception:
+        pass
 
     messages: list[dict] = [
         {"role": "system", "content": system},
@@ -485,6 +506,27 @@ async def run_mcp_orchestrate_chat(
 {_MCP_ORCHESTRATE_RULES}
 当前 MCP 编排会话 ID={sid}；后台运行中任务数={running}。
 只输出一个 JSON 对象，不要其它文字。"""
+    try:
+        from api.ai_agent import _build_active_model_runtime_ctx, _resolve_context_budget_chars
+
+        try:
+            _ctx_cfg = int(settings.get("ai_context_size") or "0")
+        except (TypeError, ValueError):
+            _ctx_cfg = 0
+        _ctx_budget = _resolve_context_budget_chars(_ctx_cfg, settings)
+        planner_system += "\n\n" + await _build_active_model_runtime_ctx(
+            db,
+            int(user["id"]),
+            settings=settings,
+            base_url=base_url,
+            provider=provider,
+            model=normalize_model(provider, settings.get("ai_model") or ""),
+            context_configured=_ctx_cfg,
+            context_budget_chars=_ctx_budget,
+            trial_info=None,
+        )
+    except Exception:
+        pass
 
     api_url = ensure_chat_completions_url(base_url)
     model = normalize_model(provider, settings.get("ai_model") or "")

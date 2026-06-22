@@ -81,7 +81,7 @@ The frontier talks about long-running agents, but I believe **AI assists people;
 - **Filesystem:** `web/fs/<username>` private space; remote SFTP browse and edit.
 - **Local host management** (admin): host shell, processes, files.
 - **API tokens**, **personal SMTP**, **web/code search** config, **dashboard**, **audit logs** (filtered by role).
-- **Settings:** global options + “My AI config”; admin manages users, mail templates, shared key quota, etc.
+- **Settings:** global options (display language, search, etc.); **Model config** (`/model-config`, multiple AI profiles per user); admin manages users, mail templates, shared key quota, etc.
 
 ## Tech stack
 
@@ -89,7 +89,7 @@ The frontier talks about long-running agents, but I believe **AI assists people;
 |-------|--------|
 | Backend | FastAPI, aiosqlite, Paramiko (SSH/SFTP), OpenAI-compatible LLM client |
 | Frontend | Vanilla JS SPA (no bundler), dark theme CSS, xterm.js, ECharts / Mermaid / Markmap |
-| Data | SQLite (WAL), versioned `database/migrations/` (currently **schema v31**, scripts **000–030**) |
+| Data | SQLite (WAL), versioned `database/migrations/` (currently **schema v32**, scripts **000–031**) |
 | Default port | **8010** (distinct from common 8000) |
 
 ## Quick start
@@ -137,13 +137,13 @@ To publish to Hub, use `publish-docker-hub.bat` at the repo root.
 
 Open `http://localhost:8010`. Default admin: **admin** / **admin123** (change the password right after first login).
 
-Configure **Settings → My AI config** (Base URL, API Key, model) after login; without a working model, the AI assistant and task features are unavailable.
+After login, open **Model config** (`/model-config`) in the sidebar and set Base URL, API Key, and model. You can maintain multiple profiles and pick which one is active. Without a working model, the AI assistant and task features are unavailable.
 
 ## Database: fresh install and upgrade
 
 | Scenario | Command |
 |----------|---------|
-| **Fresh empty DB** (default admin, schema v31) | `python scripts/bootstrap_fresh_db.py` (use `--force` if a DB file already exists) |
+| **Fresh empty DB** (default admin, schema v32) | `python scripts/bootstrap_fresh_db.py` (use `--force` if a DB file already exists) |
 | **Upgrade existing DB** | `python scripts/migrate_db.py` or **start the app** (migrations run on startup) |
 | **Startup behavior** | No DB / empty → full init; recognized Moso DB → pending migrations only; SQLite with unknown tables → **refuse to start** |
 | **Regenerate fresh_install.sql** | After editing `database/migrations/`: `python scripts/regenerate_fresh_install_sql.py` |
