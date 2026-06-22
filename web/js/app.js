@@ -11775,6 +11775,7 @@ function edgeopsAiConfigFormRows(idPrefix) {
         + '<tr><td>' + esc(t('settings.aiForm.model')) + '</td><td><input type="text" class="form-control" id="' + p + 'Model" placeholder="' + esc(t('settings.aiForm.modelPh')) + '"></td></tr>'
         + '<tr><td>' + esc(t('settings.aiForm.context')) + '</td><td><select class="form-control" id="' + p + 'ContextSize" style="max-width:180px"></select> <input type="number" class="form-control" id="' + p + 'ContextSizeManual" placeholder="' + esc(t('settings.aiForm.contextManualPh')) + '" min="0" max="8388608" step="1000" style="width:120px;display:inline-block;margin-left:4px"> <span class="inline-hint">' + t('settings.aiForm.contextHelp') + '</span></td></tr>'
         + '<tr><td>' + esc(t('settings.aiForm.autoApprove')) + '</td><td><label><input type="checkbox" id="' + p + 'AutoApprove"> ' + esc(t('settings.aiForm.autoApproveLabel')) + '</label></td></tr>'
+        + '<tr><td>' + esc(t('settings.aiForm.assistantEnabled')) + '</td><td><label><input type="checkbox" id="' + p + 'AssistantEnabled"> ' + esc(t('settings.aiForm.assistantEnabledLabel')) + '</label> <span class="inline-hint">' + t('settings.aiForm.assistantEnabledHelp') + '</span></td></tr>'
         + '<tr><td>' + esc(t('settings.aiForm.vision')) + '</td><td><label><input type="checkbox" id="' + p + 'VisionEnabled" checked> ' + esc(t('settings.aiForm.visionLabel')) + '</label> <span class="inline-hint">' + t('settings.aiForm.visionHelp') + '</span></td></tr>'
         + '<tr><td>' + esc(t('settings.aiForm.outputLocale')) + '</td><td><select class="form-control" id="' + p + 'OutputLocale" style="max-width:220px"><option value="">' + esc(t('settings.aiForm.outputLocaleAuto')) + '</option><option value="zh-CN">' + esc(t('settings.aiForm.outputLocaleZh')) + '</option><option value="en">' + esc(t('settings.aiForm.outputLocaleEn')) + '</option></select> <span class="inline-hint">' + t('settings.aiForm.outputLocaleHelp') + '</span></td></tr>'
         + '<tr><td>' + esc(t('settings.aiForm.agentMax')) + '</td><td><input type="number" class="form-control" id="' + p + 'AgentMaxSteps" min="0" max="1000" step="1" placeholder="' + esc(t('settings.aiForm.agentPh')) + '" style="max-width:160px"> <span class="text-muted" id="' + p + 'AgentMaxStepsHint" style="margin-left:8px;font-size:12px"></span></td></tr>'
@@ -11839,6 +11840,7 @@ function edgeopsFillAiConfigForm(idPrefix, c, meta) {
     var ctxEl = document.getElementById(idPrefix + 'ContextSize');
     var ctxManualEl = document.getElementById(idPrefix + 'ContextSizeManual');
     var autoEl = document.getElementById(idPrefix + 'AutoApprove');
+    var asstEl = document.getElementById(idPrefix + 'AssistantEnabled');
     var visEl = document.getElementById(idPrefix + 'VisionEnabled');
     var outLocEl = document.getElementById(idPrefix + 'OutputLocale');
     var amsEl = document.getElementById(idPrefix + 'AgentMaxSteps');
@@ -11847,6 +11849,7 @@ function edgeopsFillAiConfigForm(idPrefix, c, meta) {
     if (urlEl) urlEl.value = c.base_url || '';
     if (modelEl) modelEl.value = c.model || '';
     if (autoEl) autoEl.checked = !!c.auto_approve;
+    if (asstEl) asstEl.checked = !!c.assistant_enabled;
     if (visEl) visEl.checked = (c.vision_enabled === undefined) ? true : !!c.vision_enabled;
     if (outLocEl) {
         var _olv = c.output_locale || '';
@@ -11908,6 +11911,7 @@ function edgeopsCollectAiConfigPayload(idPrefix, meta) {
         context_size: Math.max(0, ctxVal),
         provider: providerVal,
         auto_approve: !!(document.getElementById(idPrefix + 'AutoApprove') && document.getElementById(idPrefix + 'AutoApprove').checked),
+        assistant_enabled: !!(document.getElementById(idPrefix + 'AssistantEnabled') && document.getElementById(idPrefix + 'AssistantEnabled').checked),
         vision_enabled: visEl ? !!visEl.checked : true,
         agent_max_steps: amsVal,
         assistant_max_rounds: amrVal,
@@ -12378,6 +12382,7 @@ function renderSettings() {
                 + '<tr><td>' + esc(t('settings.admin.model')) + '</td><td><input type="text" class="form-control" id="aiCfgUserModel" placeholder="' + esc(t('settings.admin.modelPh')) + '" style="max-width:280px"></td></tr>'
                 + '<tr><td>' + esc(t('settings.admin.context')) + '</td><td><select class="form-control" id="aiCfgUserContextSize" style="max-width:180px"></select> <input type="number" class="form-control" id="aiCfgUserContextSizeManual" placeholder="' + esc(t('settings.admin.contextManualPh')) + '" min="0" max="8388608" step="1000" style="width:120px;display:inline-block;margin-left:4px"></td></tr>'
                 + '<tr><td>' + esc(t('settings.admin.autoApprove')) + '</td><td><label><input type="checkbox" id="aiCfgUserAutoApprove"> ' + esc(t('settings.admin.autoEnable')) + '</label></td></tr>'
+                + '<tr><td>' + esc(t('settings.aiForm.assistantEnabled')) + '</td><td><label><input type="checkbox" id="aiCfgUserAssistantEnabled"> ' + esc(t('settings.aiForm.assistantEnabledLabel')) + '</label> <span class="inline-hint">' + t('settings.aiForm.assistantEnabledHelp') + '</span></td></tr>'
                 + '<tr><td>' + esc(t('settings.admin.vision')) + '</td><td><label><input type="checkbox" id="aiCfgUserVisionEnabled" checked> ' + esc(t('settings.admin.visionLabel')) + '</label> <span class="inline-hint">' + t('settings.admin.visionHelp') + '</span></td></tr>'
                 + '<tr><td>' + esc(t('settings.aiForm.outputLocale')) + '</td><td><select class="form-control" id="aiCfgUserOutputLocale" style="max-width:220px"><option value="">' + esc(t('settings.aiForm.outputLocaleAuto')) + '</option><option value="zh-CN">' + esc(t('settings.aiForm.outputLocaleZh')) + '</option><option value="en">' + esc(t('settings.aiForm.outputLocaleEn')) + '</option></select> <span class="inline-hint">' + t('settings.aiForm.outputLocaleHelp') + '</span></td></tr>'
                 + '<tr><td>' + esc(t('settings.admin.agentMax')) + '</td><td><input type="number" class="form-control" id="aiCfgUserAgentMaxSteps" min="0" max="1000" step="1" placeholder="' + esc(t('settings.admin.agentPh')) + '" style="max-width:160px"> <span class="text-muted" id="aiCfgUserAgentMaxStepsHint" style="margin-left:8px;font-size:12px">' + t('settings.admin.agentHint', { def: 100, cap: 1000 }) + '</span></td></tr>'
@@ -12470,10 +12475,12 @@ function renderSettings() {
                 var urlU = document.getElementById('aiCfgUserBaseUrl');
                 var modelU = document.getElementById('aiCfgUserModel');
                 var autoU = document.getElementById('aiCfgUserAutoApprove');
+                var asstU = document.getElementById('aiCfgUserAssistantEnabled');
                 if (keyU) keyU.value = c.api_key || '';
                 if (urlU) urlU.value = c.base_url || '';
                 if (modelU) modelU.value = c.model || '';
                 if (autoU) autoU.checked = !!c.auto_approve;
+                if (asstU) asstU.checked = !!c.assistant_enabled;
                 var visU = document.getElementById('aiCfgUserVisionEnabled');
                 if (visU) visU.checked = (c.vision_enabled === undefined) ? true : !!c.vision_enabled;
                 var outLocU = document.getElementById('aiCfgUserOutputLocale');
@@ -12532,6 +12539,7 @@ function renderSettings() {
                     context_size: Math.max(0, ctxVal),
                     provider: providerVal,
                     auto_approve: !!(document.getElementById('aiCfgUserAutoApprove') && document.getElementById('aiCfgUserAutoApprove').checked),
+                    assistant_enabled: !!(document.getElementById('aiCfgUserAssistantEnabled') && document.getElementById('aiCfgUserAssistantEnabled').checked),
                     vision_enabled: visUSave ? !!visUSave.checked : true,
                     agent_max_steps: amsUVal,
                     assistant_max_rounds: amrUVal,

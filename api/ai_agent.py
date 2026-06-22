@@ -2845,7 +2845,7 @@ class AIConfigRequest(BaseModel):
     model: str = ""
     system_prompt: str = ""
     auto_approve: bool = False
-    assistant_enabled: bool = False
+    assistant_enabled: bool | None = None  # None=保存时不改；显式 true/false 才写入 Profile
     context_size: int = 0  # 聊天上下文总字符数上限，0 表示不限制
     provider: str = ""  # AI 源类型：aliyun/ollama/openai，空表示按 base_url 自动探测
     # AI 多轮执行控制：0 表示沿用全局默认（config.AGENT_MAX_STEPS / ASSISTANT_MAX_ROUNDS）
@@ -3133,13 +3133,12 @@ def _profile_fields_from_ai_config_request(req: AIConfigRequest) -> dict:
     out_loc = (getattr(req, "output_locale", None) or "").strip()
     if out_loc not in ("", "en", "zh-CN"):
         out_loc = ""
-    return {
+    out = {
         "api_key": (req.api_key or "").strip(),
         "base_url": (req.base_url or "").strip().rstrip("/"),
         "model": (req.model or "").strip(),
         "system_prompt": (req.system_prompt or "").strip(),
         "auto_approve": req.auto_approve,
-        "assistant_enabled": getattr(req, "assistant_enabled", False),
         "context_size": ctx,
         "provider": provider,
         "agent_max_steps": raw_steps,
@@ -3147,6 +3146,10 @@ def _profile_fields_from_ai_config_request(req: AIConfigRequest) -> dict:
         "vision_enabled": getattr(req, "vision_enabled", True),
         "output_locale": out_loc,
     }
+    ae = getattr(req, "assistant_enabled", None)
+    if ae is not None:
+        out["assistant_enabled"] = bool(ae)
+    return out
 
 
 def _resolve_profile_target_user(user: dict, user_id: int | None) -> int:
@@ -3569,6 +3572,14 @@ async def update_ai_config(req: AIConfigRequest, user=Depends(get_current_user))
 
     fields = _profile_fields_from_ai_config_request(req)
     await upsert_active_profile_from_config(db, target_id, fields)
+    from services.ai_model_profiles import get_active_profile_row
+
+    prof = await get_active_profile_row(db, target_id)
+    ae_legacy = (
+        (prof.get("assistant_enabled") or "false").strip().lower()
+        if prof
+        else ("true" if fields.get("assistant_enabled") else "false")
+    )
     await db.execute(
         """INSERT INTO user_ai_config (user_id, api_key, base_url, model, system_prompt, auto_approve, assistant_enabled, context_size, agent_max_steps, assistant_max_rounds, provider, vision_enabled, ai_output_locale, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -3585,7 +3596,7 @@ async def update_ai_config(req: AIConfigRequest, user=Depends(get_current_user))
             fields["model"],
             fields["system_prompt"],
             "true" if fields["auto_approve"] else "false",
-            "true" if fields["assistant_enabled"] else "false",
+            ae_legacy,
             str(fields["context_size"]),
             str(fields["agent_max_steps"]) if fields["agent_max_steps"] > 0 else "",
             str(fields["assistant_max_rounds"]) if fields["assistant_max_rounds"] > 0 else "",
