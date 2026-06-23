@@ -4636,7 +4636,7 @@ def _build_ssh_remote_execution_rules() -> str:
 `ssh_channel_create(host_id)` → 循环 `ssh_channel_send` + `ssh_channel_read_lines` / `ssh_channel_has_new` → 结束后 `ssh_channel_close`。
 同一 channel 内可顺序发多条命令；出现 sudo/密码提示时 read 后再 send 密码（勿与 sudo 同次 send）。
 
-**ssh_channel 工具链**：create / list / info / send / read_lines / read_length / has_new / close / close_batch / dump_output。输出过大时用 dump_output 或 read 的 spill，再 read_chat_data 分段读。Web 会话 channel 默认空闲 **300s** 自动关；集成会话 **600s**。
+**ssh_channel 工具链**：create / list / info / send / read_lines / read_length / has_new / close / close_batch / dump_output。输出过大时用 dump_output 或 read 的 spill，再 read_chat_data 分段读。Web 会话 channel 默认空闲 **1800s** 自动关；集成会话 **3600s**。
 
 **Web 控制台 vs ssh_channel**：控制台 tab 面向**用户可见**；ssh_channel 面向**后台 PTY 会话**（用户不打开终端也能跑交互流程）。可并存：例如 channel 跑编译，控制台给用户看另一条 tail 日志。
 
@@ -6913,7 +6913,7 @@ _OPS_INTEGRATION_MODE_RULES = """
 - 当前请求**不是**浏览器里的 AI 助手页：没有与用户屏幕同步的 SSH 控制台 WebSocket 缓冲，也**不要依赖**必须由前端先连上的 `send_to_terminal`。
 - **非交互单条命令**：`ssh_execute`（长且无交互的任务可用 detach + poll_log）。
 - **多条顺序命令 / 安装编译 / sudo 密码 / 菜单 / vi / Ctrl+C**：**ssh_channel_***（create → send → read/has_new → close）。**ssh_channel 在 AI 助手/主机详情同样可用**；集成模式因无 Web tab 更应优先 channel 而非假装能用界面终端。
-- **ssh_channel 自管理**：ssh_channel_list(all_open=true) 列全部 open 通道；info 含 IP/别名/用途/主机提示词摘要；close 手工关；集成会话默认 **600s** 无读写自动关（Web 浏览器会话创建仍为 300s）。
+- **ssh_channel 自管理**：ssh_channel_list(all_open=true) 列全部 open 通道；info 含 IP/别名/用途/主机提示词摘要；close 手工关；集成会话默认 **3600s** 无读写自动关（Web 浏览器会话创建仍为 1800s）。
 - **大输出**：read_lines/read_length/dump_output 过大时 spill 到用户文件区，用 read_chat_data 分段读。
 - 若工具返回 ui_action（connect_terminal 等），在集成模式下说明「无实时 Web 界面」，改用 ssh_channel_* 或 ssh_execute。
 - 仍须遵守：凡真实执行必须通过 tool_call，禁止仅在文字中声称已执行。

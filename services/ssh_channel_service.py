@@ -16,9 +16,9 @@ from services.ssh_channel_manager import (
 
 logger = logging.getLogger("edgeops.ssh_channel_service")
 
-SSH_CHANNEL_WEB_IDLE_CLOSE_SEC = int(getattr(config, "SSH_CHANNEL_WEB_IDLE_CLOSE_SEC", 300))
+SSH_CHANNEL_WEB_IDLE_CLOSE_SEC = int(getattr(config, "SSH_CHANNEL_WEB_IDLE_CLOSE_SEC", 1800))
 SSH_CHANNEL_INTEGRATION_IDLE_CLOSE_SEC = int(
-    getattr(config, "SSH_CHANNEL_INTEGRATION_IDLE_CLOSE_SEC", 600)
+    getattr(config, "SSH_CHANNEL_INTEGRATION_IDLE_CLOSE_SEC", 3600)
 )
 SSH_CHANNEL_OUTPUT_SPILL_MIN_CHARS = int(
     getattr(config, "SSH_CHANNEL_OUTPUT_SPILL_MIN_CHARS", 8000)

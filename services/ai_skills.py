@@ -1399,7 +1399,7 @@ TOOLS = [
                 "创建 SSH **PTY 交互通道**（真实 TTY），用于**多条顺序命令**、编译、安装环境、sudo 密码、菜单、vi、Ctrl+C 等。"
                 "**AI 助手、主机详情、OpenClaw/API 集成、MCP 均可用**（不仅限于集成）。"
                 "流程：create → send → read_lines/has_new → … → close。"
-                "Web 会话默认空闲 300s 关断；集成会话默认 600s。"
+                "Web 会话默认空闲 1800s 关断；集成会话默认 3600s。"
                 "用户需要在界面**边看边操作**时，可改用 Web 控制台 send_to_terminal；后台自动化优先本工具。"
             ),
             "parameters": {
@@ -1410,7 +1410,7 @@ TOOLS = [
                     "owner_id": {"type": "string", "description": "会话 ID 或任务 ID；省略时由系统绑定当前会话/终端 scope"},
                     "input_timeout_sec": {"type": "integer", "description": "输入超时秒数，可选"},
                     "output_timeout_sec": {"type": "integer", "description": "输出超时秒数，可选"},
-                    "idle_close_sec": {"type": "integer", "description": "空闲多少秒后自动关闭；省略时 Web 300 / 集成 600"},
+                    "idle_close_sec": {"type": "integer", "description": "空闲多少秒后自动关闭；省略时 Web 1800 / 集成 3600"},
                 },
                 "required": ["host_id"],
             },

@@ -59,7 +59,7 @@ class ChannelState:
     _recv_buffer: str = ""  # 未满一行的剩余数据
     last_input_time: float = field(default_factory=time.monotonic)
     last_output_time: float = field(default_factory=time.monotonic)
-    idle_close_sec: Optional[int] = 300
+    idle_close_sec: Optional[int] = 1800
     input_timeout_sec: Optional[int] = None
     output_timeout_sec: Optional[int] = None
     stop_event: threading.Event = field(default_factory=threading.Event)
@@ -254,7 +254,7 @@ class SSHChannelManager:
         auth: dict,
         max_lines: int = DEFAULT_MAX_LINES,
         line_width: int = DEFAULT_LINE_WIDTH,
-        idle_close_sec: Optional[int] = 300,
+        idle_close_sec: Optional[int] = 1800,
         input_timeout_sec: Optional[int] = None,
         output_timeout_sec: Optional[int] = None,
     ) -> Optional[str]:

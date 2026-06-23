@@ -9,7 +9,7 @@ PRODUCT_NAME_ZH = "毛竹"
 PRODUCT_NAME_EN = "Moso"
 PRODUCT_DISPLAY = f"{PRODUCT_NAME_ZH}（{PRODUCT_NAME_EN}）"  # AI 提示词中的产品指称
 
-VERSION = os.getenv("EDGEOPS_VERSION", "1.4.6")
+VERSION = os.getenv("EDGEOPS_VERSION", "1.4.7")
 
 # 数据库 / Database
 DATABASE_PATH = os.getenv("EDGEOPS_DB", str(BASE_DIR / "edgeops.db"))
@@ -70,9 +70,9 @@ ASSISTANT_MAX_ROUNDS_CAP = int(os.getenv("EDGEOPS_ASSISTANT_MAX_ROUNDS_CAP", "10
 SSH_LEGACY_RSA = os.getenv("EDGEOPS_SSH_LEGACY_RSA", "true").strip().lower() in ("1", "true", "yes")
 # 优先使用 legacy ssh-rsa（已知 OpenWrt/dropbear 仅支持 ssh-rsa 时可设为 true）
 SSH_TRY_LEGACY_RSA_FIRST = os.getenv("EDGEOPS_SSH_TRY_LEGACY_RSA_FIRST", "false").strip().lower() in ("1", "true", "yes")
-# SSH Channel：Web 浏览器会话默认空闲关断（秒）；集成/OpenClaw 默认 600（10 分钟）
-SSH_CHANNEL_WEB_IDLE_CLOSE_SEC = int(os.getenv("EDGEOPS_SSH_CHANNEL_WEB_IDLE_CLOSE_SEC", "300"))
-SSH_CHANNEL_INTEGRATION_IDLE_CLOSE_SEC = int(os.getenv("EDGEOPS_SSH_CHANNEL_INTEGRATION_IDLE_CLOSE_SEC", "600"))
+# SSH Channel：Web 浏览器会话默认空闲关断（秒）；集成/OpenClaw 默认 3600（60 分钟）
+SSH_CHANNEL_WEB_IDLE_CLOSE_SEC = int(os.getenv("EDGEOPS_SSH_CHANNEL_WEB_IDLE_CLOSE_SEC", "1800"))
+SSH_CHANNEL_INTEGRATION_IDLE_CLOSE_SEC = int(os.getenv("EDGEOPS_SSH_CHANNEL_INTEGRATION_IDLE_CLOSE_SEC", "3600"))
 SSH_CHANNEL_OUTPUT_SPILL_MIN_CHARS = int(os.getenv("EDGEOPS_SSH_CHANNEL_OUTPUT_SPILL_MIN_CHARS", "8000"))
 SSH_CHANNEL_READ_PREVIEW_CHARS = int(os.getenv("EDGEOPS_SSH_CHANNEL_READ_PREVIEW_CHARS", "4000"))
 # 未配置个人 API Key 的用户使用系统 KEY 时的调用次数上限；达上限后提示联系管理员或配置自己的 AI

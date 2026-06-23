@@ -43,13 +43,13 @@ class SSHChannelCreate(BaseModel):
     owner_id: str = ""
     session_id: Optional[int] = Field(
         default=None,
-        description="集成/OpenClaw 会话 ID；设置后 owner 绑定为该 session，默认空闲关断 600s",
+        description="集成/OpenClaw 会话 ID；设置后 owner 绑定为该 session，默认空闲关断 3600s",
     )
     input_timeout_sec: Optional[int] = None
     output_timeout_sec: Optional[int] = None
     idle_close_sec: Optional[int] = Field(
         default=None,
-        description="空闲自动关断秒数；省略时 Web 终端会话默认 300，集成 session_id 默认 600",
+        description="空闲自动关断秒数；省略时 Web 终端会话默认 1800，集成 session_id 默认 3600",
     )
 
 
