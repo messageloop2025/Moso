@@ -730,10 +730,18 @@ function edgeopsIsMarkdownTableSeparatorLine(line) {
     return /^[|\s:\-]+$/.test(t);
 }
 
+/** 流式输出中分隔行尚未收齐（如 `|---`）时也识别为表格尾部。 */
+function edgeopsIsPartialMarkdownTableSeparatorLine(line) {
+    var t = String(line || '').trim();
+    if (!t || t.indexOf('-') === -1) return false;
+    if (edgeopsIsMarkdownTableSeparatorLine(t)) return true;
+    return /^[\|\s:\-]+$/.test(t);
+}
+
 function edgeopsIsMarkdownTableRowLine(line) {
     var t = String(line || '').trim();
     if (!t || t.indexOf('|') === -1) return false;
-    return /^\|.+\|$/.test(t) || /^\|/.test(t);
+    return /^\|.+\|?$/.test(t) || /^\|/.test(t);
 }
 
 function edgeopsParseMarkdownTableRowCells(row) {
@@ -854,7 +862,7 @@ function edgeopsExtractTrailingIncompleteMarkdownTable(text) {
     while (start >= 0) {
         var trimmed = String(lines[start] || '').trim();
         if (!trimmed) break;
-        if (edgeopsIsMarkdownTableRowLine(trimmed) || edgeopsIsMarkdownTableSeparatorLine(trimmed)) {
+        if (edgeopsIsMarkdownTableRowLine(trimmed) || edgeopsIsMarkdownTableSeparatorLine(trimmed) || edgeopsIsPartialMarkdownTableSeparatorLine(trimmed)) {
             start--;
             continue;
         }
@@ -865,7 +873,8 @@ function edgeopsExtractTrailingIncompleteMarkdownTable(text) {
     if (block.length < 2) return null;
     var headerLine = String(block[0] || '').trim();
     var sepLine = String(block[1] || '').trim();
-    if (!edgeopsIsMarkdownTableRowLine(headerLine) || !edgeopsIsMarkdownTableSeparatorLine(sepLine)) return null;
+    var sepOk = edgeopsIsMarkdownTableSeparatorLine(sepLine) || edgeopsIsPartialMarkdownTableSeparatorLine(sepLine);
+    if (!edgeopsIsMarkdownTableRowLine(headerLine) || !sepOk) return null;
     var rowLines = block.slice(2);
     var prefix = lines.slice(0, start).join('\n');
     var suffixNewline = (text.endsWith('\n') ? '\n' : '');
@@ -1074,6 +1083,16 @@ function formatMarkdown(text) {
     return markdownToHtml(text);
 }
 
+/** 剥离模型误写入正文/推理的 XML 工具调用标签（Qwen 等）。 */
+function edgeopsSanitizeLeakedToolMarkup(text) {
+    if (text == null || text === '') return '';
+    var s = String(text);
+    s = s.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '');
+    s = s.replace(/<\/?(?:tool_call|function|parameter|arguments|invoke|tool)\b[^>]*>/gi, '');
+    s = s.replace(/(?:<\/?(?:tool_call|function|parameter|arguments)\b[^>]*>)+\s*$/gi, '');
+    return s;
+}
+
 /** 文末是否为正在生成的 Markdown 表格（用于流式增量渲染）。 */
 function edgeopsSplitTextAndTailMarkdownTable(text) {
     var trailing = edgeopsExtractTrailingIncompleteMarkdownTable(text || '');
@@ -1115,7 +1134,7 @@ function edgeopsScanMarkdownTableFrom(text, start) {
     var header = String(lines[0] || '').trim();
     if (!edgeopsIsMarkdownTableRowLine(header)) return null;
     var sep = lines.length > 1 ? String(lines[1] || '').trim() : '';
-    if (!edgeopsIsMarkdownTableSeparatorLine(sep)) return null;
+    if (!sep || (!edgeopsIsMarkdownTableSeparatorLine(sep) && !edgeopsIsPartialMarkdownTableSeparatorLine(sep))) return null;
     var endLine = 2;
     while (endLine < lines.length) {
         var t = String(lines[endLine] || '').trim();
@@ -1124,6 +1143,9 @@ function edgeopsScanMarkdownTableFrom(text, start) {
         endLine++;
     }
     var complete = endLine < lines.length;
+    if (!complete && endLine >= 2 && endLine === lines.length && edgeopsIsMarkdownTableSeparatorLine(String(lines[1] || '').trim())) {
+        complete = true;
+    }
     var consumed = 0;
     for (var i = 0; i < endLine; i++) {
         consumed += lines[i].length + (i < endLine - 1 ? 1 : 0);
@@ -1559,6 +1581,7 @@ function edgeopsFormatMarkdownStreaming(text, mountEl) {
 
 if (typeof window !== 'undefined') {
     window.formatMarkdown = formatMarkdown;
+    window.edgeopsSanitizeLeakedToolMarkup = edgeopsSanitizeLeakedToolMarkup;
     window.edgeopsRenderStreamIncremental = edgeopsRenderStreamIncremental;
     window.edgeopsRenderStreamPlainText = edgeopsRenderStreamPlainText;
     window.edgeopsClearStreamIncrementalState = edgeopsClearStreamIncrementalState;

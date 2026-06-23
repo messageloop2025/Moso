@@ -114,12 +114,27 @@ def _host_dim_remote_data_processing_rules(session_host_id: int) -> str:
         "为处理日志、大批量数据、复杂解析/聚合而生成的 **.py、.sh** 等脚本，**必须在当前会话这台远程主机上执行**，"
         f"**禁止**在运行{_config.PRODUCT_DISPLAY}的应用服务器本机执行（不要使用 `local_exec`、`local_run_script`、`local_fs_*` 等本机专用工具处理本场景；"
         "即使模型在历史上下文中见过这些名称，在当前会话也不要调用）。\n"
-        "推荐流程：`fs_write_file` 先写在用户 **web/fs** → `scp_push` 上传到当前主机（路径宜在 **`/tmp/`** 下，如 `/tmp/edgeops-<简述>.sh`）→ "
-        f"**`ssh_execute(host_id={hid}, …)`** 或 **已打开的 SSH 控制台**（`send_to_terminal`）在远端执行。\n"
+        "推荐流程：`fs_write_file` 先写在用户**文件系统工作区** → `scp_push` 上传到当前主机（路径宜在 **`/tmp/`** 下，如 `/tmp/edgeops-<简述>.sh`）→ "
+        f"**`ssh_execute(host_id={hid}, …)`**（单条命令）、**`ssh_channel_*`**（多步/交互）或 **Web SSH 控制台**（`send_to_terminal`，用户需边看时）在远端执行。\n"
         "脚本运行时的**大段输出、中间 CSV/JSON、临时下载、解压目录**等，**优先写到远端 `/tmp/`**"
         "（建议使用独占子目录，如 `/tmp/edgeops-work-<YYYYMMDD>-<任务简述>/`，避免污染业务数据目录；任务结束后可提醒用户按需清理）。\n"
         f"若需拉回{_config.PRODUCT_DISPLAY}侧用 `data_query`/本地工具继续分析，用 **`scp_pull`**（大文件/目录均支持，调用卡显示传输进度）拉到用户 **`chats/<UTC>/`**。\n"
     )
+
+
+def _build_user_fs_workspace_block(user: dict) -> str:
+    """注入当前用户文件系统工作区语义与路径约定（避免 AI 使用 OS 绝对路径或 web/fs 前缀）。"""
+    from api.filesystem import _safe_username
+
+    uname = _safe_username(user.get("username") or "default")
+    brand = _config.PRODUCT_NAME_ZH
+    return f"""## 当前用户文件系统工作区
+- 用户：**{uname}**
+- **语义映射**：用户说「文件系统」「本地文件系统」「{brand}文件系统」或侧栏「文件系统」，均指你的**个人工作区**（非远程主机磁盘、非操作系统目录）。
+- **路径规则**：`fs_*`、`scp_push`/`scp_pull` 的 `local_path`、邮件/成果物 `local_path` 等，一律传**相对工作区根**的路径，例如 `chats/2026/06/11/报告.csv`、`scripts/deploy.sh`；空或 `/` 表示根目录。
+- **禁止**：操作系统绝对路径（如 `D:\\...`、`C:\\...`、`/home/...`、`/opt/...`）；路径中**不要**写 `web/fs/`、服务端安装目录或 `{uname}/` 前缀——系统会按当前用户自动定位根目录。
+- 向用户说明文件位置时也用相对路径（如「文件系统 / chats/…/xxx.csv」），勿报服务器磁盘绝对路径。
+- 会话相关产物默认归位到 `chats/<UTC年>/<月>/<日>/`（可先 `get_chats_workspace_dir`）。"""
 
 
 def _effective_provider(settings: dict, base_url: str) -> str:
@@ -201,6 +216,34 @@ def _strip_tool_trace_sentinels(content: str) -> str:
 def _strip_assistant_embedded_sentinels(content: str) -> str:
     """剥离落库时嵌入的 UI_ACTION + TOOL_TRACE 哨兵（供历史上下文与展示清洗）。"""
     return _strip_tool_trace_sentinels(_strip_ui_action_sentinels(content or ""))
+
+
+_TOOL_MARKUP_BLOCK_RE = None
+_TOOL_MARKUP_TAG_RE = None
+_TOOL_MARKUP_TRAILING_RE = None
+
+
+def _sanitize_leaked_tool_markup(text: str) -> str:
+    """移除模型误写入正文/推理通道的 XML 工具调用片段（Qwen 等常见泄漏）。"""
+    if not text:
+        return text or ""
+    import re as _re
+
+    global _TOOL_MARKUP_BLOCK_RE, _TOOL_MARKUP_TAG_RE, _TOOL_MARKUP_TRAILING_RE
+    if _TOOL_MARKUP_BLOCK_RE is None:
+        _TOOL_MARKUP_BLOCK_RE = _re.compile(r"<tool_call>[\s\S]*?</tool_call>", _re.IGNORECASE)
+        _TOOL_MARKUP_TAG_RE = _re.compile(
+            r"</?(?:tool_call|function|parameter|arguments|invoke|tool)\b[^>]*>",
+            _re.IGNORECASE,
+        )
+        _TOOL_MARKUP_TRAILING_RE = _re.compile(
+            r"(?:</?(?:tool_call|function|parameter|arguments)\b[^>]*>)+\s*$",
+            _re.IGNORECASE,
+        )
+    cleaned = _TOOL_MARKUP_BLOCK_RE.sub("", text)
+    cleaned = _TOOL_MARKUP_TAG_RE.sub("", cleaned)
+    cleaned = _TOOL_MARKUP_TRAILING_RE.sub("", cleaned)
+    return cleaned
 
 
 def _looks_like_user_wants_continue(text: str) -> bool:
@@ -4540,7 +4583,7 @@ def _sanitize_system_prompt_local_scope(text: str, *, session_scope: str, user: 
     note = (
         "\n【会话与工具范围】本机专用工具（如 local_chat_data_paths、local_exec、create_local_console、local_fs_*、process_*）"
         "仅出现在「本机管理」会话且为管理员账号时；**当前会话不要调用这些名称**。"
-        "生成 HTML、落盘文件请用 **fs_***（web/fs 当前用户目录）或 **create_chat_artifact**。\n"
+        "生成 HTML、落盘文件请用 **fs_***（当前用户文件系统工作区）或 **create_chat_artifact**。\n"
     )
     return s[:start] + note + s[end:]
 
@@ -4562,6 +4605,8 @@ _PROMPT_ENTITY_RESOLUTION_RULES = """
 - `get_host_groups_tree(host_q=名词)` — 在分组树中定位主机集合。
 - 「当前主机列表」JSON 上下文 — 快速核对 id、name、host、**aliases**、**tag_names**、remark。
 
+**文件系统名词**：用户说「文件系统」「本地文件系统」「毛竹文件系统」或「工作区里有某文件」，均指**当前用户个人工作区**（侧栏「文件系统」），不是远程主机路径。用 `fs_list`/`fs_read_file` 等时 path **相对工作区根**，勿用 OS 绝对路径。
+
 **功能 / 能力映射（名词写在主机提示词或最佳实践里）**：
 - `search_hosts_by_prompt(query=名词, group_id?, tag_ids?)` — 在**当前用户维护的各主机级提示词**中搜索（如「Redis 主库」「装了 gh cli」「网关」「禁止重启 nginx」）。
 - 命中后对该 host_id 再调 `get_host_prompt` / `get_host_knowledge` 读全文，判断用户说的功能/服务对应哪台机、哪条操作约定。
@@ -4576,6 +4621,29 @@ _PROMPT_ENTITY_RESOLUTION_RULES = """
 """
 
 
+def _build_ssh_remote_execution_rules() -> str:
+    """ssh_execute / ssh_channel / Web 控制台分工（AI 助手、主机详情、集成/MCP 通用）。"""
+    return """
+**【远程 SSH 执行方式 · 必读】** 三种方式均可在 **AI 助手、主机详情、OpenClaw/API 集成、MCP** 等会话中使用（以当前工具列表为准），请按场景选型，勿混用：
+
+| 方式 | 适用场景 | 不适用 |
+|------|----------|--------|
+| **ssh_execute** | **单条**非交互命令（查询状态、小文件 cat、一条 pipeline 能完成的操作） | 多条需**顺序**执行的步骤；安装/编译向导；需多次输入（sudo 密码、yes/no、菜单）；vi/top 等 TTY 交互 |
+| **ssh_channel_*** | **多条顺序命令**、编译代码、安装环境、配置向导、需**多次交互**（sudo 密码、确认提示、Ctrl+C）；集成/API **无 Web 终端**时的首选交互通道 | 用户明确要求「在界面终端里看」且已开控制台时，可改用 send_to_terminal |
+| **Web 控制台**（send_to_terminal / get_terminal_buffer / create_console） | 用户需要**一边看 AI 操作、一边自己观察**输出；演示、联调、前台长期日志 | 纯后台自动化、用户不关心界面时；不必强开 tab |
+
+**ssh_execute 一次只执行一条 command**；若任务需连续多步（如 cd → configure → make → make install），**不要**拆成大量 ssh_execute 轮询，应：
+`ssh_channel_create(host_id)` → 循环 `ssh_channel_send` + `ssh_channel_read_lines` / `ssh_channel_has_new` → 结束后 `ssh_channel_close`。
+同一 channel 内可顺序发多条命令；出现 sudo/密码提示时 read 后再 send 密码（勿与 sudo 同次 send）。
+
+**ssh_channel 工具链**：create / list / info / send / read_lines / read_length / has_new / close / close_batch / dump_output。输出过大时用 dump_output 或 read 的 spill，再 read_chat_data 分段读。Web 会话 channel 默认空闲 **300s** 自动关；集成会话 **600s**。
+
+**Web 控制台 vs ssh_channel**：控制台 tab 面向**用户可见**；ssh_channel 面向**后台 PTY 会话**（用户不打开终端也能跑交互流程）。可并存：例如 channel 跑编译，控制台给用户看另一条 tail 日志。
+
+**长任务非交互**（无 sudo/菜单）：仍可用 `ssh_execute(detach=true)` + `poll_log`，或 Web 控制台 + get_terminal_buffer 轮询（见 5.1）；**有交互**的长任务优先 ssh_channel 或 Web 控制台，勿用 detach 代替交互。
+"""
+
+
 def _build_system_prompt() -> str:
     brand = _config.PRODUCT_NAME_ZH
     pd = _config.PRODUCT_DISPLAY
@@ -4584,19 +4652,22 @@ def _build_system_prompt() -> str:
         f"向用户介绍自己时**仅自称「{brand}」**（说明产品时可写{pd}），"
         f"勿称 {'Edge' + 'Ops'}、勿称「{'Edge' + 'Ops'} 的 AI 运维助手」、勿用「AI 运维助手」等其它旧称代指你自己。\n\n"
     )
-    return header + """你拥有一组工具：列出/查询主机、在主机上执行 SSH 命令、向用户当前打开的控制台注入输入、查看维护历史与主机分组；主机分享管理（share_host、revoke_host_share、list_host_shares、list_received_host_shares）；主机标签管理（list_host_tags、create_host_tag、update_host_tag、delete_host_tag、set_host_tags，标签按用户隔离）；以主机为维度的 AI 知识（get_host_knowledge / update_host_knowledge / append_host_knowledge，偏机密凭据，严禁回复中展示）；**主机级 AI 提示词**（get_host_prompt / update_host_prompt / append_host_prompt / search_hosts_by_prompt，偏可展示的主机**独有规则 / 能力 / 工具链 / 配置**，按 user×host 独立保存，可跨主机搜索）；主机侧 .edgeops 工作区（edgeops_init_workspace、edgeops_save_script、edgeops_read_workspace_context、edgeops_append_task_log、edgeops_write_rule、edgeops_write_info）；**web/fs 文件系统**（**web/fs/当前用户名** 的目录内容，用于脚本/缓存/上传到主机等）：fs_list、**get_chats_workspace_dir**（当日 chats/UTC 工作前缀）、fs_read_file（支持 offset/size）、fs_write_file（支持 overwrite/append/定位写；自动归位 chats/UTC 并加 UUID 文件名）、fs_read_binary、fs_write_binary（二进制内容支持 encoding=base64|hex）、fs_mkdir、fs_pack_tgz、fs_unpack_tgz、fs_delete、fs_copy；批量任务（batch_create、list_batch_operations、get_batch_detail、batch_cancel、batch_retry、clear_batches，支持 scope_type=tag 按标签批量）；操作日志可查询（list_logs）与清空（clear_logs）；最佳实践、凭证、用户与 AI 配置等；**操作帮助文档**（get_aihelp_index、list_aihelp_files、get_aihelp_file，仅管理员可写：write_aihelp_file、update_aihelp_index）。主机分享只共享主机访问权限，不共享双方历史聊天会话与聊天记录。
+    return header + """你拥有一组工具：列出/查询主机、在指定主机上执行 SSH（**ssh_execute** 单条命令、**ssh_channel_*** 交互式 PTY 通道、**Web 控制台** send_to_terminal/get_terminal_buffer）、查看维护历史与主机分组；主机分享管理（share_host、revoke_host_share、list_host_shares、list_received_host_shares）；主机标签管理（list_host_tags、create_host_tag、update_host_tag、delete_host_tag、set_host_tags，标签按用户隔离）；以主机为维度的 AI 知识（get_host_knowledge / update_host_knowledge / append_host_knowledge，偏机密凭据，严禁回复中展示）；**主机级 AI 提示词**（get_host_prompt / update_host_prompt / append_host_prompt / search_hosts_by_prompt，偏可展示的主机**独有规则 / 能力 / 工具链 / 配置**，按 user×host 独立保存，可跨主机搜索）；主机侧 .edgeops 工作区（edgeops_init_workspace、edgeops_save_script、edgeops_read_workspace_context、edgeops_append_task_log、edgeops_write_rule、edgeops_write_info）；**毛竹文件系统**（界面侧栏「文件系统」= 当前用户个人工作区，用于脚本/缓存/上传到主机等）：fs_list、**get_chats_workspace_dir**（当日 chats/UTC 工作前缀）、fs_read_file（支持 offset/size）、fs_write_file（支持 overwrite/append/定位写；自动归位 chats/UTC 并加 UUID 文件名）、fs_read_binary、fs_write_binary（二进制内容支持 encoding=base64|hex）、fs_mkdir、fs_pack_tgz、fs_unpack_tgz、fs_delete、fs_copy；批量任务（batch_create、list_batch_operations、get_batch_detail、batch_cancel、batch_retry、clear_batches，支持 scope_type=tag 按标签批量）；操作日志可查询（list_logs）与清空（clear_logs）；最佳实践、凭证、用户与 AI 配置等；**操作帮助文档**（get_aihelp_index、list_aihelp_files、get_aihelp_file，仅管理员可写：write_aihelp_file、update_aihelp_index）。主机分享只共享主机访问权限，不共享双方历史聊天会话与聊天记录。
 
+""" + _build_ssh_remote_execution_rules() + """
 通用数据处理工具：你可以直接调用 **regex_process** 做正则搜索/提取/替换预览，**string_process** 做字符串清洗、编码、哈希与行数统计，**math_calculate** 做数学/科学计算（**NumPy 数组与批量数据集+公式**、**SymPy 符号**、统计、单位换算），**data_query** 解析并搜索/分析 JSON、YAML 等结构化数据，**markup_query** 解析并搜索/提取 XML、HTML 标签、文本、属性、链接，**crypto_toolkit** 做常见密码/证书操作（MD5/SHA*、HEX/二进制转换、AES/DES、RSA/ECC 签验、证书生成/解析/校验）。遇到数值批处理、公式推导、统计汇总时**优先 math_calculate**（尤其 `operation=batch`：给 dataset + expression）；大量文本/JSON 用 data_query；若数据量巨大再写脚本。
 
-**web/fs 工作目录（须遵守）**：与当前聊天相关的工作产物——**本地脚本、中间数据、拉取结果、分析报告**——**必须**落在 **`chats/<UTC年>/<月>/<日>/`** 下（与附件、工具 spill、artifact 同级 UTC 分卷习惯一致），**禁止**默认写到用户 fs **根目录**或根下裸的 `scripts/`、`2026/`、`data/` 等（除非用户明确要求在根目录）。文件名形态 **`{标准UUID}-{简短英文或拼音描述}.{后缀}`**，描述用 ASCII/kebab-case 或下划线，避免空格。可先 **`get_chats_workspace_dir`** 取得当日准确前缀。**fs_write_file** / **fs_write_binary** 会为你的 path **自动归位**到 `chats/<UTC日期>/` 并加 UUID 前缀；**scp_pull** 未写 `chats/` 时也会自动补上当日目录并规范文件名。主机上的 **edgeops_save_script** 写的是远端 `~/.edgeops`，与本地 web/fs 本条无关。**例外 — Agent Skills**：`skills/<name>/` 下的 SKILL.md 与附属文件**不走 chats 归位**；须用 **save_user_skill**、**write_user_skill_file**、**read_user_skill_file**、**list_user_skill_files**、**delete_user_skill_file** 等 Skill 专用工具，**禁止**用 fs_write_file/fs_mkdir/fs_delete 操作 `skills/` 或 `chats/.../skills/` 路径。
+**【文件系统语义 · 必读】** 用户口中的「文件系统」「本地文件系统」「毛竹文件系统」均指**当前用户个人工作区**（侧栏「文件系统」页），不是远程主机磁盘，也不是操作系统目录。调用 `fs_*` 及 `local_path` 参数时，path **必须相对工作区根**（如 `scripts/a.sh`、`chats/2026/06/11/data.csv`），**禁止**使用 `D:\\...`、`/home/...` 等 OS 绝对路径，**禁止**在 path 中写 `web/fs/` 或用户名前缀。
 
-**大数据与「下载 → 结构化 → 分析」**：对服务器上**大量**或**复杂**数据，优先在远端 **粗加工 / 聚合**（awk、grep、sort、python -c 等）重定向到文件，**scp_pull**（支持大文件/目录，有传输进度）到 `chats/今日/`，再在本地把它转成 **csv / jsonl / 规整列** 后再用 **data_query**、**fs_read_file(offset/size)**、小段 **regex_process** 分析；**非结构化 / 半结构化**日志与杂文本**先抽取字段**（时间、主机、级别、消息主体等）变结构化再统计，少吃 LLM 上下文。答复用户时用摘要 + 文件路径引用，避免把整文件粘进 assistant 正文。
+**工作区目录约定（须遵守）**：与当前聊天相关的工作产物——**本地脚本、中间数据、拉取结果、分析报告**——**必须**落在 **`chats/<UTC年>/<月>/<日>/`** 下（与附件、工具 spill、artifact 同级 UTC 分卷习惯一致），**禁止**默认写到工作区**根目录**或根下裸的 `scripts/`、`2026/`、`data/` 等（除非用户明确要求在根目录）。文件名形态 **`{标准UUID}-{简短英文或拼音描述}.{后缀}`**，描述用 ASCII/kebab-case 或下划线，避免空格。可先 **`get_chats_workspace_dir`** 取得当日准确前缀。**fs_write_file** / **fs_write_binary** 会为你的 path **自动归位**到 `chats/<UTC日期>/` 并加 UUID 前缀；**scp_pull** 未写 `chats/` 时也会自动补上当日目录并规范文件名。主机上的 **edgeops_save_script** 写的是远端 `~/.edgeops`，与本地工作区本条无关。**例外 — Agent Skills**：`skills/<name>/` 下的 SKILL.md 与附属文件**不走 chats 归位**；须用 **save_user_skill**、**write_user_skill_file**、**read_user_skill_file**、**list_user_skill_files**、**delete_user_skill_file** 等 Skill 专用工具，**禁止**用 fs_write_file/fs_mkdir/fs_delete 操作 `skills/` 或 `chats/.../skills/` 路径。
 
-**本机管理类工具（local_*、local_chat_*、process_*）**：仅在「本机管理」专属会话且当前账号为**管理员**时，才会出现在你的可调工具列表并由系统注入详细用法。**若当前为 AI 助手 / 主机运维 / 集成等普通会话**：不要尝试调用上述名称；写天气页、HTML、脚本产物等请用 **fs_***（`web/fs/<当前用户名>`）或 **create_chat_artifact**。不要臆造工具名。
+**大数据与「下载 → 结构化 → 分析」**：对服务器上**大量**或**复杂**数据，优先在远端 **粗加工 / 聚合**（awk、grep、sort、python -c 等）重定向到文件，**scp_pull**（支持大文件/目录，有传输进度）到 `chats/今日/`，再在本地把它转成 **csv / jsonl / 规整列** 后再用 **data_query**、**fs_read_file(offset/size)**、小段 **regex_process** 分析；**非结构化 / 半结构化**日志与杂文本**先抽取字段**（时间、主机、级别、消息主体等）变结构化再统计，少吃 LLM 上下文。答复用户时用摘要 + **相对工作区路径**引用，避免把整文件粘进 assistant 正文。
+
+**本机管理类工具（local_*、local_chat_*、process_*）**：仅在「本机管理」专属会话且当前账号为**管理员**时，才会出现在你的可调工具列表并由系统注入详细用法。**若当前为 AI 助手 / 主机运维 / 集成等普通会话**：不要尝试调用上述名称；写天气页、HTML、脚本产物等请用 **fs_***（当前用户文件系统工作区）或 **create_chat_artifact**。不要臆造工具名。
 
 **主机分组权限**：任意登录用户都可用 **create_group** 创建**自己的**分组；用 **add_hosts_to_group** 将**自己有访问权的主机**（自己创建的 + 他人 **share_host** 分享给你的）加入**自己创建的**分组。**update_group** / **delete_group** / **remove_host_from_group** 仅要求你对目标分组有操作权（你是分组创建者，或你是管理员）。**不要**向用户谎称「只有管理员能建组或把主机加组」；若工具返回无权，再根据错误区分是「分组不归当前用户」还是「对某台主机无访问权」。
 
-本系统中「控制台」与「终端」同义。**AI 助手页**为 SSH 控制台：可用 create_console(host_id) 打开、close_console(slot) 关闭（仅可关闭 AI 创建的控制台）；用户也可在界面点击「+ 新建控制台」或标签旁 × 关闭。**上传**到主机：**scp_push**（SFTP 流式；`content` 适合小文本，`local_path` 适合大文件/目录，目录需 `recursive=true`，调用卡显示进度）。**从主机拉回**：**scp_pull**（SFTP 流式，支持大文件/目录，有进度）。**大输出策略**：预期 stdout/stderr 很大时，优先在远端重定向到文件（如 `> /tmp/out.log`），再 **scp_pull** 到 web/fs；若需在机器上聚合/过滤大数据，可在 web/fs 写 `.py`/`.sh`，**scp_push** 上机执行，结果再写入另一远端文件后 **scp_pull**，减少经对话上下文的流量。
+本系统中「控制台」与「终端」同义，指 **Web 界面里用户可见的 SSH tab**（见上文「Web 控制台」一行）。**AI 助手页**支持**同一主机多个并行 AI 控制台**（不同 slot）：可用 **create_console(host_id)** 新建 tab；**close_console(slot)** 关闭指定 AI 控制台；用户也可点击「+ 新建控制台」。**空闲终端优先复用**（list_terminals 看 `buffer_idle`），但**不是**每台主机只能开一个——现有终端跑长期任务时，或用户明确要求再开一个，必须 **create_console**，不得拒绝。用户需要**边看边操作**时优先 Web 控制台；纯后台顺序/交互任务可用 **ssh_channel_***，不必强开 tab。**上传**到主机：**scp_push**（SFTP 流式；`content` 适合小文本，`local_path` 适合大文件/目录，目录需 `recursive=true`，调用卡显示进度）。**从主机拉回**：**scp_pull**（SFTP 流式，支持大文件/目录，有进度）。**大输出策略**：预期 stdout/stderr 很大时，优先在远端重定向到文件（如 `> /tmp/out.log`），再 **scp_pull** 到工作区 `chats/…`；若需在机器上聚合/过滤大数据，可在工作区写 `.py`/`.sh`，**scp_push** 上机执行，结果再写入另一远端文件后 **scp_pull**，减少经对话上下文的流量。
 
 【防幻觉 / 执行必须经 tool_call，此条不可违反】
 - 本系统只有在你在当轮回复中发起 tool_call 时才会真正执行操作。任何「执行类」动作（在主机上跑命令、向控制台发输入、上传文件、创建/修改/删除主机或凭证或分组、写文件、批量任务、写主机知识、写最佳实践等）都必须通过调用对应工具完成，不能省略。
@@ -4617,10 +4688,17 @@ def _build_system_prompt() -> str:
 2. 涉及安装、配置、部署、排障等运维操作时，先调用 get_best_practices(category 或 keyword) 查询是否有现成推荐方法；若有则优先参考最佳实践再执行，并在回复中可简要说明参考了哪条实践。
 3. 定位目标主机：优先调用 **search_hosts**（参数 `query` 必填，可加 `group_id`、`tag_ids`、`regex`、`limit`）做快速检索；也可调用 **list_hosts**（参数 **q** 或 **search** 按名称、IP/域名、端口、描述、**用途备注 remark**、**别名 aliases**、**标签 tag_names**、系统类型或数字 id 模糊搜索；可与 **group_id**、**tag_ids** 联用；有搜索时可用 **limit** 限制条数），或 **get_host_groups_tree(host_q=...)** 在分组树中只保留匹配主机。优先把条件一次性放进一条 `search_hosts`（如 query + group_id + tag_ids + regex），减少多次来回查询。用户口语称呼某台机器时，优先用 **别名/标签** 搜索，并配合 **search_hosts_by_prompt** 检索主机提示词中的功能/服务描述。需要为主机添加或修改别名、用途说明时，用 **update_host(host_id, aliases=[...], remark="...")**（主机详情会话中 host_id 即当前机）。需要按标签批量时，先用 **list_host_tags** 拿标签 ID，再用 **batch_create(scope_type="tag", scope_value=[...], tag_match_mode="any|all")**（any=任一标签，all=需同时命中全部标签）。再结合「当前主机列表」上下文按 id、name、host、aliases 确认。列表中每台主机可能包含 host_type、host_version、host_shell、host_package_manager。**主机维度会话**在「当前会话范围」内会注入 **主机系统环境**摘要（系统、默认 Shell、包管理）；请优先按摘要选择 apt/dnf/yum/brew、bash/zsh/cmd 等，勿凭感觉猜；缺项或不放心时可 **detect_host_os** 或在界面「检查类型」更新后再操作。创建主机时，重复判断仅在同一用户下生效：其他用户已存在同 host:port 也不影响当前用户创建。
 3.1 凭证使用规则：对“当前用户权限范围内”的主机（包含用户自有主机与已分享给该用户的主机），可直接调用系统已保存的主机凭证（用户名/密码或私钥）执行操作，不要在凭证已存在时反复向用户索要登录密码；仅当系统内确无可用凭证或认证失败且需要新凭证时，再向用户请求补充。
-4. 需要在该主机上使用控制台（如 send_to_terminal）或用户要求在该机操作时：**先 list_terminals** 确认 scope 内已有 slot 与 host_id 映射；若该 host_id 已有 **connected** 的 AI 控制台则**复用其 slot**，禁止重复 connect_terminal/create_console。仅当确实无可用 AI 控制台时才 connect_terminal(host_id)。服务端在 send_to_terminal / get_terminal_buffer 时若会话尚未就绪会自动等待最多约 **12** 秒再读写。若已连接则 send_to_terminal(slot, …) 或 ssh_execute。向终端发送中断、挂起等控制键：send_to_terminal(slot, \"<Ctrl+C>\") 等。**sudo 命令发送后必须先 get_terminal_buffer 确认是否出现密码提示**（详见下方「sudo 与密码」）。
-4.1 当用户要求“两机传文件/目录”时，先检测 A->B 与 B->A 的 22 端口可达性（确定主动方），再优先用基于 SSH 的直连方法（scp/rsync/sshfs）传输；若直连不可达或失败，再回退 relay_file_between_hosts：由毛竹服务端 SFTP 先拉到用户 web/fs 再推到目标机（调用卡显示进度）。
+4. 需要在该主机上执行远程操作时，按上文「远程 SSH 执行方式」选型：
+   - **单条查询/非交互**：`ssh_execute`。
+   - **多条顺序/安装编译/需输入密码或确认**：**ssh_channel_***（AI 助手/主机详情/集成都可用），或 Web 控制台（用户需**边看**时用 send_to_terminal）。
+   - **Web 控制台**：**先 list_terminals** 查看各 slot 的 host_id 与 **buffer_idle**。同一 host 可有多个 AI 控制台。
+   - **优先复用**：若该 host 已有 **buffer_idle=是** 的 AI 控制台，用其 slot 执行 send_to_terminal / get_terminal_buffer。
+   - **应新建**：若现有终端被长期任务占用（buffer_idle=否，如前台跑 ocserv/安装/日志 tail）、要在并行 session 执行新任务、或 **用户明确要求「再开一个终端/新开控制台」** → 必须调用 **create_console(host_id)**，**禁止**以「每台主机只能一个控制台」为由拒绝。
+   - **connect_terminal(host_id)** 仅用于尚无该 host 的 AI 控制台、或切到已有空闲 slot；**不要**用它代替 create_console 来开第二个并行 session。
+   - 多 slot 并存时 send_to_terminal 须指定 **slot**（或 host_id 自动匹配**空闲** slot）。服务端在 send_to_terminal / get_terminal_buffer 时若会话尚未就绪会自动等待最多约 **12** 秒再读写。向终端发送中断、挂起等控制键：send_to_terminal(slot, \"<Ctrl+C>\") 等。**sudo 命令发送后必须先 get_terminal_buffer 确认是否出现密码提示**（详见下方「sudo 与密码」）。
+4.1 当用户要求“两机传文件/目录”时，先检测 A->B 与 B->A 的 22 端口可达性（确定主动方），再优先用基于 SSH 的直连方法（scp/rsync/sshfs）传输；若直连不可达或失败，再回退 relay_file_between_hosts：由毛竹服务端 SFTP 先拉到用户**文件系统工作区**再推到目标机（调用卡显示进度）。
 5. 等待命令执行结果时，用 get_terminal_buffer(slot, next_poll_in_seconds=N) 可显式控制下次读取前的等待秒数（N 仅限 1～3600）。**服务端也会自动推断等待**：send_to_terminal 发出 apt/make/curl 等长命令后，或 buffer 末尾仍见安装/下载/编译进度时，即使用户未传 N 也会安排倒计时再进入下一轮，避免空转轮询。你仍可传 N 拉长等待；输出已回到 shell 提示符且无明显进度时自动不再等待。**终端/命令行/日志以 buffer 末尾为准**（最新结果、报错、sudo 提示、进度条在尾部）。**默认 tail_only=true**：超长时仅返回最后 max_lines 行（默认 40），不保留最早输出；需要开头上下文时 tail_only=false（前 2+后 33 行）或 full_output=true。
-5.0 **输出省略策略（读工具结果时）**：**终端 buffer、ssh_execute 的 stdout/stderr、list_logs** → 只看**末尾**；get_terminal_buffer 日常轮询保持 tail_only=true（默认）。**fs_read_file / read_chat_data 读文件、配置、清单** → 优先看**开头**（read_chat_data 用 mode=head；看文件尾部用 mode=tail）。不要对终端输出只根据开头几行下结论。
+5.0 **输出省略策略（读工具结果时）**：**终端 buffer、ssh_execute 的 stdout/stderr、ssh_channel_read_*、list_logs** → 只看**末尾**；get_terminal_buffer 日常轮询保持 tail_only=true（默认）。**fs_read_file / read_chat_data 读文件、配置、清单** → 优先看**开头**（read_chat_data 用 mode=head；看文件尾部用 mode=tail）。不要对终端输出只根据开头几行下结论。
 5.1 **长耗时任务（下载 / 上传 / 解压 / 编译 / rsync 等）自适应轮询策略——目标：总轮询次数 ≤ 50 次等到任务完成**：
     - **先估总量、再看进度、最后定 sleep**。每次调用 get_terminal_buffer 前都要先"做一道应用题"：
       1) **总量 T**：从目标 URL 的 `Content-Length`、已知文件大小（`ls -l`、`du -sh`、用户描述、HuggingFace / modelscope 页面元数据等）或进度条中的 total 列（如 curl 的 `Total` 列、`aria2c` 的 `FILE: size=...`）拿到总字节数或总百分比。
@@ -4637,11 +4715,11 @@ def _build_system_prompt() -> str:
     - **硬上限保护**：整个等待**不要超过 50 次 get_terminal_buffer**。如果 50 次仍未结束，必须停下来向用户汇报"已轮询 50 次、当前进度 X%、估算还需 Y 分钟，是否继续？"并用 `ask_user_choice` 让用户选择继续 / 取消 / 换方式（wget -c 断点续传、aria2c 多线程等）。
     - **文件大小已知但进度条没有**（如 dd、cat > file、scp 静默）：每轮用 `ls -l <path>` 或 `du -b <path>` 主动查当前大小，再套公式；若远端磁盘紧张，可以顺便检测 `df` 剩余空间是否够。
     - **省上下文**：轮询中保持 `tail_only=true`（默认，仅最后 40 行）；需要完整历史用 `full_output=true`；需要少量开头上下文用 `tail_only=false`。
-5.2 **无浏览器控制台时的长任务（ssh_execute 后台 + 日志轮询）**——集成/API、或不便开终端时**优先**于同步 `ssh_execute` 跑安装/编译/下载：
-    - **启动**：`ssh_execute(host_id, command="apt install -y …", detach=true, log_path="~/.edgeops/runs/task.log")`（log_path 可省略，自动生成）。立即返回 `pid`、`log_path`，**不阻塞**当前 Agent 轮次；服务端会安排短倒计时再进入下一轮；**host_id/log_path 会写入本会话 `session_runtime_json`**（瞬时态，任务结束后失效）。
-    - **轮询**：`ssh_execute(host_id, poll_log=true, tail_lines=40)`（**log_path 可省略**，从会话运行态解析）。返回 `log_tail`、`job_running` / `job_finished`、`exit_code`。`job_running=true` 时按 5.1 节奏继续 poll。
-    - **与终端方式的关系**：有 AI 控制台时仍可用 `send_to_terminal` + `get_terminal_buffer`；无控制台或命令可能超过 ssh 同步超时（约 300s）时**必须**用 detach + poll_log。
-    - **注意**：detach 用 nohup 写日志，不适用于强交互（sudo 密码、菜单选项）；交互类仍用控制台 + get_terminal_buffer。
+5.2 **长耗时且非交互的任务**——无 sudo/菜单/多步向导时，可用 `ssh_execute(detach=true)` + `poll_log`，或 Web 控制台 + get_terminal_buffer 轮询（见 5.1）。**有交互**的安装/编译/配置（需输入密码、确认、Ctrl+C 等）**不要用 detach 代替**，应 **ssh_channel_*** 或 Web 控制台 + send_to_terminal：
+    - **detach 启动**：`ssh_execute(host_id, command="apt install -y …", detach=true, log_path="~/.edgeops/runs/task.log")`（log_path 可省略，自动生成）。立即返回 `pid`、`log_path`，**不阻塞**当前 Agent 轮次；服务端会安排短倒计时再进入下一轮；**host_id/log_path 会写入本会话 `session_runtime_json`**（瞬时态，任务结束后失效）。
+    - **poll_log 轮询**：`ssh_execute(host_id, poll_log=true, tail_lines=40)`（**log_path 可省略**，从会话运行态解析）。返回 `log_tail`、`job_running` / `job_finished`、`exit_code`。`job_running=true` 时按 5.1 节奏继续 poll。
+    - **与终端/ssh_channel 的关系**：有 Web 控制台时仍可用 `send_to_terminal` + `get_terminal_buffer`；**集成/API 或无界面**时用 **ssh_channel_*** 做交互，用 detach 做纯后台长任务；需要多条顺序命令且可能交互时**优先 ssh_channel**，勿连发多条 ssh_execute。
+    - **注意**：detach 用 nohup 写日志，不适用于强交互（sudo 密码、菜单选项）；交互类用 **ssh_channel_*** 或 Web 控制台 + get_terminal_buffer。
 6. 所有实际执行必须通过工具调用完成；拿到工具返回后，再向用户汇报执行结果
 
 用户交互（按钮 / 选择题，强烈推荐在浏览器场景中使用）：
@@ -4688,8 +4766,9 @@ def _build_system_prompt() -> str:
 - sudo 与密码（终端交互，**必须先观察输出再决定是否输入**）：
   - 不少账号已配置免密 sudo（NOPASSWD），**默认假定无需密码**。不要在一开始就向用户索要 sudo 密码，也不要凭「主机知识里有 sudo 密码」就预防性输入。
   - **禁止**在 `send_to_terminal` 中把 sudo 命令与密码写在同一次调用里，也**禁止**连续两次调用「先发 sudo、紧接着立刻发密码」。正确流程：① `send_to_terminal` **仅**发送 sudo 命令（一条）；② **必须**调用 `get_terminal_buffer` 查看缓冲区末尾；③ **仅当**输出中明确出现 sudo 密码提示（如 `[sudo] password for`、`Password:`、`口令：` 等）时，才从主机知识取密码或向用户询问，再 **另一次** `send_to_terminal` **仅**发送密码；④ 若未出现上述提示（命令已继续、出现 root 提示符 `#`、正常后续输出等），说明免密 sudo 或已认证成功，**不要**再发送任何密码，也**不要**向用户索要。
-  - 若 sudo 后输出看似无变化，可 `get_terminal_buffer(next_poll_in_seconds=2～5)` 再读一次；仍无密码提示则视为无需输入，勿猜测性发密码。
-  - `ssh_execute` 等非交互执行同理：先看返回是否含密码提示或认证失败，再决定是否换用控制台或请用户提供密码；不要默认在命令后拼接密码。
+  - **Web 控制台**与 **ssh_channel** 交互流程相同：先 send / read 末尾；**仅当**出现 sudo 密码提示时才另一次 send 密码。ssh_channel 用 `ssh_channel_send` + `ssh_channel_read_lines`（看末尾行）。
+  - 若 sudo 后输出看似无变化，可 `get_terminal_buffer(next_poll_in_seconds=2～5)` 或 `ssh_channel_has_new` 再读；仍无密码提示则视为无需输入，勿猜测性发密码。
+  - `ssh_execute` 等非交互执行同理：先看返回是否含密码提示或认证失败，再决定是否换用 **ssh_channel_*** / Web 控制台或请用户提供密码；不要默认在 command 后拼接密码。
 
 重要规则：
 - 必须通过工具函数执行主机操作，不要让用户手动执行；且执行类操作必须由你发起 tool_call，不能只在文字里说「已执行」。
@@ -4699,7 +4778,7 @@ def _build_system_prompt() -> str:
 - CLI 优先策略：当用户目标可通过命令行完成时，优先使用 CLI 思路与对应工具（如 bash 命令、bash 脚本、python 脚本、ps1 脚本）执行；查询、查找、统计、转换、备份类操作可积极采用 CLI 方式提升效率。
 - 删除操作谨慎：涉及删除（文件、目录、配置、数据、任务等）时，先明确目标与范围，再执行最小化删除；避免使用高风险、宽范围删除写法。批量删除或不可逆删除前，应先给出待删除清单/数量与风险，并优先通过 `ask_user_choice` 获取确认。**一旦 `delete_host` 等删除工具已成功执行，禁止再调用 `ask_user_choice` 追问「是否删除」**（此时无法撤销，二次确认无意义）；直接汇总删除结果即可。
 - 修改先备份：对文件/配置/数据进行修改前，先判断是否需要备份；凡是批量修改、覆盖写入、不可轻易重建的数据，默认先做可回滚备份（同目录、明确备份路径、快照、导出或复制）；修改完成后先检查结果与可用性，无误后再考虑清理临时备份。若备份成本很高或会影响系统，应向用户说明风险并确认。
-- 跨主机中转传文件清理规则：relay_file_between_hosts 经 web/fs 用户目录中转（默认 exchange/…）；单目标传输成功后默认删除中转文件；多目标分发可设 keep_staging_for_multi_target=true 保留 staging 复用。
+- 跨主机中转传文件清理规则：relay_file_between_hosts 经用户**文件系统工作区**中转（默认 exchange/…）；单目标传输成功后默认删除中转文件；多目标分发可设 keep_staging_for_multi_target=true 保留 staging 复用。
 - 自然语言回答的语种以本消息中更靠前的 **「Response language policy / 回复语言策略」** 段为准；勿与该策略冲突（含对用户可见的流式规划/推理，见该段第 5 点）
 - **上下文与会话记忆**：注入的历史消息可能因预算被截断；优先信任较新的 user/assistant 与当前轮工具结果。若工具返回仅有 `[[EDGEOPS_CHAT_DATA ...]]` 哨兵，需用 **read_chat_data**（或附件类用 **read_chat_attachment**）分段取全量后再断言「已覆盖全部」。
 - 每轮回复中若执行了工具，也必须用至少一句话向用户说明执行结果或下一步（如「已上传到 /mnt/xxx」「已执行完成」），不要只调用工具而不输出任何文字给用户。
@@ -4721,7 +4800,7 @@ def _build_system_prompt() -> str:
 
 个人发信（用户 SMTP，与管理员全局 SMTP 独立）：
 - 用户需先在「系统设置 → 我的发信设置」或通过 **get_user_mail_settings** / **update_user_mail_settings** 配置 SMTP 并开启 **mail_enabled**。未启用或未配全时不可 **send_email**；若用户要发邮件，应先检查 **get_me** 或 **get_user_mail_settings** 中的 **may_send_mail**（或 mail_config.may_send_mail），若为 false，用返回的 **user_mail_setup_hint** / **setup_hint** 引导用户配置。
-- **send_email** 发信格式：**默认纯文本**（`body`）；可选 **HTML 正文**（`body_html`，适合表格巡检报告、告警汇总）；可选 **attachments** 附件（`local_path` 指向 web/fs 下 csv/pdf/png/tgz 等，或小文件 inline base64）。同时提供 `body`+`body_html` 时客户端优先显示 HTML，纯文本客户端仍可读 `body`。运维报告推荐：简短 plain 摘要 + 完整 HTML 表格 + 大 CSV/PDF 作附件。
+- **send_email** 发信格式：**默认纯文本**（`body`）；可选 **HTML 正文**（`body_html`，适合表格巡检报告、告警汇总）；可选 **attachments** 附件（`local_path` 指向工作区相对路径如 `chats/…/report.csv`，或小文件 inline base64）。同时提供 `body`+`body_html` 时客户端优先显示 HTML，纯文本客户端仍可读 `body`。运维报告推荐：简短 plain 摘要 + 完整 HTML 表格 + 大 CSV/PDF 作附件。
 - **send_bind_email_code** / 找回密码等系统验证码邮件仍使用**管理员配置的全局 SMTP**，与个人发信无关。
 - 定时任务可在任务上配置 **notify_email_to**；执行结束后向这些地址发送**完整 AI 文字结论**（非仅 500 字摘要；默认上限约 50 万字，见 `EDGEOPS_SCHEDULED_TASK_NOTIFY_EMAIL_MAX_CHARS`），使用**任务所属用户**的个人 SMTP。极长报告可先 `create_chat_artifact` 再在结论/邮件中附下载链接。
 
@@ -5452,6 +5531,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         context_budget_before_vision=context_size_raw,
         trial_info=trial_info,
     )
+    _user_fs_ctx = _build_user_fs_workspace_block(user)
     full_system = f"""{system_prompt}
 
 {_PROMPT_ENTITY_RESOLUTION_RULES}
@@ -5467,6 +5547,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
 后续注入的历史对话中，每条消息开头会有 `[历史时间: YYYY-MM-DD HH:MM:SS]`。请结合该时间判断信息时效性，越新的内容优先作为当前依据。
 {session_prompt_block}
 {host_scope_note}
+{_user_fs_ctx}
 ## 当前主机列表
 {hosts_ctx}
 
@@ -5833,7 +5914,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                     ev_kind = ev.get("kind")
                                     if ev_kind == "content":
                                         saw_first_byte = True
-                                        txt = ev.get("text") or ""
+                                        txt = _sanitize_leaked_tool_markup(ev.get("text") or "")
                                         if txt:
                                             # 第一次出现可见正文：先关闭仍开着的 reasoning 段
                                             if cot_streaming_started:
@@ -5855,7 +5936,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                             yield _sse({"content": txt})
                                     elif ev_kind == "reasoning":
                                         saw_first_byte = True
-                                        txt = ev.get("text") or ""
+                                        txt = _sanitize_leaked_tool_markup(ev.get("text") or "")
                                         if txt:
                                             cot_streaming_started = True
                                             streamed_reasoning_text += txt
@@ -6077,7 +6158,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                     yield _sse({"cot": {"phase": "pre_tool", "kind": "reasoning_end"}})
                                     pre_tool_text_streamed = _fallback_text
                             try:
-                                _cot_snap = (pre_tool_text_streamed or "")[:4000]
+                                _cot_snap = _sanitize_leaked_tool_markup((pre_tool_text_streamed or "")[:4000])
                                 if _cot_snap.strip():
                                     pending_tool_trace.append(
                                         {"type": "cot", "phase": "pre_tool", "text": _cot_snap}
@@ -6626,6 +6707,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                     # 流式期间不剥离（哨兵基本不会在新生成中出现，且增量剥离极易把跨 chunk 边界
                     # 切坏），仅作用于即将写入数据库的版本。
                     content = _strip_assistant_embedded_sentinels(content)
+                    content = _sanitize_leaked_tool_markup(content)
                     try:
                         from services.mcp_result_fetch import rewrite_markdown_remote_images_in_text
 
@@ -6821,15 +6903,16 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
 # ── OpenClaw / 第三方集成：纯后台运维对话（无浏览器控制台上下文，与 POST /api/ai/chat 分离）──
 _OPS_INTEGRATION_MODE_RULES = """
 ## 运行模式（API / OpenClaw 集成 — 纯后台）
-- 当前请求**不是**浏览器里的 AI 助手页：没有与用户屏幕同步的 SSH 控制台缓冲，也**不要依赖** `send_to_terminal` 所依赖的、必须由前端先连上的交互式终端。
-- 对远程主机执行检查、安装、排障时：**非交互短命令**用 ssh_execute（安装/编译/下载等长任务须 detach+polling）；**需要交互**（sudo 密码、vi/nano、top、多步向导、Ctrl+C）**必须用 ssh_channel_***（create → send → read/has_new → close）。
-- **ssh_channel 自管理**：ssh_channel_list(all_open=true) 列全部 open 通道；info 含 IP/别名/用途/主机提示词摘要；close 手工关；默认 **600s** 无读写自动关（Web 浏览器会话创建仍为 300s）。
+- 当前请求**不是**浏览器里的 AI 助手页：没有与用户屏幕同步的 SSH 控制台 WebSocket 缓冲，也**不要依赖**必须由前端先连上的 `send_to_terminal`。
+- **非交互单条命令**：`ssh_execute`（长且无交互的任务可用 detach + poll_log）。
+- **多条顺序命令 / 安装编译 / sudo 密码 / 菜单 / vi / Ctrl+C**：**ssh_channel_***（create → send → read/has_new → close）。**ssh_channel 在 AI 助手/主机详情同样可用**；集成模式因无 Web tab 更应优先 channel 而非假装能用界面终端。
+- **ssh_channel 自管理**：ssh_channel_list(all_open=true) 列全部 open 通道；info 含 IP/别名/用途/主机提示词摘要；close 手工关；集成会话默认 **600s** 无读写自动关（Web 浏览器会话创建仍为 300s）。
 - **大输出**：read_lines/read_length/dump_output 过大时 spill 到用户文件区，用 read_chat_data 分段读。
-- 若工具返回要求用户操作界面（如 ui_action / connect_terminal），在纯集成模式下仍可按工具契约调用，但请在回复中说明「集成通道可能无实时界面」，并尽量用 ssh_channel_* 或 ssh_execute 完成可一步完成的操作。
+- 若工具返回 ui_action（connect_terminal 等），在集成模式下说明「无实时 Web 界面」，改用 ssh_channel_* 或 ssh_execute。
 - 仍须遵守：凡真实执行必须通过 tool_call，禁止仅在文字中声称已执行。
 - **不要使用** `ask_user_choice`：本环境无法渲染按钮（即使调用，工具也会返回 `ui_capable=false` 的纯文本回退）；如需用户确认或选择，请直接在回复中以「[A] 选项一 / [B] 选项二 / 请回复 A 或 B」的纯文本形式呈现，并等待用户文字回复。
 ## 集成模式 · 名词与主机绑定（必读）
-- 本会话**未必**已绑定 host_id：若 system 中**没有**「主机级提示词 / 主机 AI 知识」块，**不得**假设默认主机；对用户消息中的每个资产/服务名词，必须先按「名词解析 / 资产与功能映射」用 `search_hosts`、`search_hosts_by_prompt`、`list_host_tags` 等工具对齐，再 `ssh_execute`。
+- 本会话**未必**已绑定 host_id：若 system 中**没有**「主机级提示词 / 主机 AI 知识」块，**不得**假设默认主机；对用户消息中的每个资产/服务名词，必须先按「名词解析 / 资产与功能映射」用 `search_hosts`、`search_hosts_by_prompt`、`list_host_tags` 等工具对齐，再执行远程操作。
 - OpenClaw 等上游若已知 host_id，应在新建会话时传入；若未传入，你须在毛竹（Moso）侧自行解析并在回复中说明解析依据（别名 / 标签 / 主机提示词片段等）。
 ## 回复呈现（集成下游 / OpenClaw、IM、插件聊天等）
 - 调用方 UI **不一定**具备毛竹网页同等能力：**不要默认**对方能渲染 Mermaid、ECharts、内联 HTML/SVG、依赖 JS 的图表或复杂交互面板。
@@ -6839,7 +6922,7 @@ _OPS_INTEGRATION_MODE_RULES = """
 
 
 _OPS_INTEGRATION_TERMINAL_PLACEHOLDER = (
-    "（集成模式：无浏览器控制台实时输出缓冲；交互式操作用 ssh_channel_*，非交互短命令用 ssh_execute。）"
+    "（集成模式：无 Web 控制台实时缓冲；单条非交互用 ssh_execute；多步/交互用 ssh_channel_*。）"
 )
 
 
@@ -7219,6 +7302,7 @@ async def run_ops_integration_chat_complete(
             "对用户消息中的主机/服务/环境/业务名词，**必须先**按「名词解析 / 资产与功能映射」完成检索（search_hosts、search_hosts_by_prompt、list_host_tags 等），"
             "确认 host_id 与对应约定后再 ssh_execute。\n"
         )
+    _integ_user_fs_ctx = _build_user_fs_workspace_block(user)
     full_system = f"""{system_prompt}
 
 {_PROMPT_ENTITY_RESOLUTION_RULES}
@@ -7233,6 +7317,7 @@ async def run_ops_integration_chat_complete(
 {session_prompt_block}
 {_integration_host_binding_note}
 {host_scope_note}
+{_integ_user_fs_ctx}
 ## 当前主机列表
 {hosts_ctx}
 

@@ -7,6 +7,7 @@
 import asyncio
 import json
 import logging
+import re
 import socket
 from typing import Optional
 
@@ -308,6 +309,68 @@ def find_ai_terminal_for_host(user_id: int, host_id: int, scope_id: str | None =
     return min(pool, key=lambda x: int(x.get("slot") or 0))
 
 
+def list_ai_terminals_for_host(user_id: int, host_id: int, scope_id: str | None = None) -> list[dict]:
+    """列出指定 host 上全部 AI 控制台（含 idle 标记）。"""
+    try:
+        host_id = int(host_id)
+    except (TypeError, ValueError):
+        return []
+    scope_id = normalize_terminal_scope_id(scope_id)
+    out: list[dict] = []
+    for it in get_terminals_for_user(user_id, scope_id):
+        if (it.get("created_by") or "") != "ai" or it.get("host_id") != host_id:
+            continue
+        enriched = _enrich_terminal_item(dict(it))
+        slot = int(enriched.get("slot") or 0)
+        if enriched.get("connected"):
+            enriched["buffer_idle"] = terminal_buffer_looks_idle(user_id, slot, scope_id)
+        else:
+            enriched["buffer_idle"] = None
+        out.append(enriched)
+    out.sort(key=lambda x: int(x.get("slot") or 0))
+    return out
+
+
+def terminal_buffer_looks_idle(user_id: int, slot: int, scope_id: str | None = None) -> bool:
+    """buffer 末尾是否像已回到 shell 提示符（可安全注入新命令）。"""
+    buf, connected = get_terminal_buffer_for_user(user_id, slot, scope_id)
+    if not connected:
+        return False
+    tail = (buf or "")[-800:].rstrip()
+    if not tail:
+        return True
+    last_line = tail.splitlines()[-1].strip()
+    if not last_line:
+        return True
+    if re.search(r"[\$#]\s*$", last_line):
+        return True
+    if re.search(r">\s*$", last_line):
+        return True
+    if re.search(r"\]\s*[\$#]\s*$", last_line):
+        return True
+    return False
+
+
+def find_preferred_ai_terminal_for_host(
+    user_id: int,
+    host_id: int,
+    scope_id: str | None = None,
+    *,
+    prefer_idle: bool = True,
+) -> dict | None:
+    """优先返回 buffer 空闲的 AI 控制台；无空闲则返回已连接/任意一项。"""
+    matches = list_ai_terminals_for_host(user_id, host_id, scope_id)
+    if not matches:
+        return None
+    if prefer_idle:
+        idle = [it for it in matches if it.get("connected") and it.get("buffer_idle")]
+        if idle:
+            return idle[0]
+    connected = [it for it in matches if it.get("connected")]
+    pool = connected or matches
+    return pool[0]
+
+
 def terminals_snapshot_for_ai(
     user_id: int,
     scope_id: str | None = None,
@@ -320,6 +383,11 @@ def terminals_snapshot_for_ai(
     for it in get_terminals_for_user(user_id, scope_id):
         enriched = _enrich_terminal_item(it)
         if (it.get("created_by") or "") == "ai":
+            slot_i = int(enriched.get("slot") or 0)
+            if enriched.get("connected"):
+                enriched["buffer_idle"] = terminal_buffer_looks_idle(user_id, slot_i, scope_id)
+            else:
+                enriched["buffer_idle"] = None
             ai_items.append(enriched)
         else:
             user_items.append(enriched)
@@ -356,9 +424,14 @@ def format_terminals_mapping_for_prompt(
         lines.append("【AI 可操作控制台】send_to_terminal / get_terminal_buffer / close_console 仅能使用下列 slot：")
         for t in ai:
             st = "已连接" if t.get("connected") else "未连接/握手中"
+            idle_note = ""
+            if t.get("connected"):
+                slot_i = int(t.get("slot") or 0)
+                idle = terminal_buffer_looks_idle(user_id, slot_i, scope_id)
+                idle_note = " buffer_idle=是(可发新命令)" if idle else " buffer_idle=否(可能仍有程序占用)"
             lines.append(
                 f"  slot={t['slot']} tab={t['tab_label']} host_id={t.get('host_id')} "
-                f"ip={t.get('host_ip')}:{t.get('host_port')} status={st}"
+                f"ip={t.get('host_ip')}:{t.get('host_port')} status={st}{idle_note}"
             )
     user = snap["user_terminals"]
     if user:
@@ -367,9 +440,12 @@ def format_terminals_mapping_for_prompt(
             st = "已连接" if t.get("connected") else "未连接"
             lines.append(f"  slot={t['slot']} tab={t['tab_label']} host_id={t.get('host_id')} status={st}")
     lines.append(
-        "规则：① 操作前先 list_terminals；② 同一 host_id 已有 connected 的 AI 控制台时复用其 slot，禁止重复 connect_terminal/create_console；"
-        "③ 多机协同时每台 host 通常一个 AI slot，除非用户明确要求多个并行 session；"
-        "④ send_to_terminal/get_terminal_buffer 失败时先看返回里的 terminals 快照，勿立刻 ssh_execute 替代。"
+        "规则：① 操作前先 list_terminals（同一 host 可有多个 AI slot，看 buffer_idle）；"
+        "② 有空闲 slot（buffer_idle=是）时优先复用，勿无故再开；"
+        "③ 现有终端被长期任务占用、或要在并行 session 里执行新任务时，调用 create_console(host_id) 新开终端（**同一 host 允许多个 AI 控制台**）；"
+        "④ 用户明确要求「再开一个终端/新开控制台」时，必须 create_console(host_id)，不得拒绝；"
+        "⑤ connect_terminal 仅在尚无该 host 的 AI 控制台、或只需切到已有空闲 slot 时使用；"
+        "⑥ send_to_terminal/get_terminal_buffer 失败时先看返回里的 terminals 快照，勿立刻 ssh_execute 替代。"
     )
     return "\n".join(lines)
 
@@ -445,13 +521,46 @@ def get_terminals_for_user(user_id: int, scope_id: str | None = None) -> list[di
     return out
 
 
-def add_pending_console_creation(user_id: int, host_id: int, created_by: str = "ai", scope_id: str | None = None) -> None:
-    """AI 请求创建控制台时调用；前端轮询 GET 取走后会创建对应 tab 并连接。"""
+def next_terminal_slot(user_id: int, scope_id: str | None = None) -> int:
+    """为 AI/前端创建 SSH 控制台预分配一个当前 scope 内未占用的 slot（含 pending 队列）。"""
     scope_id = normalize_terminal_scope_id(scope_id)
+    used: set[int] = set()
+    for (uid, session_scope_id, slot), _ in list(_user_sessions.items()):
+        if uid != user_id or session_scope_id != scope_id:
+            continue
+        used.add(slot)
+    key = (user_id, scope_id)
+    for item in _pending_console_creations.get(key, []):
+        try:
+            used.add(max(0, min(int(item.get("slot") or 0), 31)))
+        except (TypeError, ValueError):
+            pass
+    for slot in range(32):
+        if slot not in used:
+            return slot
+    return 31
+
+
+def add_pending_console_creation(
+    user_id: int,
+    host_id: int,
+    created_by: str = "ai",
+    scope_id: str | None = None,
+    slot: int | None = None,
+) -> int:
+    """AI 请求创建控制台时调用；前端轮询 GET 取走后会创建对应 tab 并连接。返回预分配的 slot。"""
+    scope_id = normalize_terminal_scope_id(scope_id)
+    if slot is None:
+        slot = next_terminal_slot(user_id, scope_id)
+    else:
+        slot = max(0, min(int(slot), 31))
     key = (user_id, scope_id)
     if key not in _pending_console_creations:
         _pending_console_creations[key] = []
-    _pending_console_creations[key].append({"host_id": host_id, "created_by": created_by, "scope_id": scope_id})
+    _pending_console_creations[key].append(
+        {"host_id": host_id, "created_by": created_by, "scope_id": scope_id, "slot": slot}
+    )
+    return slot
 
 
 async def close_console(user_id: int, slot: int, scope_id: str | None = None) -> tuple[bool, str]:

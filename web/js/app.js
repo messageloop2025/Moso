@@ -11,6 +11,22 @@ function tOr(i18nKey, fallback) {
 function edgeopsIsTempSessionTitle(title) {
     return String(title == null ? '' : title).indexOf(EDGEOPS_TEMP_SESSION_PREFIX) === 0;
 }
+/** 会话有消息才调用 summarize-title；空会话直接跳过，避免无意义 400。 */
+function edgeopsTrySummarizeAISessionTitle(sessionId, opts) {
+    opts = opts || {};
+    sessionId = parseInt(sessionId, 10);
+    if (!sessionId || isNaN(sessionId)) return Promise.resolve(null);
+    return API.getAISession(sessionId).then(function(r) {
+        var msgs = (r.session && r.session.messages) || [];
+        if (!msgs.length) {
+            if (opts.toastIfEmpty && typeof showToast === 'function') {
+                showToast(opts.toastIfEmptyMessage || t('toast.noMessagesInSession'), 'info');
+            }
+            return null;
+        }
+        return API.summarizeAISessionTitle(sessionId);
+    });
+}
 /** 列表接口返回的 session_prompt 非空则认为该会话配置了会话提示词（置顶 + 专属样式） */
 function edgeopsSessionHasPrompt(s) {
     var p = s && s.session_prompt != null ? String(s.session_prompt) : '';
@@ -3638,19 +3654,33 @@ function initDataTableSortFilter(container) {
     });
 }
 
-/** 移除模型输出中的 </think>...</think> 块及未闭合的 </think>，并顺带剥离 UI_ACTION 哨兵注释，避免在界面以原文显示 */
+/** 剥离泄漏的工具 XML；utils.js 未加载或缓存旧版时仍可用内联兜底 */
+function edgeopsApplyLeakedToolMarkupSanitize(text) {
+    if (typeof edgeopsSanitizeLeakedToolMarkup === 'function') {
+        return edgeopsSanitizeLeakedToolMarkup(text);
+    }
+    if (text == null || text === '') return '';
+    var s = String(text);
+    s = s.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '');
+    s = s.replace(/<\/?(?:tool_call|function|parameter|arguments|invoke|tool)\b[^>]*>/gi, '');
+    s = s.replace(/(?:<\/?(?:tool_call|function|parameter|arguments)\b[^>]*>)+\s*$/gi, '');
+    return s;
+}
+
+/** 移除模型输出中的 thinking / 工具 XML 泄漏 / 哨兵注释，避免在界面以原文显示 */
 function stripThinkTags(text) {
     if (typeof text !== 'string') return '';
     var reBlock = new RegExp('</think>[\\s\\S]*?</think>', 'gi');
     var reUnclosed = new RegExp('</think>[\\s\\S]*$', 'gi');
     var reUIAction = /<!--\s*EDGEOPS:UI_ACTION:v1\s+[A-Za-z0-9+/=]+\s*-->/g;
     var reToolTrace = /<!--\s*EDGEOPS:TOOL_TRACE:v1\s+[A-Za-z0-9+/=]+\s*-->/g;
-    return text
-        .replace(reBlock, '')
-        .replace(reUnclosed, '')
-        .replace(reUIAction, '')
-        .replace(reToolTrace, '')
-        .trim();
+    return edgeopsApplyLeakedToolMarkupSanitize(
+        text
+            .replace(reBlock, '')
+            .replace(reUnclosed, '')
+            .replace(reUIAction, '')
+            .replace(reToolTrace, '')
+    ).trim();
 }
 
 function edgeopsFinalAssistantText(streamedText, hasTools) {
@@ -5618,6 +5648,7 @@ function copyHostAiLogFull() {
 /** AI 思维链面板：与 stripThinkTags 相同的 thinking 块分隔符，抽取块内正文用于推理卡展示 */
 function edgeopsReasoningBufferToPlain(buf) {
     if (!buf) return '';
+    buf = edgeopsApplyLeakedToolMarkupSanitize(buf);
     var reBlock = new RegExp('</think>([\\s\\S]*?)</think>', 'gi');
     var thinkParts = [];
     var m;
@@ -6562,11 +6593,10 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
                             var oldText = btn.textContent;
                             btn.textContent = '\u2026';
                             btn.disabled = true;
-                            showToast(t('toast.generatingTitle'));
-                            API.summarizeAISessionTitle(id).then(function(res) {
+                            edgeopsTrySummarizeAISessionTitle(id, { toastIfEmpty: true }).then(function(res) {
                                 btn.textContent = oldText;
                                 btn.disabled = false;
-                                if (res.title) { titleEl.textContent = res.title; showToast(t('toast.titleGenerated')); }
+                                if (res && res.title) { titleEl.textContent = res.title; showToast(t('toast.titleGenerated')); }
                             }).catch(function(err) {
                                 btn.textContent = oldText;
                                 btn.disabled = false;
@@ -6592,7 +6622,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
                         if (srow.title && edgeopsIsTempSessionTitle(srow.title)) { toSummarize = srow.id; break; }
                     }
                 }
-                if (toSummarize) API.summarizeAISessionTitle(toSummarize).then(function(res) { if (res && res.title) loadSessions(); }).catch(function() {});
+                if (toSummarize) edgeopsTrySummarizeAISessionTitle(toSummarize).then(function(res) { if (res && res.title) loadSessions(); }).catch(function() {});
             }
         });
     }
@@ -6827,7 +6857,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
                 loadSession(id);
                 showToast(t('toast.newSessionCreated'));
                 if (oldSessionId) {
-                    API.summarizeAISessionTitle(oldSessionId).then(function(res) { if (res && res.title) loadSessions(); }).catch(function() {});
+                    edgeopsTrySummarizeAISessionTitle(oldSessionId).then(function(res) { if (res && res.title) loadSessions(); }).catch(function() {});
                 }
             }
         }).catch(function(err) { showToast(err.message || t('toast.createFailed'), 'error'); });
@@ -7153,7 +7183,9 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         tabLabel.type = 'button';
         tabLabel.className = 'terminal-tab-btn ai-console-tab' + (hostAiConsoles.length === 0 ? ' active' : '');
         tabLabel.style.marginRight = '0';
-        tabLabel.textContent = edgeopsFormatConsoleTabLabel({ slot: slot, createdBy: createdBy });
+        tabLabel.textContent = edgeopsFormatConsoleTabLabel({
+            slot: slot, createdBy: createdBy, hostId: hostId, hostName: hostName
+        });
         tabWrap.appendChild(tabLabel);
         var closeBtn = document.createElement('button');
         closeBtn.type = 'button';
@@ -7200,6 +7232,8 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         var rec = {
             slot: slot,
             createdBy: createdBy,
+            hostId: String(hostId),
+            hostName: hostName,
             ws: null,
             term: null,
             fitDispose: null,
@@ -7245,8 +7279,42 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         }
         return addHostConsole(getNextHostConsoleSlot(), createdBy, true);
     }
+    function createNewHostAiConsole(slot, createdBy) {
+        createdBy = createdBy || 'ai';
+        slot = slot != null ? parseInt(slot, 10) : getNextHostConsoleSlot();
+        var existing = hostAiConsoles.filter(function(c) { return c.slot === slot; })[0];
+        if (existing) {
+            if (!existing.ws || existing.ws.readyState !== WebSocket.OPEN) {
+                connectHostConsole(slot, existing.createdBy || createdBy);
+            }
+            if (canHostAiAutoSwitchTo(slot)) activateHostConsole(slot, false);
+            return existing;
+        }
+        var rec = addHostConsole(slot, createdBy, true);
+        if (rec && canHostAiAutoSwitchTo(slot)) activateHostConsole(slot, false);
+        return rec;
+    }
+    function applyHostPendingConsoleCreation(item) {
+        var pendingHostId = item.host_id != null ? parseInt(item.host_id, 10) : parseInt(item.hostId, 10);
+        var createdBy = item.created_by || 'ai';
+        if (!pendingHostId || pendingHostId !== parseInt(hostId, 10)) return;
+        var slot = item.slot != null ? parseInt(item.slot, 10) : getNextHostConsoleSlot();
+        createNewHostAiConsole(slot, createdBy);
+    }
+    function pollHostPendingConsoleCreations() {
+        return API.terminalPendingConsoleCreations(hostTerminalScopeId).then(function(r) {
+            var list = r && r.items ? r.items : [];
+            list.forEach(applyHostPendingConsoleCreation);
+        }).catch(function() {});
+    }
     function runHostConsoleUIAction(ua) {
         if (!ua) return;
+        if (ua.action === 'create_console' && ua.host_id === parseInt(hostId, 10)) {
+            createNewHostAiConsole(ua.slot, ua.created_by || 'ai');
+            pollHostPendingConsoleCreations();
+            showToast(t('toast.creatingAiConsole'));
+            return;
+        }
         if (ua.action === 'connect_terminal' && ua.host_id === parseInt(hostId, 10)) {
             ensureHostAiConsole(parseInt(hostId, 10), 'ai');
             showToast(t('toast.creatingAiConsole'));
@@ -7266,6 +7334,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
     showHostConsolePanels(false);
     var hostNoAutoSwitchEl = document.getElementById('hostAiConsoleNoAutoSwitch');
     if (hostNoAutoSwitchEl) hostNoAutoSwitchEl.onchange = function() { hostAiAutoSwitchConsole = !this.checked; };
+    pollHostPendingConsoleCreations();
     window._hostAiPendingPollTimer = setInterval(function() {
         if (!panel || !panel.isConnected) {
             if (window._hostAiPendingPollTimer) {
@@ -7274,17 +7343,8 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
             }
             return;
         }
-        API.terminalPendingConsoleCreations(hostTerminalScopeId).then(function(r) {
-            var list = r && r.items ? r.items : [];
-            list.forEach(function(item) {
-                var pendingHostId = item.host_id != null ? parseInt(item.host_id, 10) : parseInt(item.hostId, 10);
-                var createdBy = item.created_by || 'ai';
-                if (!pendingHostId || pendingHostId !== parseInt(hostId, 10)) return;
-                if (findHostAiConsoleByHost(pendingHostId, createdBy)) return;
-                addHostConsole(getNextHostConsoleSlot(), createdBy, true);
-            });
-        }).catch(function() {});
-    }, 2500);
+        pollHostPendingConsoleCreations();
+    }, 500);
     document.getElementById('hostAiLogCopyAll').onclick = copyHostAiLogFull;
     var hostAiRemoteFsCurrentPath = '/';
     var hostAiRemoteFsCurrentFile = null;
@@ -8226,7 +8286,21 @@ function renderAIPage() {
                 if (lastHost) { hostPicker.setHostId(lastHost); connectBtn.disabled = false; }
             }
         });
-        if (presetHostId) doConnectTerminal(String(presetHostId), slot, createdBy);
+        if (presetHostId) {
+            rec.hostId = String(presetHostId);
+            var presetName = '';
+            if (aiAssistantHostsCache) {
+                for (var phi = 0; phi < aiAssistantHostsCache.length; phi++) {
+                    if (String(aiAssistantHostsCache[phi].id) === String(presetHostId)) {
+                        presetName = aiAssistantHostsCache[phi].name || '';
+                        break;
+                    }
+                }
+            }
+            rec.hostName = presetName;
+            edgeopsRefreshConsoleTabLabel(rec, { hostId: presetHostId, hostName: presetName });
+            doConnectTerminal(String(presetHostId), slot, createdBy);
+        }
         return rec;
     }
     var newBtn = document.createElement('button');
@@ -8332,8 +8406,61 @@ function renderAIPage() {
         addAiConsole(getNextSlot(), createdBy, parseInt(hid, 10));
         return null;
     }
+    function createNewAiConsole(hid, slot, createdBy) {
+        createdBy = createdBy || 'ai';
+        hid = parseInt(hid, 10);
+        slot = slot != null ? parseInt(slot, 10) : getNextSlot();
+        var existing = aiConsoles.filter(function(c) { return c.slot === slot; })[0];
+        if (existing) {
+            if (!existing.ws || existing.ws.readyState !== WebSocket.OPEN) {
+                doConnectTerminal(String(hid), slot, existing.createdBy || createdBy);
+            }
+            if (canAiAutoSwitchTo(slot)) {
+                aiActiveConsoleSlot = slot;
+                aiConsoles.forEach(function(c) {
+                    c.panelEl.style.display = c.slot === slot ? 'flex' : 'none';
+                    c.panelEl.style.flexDirection = 'column';
+                    c.tabEl.classList.toggle('active', c.slot === slot);
+                    if (c.tabBtn) c.tabBtn.classList.toggle('active', c.slot === slot);
+                });
+                if (existing.refit) existing.refit();
+            }
+            return existing;
+        }
+        var rec = addAiConsole(slot, createdBy, hid);
+        if (rec && canAiAutoSwitchTo(slot)) {
+            aiActiveConsoleSlot = slot;
+            aiConsoles.forEach(function(c) {
+                c.panelEl.style.display = c.slot === slot ? 'flex' : 'none';
+                c.panelEl.style.flexDirection = 'column';
+                c.tabEl.classList.toggle('active', c.slot === slot);
+                if (c.tabBtn) c.tabBtn.classList.toggle('active', c.slot === slot);
+            });
+            if (rec.refit) rec.refit();
+        }
+        return rec;
+    }
+    function applyPendingConsoleCreation(item) {
+        var hostId = item.host_id != null ? item.host_id : item.hostId;
+        var createdBy = item.created_by || 'ai';
+        var slot = item.slot != null ? parseInt(item.slot, 10) : getNextSlot();
+        if (!hostId) return;
+        createNewAiConsole(hostId, slot, createdBy);
+    }
+    function pollAiPendingConsoleCreations() {
+        return API.terminalPendingConsoleCreations(aiTerminalScopeId).then(function(r) {
+            var list = r && r.items ? r.items : [];
+            list.forEach(applyPendingConsoleCreation);
+        }).catch(function() {});
+    }
     window.edgeopsRunUIAction = function(ua) {
         if (!ua) return;
+        if (ua.action === 'create_console' && ua.host_id) {
+            createNewAiConsole(parseInt(ua.host_id, 10), ua.slot, ua.created_by || 'ai');
+            pollAiPendingConsoleCreations();
+            showToast(t('toast.creatingAiConsoleUnicode'));
+            return;
+        }
         if (ua.action === 'connect_terminal' && ua.host_id) {
             ensureAiConsole(parseInt(ua.host_id, 10), 'ai');
             showToast(t('toast.creatingAiConsoleUnicode'));
@@ -8355,18 +8482,8 @@ function renderAIPage() {
         }
     };
     window.addEventListener('beforeunload', function() { aiConsoles.forEach(function(c) { if (c.ws) c.ws.close(); }); });
-    aiPendingPollTimer = setInterval(function() {
-        API.terminalPendingConsoleCreations(aiTerminalScopeId).then(function(r) {
-            var list = r && r.items ? r.items : [];
-            list.forEach(function(item) {
-                var hostId = item.host_id != null ? item.host_id : item.hostId;
-                var createdBy = item.created_by || 'ai';
-                if (!hostId) return;
-                if (findAiConsoleByHost(hostId, createdBy)) return;
-                addAiConsole(getNextSlot(), createdBy, hostId);
-            });
-        }).catch(function() {});
-    }, 2500);
+    pollAiPendingConsoleCreations();
+    aiPendingPollTimer = setInterval(pollAiPendingConsoleCreations, 500);
     var aiRemoteFsCurrentPath = '/';
     var aiRemoteFsCurrentFile = null;
     var aiRemoteFsClipboard = null;
@@ -8785,11 +8902,10 @@ function renderAIPage() {
                             var oldText = btn.textContent;
                             btn.textContent = '\u2026';
                             btn.disabled = true;
-                            showToast(t('toast.generatingTitle'));
-                            API.summarizeAISessionTitle(id).then(function(res) {
+                            edgeopsTrySummarizeAISessionTitle(id, { toastIfEmpty: true }).then(function(res) {
                                 btn.textContent = oldText;
                                 btn.disabled = false;
-                                if (res.title) { titleEl.textContent = res.title; showToast(t('toast.titleGenerated')); }
+                                if (res && res.title) { titleEl.textContent = res.title; showToast(t('toast.titleGenerated')); }
                             }).catch(function(err) {
                                 btn.textContent = oldText;
                                 btn.disabled = false;
@@ -8841,7 +8957,7 @@ function renderAIPage() {
                         if (srow.title && edgeopsIsTempSessionTitle(srow.title)) { toSummarize = srow.id; break; }
                     }
                 }
-                if (toSummarize) API.summarizeAISessionTitle(toSummarize).then(function(res) { if (res && res.title) loadSessions(); }).catch(function() {});
+                if (toSummarize) edgeopsTrySummarizeAISessionTitle(toSummarize).then(function(res) { if (res && res.title) loadSessions(); }).catch(function() {});
             }
         });
     }
@@ -9076,7 +9192,7 @@ function renderAIPage() {
                 loadSession(id);
                 showToast(t('toast.newSessionCreated'));
                 if (oldSessionId) {
-                    API.summarizeAISessionTitle(oldSessionId).then(function(res) { if (res && res.title) loadSessions(); }).catch(function() {});
+                    edgeopsTrySummarizeAISessionTitle(oldSessionId).then(function(res) { if (res && res.title) loadSessions(); }).catch(function() {});
                 }
             }
         }).catch(function(err) { showToast(err.message || t('toast.createFailed'), 'error'); });
@@ -12737,11 +12853,10 @@ function renderLocalPage() {
                         var oldText = btn.textContent;
                         btn.textContent = '\u2026';
                         btn.disabled = true;
-                        showToast(t('toast.generatingTitle'));
-                        API.summarizeAISessionTitle(id).then(function(res) {
+                        edgeopsTrySummarizeAISessionTitle(id, { toastIfEmpty: true }).then(function(res) {
                             btn.textContent = oldText;
                             btn.disabled = false;
-                            if (res.title) { titleEl.textContent = res.title; showToast(t('toast.titleGenerated')); }
+                            if (res && res.title) { titleEl.textContent = res.title; showToast(t('toast.titleGenerated')); }
                         }).catch(function(err) {
                             btn.textContent = oldText;
                             btn.disabled = false;
@@ -12783,7 +12898,7 @@ function renderLocalPage() {
                         if (srow.title && edgeopsIsTempSessionTitle(srow.title)) { toSummarize = srow.id; break; }
                     }
                 }
-                if (toSummarize) API.summarizeAISessionTitle(toSummarize).then(function(res) { if (res && res.title) loadLocalSessions(); }).catch(function() {});
+                if (toSummarize) edgeopsTrySummarizeAISessionTitle(toSummarize).then(function(res) { if (res && res.title) loadLocalSessions(); }).catch(function() {});
             }
         }).catch(function(err) { showToast(err.message, 'error'); });
     }

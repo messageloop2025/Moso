@@ -59,6 +59,101 @@ def _normalize_fs_relative(path: str) -> str:
     return path
 
 
+_FS_WEB_MARKERS = ("web/fs/", "static/fs/")
+
+
+def _fs_workspace_username(base: Path) -> str:
+    """base 为 web/fs/<username> 时返回 username，否则空（不做用户名前缀剥离）。"""
+    try:
+        base_resolved = base.resolve()
+        fs_root = FS_DIR.resolve()
+        if base_resolved.parent == fs_root:
+            return base_resolved.name
+    except OSError:
+        pass
+    return ""
+
+
+def _strip_embedded_fs_web_path(path: str, username: str = "") -> str:
+    """从混合路径中提取 web/fs 之后的相对段（兼容 AI 误传绝对路径）。"""
+    s = (path or "").strip().replace("\\", "/")
+    if not s:
+        return ""
+    lower = s.lower()
+    for marker in _FS_WEB_MARKERS:
+        idx = lower.find(marker)
+        if idx >= 0:
+            tail = s[idx + len(marker):].lstrip("/")
+            if username and tail.lower().startswith(username.lower() + "/"):
+                tail = tail[len(username):].lstrip("/")
+            elif username and tail.lower() == username.lower():
+                tail = ""
+            return tail
+    if lower.startswith("fs/"):
+        tail = s[3:].lstrip("/")
+        if username and tail.lower().startswith(username.lower() + "/"):
+            tail = tail[len(username):].lstrip("/")
+        return tail
+    return s
+
+
+def _looks_like_os_absolute_path(path: str) -> bool:
+    s = (path or "").strip().replace("\\", "/")
+    if not s:
+        return False
+    if len(s) >= 2 and s[1] == ":":
+        return True
+    if s.startswith("/"):
+        return True
+    first = s.split("/")[0].lower()
+    return first in ("home", "opt", "var", "usr", "root", "etc", "private", "users", "windows", "program files")
+
+
+def fs_path_usage_hint() -> str:
+    return (
+        "路径须为相对当前用户「文件系统」工作区根（如 chats/…/file.txt、scripts/a.sh），"
+        "不要使用操作系统绝对路径，也不要写 web/fs/ 或用户名前缀。"
+    )
+
+
+def coerce_fs_relative_path(raw: str, base: Optional[Path] = None) -> str:
+    """规范为相对用户 fs 根的路径；若误传 OS 绝对路径则尽量归位，无法归位则报错。"""
+    s = (raw or "").strip().replace("\\", "/")
+    if not s or s in (".", "/"):
+        return ""
+
+    base = base or FS_DIR
+    username = _fs_workspace_username(base)
+
+    is_win_abs = len(s) >= 2 and s[1] == ":"
+    if Path(s).is_absolute() or is_win_abs:
+        try:
+            resolved = Path(s).resolve()
+            rel = resolved.relative_to(base.resolve())
+            return str(rel).replace("\\", "/")
+        except (ValueError, OSError):
+            s = _strip_embedded_fs_web_path(s, username)
+            s = _normalize_fs_relative(s.lstrip("/"))
+            if username and s.lower().startswith(username.lower() + "/"):
+                s = s[len(username):].lstrip("/")
+            elif username and s.lower() == username.lower():
+                s = ""
+            if _looks_like_os_absolute_path(s):
+                raise ValueError(f"{fs_path_usage_hint()} 收到：{str(raw)[:160]}")
+            return s
+
+    s = s.lstrip("/")
+    s = _strip_embedded_fs_web_path(s, username)
+    s = _normalize_fs_relative(s)
+    if username and s.lower().startswith(username.lower() + "/"):
+        s = s[len(username):].lstrip("/")
+    elif username and s.lower() == username.lower():
+        s = ""
+    if _looks_like_os_absolute_path(s):
+        raise ValueError(f"{fs_path_usage_hint()} 收到：{str(raw)[:160]}")
+    return s
+
+
 def _safe_upload_relative_name(name: str) -> str:
     """multipart 中的文件名可能含子目录（拖放文件夹）；禁止 .. 与绝对路径逃逸。"""
     raw = (name or "").strip().replace("\\", "/").lstrip("/")
@@ -71,7 +166,7 @@ def _safe_upload_relative_name(name: str) -> str:
 def resolve_fs_path(relative: str, base: Optional[Path] = None) -> Path:
     """将相对路径解析为绝对路径，且必须落在 base 内；base 默认为 FS_DIR（兼容旧调用）。"""
     base = base or FS_DIR
-    relative = _normalize_fs_relative(relative)
+    relative = coerce_fs_relative_path(relative, base)
     if not relative:
         return base
     resolved = (base / relative).resolve()

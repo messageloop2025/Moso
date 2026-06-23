@@ -62,6 +62,7 @@ from api.terminal import (
     add_pending_console_creation,
     close_console as terminal_close_console,
     find_ai_terminal_for_host,
+    find_preferred_ai_terminal_for_host,
     format_terminal_tab_label,
     normalize_terminal_scope_id,
     terminals_snapshot_for_ai,
@@ -603,10 +604,11 @@ TOOLS = [
         "function": {
             "name": "ssh_execute",
             "description": (
-                "在指定主机上执行一条 SSH 命令。返回 stdout、stderr 和退出码。排障时以 stdout/stderr **末尾**为准。"
-                "**长任务（安装/编译/下载）推荐 detach**：detach=true 时命令在远端后台运行，输出写入 log_path（默认 ~/.edgeops/runs/…），立即返回 pid 与日志路径，不阻塞本轮。"
-                "之后用 poll_log=true + 同一 log_path 多次调用，仅 tail 日志末尾并检查是否仍在运行（job_running）。"
-                "无浏览器控制台时（集成/API）长任务应优先 detach + poll_log，而非同步阻塞安装命令。"
+                "在指定主机上**执行一条** SSH 命令（一次 tool_call = 一条 command）。返回 stdout、stderr 和退出码。"
+                "**多条顺序命令、安装向导、需多次输入（sudo 密码、yes/no）** 不要用本工具连发多次，应改用 **ssh_channel_***。"
+                "排障时以 stdout/stderr **末尾**为准。"
+                "**长且无交互的任务**可用 detach：detach=true 时后台运行，输出写入 log_path，之后 poll_log=true 轮询尾部。"
+                "AI 助手/主机详情/集成/MCP 均可用。"
             ),
             "parameters": {
                 "type": "object",
@@ -640,7 +642,12 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "send_to_terminal",
-            "description": "向指定 AI 控制台注入输入（如命令或按键）。仅可操作 AI 创建的 SSH 控制台。操作前先 list_terminals；同一 host 已有 connected 的 AI 控制台时复用其 slot。未指定 slot 时可按 host_id 自动匹配。",
+            "description": (
+                "向指定 **Web 界面 AI 控制台**注入输入（用户可在 tab 中实时看到）。"
+                "仅可操作 AI 创建的 SSH 控制台。操作前先 list_terminals；同一 host 可有多个 slot，优先选 buffer_idle=是的空闲终端。"
+                "未指定 slot 时可按 host_id 自动匹配空闲 slot；若现有终端被长期任务占用，应 create_console 新开。"
+                "**多条顺序/交互任务**且用户不必看界面时，优先 ssh_channel_*，不必强开 Web tab。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -656,7 +663,12 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "connect_terminal",
-            "description": "请求前端连接指定主机的 AI 控制台。若该 host_id 已有 AI 控制台（含握手中/已连接）则复用现有 slot，不会重复创建。无可用控制台时才新建。创建/连接后 send_to_terminal / get_terminal_buffer 最多等待约 12 秒就绪。",
+            "description": (
+                "请求前端连接指定主机的 AI 控制台（不强制新建 tab）。"
+                "若该 host 已有 AI 控制台，优先切到 buffer_idle=是的空闲 slot；"
+                "仅当尚无该 host 的 AI 控制台时才新建。"
+                "用户要求「再开一个/新开终端」或现有终端被长期任务占用时，请用 create_console 而非本工具。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -670,7 +682,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "list_terminals",
-            "description": "查询当前聊天区域内 AI 可操作的 SSH 控制台列表（含 tab_label、connected、host 映射）。只返回 AI 创建的控制台。多控制台/多主机场景下**必须先调用**再 send_to_terminal。",
+            "description": "查询当前聊天区域内 AI 可操作的 SSH 控制台列表（含 tab_label、connected、host 映射、buffer_idle 是否空闲）。只返回 AI 创建的控制台。多控制台/多主机场景下**必须先调用**再 send_to_terminal。",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -678,7 +690,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "create_console",
-            "description": "在 AI 助手页创建并连接新控制台（多机协同时使用）。若该 host_id 已有 AI 控制台则复用现有 slot，不重复创建。每台 host 通常保留一个 AI slot，除非用户明确要求多个并行 session。",
+            "description": (
+                "在 AI 助手页**新建并连接**一个控制台 tab（同一 host 可多次调用以并行多个 session）。"
+                "现有终端被长期任务占用、要在新 session 执行命令、或用户明确要求再开一个终端时，必须调用本工具。"
+                "不要以「每台主机只能一个控制台」为由拒绝；list_terminals 后仍无 buffer_idle=是的 slot 时也应 create_console。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1379,7 +1395,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "ssh_channel_create",
-            "description": "创建属于当前会话或指定任务的 SSH TTY 通道（真实 PTY 连接），用于交互式命令、sudo 密码、vi、Ctrl+C 等。Web 会话默认空闲 300s 关断；集成/OpenClaw 会话默认 600s（10 分钟无读写自动关）。",
+            "description": (
+                "创建 SSH **PTY 交互通道**（真实 TTY），用于**多条顺序命令**、编译、安装环境、sudo 密码、菜单、vi、Ctrl+C 等。"
+                "**AI 助手、主机详情、OpenClaw/API 集成、MCP 均可用**（不仅限于集成）。"
+                "流程：create → send → read_lines/has_new → … → close。"
+                "Web 会话默认空闲 300s 关断；集成会话默认 600s。"
+                "用户需要在界面**边看边操作**时，可改用 Web 控制台 send_to_terminal；后台自动化优先本工具。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1426,7 +1448,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "ssh_channel_send",
-            "description": "向 SSH 通道发送内容（支持控制字符如 Ctrl+C）。",
+            "description": "向 SSH 通道发送内容（命令、sudo 密码、控制字符如 Ctrl+C）。同一 channel 内可多次 send 实现顺序交互。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1800,8 +1822,8 @@ TOOLS = [
             "name": "scp_push",
             "description": (
                 "通过 **SFTP** 将文件或目录推送到主机（流式传输，支持大文件与目录树，调用卡会显示进度）。"
-                "二选一：1) **content** 文本字符串（适合小脚本）；2) **local_path** web/fs 相对路径（文件或目录，支持二进制）。"
-                "目录上传需 **recursive=true**。大文件/安装包优先 local_path，勿用 content。"
+                "二选一：1) **content** 文本字符串（适合小脚本）；2) **local_path** **相对工作区根**的路径（文件或目录，支持二进制）。"
+                "目录上传需 **recursive=true**。大文件/安装包优先 local_path，勿用 content。**禁止** OS 绝对路径。"
             ),
             "parameters": {
                 "type": "object",
@@ -1809,7 +1831,7 @@ TOOLS = [
                     "host_id": {"type": "integer", "description": "主机 ID"},
                     "remote_path": {"type": "string", "description": "远程路径，如 /tmp/script.sh 或 /tmp/mydir/"},
                     "content": {"type": "string", "description": "文本内容（与 local_path 二选一，仅适合小文本）"},
-                    "local_path": {"type": "string", "description": "web/fs 相对路径（文件或目录），与 content 二选一"},
+                    "local_path": {"type": "string", "description": "相对工作区根的路径（文件或目录），与 content 二选一；例 scripts/deploy.sh"},
                     "recursive": {"type": "boolean", "description": "local_path 为目录时必须 true"},
                     "timeout": {"type": "integer", "description": "超时秒数，默认 300，范围 30–3600"},
                 },
@@ -1822,11 +1844,11 @@ TOOLS = [
         "function": {
             "name": "scp_pull",
             "description": (
-                "通过 **SFTP** 从主机拉取**文件或目录**到当前用户 **web/fs**（流式落盘，调用卡显示进度）。"
+                "通过 **SFTP** 从主机拉取**文件或目录**到**当前用户文件系统工作区**（流式落盘，调用卡显示进度）。"
                 "适合大日志、安装包、归档；目录拉取需 **recursive=true**。\n\n"
-                "`local_path`：逻辑路径如 `data/host1-syslog.txt` 或 `data/logs-backup`；"
+                "`local_path`：相对工作区根的逻辑路径如 `data/host1-syslog.txt`；"
                 "未以 `chats/` 开头会自动加 **当天 UTC** 的 `chats/年/月/日/` 并补 UUID 前缀。"
-                "单文件受 `max_bytes` 约束；目录受系统整树字节上限约束。"
+                "**禁止** OS 绝对路径。单文件受 `max_bytes` 约束；目录受系统整树字节上限约束。"
             ),
             "parameters": {
                 "type": "object",
@@ -1918,11 +1940,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "fs_list",
-            "description": "列出 **web/fs/当前用户** 目录下的文件和子目录（毛竹（Moso）项目文件系统，非本机操作系统目录）。path 为相对该用户 fs 根的路径，空表示根目录。用户要求「列文件系统」「看 web/fs」时用此工具。会话工作区多在 `chats/<UTC年>/<月>/<日>/` 下，可先 list 该路径。",
+            "description": "列出**当前用户文件系统工作区**（侧栏「文件系统」；用户亦称本地/毛竹文件系统）下的文件和子目录。path 为**相对工作区根**的路径，空表示根目录。用户说「文件系统里有某文件」时用此工具；**禁止**传 OS 绝对路径或 web/fs/ 前缀。会话工作区多在 `chats/<UTC年>/<月>/<日>/` 下。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "相对 fs 根的目录路径，空或 / 表示根目录"},
+                    "path": {"type": "string", "description": "相对工作区根的目录路径，空或 / 表示根目录；例 chats/2026/06/11"},
                 },
                 "required": [],
             },
@@ -1943,11 +1965,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "fs_read_file",
-            "description": "读取 毛竹（Moso）本地文件系统（web/fs）中的文本文件内容（UTF-8）。支持按字符 offset/size 分段读取。",
+            "description": "读取**当前用户文件系统工作区**中的文本文件（UTF-8）。path 为**相对工作区根**；支持 offset/size 分段读取。**禁止** OS 绝对路径。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "相对 fs 根的文件路径"},
+                    "path": {"type": "string", "description": "相对工作区根的文件路径，如 chats/2026/06/11/report.md 或 scripts/deploy.sh"},
                     "offset": {"type": "integer", "description": "可选，起始字符偏移（默认 0）"},
                     "size": {"type": "integer", "description": "可选，读取字符数；不传则读到末尾"},
                 },
@@ -1960,12 +1982,11 @@ TOOLS = [
         "function": {
             "name": "fs_write_file",
             "description": (
-                "向 毛竹（Moso）本地文件系统（web/fs）写入文本文件（UTF-8）。支持 overwrite/append，以及按字符 offset 定位插入/替换。\n"
+                "向**当前用户文件系统工作区**写入文本文件（UTF-8）。path 为**相对工作区根**的逻辑路径；支持 overwrite/append 及按字符 offset 定位写。\n"
                 "**会话相关**写入（脚本、中间数据、报告）：path 只需写逻辑路径段如 `scripts/job.sh`、`data/raw.csv`；"
-                "后端会**自动**归位到 `chats/<UTC日期>/…`，并命名为 `{UUID}-{文件名 stem}{后缀}`，不会落在用户根目录。\n"
+                "后端会**自动**归位到 `chats/<UTC日期>/…`，并命名为 `{UUID}-{文件名 stem}{后缀}`。\n"
                 "本机管理会话（local）则归位到 `local/<UTC日期>/…`。\n"
-                "**禁止**用本工具写 `skills/` 或 `chats/.../skills/` 下任何文件（会被错误归位）；"
-                "Agent Skills 须用 save_user_skill / write_user_skill_file，根路径固定为 `skills/<name>/`。"
+                "**禁止** OS 绝对路径、web/fs/ 前缀；**禁止**用本工具写 `skills/`（须 save_user_skill / write_user_skill_file）。"
             ),
             "parameters": {
                 "type": "object",
@@ -1987,11 +2008,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "fs_read_binary",
-            "description": "从 web/fs 读取二进制文件，返回 base64 或 hex 字符串。支持 offset/size 分段读取。",
+            "description": "从**当前用户文件系统工作区**读取二进制文件，返回 base64 或 hex。path 为相对工作区根；支持 offset/size。**禁止** OS 绝对路径。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "相对 fs 根的文件路径"},
+                    "path": {"type": "string", "description": "相对工作区根的文件路径"},
                     "offset": {"type": "integer", "description": "可选，字节偏移（默认 0）"},
                     "size": {"type": "integer", "description": "可选，读取字节数；不传则读到末尾"},
                     "encoding": {"type": "string", "description": "返回编码：base64 或 hex，默认 base64"},
@@ -2005,8 +2026,8 @@ TOOLS = [
         "function": {
             "name": "fs_write_binary",
             "description": (
-                "向 web/fs 写入二进制内容（content 可为 base64 或 hex，由 encoding 指定）。offset 为空时 truncate=true 覆盖写入，否则追加；offset 指定时从该字节偏移写入。"
-                "**路径归位**与 fs_write_file 相同：普通会话自动落在 `chats/<UTC日期>/` 并加 UUID 文件名前缀。"
+                "向**当前用户文件系统工作区**写入二进制（content 为 base64 或 hex）。path 为相对工作区根；"
+                "**路径归位**与 fs_write_file 相同。**禁止** OS 绝对路径。"
             ),
             "parameters": {
                 "type": "object",
@@ -2025,11 +2046,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "fs_truncate",
-            "description": "将 web/fs 下文件截断或扩展到指定字节大小（size）。文件不存在会创建空文件后再调整大小。",
+            "description": "将**当前用户文件系统工作区**下文件截断或扩展到指定字节大小。path 为相对工作区根。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "相对 fs 根的文件路径"},
+                    "path": {"type": "string", "description": "相对工作区根的文件路径"},
                     "size": {"type": "integer", "description": "目标字节大小；默认 0"},
                 },
                 "required": ["path"],
@@ -2041,13 +2062,13 @@ TOOLS = [
         "function": {
             "name": "fs_mkdir",
             "description": (
-                "在 毛竹（Moso）本地文件系统（web/fs）中创建目录。建议目录建在 `chats/<UTC日期>/` 下（可先 get_chats_workspace_dir），"
-                "避免在用户 fs 根随意建顶层 `scripts/`、`data/`。"
+                "在**当前用户文件系统工作区**创建目录。path 为相对工作区根；建议建在 `chats/<UTC日期>/` 下（可先 get_chats_workspace_dir）。"
+                "**禁止** OS 绝对路径。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "相对 fs 根的目录路径，例如 chats/2026/05/08/scripts"},
+                    "path": {"type": "string", "description": "相对工作区根的目录路径，如 chats/2026/06/11/scripts"},
                 },
                 "required": ["path"],
             },
@@ -2057,7 +2078,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "fs_pack_tgz",
-            "description": "将 web/fs 下某目录打包为 .tgz 压缩包。path 为相对 fs 根的目录路径，生成 path.tgz。",
+            "description": "将**当前用户文件系统工作区**下某目录打包为 .tgz。path 为相对工作区根的目录路径，生成 path.tgz。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2071,7 +2092,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "fs_unpack_tgz",
-            "description": "解压 web/fs 下的 .tgz 文件。path 为 tgz 文件相对路径，dest 为解压目标目录（相对 fs 根），空则解压到 tgz 同目录。",
+            "description": "解压**当前用户文件系统工作区**下的 .tgz。path 为相对工作区根的 tgz 路径，dest 为解压目标目录（相对工作区根），空则解压到 tgz 同目录。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2086,11 +2107,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "fs_delete",
-            "description": "删除 web/fs（当前用户根）下的文件或目录；目录会递归删除（含非空）。",
+            "description": "删除**当前用户文件系统工作区**下的文件或目录；目录会递归删除（含非空）。path 为相对工作区根。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "相对 fs 根的文件或空目录路径"},
+                    "path": {"type": "string", "description": "相对工作区根的文件或目录路径"},
                 },
                 "required": ["path"],
             },
@@ -2100,7 +2121,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "fs_copy",
-            "description": "在 web/fs 下复制或移动：将 path 复制到 dest_dir 目录下；move 为 true 时移动（复制后删除源）。",
+            "description": "在**当前用户文件系统工作区**内复制或移动：将 path 复制到 dest_dir；move 为 true 时移动。路径均为相对工作区根。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -5975,7 +5996,9 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             ai_slots = {int(it["slot"]): it for it in items if it.get("slot") is not None}
             if host_id_hint is not None:
                 try:
-                    match = find_ai_terminal_for_host(user["id"], int(host_id_hint), terminal_scope_id)
+                    match = find_preferred_ai_terminal_for_host(
+                        user["id"], int(host_id_hint), terminal_scope_id, prefer_idle=True
+                    )
                     if match and match.get("slot") is not None:
                         slot_id = int(match["slot"])
                         if requested_slot is None or requested_slot == slot_id:
@@ -7618,19 +7641,28 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 return json.dumps({"success": False, "error": f"主机 ID={host_id} 不存在"}, ensure_ascii=False)
             if not await _can_access_host_with_shares(row, user):
                 return json.dumps({"success": False, "error": "无权操作该主机"}, ensure_ascii=False)
-            existing = find_ai_terminal_for_host(user["id"], int(host_id), terminal_scope_id)
+            existing = find_preferred_ai_terminal_for_host(
+                user["id"], int(host_id), terminal_scope_id, prefer_idle=True
+            )
             if existing:
                 slot_id = int(existing["slot"])
+                idle = existing.get("buffer_idle")
+                idle_txt = "空闲" if idle else "可能仍有任务占用"
                 return json.dumps(attach_terminals_snapshot({
                     "success": True,
                     "reused": True,
-                    "message": f"主机 {host_id} 已有 AI 控制台 slot={slot_id}（tab={existing.get('tab_label')}，connected={existing.get('connected')}），已复用，未新建。",
+                    "message": (
+                        f"主机 {host_id} 已有 AI 控制台 slot={slot_id}（tab={existing.get('tab_label')}，"
+                        f"connected={existing.get('connected')}，{idle_txt}），已切到该 slot，未新建。"
+                        f"若需并行第二个 session 请 create_console(host_id)。"
+                    ),
                     "slot": slot_id,
                     "host_id": int(host_id),
                     "host_name": (row.get("name") or "").strip(),
                     "host_ip": (row.get("host") or "").strip(),
                     "host_port": int(row.get("port") or 22),
                     "connected": existing.get("connected"),
+                    "buffer_idle": idle,
                     "ui_action": {"action": "switch_console", "slot": slot_id, "scope": "ai"},
                 }), ensure_ascii=False)
             return json.dumps(attach_terminals_snapshot({
@@ -7667,25 +7699,40 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 return json.dumps({"success": False, "error": f"主机 ID={host_id} 不存在"}, ensure_ascii=False)
             if not await _can_access_host_with_shares(row, user):
                 return json.dumps({"success": False, "error": "无权操作该主机"}, ensure_ascii=False)
-            existing = find_ai_terminal_for_host(user["id"], int(host_id), terminal_scope_id)
-            if existing:
-                slot_id = int(existing["slot"])
-                return json.dumps(attach_terminals_snapshot({
-                    "success": True,
-                    "reused": True,
-                    "message": f"主机 {host_id} 已有 AI 控制台 slot={slot_id}，已复用，未重复创建。",
-                    "slot": slot_id,
-                    "host_id": int(host_id),
-                    "connected": existing.get("connected"),
-                }), ensure_ascii=False)
-            add_pending_console_creation(user["id"], int(host_id), "ai", scope_id=terminal_scope_id)
+            slot = add_pending_console_creation(
+                user["id"], int(host_id), "ai", scope_id=terminal_scope_id
+            )
+            tab_label = format_terminal_tab_label({
+                "host_id": int(host_id),
+                "host_name": (row.get("name") or "").strip(),
+                "host_ip": (row.get("host") or "").strip(),
+                "slot": slot,
+                "created_by": "ai",
+            })
+            ready = await wait_for_terminal_session_ready(
+                user["id"], slot, terminal_scope_id
+            )
+            ready_msg = "已连接就绪" if ready else "前端仍在连接中（已等待约 12 秒，可 list_terminals 再查）"
             return json.dumps(attach_terminals_snapshot({
                 "success": True,
-                "message": f"已请求创建新控制台并连接主机 {host_id}（标签：host_id-host_name-slot (AI)）",
+                "created_new": True,
+                "slot": slot,
+                "connected": ready,
+                "tab_label": tab_label,
+                "message": (
+                    f"已为 host_id={host_id} 新建 AI 控制台 slot={slot}（tab={tab_label}），{ready_msg}。"
+                    f"后续 send_to_terminal / get_terminal_buffer 请使用 slot={slot}。"
+                ),
                 "host_id": int(host_id),
                 "host_name": (row.get("name") or "").strip(),
                 "host_ip": (row.get("host") or "").strip(),
                 "host_port": int(row.get("port") or 22),
+                "ui_action": {
+                    "action": "create_console",
+                    "host_id": int(host_id),
+                    "slot": slot,
+                    "created_by": "ai",
+                },
             }), ensure_ascii=False)
 
         if name == "close_console":
@@ -10626,7 +10673,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             recursive = bool(arguments.get("recursive"))
             if not host_id or not remote_path or not local_path:
                 return json.dumps(
-                    {"success": False, "error": "需要 host_id、remote_path、local_path（web/fs 相对路径）"},
+                    {"success": False, "error": "需要 host_id、remote_path、local_path（相对工作区根的路径）"},
                     ensure_ascii=False,
                 )
             raw_local_requested = local_path
@@ -10701,7 +10748,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             return json.dumps(
                 {
                     "success": True,
-                    "message": f"已保存到 web/fs:{local_path}",
+                    "message": f"已保存到工作区:{local_path}",
                     "local_path": local_path,
                     "requested_local_path": raw_local_requested,
                     "bytes_transferred": result.bytes_transferred,
