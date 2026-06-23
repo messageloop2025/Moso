@@ -2245,6 +2245,342 @@ function edgeopsCotCollapsePanelAfterStream(toolsEl) {
     if (ch) ch.textContent = '\u25b6';
 }
 
+function edgeopsCollapseReplyProsePanel(panel) {
+    if (!panel) return;
+    var body = panel.querySelector('.ai-reply-prose-body');
+    var header = panel.querySelector('.ai-reply-prose-header');
+    if (!body || body.classList.contains('ai-reply-prose-collapsed')) return;
+    body.classList.add('ai-reply-prose-collapsed');
+    panel.classList.add('ai-reply-prose-collapsed');
+    if (header) header.setAttribute('aria-expanded', 'false');
+    var ch = panel.querySelector('.ai-reply-prose-chevron');
+    if (ch) ch.textContent = '\u25b6';
+}
+
+function edgeopsResetProcessProseLiveMount(textEl) {
+    if (!textEl) return;
+    var liveItem = textEl.querySelector('.ai-reply-prose-item-live');
+    if (liveItem) liveItem.remove();
+    textEl.querySelectorAll('.edgeops-stream-segment').forEach(function(el) {
+        var item = el.closest('.ai-reply-prose-item');
+        if (!item || !item.classList.contains('ai-reply-prose-item-frozen')) el.remove();
+    });
+    var orphanTail = textEl.querySelector(':scope > .edgeops-stream-tail, :scope > [data-edgeops-stream-tail]');
+    if (orphanTail) orphanTail.remove();
+    if (typeof edgeopsClearStreamIncrementalState === 'function') edgeopsClearStreamIncrementalState(textEl);
+}
+
+function edgeopsBindFrozenProseItemsIn(root) {
+    if (!root || !root.querySelectorAll) return;
+    root.querySelectorAll('.ai-reply-prose-item-frozen .ai-reply-prose-item-head').forEach(function(head) {
+        var body = head.nextElementSibling;
+        if (body && body.classList.contains('ai-reply-prose-item-body')) {
+            edgeopsBindProseItemToggle(head, body, body.classList.contains('ai-reply-prose-item-collapsed'));
+        }
+    });
+}
+
+function edgeopsBuildProcessProsePanelFromSegments(segments, collapsed) {
+    if (!segments || !segments.length) return '';
+    var itemsHtml = segments.map(function(text, i) {
+        var inner = typeof edgeopsFormatStreamCommittedSegmentHtml === 'function'
+            ? edgeopsFormatStreamCommittedSegmentHtml(text)
+            : (typeof formatMarkdown === 'function' ? formatMarkdown(text) : esc(text));
+        var summary = typeof edgeopsProseItemSummary === 'function'
+            ? edgeopsProseItemSummary(text, i)
+            : ('#' + (i + 1));
+        return '<div class="ai-reply-prose-item ai-reply-prose-item-frozen">'
+            + '<button type="button" class="ai-reply-prose-item-head" aria-expanded="false">'
+            + '<span class="ai-reply-prose-item-chevron">\u25b6</span>'
+            + '<span class="ai-reply-prose-item-title">' + esc(summary) + '</span>'
+            + '</button>'
+            + '<div class="ai-reply-prose-item-body ai-reply-prose-item-collapsed">' + inner + '</div>'
+            + '</div>';
+    }).join('');
+    var title = typeof t === 'function' ? t('hostAi.proseTitle', { n: segments.length }) : ('Process');
+    var doneHint = typeof t === 'function' ? t('hostAi.proseDoneHint') : 'Done';
+    var expanded = collapsed ? 'false' : 'true';
+    var chev = collapsed ? '\u25b6' : '\u25bc';
+    var collapsedClass = collapsed ? ' ai-reply-prose-collapsed' : '';
+    var bodyCollapsed = collapsed ? ' ai-reply-prose-collapsed' : '';
+    return '<div class="ai-reply-prose-panel ai-reply-process-persisted' + collapsedClass + '">'
+        + '<button type="button" class="ai-reply-prose-header" aria-expanded="' + expanded + '">'
+        + '<span class="ai-reply-prose-chevron">' + chev + '</span>'
+        + '<span class="ai-reply-prose-head-main">' + esc(title) + '</span>'
+        + '<span class="ai-reply-prose-head-status ai-reply-prose-status-done">' + esc(doneHint) + '</span>'
+        + '</button>'
+        + '<div class="ai-reply-prose-body' + bodyCollapsed + '">'
+        + '<div class="ai-reply-text">' + itemsHtml + '</div>'
+        + '</div></div>';
+}
+
+function edgeopsRestoreProcessProseOnLastAssistant(box, segments) {
+    if (!box || !segments || !segments.length) return;
+    var nodes = box.querySelectorAll('.chat-message.assistant');
+    if (!nodes.length) return;
+    var node = nodes[nodes.length - 1];
+    var replyWrap = node.querySelector('.ai-reply-stream, .ai-reply-persisted');
+    if (!replyWrap || replyWrap.querySelector('.ai-reply-prose-panel')) return;
+    var html = edgeopsBuildProcessProsePanelFromSegments(segments, true);
+    if (!html) return;
+    var finalEl = replyWrap.querySelector('.ai-reply-text.message-body, .ai-reply-final-text');
+    var toolsEl = replyWrap.querySelector('.ai-reply-tools');
+    if (toolsEl) toolsEl.insertAdjacentHTML('afterend', html);
+    else if (finalEl) finalEl.insertAdjacentHTML('beforebegin', html);
+    else replyWrap.insertAdjacentHTML('beforeend', html);
+    edgeopsBindReplyProsePanelsIn(replyWrap);
+    edgeopsBindFrozenProseItemsIn(replyWrap);
+    if (typeof edgeopsHydrateChatDiagrams === 'function') edgeopsHydrateChatDiagrams(replyWrap);
+}
+
+function edgeopsResolveProcessFinalText(replyWrap, streamedText, hasTools) {
+    var clean = stripThinkTags(streamedText || '');
+    if (replyWrap && replyWrap._edgeopsFinalAnswerText) {
+        return String(replyWrap._edgeopsFinalAnswerText).trim();
+    }
+    if (replyWrap && replyWrap._edgeopsContentRefreshFinal) return clean.trim();
+    if (replyWrap && replyWrap._edgeopsProcessProseEnabled) {
+        var tail = clean.slice(replyWrap._edgeopsProseLastCommit || 0).trim();
+        if (tail) return tail;
+        return hasTools ? edgeopsFinalAssistantText('', true) : '';
+    }
+    return edgeopsFinalAssistantText(streamedText, hasTools);
+}
+
+function edgeopsAppendProcessFinalAnswer(replyWrap, finalText, fmtFn) {
+    if (!replyWrap || !finalText || !String(finalText).trim()) return null;
+    fmtFn = typeof fmtFn === 'function' ? fmtFn : edgeopsDefaultFmtMd;
+    var existing = replyWrap.querySelector('.ai-reply-final-text');
+    if (existing) existing.remove();
+    var finalDiv = document.createElement('div');
+    finalDiv.className = 'ai-reply-text message-body ai-reply-final-text';
+    finalDiv.innerHTML = fmtFn(finalText);
+    var panel = replyWrap.querySelector('.ai-reply-prose-panel');
+    if (panel) panel.insertAdjacentElement('afterend', finalDiv);
+    else replyWrap.appendChild(finalDiv);
+    return finalDiv;
+}
+
+function edgeopsMaybeEnableProcessProse(replyWrap, toolsEl) {
+    if (!replyWrap || replyWrap._edgeopsProcessProseEnabled) return;
+    if (!toolsEl || !toolsEl.querySelector('.ai-cot-panel')) return;
+    replyWrap._edgeopsProcessProseEnabled = true;
+    edgeopsEnsureReplyProsePanel(replyWrap);
+}
+
+function edgeopsBindReplyProsePanelToggle(panel) {
+    if (!panel || panel._edgeopsProseBound) return;
+    panel._edgeopsProseBound = true;
+    var header = panel.querySelector('.ai-reply-prose-header');
+    var body = panel.querySelector('.ai-reply-prose-body');
+    if (!header || !body) return;
+    header.addEventListener('click', function() {
+        var collapsed = body.classList.toggle('ai-reply-prose-collapsed');
+        panel.classList.toggle('ai-reply-prose-collapsed', collapsed);
+        header.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        var ch = panel.querySelector('.ai-reply-prose-chevron');
+        if (ch) ch.textContent = collapsed ? '\u25b6' : '\u25bc';
+    });
+}
+
+function edgeopsRefreshReplyProseHeader(panel, opts) {
+    opts = opts || {};
+    if (!panel) return;
+    var main = panel.querySelector('.ai-reply-prose-head-main');
+    var status = panel.querySelector('.ai-reply-prose-head-status');
+    var textEl = panel.querySelector('.ai-reply-text');
+    var count = 0;
+    if (textEl) {
+        count = textEl.querySelectorAll('.ai-reply-prose-item-frozen').length;
+        if (opts.live && textEl.querySelector('.ai-reply-prose-item-live')) count += 1;
+        if (!count && textEl._edgeopsStreamSegmentCount) count = textEl._edgeopsStreamSegmentCount;
+    }
+    if (!count && opts.live) count = 1;
+    if (main) {
+        var titleKey = opts.live ? 'hostAi.proseTitleLive' : 'hostAi.proseTitle';
+        main.textContent = typeof t === 'function'
+            ? t(titleKey, { n: count || 1 })
+            : ('Reply (' + (count || 1) + ')');
+    }
+    if (status) {
+        status.textContent = typeof t === 'function'
+            ? t(opts.live ? 'hostAi.proseLiveHint' : 'hostAi.proseDoneHint')
+            : (opts.live ? '…' : 'Done');
+        status.className = 'ai-reply-prose-head-status ' + (opts.live ? 'ai-reply-prose-status-live' : 'ai-reply-prose-status-done');
+    }
+}
+
+function edgeopsBindProseItemToggle(head, body, startCollapsed) {
+    if (!head || !body || head._edgeopsProseItemBound) return;
+    head._edgeopsProseItemBound = true;
+    if (startCollapsed) body.classList.add('ai-reply-prose-item-collapsed');
+    head.setAttribute('aria-expanded', startCollapsed ? 'false' : 'true');
+    var ch0 = head.querySelector('.ai-reply-prose-item-chevron');
+    if (ch0) ch0.textContent = startCollapsed ? '\u25b6' : '\u25bc';
+    head.addEventListener('click', function() {
+        var collapsed = body.classList.toggle('ai-reply-prose-item-collapsed');
+        head.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        var ch = head.querySelector('.ai-reply-prose-item-chevron');
+        if (ch) ch.textContent = collapsed ? '\u25b6' : '\u25bc';
+    });
+}
+
+function edgeopsAppendFrozenProcessProseItem(textEl, text, index, hydrateRoot) {
+    if (!textEl || !String(text || '').trim()) return;
+    var inner = typeof edgeopsFormatStreamCommittedSegmentHtml === 'function'
+        ? edgeopsFormatStreamCommittedSegmentHtml(text)
+        : (typeof formatMarkdown === 'function' ? formatMarkdown(text) : esc(text));
+    var summary = typeof edgeopsProseItemSummary === 'function'
+        ? edgeopsProseItemSummary(text, index)
+        : ('#' + ((index | 0) + 1));
+    var item = document.createElement('div');
+    item.className = 'ai-reply-prose-item ai-reply-prose-item-frozen';
+    var head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'ai-reply-prose-item-head';
+    head.innerHTML = '<span class="ai-reply-prose-item-chevron">\u25b6</span>'
+        + '<span class="ai-reply-prose-item-title">' + esc(summary) + '</span>';
+    var body = document.createElement('div');
+    body.className = 'ai-reply-prose-item-body';
+    body.innerHTML = inner;
+    edgeopsBindProseItemToggle(head, body, true);
+    item.appendChild(head);
+    item.appendChild(body);
+    var liveItem = textEl.querySelector('.ai-reply-prose-item-live');
+    if (liveItem) textEl.insertBefore(item, liveItem);
+    else textEl.appendChild(item);
+    if (hydrateRoot && typeof edgeopsHydrateChatDiagrams === 'function') edgeopsHydrateChatDiagrams(item);
+}
+
+function edgeopsCommitProcessProseSegment(replyWrap, textEl) {
+    if (!replyWrap || !textEl) return;
+    var full = stripThinkTags(replyWrap._edgeopsProseStreamText || '');
+    var since = replyWrap._edgeopsProseLastCommit || 0;
+    var chunk = full.slice(since).trim();
+    replyWrap._edgeopsProcessProseEnabled = true;
+    edgeopsEnsureReplyProsePanel(replyWrap);
+    if (!chunk) {
+        edgeopsResetProcessProseLiveMount(textEl);
+        return;
+    }
+    replyWrap._edgeopsProseLastCommit = full.length;
+    replyWrap._edgeopsProseSegCount = (replyWrap._edgeopsProseSegCount || 0) + 1;
+    edgeopsAppendFrozenProcessProseItem(textEl, chunk, replyWrap._edgeopsProseSegCount - 1, replyWrap);
+    replyWrap._edgeopsProseSegments = replyWrap._edgeopsProseSegments || [];
+    replyWrap._edgeopsProseSegments.push(chunk);
+    edgeopsResetProcessProseLiveMount(textEl);
+    var panel = replyWrap.querySelector('.ai-reply-prose-panel');
+    if (panel) edgeopsRefreshReplyProseHeader(panel, { live: false });
+}
+
+function edgeopsFinalizeProcessProsePanel(replyWrap, textEl, collapsePanel) {
+    if (!replyWrap || !textEl || !replyWrap._edgeopsProcessProseEnabled) return;
+    edgeopsResetProcessProseLiveMount(textEl);
+    var panel = replyWrap.querySelector('.ai-reply-prose-panel');
+    if (panel) {
+        edgeopsRefreshReplyProseHeader(panel, { live: false });
+        if (collapsePanel) edgeopsCollapseReplyProsePanel(panel);
+    }
+    edgeopsBindFrozenProseItemsIn(replyWrap);
+}
+
+function edgeopsFlushAssistantStreamText(replyWrap, textEl, streamedText, toolsEl) {
+    var clean = stripThinkTags(streamedText || '');
+    if (replyWrap) replyWrap._edgeopsProseStreamText = clean;
+    if (replyWrap && toolsEl && clean.trim()) edgeopsMaybeEnableProcessProse(replyWrap, toolsEl);
+    var renderText = clean;
+    if (replyWrap && replyWrap._edgeopsProcessProseEnabled) {
+        edgeopsEnsureReplyProsePanel(replyWrap);
+        renderText = clean.slice(replyWrap._edgeopsProseLastCommit || 0);
+    }
+    if (typeof edgeopsRenderStreamIncremental === 'function') {
+        edgeopsRenderStreamIncremental(textEl, renderText, replyWrap);
+    } else if (typeof edgeopsRenderStreamPlainText === 'function') {
+        edgeopsRenderStreamPlainText(textEl, renderText);
+    } else if (textEl) {
+        textEl.textContent = renderText;
+    }
+    if (replyWrap && replyWrap._edgeopsProcessProseEnabled) {
+        var panel = replyWrap.querySelector('.ai-reply-prose-panel');
+        if (panel) edgeopsRefreshReplyProseHeader(panel, { live: !!(renderText && renderText.trim()) });
+    }
+}
+
+function edgeopsResolveStreamFinalText(replyWrap, streamedText, hasTools) {
+    return edgeopsResolveProcessFinalText(replyWrap, streamedText, hasTools);
+}
+
+function edgeopsEnsureReplyProsePanel(replyWrap) {
+    if (!replyWrap) return null;
+    var panel = replyWrap.querySelector('.ai-reply-prose-panel');
+    if (panel) return panel;
+    var textEl = replyWrap.querySelector('.ai-reply-text');
+    if (!textEl) {
+        textEl = document.createElement('div');
+        textEl.className = 'ai-reply-text';
+        replyWrap.appendChild(textEl);
+    }
+    panel = document.createElement('div');
+    panel.className = 'ai-reply-prose-panel';
+    var header = document.createElement('button');
+    header.type = 'button';
+    header.className = 'ai-reply-prose-header';
+    header.setAttribute('aria-expanded', 'true');
+    header.innerHTML = '<span class="ai-reply-prose-chevron">\u25bc</span>'
+        + '<span class="ai-reply-prose-head-main"></span>'
+        + '<span class="ai-reply-prose-head-status"></span>';
+    var body = document.createElement('div');
+    body.className = 'ai-reply-prose-body';
+    textEl.parentNode.insertBefore(panel, textEl);
+    body.appendChild(textEl);
+    panel.appendChild(header);
+    panel.appendChild(body);
+    edgeopsBindReplyProsePanelToggle(panel);
+    edgeopsRefreshReplyProseHeader(panel, { live: true });
+    return panel;
+}
+
+function edgeopsBuildFinalProsePanelHtml(finalText, fmtFn, collapsed) {
+    if (!finalText || !String(finalText).trim()) return '';
+    fmtFn = typeof fmtFn === 'function' ? fmtFn : edgeopsDefaultFmtMd;
+    var segments = typeof edgeopsParseCommittedStreamSegments === 'function'
+        ? edgeopsParseCommittedStreamSegments(finalText)
+        : [{ type: 'md', text: finalText }];
+    if (!segments.length) segments = [{ type: 'md', text: finalText }];
+    var itemsHtml = segments.map(function(seg, i) {
+        var inner = typeof edgeopsFormatStreamCommittedSegmentHtml === 'function'
+            ? edgeopsFormatStreamCommittedSegmentHtml(seg.text)
+            : fmtFn(seg.text);
+        var summary = typeof edgeopsProseItemSummary === 'function'
+            ? edgeopsProseItemSummary(seg.text, i)
+            : ('#' + (i + 1));
+        return '<div class="ai-reply-prose-item"><div class="ai-reply-prose-item-head">' + esc(summary)
+            + '</div><div class="ai-reply-prose-item-body">' + inner + '</div></div>';
+    }).join('');
+    var title = typeof t === 'function' ? t('hostAi.proseTitle', { n: segments.length }) : ('Reply');
+    var doneHint = typeof t === 'function' ? t('hostAi.proseDoneHint') : 'Done';
+    var expanded = collapsed ? 'false' : 'true';
+    var chev = collapsed ? '\u25b6' : '\u25bc';
+    var collapsedClass = collapsed ? ' ai-reply-prose-collapsed' : '';
+    var bodyCollapsed = collapsed ? ' ai-reply-prose-collapsed' : '';
+    return '<div class="ai-reply-prose-panel' + collapsedClass + '">'
+        + '<button type="button" class="ai-reply-prose-header" aria-expanded="' + expanded + '">'
+        + '<span class="ai-reply-prose-chevron">' + chev + '</span>'
+        + '<span class="ai-reply-prose-head-main">' + esc(title) + '</span>'
+        + '<span class="ai-reply-prose-head-status ai-reply-prose-status-done">' + esc(doneHint) + '</span>'
+        + '</button>'
+        + '<div class="ai-reply-prose-body' + bodyCollapsed + '">'
+        + '<div class="ai-reply-text message-body">' + itemsHtml + '</div>'
+        + '</div></div>';
+}
+
+function edgeopsBindReplyProsePanelsIn(root) {
+    if (!root) return;
+    root.querySelectorAll('.ai-reply-prose-panel').forEach(function(p) {
+        edgeopsBindReplyProsePanelToggle(p);
+    });
+}
+
 /** 历史消息：按持久化的 steps 回放工具 / 推理面板 */
 function edgeopsReplayPersistedToolTrace(toolsEl, steps, opts) {
     if (!toolsEl || !steps || !steps.length) return;
@@ -2518,6 +2854,12 @@ function edgeopsRenderSessionMessages(box, msgs, formatter, sessionId, options) 
             }
         }
     } catch (_e3) {}
+    try {
+        if (typeof window !== 'undefined' && window._edgeopsPendingProcessProseRestore && window._edgeopsPendingProcessProseRestore.length) {
+            edgeopsRestoreProcessProseOnLastAssistant(box, window._edgeopsPendingProcessProseRestore);
+            window._edgeopsPendingProcessProseRestore = null;
+        }
+    } catch (_eps) {}
 }
 
 function edgeopsReplaceSingleDiagramSource(content, oldSource, newSource) {
@@ -2899,7 +3241,13 @@ function edgeopsNormalizeMermaidSource(source) {
         return type === 'flowchart' || type === 'graph';
     }
     function sanitizeLabelText(label) {
-        return String(label || '')
+        var brSlots = [];
+        var s = String(label || '');
+        s = s.replace(/<br\s*\/?>/gi, function() {
+            brSlots.push('<br/>');
+            return '\x00EDGEOPS_BR_' + (brSlots.length - 1) + '\x00';
+        });
+        s = s
             .replace(/[\[\]\{\}]/g, function(ch) {
                 return { '[': '(', ']': ')', '{': '(', '}': ')' }[ch] || ch;
             })
@@ -2907,6 +3255,10 @@ function edgeopsNormalizeMermaidSource(source) {
             .replace(/"/g, '\'')
             .replace(/[<>]/g, function(ch) { return ch === '<' ? '＜' : '＞'; })
             .trim();
+        s = s.replace(/\x00EDGEOPS_BR_(\d+)\x00/g, function(_m, idx) {
+            return brSlots[parseInt(idx, 10)] || '<br/>';
+        });
+        return s;
     }
     function looksLikePathLabel(label) {
         var raw = String(label || '').trim();
@@ -3052,12 +3404,87 @@ function edgeopsStripClassDiagramPackages(source, notes) {
     return changed ? out.join('\n') : String(source || '');
 }
 
+function edgeopsNormalizeMermaidLineBreaks(source) {
+    return String(source || '').replace(/<br\s*\/?>/gi, '<br/>');
+}
+
+var EDGEOPS_MERMAID_BR_IN_TEXT = /<br\s*\/?>|＜br\s*\/?＞/i;
+
+function edgeopsSplitSvgTextOnBr(textEl) {
+    if (!textEl) return;
+    var tspans = textEl.querySelectorAll('tspan');
+    var full = '';
+    if (tspans.length) {
+        tspans.forEach(function(ts) { full += ts.textContent || ''; });
+    } else {
+        full = textEl.textContent || '';
+    }
+    if (!EDGEOPS_MERMAID_BR_IN_TEXT.test(full)) return;
+    var lines = full.split(/<br\s*\/?>|＜br\s*\/?＞/i).map(function(s) { return s.trim(); }).filter(function(s, i, arr) {
+        return s || arr.length === 1 || i < arr.length - 1;
+    });
+    if (lines.length < 2) return;
+    var baseX = textEl.getAttribute('x');
+    if (baseX == null && tspans.length) baseX = tspans[0].getAttribute('x');
+    if (baseX == null) baseX = '0';
+    var baseY = textEl.getAttribute('y');
+    if (baseY == null && tspans.length) baseY = tspans[0].getAttribute('y');
+    var anchor = textEl.getAttribute('text-anchor');
+    var lineHeightEm = 1.15;
+    while (textEl.firstChild) textEl.removeChild(textEl.firstChild);
+    lines.forEach(function(line, i) {
+        var ts = document.createElementNS('http://www.w3.org/2000/svg', 'tspan');
+        ts.setAttribute('x', baseX);
+        if (i === 0) {
+            if (baseY != null) ts.setAttribute('y', baseY);
+        } else {
+            ts.setAttribute('dy', lineHeightEm + 'em');
+        }
+        if (anchor) ts.setAttribute('text-anchor', anchor);
+        ts.textContent = line;
+        textEl.appendChild(ts);
+    });
+}
+
+function edgeopsFixMermaidForeignObjectLineBreaks(svgEl) {
+    if (!svgEl || !svgEl.querySelectorAll) return;
+    svgEl.querySelectorAll('foreignObject').forEach(function(fo) {
+        var span = fo.querySelector('.nodeLabel, .edgeLabel, span');
+        if (!span) return;
+        var raw = span.innerHTML || span.textContent || '';
+        if (!EDGEOPS_MERMAID_BR_IN_TEXT.test(raw)) return;
+        if (!/<br/i.test(raw) && /＜br/i.test(raw)) {
+            raw = raw.replace(/＜br\s*\/?＞/gi, '<br/>');
+        }
+        if (span.textContent && /<br/i.test(span.textContent) && !span.querySelector('br')) {
+            span.innerHTML = span.textContent.replace(/<br\s*\/?>/gi, '<br/>');
+            return;
+        }
+        if (/<br/i.test(raw)) span.innerHTML = raw.replace(/<br\s*\/?>/gi, '<br/>');
+    });
+}
+
+function edgeopsFixMermaidSvgLineBreaks(svgEl) {
+    if (!svgEl || !svgEl.querySelectorAll) return;
+    edgeopsFixMermaidForeignObjectLineBreaks(svgEl);
+    svgEl.querySelectorAll('.node text, g[class*="node"] text, .cluster text, g[class*="cluster"] text').forEach(function(textEl) {
+        edgeopsSplitSvgTextOnBr(textEl);
+    });
+}
+
 var EDGEOPS_MERMAID_CLEANUP_RULES = [
     {
         id: 'strip-leading-noise',
         appliesTo: function() { return true; },
         run: function(ctx) {
             return edgeopsStripMermaidLeadingNoise(ctx.source, ctx.notes);
+        }
+    },
+    {
+        id: 'normalize-line-breaks',
+        appliesTo: function() { return true; },
+        run: function(ctx) {
+            return edgeopsNormalizeMermaidLineBreaks(ctx.source);
         }
     },
     {
@@ -3242,8 +3669,10 @@ function edgeopsRenderMermaidBlock(block) {
         window.mermaid.initialize({
             startOnLoad: false,
             securityLevel: 'loose',
+            htmlLabels: true,
             theme: 'base',
             suppressErrorRendering: true,
+            flowchart: { htmlLabels: true },
             themeVariables: {
                 darkMode: true,
                 background: '#0f172a',
@@ -3287,6 +3716,7 @@ function edgeopsRenderMermaidBlock(block) {
         var svgEl = edgeopsGetDiagramSvg(block);
         if (svgEl) {
             edgeopsTuneDiagramSvg(svgEl, { minWidth: edgeopsIsMobileViewport() ? 420 : 700, minHeight: edgeopsIsMobileViewport() ? 240 : 340 });
+            edgeopsFixMermaidSvgLineBreaks(svgEl);
             edgeopsForceMermaidNodeColors(svgEl);
         }
         if (typeof res.bindFunctions === 'function') res.bindFunctions(canvasEl);
@@ -6064,6 +6494,13 @@ function edgeopsInitStreamReplyState(replyWrap, userMsg) {
     replyWrap._edgeopsToolFinishedCount = 0;
     replyWrap._edgeopsPausedForConfirm = false;
     replyWrap._edgeopsUserMsg = userMsg || '';
+    replyWrap._edgeopsProseLastCommit = 0;
+    replyWrap._edgeopsProseStreamText = '';
+    replyWrap._edgeopsProcessProseEnabled = false;
+    replyWrap._edgeopsProseSegCount = 0;
+    replyWrap._edgeopsProseSegments = [];
+    replyWrap._edgeopsContentRefreshFinal = false;
+    replyWrap._edgeopsFinalAnswerText = '';
 }
 
 function edgeopsEnsureChatWaitHost(toolsEl) {
@@ -6182,9 +6619,13 @@ function edgeopsFinishChatStreamRound(opts) {
     return endPhase;
 }
 
-function edgeopsOnChatStreamToolEvent(replyWrap, toolsEl, ev, logBuffer, renderLogFn, onAfter) {
-    if (ev.action === 'executing') edgeopsCotOnToolExecuting(toolsEl, ev);
-    else edgeopsCotOnToolFinished(toolsEl, ev);
+function edgeopsOnChatStreamToolEvent(replyWrap, toolsEl, ev, logBuffer, renderLogFn, onAfter, textEl) {
+    if (ev.action === 'executing') {
+        if (replyWrap && textEl) edgeopsCommitProcessProseSegment(replyWrap, textEl);
+        edgeopsCotOnToolExecuting(toolsEl, ev);
+    } else {
+        edgeopsCotOnToolFinished(toolsEl, ev);
+    }
     if (replyWrap && ev.action && ev.action !== 'executing') {
         replyWrap._edgeopsToolFinishedCount = (replyWrap._edgeopsToolFinishedCount || 0) + 1;
         if (replyWrap._edgeopsStreamPhase === 'incomplete') replyWrap._edgeopsStreamPhase = 'active';
@@ -6237,10 +6678,30 @@ function edgeopsFinalizeAssistantStreamReply(opts) {
         edgeopsCotCollapsePanelAfterStream(toolsEl);
     }
     var toolsHtml = toolsEl && toolsEl.children.length ? toolsEl.outerHTML : '';
-    var finalText = edgeopsFinalAssistantText(streamedText, !!toolsHtml);
+    var hasTools = !!toolsHtml;
+    var collapseProse = endPhase === 'complete' && !replyWrap._edgeopsPausedForConfirm;
     var fmtFn = typeof opts.formatMd === 'function' ? opts.formatMd : edgeopsDefaultFmtMd;
+    if (replyWrap._edgeopsProcessProseEnabled && textEl) {
+        edgeopsFinalizeProcessProsePanel(replyWrap, textEl, collapseProse);
+        var finalText = edgeopsResolveProcessFinalText(replyWrap, streamedText, hasTools);
+        edgeopsAppendProcessFinalAnswer(replyWrap, finalText, fmtFn);
+        replyWrap.classList.add('ai-reply-persisted');
+        if (endPhase === 'incomplete') {
+            var bannerTxtP = typeof t === 'function' ? t('hostAi.streamIncompleteBanner') : '';
+            replyWrap.insertAdjacentHTML('beforeend', '<div class="ai-reply-incomplete-banner" role="status">' + esc(bannerTxtP) + '</div>');
+        }
+        if (replyMsgEl) {
+            replyMsgEl._edgeopsPersistContent = stripThinkTags(streamedText);
+            replyMsgEl._edgeopsProseSegments = (replyWrap._edgeopsProseSegments || []).slice();
+        }
+        edgeopsHydrateChatDiagrams(replyWrap);
+        if (typeof edgeopsEnhanceChatMessageArtifacts === 'function') edgeopsEnhanceChatMessageArtifacts(replyWrap);
+        replyWrap._edgeopsStreamEndPhase = endPhase;
+        return endPhase;
+    }
+    var finalText = edgeopsFinalAssistantText(streamedText, hasTools);
     if (textEl && typeof edgeopsClearStreamIncrementalState === 'function') edgeopsClearStreamIncrementalState(textEl);
-    var bodyHtml = toolsHtml + (finalText ? '<div class="ai-reply-text">' + fmtFn(finalText) + '</div>' : '');
+    var bodyHtml = toolsHtml + (finalText ? '<div class="ai-reply-text message-body">' + fmtFn(finalText) + '</div>' : '');
     if (endPhase === 'incomplete') {
         var bannerTxt = typeof t === 'function' ? t('hostAi.streamIncompleteBanner') : '';
         bodyHtml += '<div class="ai-reply-incomplete-banner" role="status">' + esc(bannerTxt) + '</div>';
@@ -6918,11 +7379,8 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         var streamedText = '';
         var hostAiStreamInputMode = 'idle';
         function flushStreamReplyText() {
-            var clean = stripThinkTags(streamedText);
-            if (typeof edgeopsRenderStreamIncremental === 'function') edgeopsRenderStreamIncremental(textEl, clean, replyWrap);
-            else if (typeof edgeopsRenderStreamPlainText === 'function') edgeopsRenderStreamPlainText(textEl, clean);
-            else textEl.textContent = clean;
-            if (replyMsgEl) replyMsgEl._edgeopsPersistContent = clean;
+            edgeopsFlushAssistantStreamText(replyWrap, textEl, streamedText, toolsEl);
+            if (replyMsgEl) replyMsgEl._edgeopsPersistContent = stripThinkTags(streamedText);
             edgeopsScrollChatToBottomStepIfPinned(box);
         }
         function finishStreamAndRender() {
@@ -7008,6 +7466,10 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
             }
             else if (ev.content_refresh) {
                 streamedText = String(ev.content_refresh || '');
+                if (replyWrap) {
+                    replyWrap._edgeopsContentRefreshFinal = true;
+                    replyWrap._edgeopsFinalAnswerText = stripThinkTags(streamedText);
+                }
                 flushStreamReplyText();
             }
             else if (ev.content) {
@@ -7040,11 +7502,16 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
             else if (ev.action && ev.tool) {
                 edgeopsOnChatStreamToolEvent(replyWrap, toolsEl, ev, hostAiLogBuffer, renderHostAiLog, function() {
                     edgeopsScrollChatToBottomStepIfPinned(box);
-                });
+                }, textEl);
             }
         }, { signal: hostAiAbortController.signal, hostId: hostId, terminalScopeId: hostTerminalScopeId, preferredTerminalSlot: getHostAiPreferredTerminalSlot(), attachmentUuids: attachUuids }).then(function(sid) {
             if (sid != null) sessionId = sid;
+            var proseSegs = (replyWrap && replyWrap._edgeopsProcessProseEnabled && replyWrap._edgeopsProseSegments)
+                ? replyWrap._edgeopsProseSegments.slice() : null;
             finishStreamAndRender();
+            if (proseSegs && proseSegs.length) {
+                try { window._edgeopsPendingProcessProseRestore = proseSegs; } catch (_eps1) {}
+            }
             loadSession(sessionId); loadSessions();
             requestAnimationFrame(function() {
                 var _boxF = document.getElementById('hostAiMessages');
@@ -9049,11 +9516,8 @@ function renderAIPage() {
         var streamedText = '';
         var aiStreamInputMode = 'idle';
         function flushStreamReplyText() {
-            var clean = stripThinkTags(streamedText);
-            if (typeof edgeopsRenderStreamIncremental === 'function') edgeopsRenderStreamIncremental(textEl, clean, replyWrap);
-            else if (typeof edgeopsRenderStreamPlainText === 'function') edgeopsRenderStreamPlainText(textEl, clean);
-            else textEl.textContent = clean;
-            if (replyMsgEl) replyMsgEl._edgeopsPersistContent = clean;
+            edgeopsFlushAssistantStreamText(replyWrap, textEl, streamedText, toolsEl);
+            if (replyMsgEl) replyMsgEl._edgeopsPersistContent = stripThinkTags(streamedText);
             edgeopsScrollChatToBottomStepIfPinned(box);
         }
         function finishStreamAndRender() {
@@ -9133,6 +9597,10 @@ function renderAIPage() {
                 edgeopsScrollChatToBottomStepIfPinned(box);
             } else if (ev.content_refresh) {
                 streamedText = String(ev.content_refresh || '');
+                if (replyWrap) {
+                    replyWrap._edgeopsContentRefreshFinal = true;
+                    replyWrap._edgeopsFinalAnswerText = stripThinkTags(streamedText);
+                }
                 flushStreamReplyText();
             } else if (ev.content) {
                 streamedText += ev.content;
@@ -9160,11 +9628,16 @@ function renderAIPage() {
             } else if (ev.action && ev.tool) {
                 edgeopsOnChatStreamToolEvent(replyWrap, toolsEl, ev, aiLogBuffer, renderAiLog, function() {
                     edgeopsScrollChatToBottomStepIfPinned(box);
-                });
+                }, textEl);
             }
         }, { signal: aiAbortController.signal, terminalScopeId: aiTerminalScopeId, preferredTerminalSlot: getAiPreferredTerminalSlot(), contextHostId: getAiGlobalContextHostId(), attachmentUuids: attachUuids }).then(function(sid) {
             if (sid != null) sessionId = sid;
+            var proseSegs = (replyWrap && replyWrap._edgeopsProcessProseEnabled && replyWrap._edgeopsProseSegments)
+                ? replyWrap._edgeopsProseSegments.slice() : null;
             finishStreamAndRender();
+            if (proseSegs && proseSegs.length) {
+                try { window._edgeopsPendingProcessProseRestore = proseSegs; } catch (_eps2) {}
+            }
             loadSession(sessionId);
             loadSessions();
             requestAnimationFrame(function() {
@@ -13126,11 +13599,8 @@ function renderLocalPage() {
         var streamedText = '';
         var localStreamInputMode = 'idle';
         function flushStreamReplyText() {
-            var clean = stripThinkTags(streamedText);
-            if (typeof edgeopsRenderStreamIncremental === 'function') edgeopsRenderStreamIncremental(textEl, clean, replyWrap);
-            else if (typeof edgeopsRenderStreamPlainText === 'function') edgeopsRenderStreamPlainText(textEl, clean);
-            else textEl.textContent = clean;
-            if (replyMsgEl) replyMsgEl._edgeopsPersistContent = clean;
+            edgeopsFlushAssistantStreamText(replyWrap, textEl, streamedText, toolsEl);
+            if (replyMsgEl) replyMsgEl._edgeopsPersistContent = stripThinkTags(streamedText);
             edgeopsScrollChatToBottomStepIfPinned(box);
         }
         function finishStreamAndRender() {
@@ -13265,6 +13735,10 @@ function renderLocalPage() {
             }
             else if (ev.content_refresh) {
                 streamedText = String(ev.content_refresh || '');
+                if (replyWrap) {
+                    replyWrap._edgeopsContentRefreshFinal = true;
+                    replyWrap._edgeopsFinalAnswerText = stripThinkTags(streamedText);
+                }
                 flushStreamReplyText();
             }
             else if (ev.content) {
@@ -13291,6 +13765,7 @@ function renderLocalPage() {
                 });
                 edgeopsScrollChatToBottomStepIfPinned(box);
             } else if (ev.action && ev.tool) {
+                if (ev.action === 'executing') edgeopsCommitProcessProseSegment(replyWrap, textEl);
                 if (ev.action === 'executing') edgeopsCotOnToolExecuting(toolsEl, ev);
                 else edgeopsCotOnToolFinished(toolsEl, ev);
                 if (replyWrap && ev.action && ev.action !== 'executing') {

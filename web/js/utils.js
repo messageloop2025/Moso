@@ -1246,6 +1246,63 @@ function edgeopsParseCommittedStreamSegments(text) {
     return segments;
 }
 
+function edgeopsProseItemSummary(text, index) {
+    text = text == null ? '' : String(text);
+    var lines = text.split(/\r?\n/);
+    var first = '';
+    for (var li = 0; li < lines.length; li++) {
+        var line = String(lines[li] || '').trim();
+        if (line) { first = line; break; }
+    }
+    first = first.replace(/^#+\s*/, '').replace(/\*\*/g, '').replace(/`/g, '').trim();
+    if (first.length > 56) first = first.slice(0, 53) + '\u2026';
+    var label = (typeof t === 'function')
+        ? t('hostAi.proseItemLabel', { n: (index | 0) + 1 })
+        : ('#' + ((index | 0) + 1));
+    return first ? (label + ' \u00b7 ' + first) : label;
+}
+
+function edgeopsWrapProseStreamItem(segEl, segText, index) {
+    var item = document.createElement('div');
+    item.className = 'ai-reply-prose-item';
+    var head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'ai-reply-prose-item-head';
+    head.innerHTML = '<span class="ai-reply-prose-item-chevron">\u25bc</span>'
+        + '<span class="ai-reply-prose-item-title">' + esc(edgeopsProseItemSummary(segText, index)) + '</span>';
+    var body = document.createElement('div');
+    body.className = 'ai-reply-prose-item-body';
+    body.appendChild(segEl);
+    if (typeof edgeopsBindProseItemToggle === 'function') {
+        edgeopsBindProseItemToggle(head, body, false);
+    } else {
+        item.appendChild(head);
+        item.appendChild(body);
+        return item;
+    }
+    item.appendChild(head);
+    item.appendChild(body);
+    return item;
+}
+
+function edgeopsEnsureStreamTailLiveItem(mountEl) {
+    var tail = mountEl && mountEl.querySelector('[data-edgeops-stream-tail]');
+    if (!tail) return null;
+    if (tail.closest('.ai-reply-prose-item-live')) return tail.closest('.ai-reply-prose-item-live');
+    var item = document.createElement('div');
+    item.className = 'ai-reply-prose-item ai-reply-prose-item-live';
+    var head = document.createElement('div');
+    head.className = 'ai-reply-prose-item-head';
+    head.textContent = (typeof t === 'function') ? t('hostAi.proseItemLive') : '\u2026';
+    var body = document.createElement('div');
+    body.className = 'ai-reply-prose-item-body';
+    mountEl.insertBefore(item, tail);
+    body.appendChild(tail);
+    item.appendChild(head);
+    item.appendChild(body);
+    return item;
+}
+
 function edgeopsEnsureStreamIncrementalDom(mountEl) {
     if (mountEl._edgeopsIncrementalStream) return;
     mountEl._edgeopsIncrementalStream = true;
@@ -1267,6 +1324,7 @@ function edgeopsEnsureStreamIncrementalDom(mountEl) {
     mountEl.appendChild(tail);
     mountEl._edgeopsStreamTailPlain = tailPlain;
     mountEl._edgeopsStreamTailTable = tailTable;
+    if (mountEl.closest('.ai-reply-prose-panel')) edgeopsEnsureStreamTailLiveItem(mountEl);
 }
 
 function edgeopsUpdatePlainTail(tailEl, fullPlain) {
@@ -1421,6 +1479,7 @@ function edgeopsRenderStreamIncremental(mountEl, fullText, hydrateRoot) {
         && tailTable.style.display !== 'none') {
         migratedTableHtml = tailTable.innerHTML;
     }
+    var inProcessPanel = !!(mountEl.closest && mountEl.closest('.ai-reply-prose-panel'));
     for (var s = domCount; s < segments.length; s++) {
         var segEl = document.createElement('div');
         segEl.className = 'edgeops-stream-segment';
@@ -1452,8 +1511,17 @@ function edgeopsRenderStreamIncremental(mountEl, fullText, hydrateRoot) {
                 ? edgeopsFormatStreamCommittedSegmentHtml(segText)
                 : formatMarkdown(segText);
         }
-        if (tailWrap) mountEl.insertBefore(segEl, tailWrap);
-        else mountEl.appendChild(segEl);
+        if (inProcessPanel) {
+            var insertEl = edgeopsWrapProseStreamItem(segEl, segText, s);
+            var liveItem = edgeopsEnsureStreamTailLiveItem(mountEl);
+            if (liveItem) mountEl.insertBefore(insertEl, liveItem);
+            else if (tailWrap) mountEl.insertBefore(insertEl, tailWrap);
+            else mountEl.appendChild(insertEl);
+        } else if (tailWrap) {
+            mountEl.insertBefore(segEl, tailWrap);
+        } else {
+            mountEl.appendChild(segEl);
+        }
         if (hydrateRoot && typeof edgeopsHydrateChatDiagrams === 'function') {
             edgeopsHydrateChatDiagrams(segEl);
         }
@@ -1481,6 +1549,10 @@ function edgeopsRenderStreamIncremental(mountEl, fullText, hydrateRoot) {
             tailTable.style.display = 'none';
         }
         edgeopsUpdateHybridMarkdownTail(tailPlain, tail, hydrateRoot);
+    }
+    if (typeof edgeopsRefreshReplyProseHeader === 'function') {
+        var prosePanel = mountEl.closest('.ai-reply-prose-panel');
+        if (prosePanel) edgeopsRefreshReplyProseHeader(prosePanel, { live: !!(tail && tail.trim()) });
     }
 }
 
@@ -1582,6 +1654,8 @@ function edgeopsFormatMarkdownStreaming(text, mountEl) {
 if (typeof window !== 'undefined') {
     window.formatMarkdown = formatMarkdown;
     window.edgeopsSanitizeLeakedToolMarkup = edgeopsSanitizeLeakedToolMarkup;
+    window.edgeopsProseItemSummary = edgeopsProseItemSummary;
+    window.edgeopsParseCommittedStreamSegments = edgeopsParseCommittedStreamSegments;
     window.edgeopsRenderStreamIncremental = edgeopsRenderStreamIncremental;
     window.edgeopsRenderStreamPlainText = edgeopsRenderStreamPlainText;
     window.edgeopsClearStreamIncrementalState = edgeopsClearStreamIncrementalState;
