@@ -5326,7 +5326,14 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
             _vision_count, _vision_tokens, _vision_chars, context_size_raw, context_size,
         )
     tool_result_limit = _tool_result_message_limit(context_size)
-    terminal_scope_id = normalize_terminal_scope_id(req.terminal_scope_id)
+    _raw_terminal_scope = (req.terminal_scope_id or "").strip()
+    if _raw_terminal_scope:
+        terminal_scope_id = normalize_terminal_scope_id(_raw_terminal_scope)
+    elif req.session_id is not None:
+        _scope_kind = "local" if (req.scope or "").strip().lower() == "local" else "web"
+        terminal_scope_id = normalize_terminal_scope_id(f"{_scope_kind}:session:{req.session_id}")
+    else:
+        terminal_scope_id = normalize_terminal_scope_id(None)
     preferred_terminal_slot = req.preferred_terminal_slot
     try:
         preferred_terminal_slot = int(preferred_terminal_slot) if preferred_terminal_slot is not None else None
@@ -7482,7 +7489,10 @@ async def run_ops_integration_chat_complete(
                                 fn_args,
                                 user,
                                 scope=exec_scope,
-                                terminal_scope_id=None,
+                                terminal_scope_id=(
+                                    normalize_terminal_scope_id(f"integration:session:{sid}")
+                                    if sid is not None else None
+                                ),
                                 default_terminal_slot=None,
                                 ui_capable=False,
                                 session_id=sid,

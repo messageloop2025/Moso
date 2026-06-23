@@ -24,6 +24,7 @@ from database import get_db
 from api.filesystem import get_user_fs_root
 from services.terminal_input import expand_control_keys, is_control_only
 from api.auth import get_current_user, require_admin, _is_admin_role, user_dict_for_websocket_from_token
+from api.terminal import normalize_terminal_scope_id
 
 logger = logging.getLogger("edgeops.local_host")
 
@@ -47,8 +48,8 @@ BUFFER_MAX = 65536
 PROCESS_MAX = 50  # 同时托管的子进程数量上限
 PROCESS_STREAM_BUFFER_MAX = 2 * 1024 * 1024
 
-# 内存中的本机“终端”会话：(user_id, slot) -> { process, buffer, ws, task }，按命令逐条执行并回显
-_local_sessions: dict[tuple[int, int], dict] = {}
+# 内存中的本机“终端”会话：(user_id, scope_id, slot) -> { process, buffer, ws, task }
+_local_sessions: dict[tuple[int, str, int], dict] = {}
 # Windows ConPTY/pywinpty 异常断开记录窗口，仅作日志/诊断使用，不再触发自动降级到 PIPE。
 _winpty_failure_times: list[float] = []
 WINPTY_FAILURE_WINDOW_SEC = 120.0
@@ -64,6 +65,14 @@ WINPTY_ABNORMAL_REASONS = {
     "winpty_reader_dead",
     "unknown",
 }
+
+
+def _local_session_key(user_id: int, slot: int, scope_id: str | None = None) -> tuple[int, str, int]:
+    return (user_id, normalize_terminal_scope_id(scope_id), max(0, min(int(slot), 31)))
+
+
+def _local_scope_matches(session_scope: str, scope_id: str | None) -> bool:
+    return session_scope == normalize_terminal_scope_id(scope_id)
 
 # Windows 下本机终端独享的线程池：spawn / write / setwinsize 在这里执行，避免和 AI 工具
 # 共用默认线程池（asyncio.to_thread 的 default executor）时被大量阻塞 I/O 拖死，
@@ -1232,7 +1241,7 @@ async def _run_local_shell_pty_win(ws: WebSocket, buffer: list, buffer_size: lis
         target=_winpty_read_thread,
         args=(proc, out_queue, loop, session),
         daemon=True,
-        name=f"edgeops-winpty-reader-{session_key[0]}-{session_key[1]}",
+        name=f"edgeops-winpty-reader-{session_key[0]}-{session_key[2]}",
     )
     reader.start()
     disconnect_reason = "unknown"
@@ -1353,9 +1362,10 @@ async def _run_local_shell_pty_win(ws: WebSocket, buffer: list, buffer_size: lis
     finally:
         sess = _local_sessions.get(session_key) or {}
         logger.warning(
-            "local shell winpty session closing: user_id=%s slot=%s reason=%s proc_alive=%s reader_alive=%s reader_exit=%s",
+            "local shell winpty session closing: user_id=%s scope=%s slot=%s reason=%s proc_alive=%s reader_alive=%s reader_exit=%s",
             session_key[0],
             session_key[1],
+            session_key[2],
             disconnect_reason,
             _local_proc_alive(proc),
             sess.get("reader_alive"),
@@ -1363,7 +1373,7 @@ async def _run_local_shell_pty_win(ws: WebSocket, buffer: list, buffer_size: lis
         )
         _record_winpty_close_reason(disconnect_reason)
         try:
-            await ws.send_json({"type": "closed", "reason": disconnect_reason, "slot": session_key[1]})
+            await ws.send_json({"type": "closed", "reason": disconnect_reason, "slot": session_key[2]})
         except Exception:
             pass
         _terminate_local_proc(proc)
@@ -1522,9 +1532,11 @@ def _local_session_pending(session: dict | None) -> bool:
     return bool(session and session.get("proc") is None and session.get("master_fd") is None and session.get("ws") is not None)
 
 
-def _drop_local_session_if_stale(user_id: int, slot: int, session: dict | None = None) -> bool:
+def _drop_local_session_if_stale(
+    user_id: int, slot: int, session: dict | None = None, scope_id: str | None = None
+) -> bool:
     """若本机终端 session 已失效则清理，返回是否已清理。"""
-    key = (user_id, slot)
+    key = _local_session_key(user_id, slot, scope_id)
     session = session if session is not None else _local_sessions.get(key)
     if _local_session_alive(session):
         return False
@@ -1537,13 +1549,14 @@ def _drop_local_session_if_stale(user_id: int, slot: int, session: dict | None =
     return True
 
 
-def next_local_terminal_slot(user_id: int) -> int:
-    """为 AI/前端创建本机控制台预分配一个当前后端未占用的 slot。"""
+def next_local_terminal_slot(user_id: int, scope_id: str | None = None) -> int:
+    """为 AI/前端创建本机控制台预分配一个当前 scope 内未占用的 slot。"""
+    scope_norm = normalize_terminal_scope_id(scope_id)
     used: set[int] = set()
-    for (uid, slot), session in list(_local_sessions.items()):
-        if uid != user_id:
+    for (uid, session_scope, slot), session in list(_local_sessions.items()):
+        if uid != user_id or session_scope != scope_norm:
             continue
-        if _drop_local_session_if_stale(uid, slot, session):
+        if _drop_local_session_if_stale(uid, slot, session, session_scope):
             continue
         used.add(slot)
     for slot in range(32):
@@ -1552,14 +1565,15 @@ def next_local_terminal_slot(user_id: int) -> int:
     return 31
 
 
-def default_local_terminal_slot(user_id: int) -> int:
+def default_local_terminal_slot(user_id: int, scope_id: str | None = None) -> int:
     """默认写入最近使用/最近创建的 AI 本机控制台，避免误写隐藏的旧 slot。"""
+    scope_norm = normalize_terminal_scope_id(scope_id)
     candidates: list[tuple[float, int]] = []
     fallback: list[tuple[float, int]] = []
-    for (uid, slot), session in list(_local_sessions.items()):
-        if uid != user_id:
+    for (uid, session_scope, slot), session in list(_local_sessions.items()):
+        if uid != user_id or session_scope != scope_norm:
             continue
-        if _drop_local_session_if_stale(uid, slot, session) or not _local_session_alive(session):
+        if _drop_local_session_if_stale(uid, slot, session, session_scope) or not _local_session_alive(session):
             continue
         ts = float(session.get("last_used_at") or session.get("connected_at") or 0.0)
         item = (ts, slot)
@@ -1576,6 +1590,7 @@ def default_local_terminal_slot(user_id: int) -> int:
 async def wait_for_local_terminal_ready(
     user_id: int,
     slot: int,
+    scope_id: str | None = None,
     *,
     max_wait_sec: float = LOCAL_TERMINAL_CONNECT_WAIT_MAX_SEC,
     poll_interval_sec: float = LOCAL_TERMINAL_CONNECT_POLL_SEC,
@@ -1584,19 +1599,23 @@ async def wait_for_local_terminal_ready(
     slot = max(0, min(int(slot), 31))
     loop = asyncio.get_running_loop()
     deadline = loop.time() + max(0.5, min(max_wait_sec, 30.0))
+    key = _local_session_key(user_id, slot, scope_id)
     while loop.time() < deadline:
-        session = _local_sessions.get((user_id, slot))
+        session = _local_sessions.get(key)
         if session and _local_terminal_io_ready(session):
             return True
         await asyncio.sleep(poll_interval_sec)
     return False
 
 
-async def send_to_local_terminal(user_id: int, slot: int, text: str) -> bool:
+async def send_to_local_terminal(
+    user_id: int, slot: int, text: str, scope_id: str | None = None
+) -> bool:
     """向本机管理中的终端会话写入文本（供 AI 通过 execute_tool 按 scope 调用）。支持 <Ctrl+C> 等控制键占位符。"""
     slot = max(0, min(int(slot), 31))
-    session = _local_sessions.get((user_id, slot))
-    if not session or _drop_local_session_if_stale(user_id, slot, session):
+    key = _local_session_key(user_id, slot, scope_id)
+    session = _local_sessions.get(key)
+    if not session or _drop_local_session_if_stale(user_id, slot, session, scope_id):
         return False
     session["last_used_at"] = time.time()
     text = expand_control_keys((text or "").rstrip())
@@ -1620,10 +1639,10 @@ async def send_to_local_terminal(user_id: int, slot: int, text: str) -> bool:
         try:
             if hasattr(proc, "write"):
                 if not _local_proc_alive(proc):
-                    _drop_local_session_if_stale(user_id, slot, session)
+                    _drop_local_session_if_stale(user_id, slot, session, scope_id)
                     return False
                 if session.get("reader_alive") is False:
-                    _drop_local_session_if_stale(user_id, slot, session)
+                    _drop_local_session_if_stale(user_id, slot, session, scope_id)
                     return False
                 # ConPTY/pywinpty：必须整行带 \r\n 一次性写入，否则命令不会执行（见 pywinpty#545）
                 # 走本机终端专用线程池，避免与 AI 文件 I/O 抢默认线程池。
@@ -1637,7 +1656,7 @@ async def send_to_local_terminal(user_id: int, slot: int, text: str) -> bool:
                 await proc.stdin.drain()
                 return True
         except (BrokenPipeError, ConnectionResetError, EOFError, OSError):
-            _drop_local_session_if_stale(user_id, slot, session)
+            _drop_local_session_if_stale(user_id, slot, session, scope_id)
             return False
     return False
 
@@ -1653,7 +1672,9 @@ async def local_terminal_ws(ws: WebSocket):
         return
     user_id = user["id"]
     slot = 0
+    scope_id = normalize_terminal_scope_id(None)
     session_obj = None
+    session_key: tuple[int, str, int] | None = None
     try:
         raw = await ws.receive_text()
         try:
@@ -1666,21 +1687,31 @@ async def local_terminal_ws(ws: WebSocket):
             return
         if isinstance(msg.get("slot"), (int, float)):
             slot = max(0, min(int(msg["slot"]), 31))
+        scope_id = normalize_terminal_scope_id(msg.get("scope_id"))
         created_by = (msg.get("created_by") or "user").strip().lower()
         if created_by not in ("user", "ai"):
             created_by = "user"
-        session_key = (user_id, slot)
+        session_key = _local_session_key(user_id, slot, scope_id)
         old = _local_sessions.pop(session_key, None)
         if old and _local_proc_alive(old.get("proc")):
-            logger.warning("local ws replacing existing session: user_id=%s slot=%s", user_id, slot)
+            logger.warning(
+                "local ws replacing existing session: user_id=%s scope=%s slot=%s",
+                user_id, scope_id, slot,
+            )
             _terminate_local_proc(old.get("proc"))
         buffer: list[str] = []
         buffer_size = [0]
         cwd = str(LOCAL_ROOT)
         use_pty = (sys.platform != "win32") or _should_use_winpty()
         backend = _local_terminal_backend_name(use_pty)
-        logger.warning("local ws starting session: user_id=%s slot=%s platform=%s backend=%s", user_id, slot, sys.platform, backend)
-        await ws.send_json({"type": "ready", "slot": slot, "cwd": cwd, "platform": sys.platform, "pty": use_pty, "backend": backend})
+        logger.warning(
+            "local ws starting session: user_id=%s scope=%s slot=%s platform=%s backend=%s",
+            user_id, scope_id, slot, sys.platform, backend,
+        )
+        await ws.send_json({
+            "type": "ready", "slot": slot, "scope_id": scope_id,
+            "cwd": cwd, "platform": sys.platform, "pty": use_pty, "backend": backend,
+        })
         now_ts = time.time()
         session_obj = {
             "buffer": buffer,
@@ -1710,22 +1741,23 @@ async def local_terminal_ws(ws: WebSocket):
         except Exception:
             pass
     finally:
-        session_key = (user_id, slot)
-        if session_obj is not None and _local_sessions.get(session_key) is session_obj:
+        if session_key is not None and session_obj is not None and _local_sessions.get(session_key) is session_obj:
             _local_sessions.pop(session_key, None)
-        logger.warning("local ws session removed: user_id=%s slot=%s", user_id, slot)
+        logger.warning("local ws session removed: user_id=%s scope=%s slot=%s", user_id, scope_id, slot)
 
 
-def get_local_terminals_for_user(user_id: int) -> list[dict]:
-    """供 AI list_terminals（scope=local）调用：返回该用户当前所有本机控制台 slot 列表。"""
+def get_local_terminals_for_user(user_id: int, scope_id: str | None = None) -> list[dict]:
+    """供 AI list_terminals（scope=local）调用：返回该用户当前 scope 内本机控制台 slot 列表。"""
+    scope_norm = normalize_terminal_scope_id(scope_id)
     out = []
-    for (uid, slot), session in list(_local_sessions.items()):
-        if uid != user_id:
+    for (uid, session_scope, slot), session in list(_local_sessions.items()):
+        if uid != user_id or session_scope != scope_norm:
             continue
-        if _drop_local_session_if_stale(uid, slot, session) or not _local_session_alive(session):
+        if _drop_local_session_if_stale(uid, slot, session, session_scope) or not _local_session_alive(session):
             continue
         out.append({
             "slot": slot,
+            "scope_id": session_scope,
             "connected": True,
             "created_by": session.get("created_by") or "user",
             "pty": bool(session.get("pty")),
@@ -1742,32 +1774,38 @@ def get_local_terminals_for_user(user_id: int) -> list[dict]:
     return out
 
 
-def get_local_terminal_buffer(user_id: int, slot: int) -> tuple[str, bool]:
+def get_local_terminal_buffer(
+    user_id: int, slot: int, scope_id: str | None = None
+) -> tuple[str, bool]:
     """获取本机管理某控制台的输出缓冲（供 AI execute_tool 按 scope 调用）。返回 (buffer_text, connected)。"""
     slot = max(0, min(slot, 31))
-    session = _local_sessions.get((user_id, slot))
+    key = _local_session_key(user_id, slot, scope_id)
+    session = _local_sessions.get(key)
     if not session:
         return "", False
     buf = "".join(session.get("buffer") or [])
-    if _drop_local_session_if_stale(user_id, slot, session) or not _local_session_alive(session):
+    if _drop_local_session_if_stale(user_id, slot, session, scope_id) or not _local_session_alive(session):
         return buf, False
     return buf, True
 
 
 @router.get("/buffer")
-async def local_buffer(slot: int = 0, user=Depends(require_admin)):
+async def local_buffer(slot: int = 0, scope_id: str | None = None, user=Depends(require_admin)):
     """获取本机某控制台的输出缓冲（供前端/Log 展示）。"""
     slot = max(0, min(slot, 31))
-    session = _local_sessions.get((user["id"], slot))
+    scope_id = normalize_terminal_scope_id(scope_id)
+    key = _local_session_key(user["id"], slot, scope_id)
+    session = _local_sessions.get(key)
     if not session:
-        return {"success": True, "buffer": "", "connected": False, "slot": slot}
+        return {"success": True, "buffer": "", "connected": False, "slot": slot, "scope_id": scope_id}
     buf = "".join(session.get("buffer") or [])
-    connected = not _drop_local_session_if_stale(user["id"], slot, session) and _local_session_alive(session)
+    connected = not _drop_local_session_if_stale(user["id"], slot, session, scope_id) and _local_session_alive(session)
     return {
         "success": True,
         "buffer": buf,
         "connected": connected,
         "slot": slot,
+        "scope_id": scope_id,
         "backend": session.get("backend") or _local_terminal_backend_name(bool(session.get("pty"))),
         "last_output_at": session.get("last_output_at"),
         "reader_alive": session.get("reader_alive"),
@@ -1790,11 +1828,13 @@ def _local_term_executor_stats() -> dict | None:
 
 
 @router.get("/terminals")
-async def local_terminals(user=Depends(require_admin)):
+async def local_terminals(scope_id: str | None = None, user=Depends(require_admin)):
     """诊断：列出当前用户本机终端后端会话。"""
+    scope_id = normalize_terminal_scope_id(scope_id)
     return {
         "success": True,
-        "terminals": get_local_terminals_for_user(user["id"]),
+        "terminals": get_local_terminals_for_user(user["id"], scope_id),
+        "scope_id": scope_id,
         "windows_backend": _windows_terminal_backend() if sys.platform == "win32" else None,
         "winpty_active": _should_use_winpty() if sys.platform == "win32" else None,
         "winpty_failures_in_window": len(_winpty_failure_times) if sys.platform == "win32" else 0,

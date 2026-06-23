@@ -378,7 +378,12 @@ var API = {
             });
         });
     },
-    getLocalBuffer: function(slot) { return this.get('/local/buffer' + (slot != null ? '?slot=' + parseInt(slot, 10) : '')); },
+    getLocalBuffer: function(slot, scopeId) {
+        var q = [];
+        if (slot != null) q.push('slot=' + parseInt(slot, 10));
+        if (scopeId) q.push('scope_id=' + encodeURIComponent(scopeId));
+        return this.get('/local/buffer' + (q.length ? ('?' + q.join('&')) : ''));
+    },
 
     getTerminalBuffer: function(slot) {
         var q = '/terminal/buffer';

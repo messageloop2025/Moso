@@ -371,15 +371,24 @@ function edgeopsGetTerminalToggleKey(layoutId, scopeId) {
 }
 
 function edgeopsGetBrowserTabId() {
+    if (window._edgeopsBrowserTabIdMem) return window._edgeopsBrowserTabIdMem;
     try {
         var id = sessionStorage.getItem('edgeops_browser_tab_id');
         if (!id) {
-            id = 'tab_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+            id = (typeof crypto !== 'undefined' && crypto.randomUUID)
+                ? ('tab_' + crypto.randomUUID())
+                : ('tab_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10));
             sessionStorage.setItem('edgeops_browser_tab_id', id);
         }
+        window._edgeopsBrowserTabIdMem = id;
         return id;
     } catch (e) {}
-    return 'tab_fallback';
+    if (!window._edgeopsBrowserTabIdMem) {
+        window._edgeopsBrowserTabIdMem = (typeof crypto !== 'undefined' && crypto.randomUUID)
+            ? ('tab_' + crypto.randomUUID())
+            : ('tab_mem_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10));
+    }
+    return window._edgeopsBrowserTabIdMem;
 }
 
 function edgeopsMakeTerminalScopeId(kind, ref) {
@@ -12780,6 +12789,7 @@ function renderLocalPage() {
     var currentSessionId = null;
     var localAiFirstLoad = true;
     var localAiLogBuffer = [];
+    var localTerminalScopeId = edgeopsMakeTerminalScopeId('local', 'default');
     var localConsoles = [];
     var localActiveSlot = 0;
     var localAutoSwitchConsole = true;
@@ -13296,7 +13306,7 @@ function renderLocalPage() {
                 scheduleRenderLocalAiLog();
                 edgeopsScrollChatToBottomStepIfPinned(box);
             }
-        }, { scope: 'local', signal: localAbortController.signal, attachmentUuids: attachUuids }).then(function(sid) {
+        }, { scope: 'local', signal: localAbortController.signal, terminalScopeId: localTerminalScopeId, attachmentUuids: attachUuids }).then(function(sid) {
             if (sid != null) currentSessionId = sid;
             finishStreamAndRender();
             loadLocalSessions();
@@ -13726,7 +13736,7 @@ function renderLocalPage() {
             if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
             rec.closed = false;
             placeholder.textContent = 'WebSocket 已连接，正在初始化本机终端…';
-            ws.send(JSON.stringify({ type: 'init', slot: slot, created_by: createdBy }));
+            ws.send(JSON.stringify({ type: 'init', slot: slot, created_by: createdBy, scope_id: localTerminalScopeId }));
         };
         function hydrateLocalConsoleBuffer(reason, opts) {
             opts = opts || {};
@@ -13734,7 +13744,7 @@ function renderLocalPage() {
             // 只有手动按钮、或 WS 还完全没收到任何数据时，才允许 hydrate。
             // 否则与 WS 异步交付混合会造成重复输出（无法可靠定位 WS 已读到的位置）。
             if (!opts.manual && rec.receivedChars > 0) return;
-            API.getLocalBuffer(slot).then(function(r) {
+            API.getLocalBuffer(slot, localTerminalScopeId).then(function(r) {
                 if (!r || !r.success || !r.buffer || !rec.term) return;
                 if (!opts.manual && rec.receivedChars > 0) return;
                 var text = String(r.buffer || '');

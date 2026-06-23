@@ -6031,6 +6031,31 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 return connected[0], None
             return min(ai_slots.keys()), None
 
+        def resolve_local_slot(requested_slot) -> tuple[int | None, str | None]:
+            from api import local_host
+
+            items = local_host.get_local_terminals_for_user(user["id"], terminal_scope_id)
+            slots = {int(it["slot"]): it for it in items if it.get("slot") is not None}
+            if not slots:
+                return None, (
+                    "当前页面 scope 内没有本机控制台，请先 create_local_console 或在本机管理页打开控制台"
+                )
+            if requested_slot is not None:
+                try:
+                    requested_slot = int(requested_slot)
+                except (TypeError, ValueError):
+                    return None, "slot 须为整数"
+                if requested_slot not in slots:
+                    labels = ", ".join(f"slot={s}" for s in sorted(slots.keys()))
+                    return None, f"slot {requested_slot} 不存在于当前页面。可用：{labels}"
+                return requested_slot, None
+            if default_terminal_slot is not None and default_terminal_slot in slots:
+                return default_terminal_slot, None
+            ai_items = [s for s, it in slots.items() if (it.get("created_by") or "") == "ai"]
+            if ai_items:
+                return min(ai_items), None
+            return min(slots.keys()), None
+
         if name in LOCAL_ONLY_TOOLS:
             scope_val = (scope or "default").strip().lower() or "default"
             if scope_val != "local":
@@ -7595,18 +7620,21 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                         slot = int(slot)
                     except (TypeError, ValueError):
                         slot = None
-                if slot is None:
-                    slot = local_host.default_local_terminal_slot(user["id"])
+                slot, slot_err = resolve_local_slot(slot)
+                if slot_err:
+                    return json.dumps({"success": False, "error": slot_err, "terminal_scope_id": terminal_scope_id}, ensure_ascii=False)
 
-                ok = await local_host.send_to_local_terminal(user["id"], slot, text)
+                ok = await local_host.send_to_local_terminal(user["id"], slot, text, terminal_scope_id)
                 if not ok:
-                    await local_host.wait_for_local_terminal_ready(user["id"], slot)
-                    ok = await local_host.send_to_local_terminal(user["id"], slot, text)
+                    await local_host.wait_for_local_terminal_ready(user["id"], slot, terminal_scope_id)
+                    ok = await local_host.send_to_local_terminal(user["id"], slot, text, terminal_scope_id)
                 if not ok:
                     return json.dumps({"success": False, "error": "本机控制台未就绪或已关闭，请先在本机管理页打开控制台（已等待连接就绪）"}, ensure_ascii=False)
                 return json.dumps({
                     "success": True,
                     "message": "已发送到本机控制台",
+                    "slot": slot,
+                    "terminal_scope_id": terminal_scope_id,
                     "ui_action": {"action": "switch_console", "slot": slot, "scope": "local"},
                 }, ensure_ascii=False)
             slot, slot_err = resolve_ai_slot(slot, arguments.get("host_id"))
@@ -7678,8 +7706,13 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
         if name == "list_terminals":
             if (scope or "").strip().lower() == "local":
                 from api import local_host
-                items = local_host.get_local_terminals_for_user(user["id"])
-                return json.dumps({"success": True, "terminals": items}, ensure_ascii=False)
+                items = local_host.get_local_terminals_for_user(user["id"], terminal_scope_id)
+                return json.dumps({
+                    "success": True,
+                    "terminal_scope_id": terminal_scope_id,
+                    "terminals": items,
+                    "note": "仅列出当前页面 terminal_scope_id 下的本机控制台",
+                }, ensure_ascii=False)
             snap = terminals_snapshot_for_ai(user["id"], terminal_scope_id, default_terminal_slot)
             return json.dumps({
                 "success": True,
@@ -10059,13 +10092,14 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                         slot = max(0, min(slot, 31))
                     except (TypeError, ValueError):
                         slot = None
-                if slot is None:
-                    slot = local_host.default_local_terminal_slot(user["id"])
+                slot, slot_err = resolve_local_slot(slot)
+                if slot_err:
+                    return json.dumps({"success": False, "error": slot_err, "terminal_scope_id": terminal_scope_id}, ensure_ascii=False)
 
-                buf, connected = local_host.get_local_terminal_buffer(user["id"], slot)
+                buf, connected = local_host.get_local_terminal_buffer(user["id"], slot, terminal_scope_id)
                 if not connected:
-                    await local_host.wait_for_local_terminal_ready(user["id"], slot)
-                    buf, connected = local_host.get_local_terminal_buffer(user["id"], slot)
+                    await local_host.wait_for_local_terminal_ready(user["id"], slot, terminal_scope_id)
+                    buf, connected = local_host.get_local_terminal_buffer(user["id"], slot, terminal_scope_id)
             else:
                 slot, slot_err = resolve_ai_slot(slot, arguments.get("host_id"))
                 if slot_err:
@@ -10084,7 +10118,10 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     tail_only=tail_only,
                     max_lines=max_lines,
                 )
-            out = attach_terminals_snapshot(attach_terminal_host_fields({"success": True, "buffer": buf, "connected": connected, "slot": slot}, slot))
+            if (scope or "").strip().lower() == "local":
+                out = {"success": True, "buffer": buf, "connected": connected, "slot": slot, "terminal_scope_id": terminal_scope_id}
+            else:
+                out = attach_terminals_snapshot(attach_terminal_host_fields({"success": True, "buffer": buf, "connected": connected, "slot": slot}, slot))
             if abbreviated:
                 out["abbreviated"] = True
                 out["total_lines"] = total_lines
@@ -11613,11 +11650,12 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             if not _is_admin(user):
                 return json.dumps({"success": False, "error": "本机管理仅管理员可用"}, ensure_ascii=False)
             from api import local_host
-            slot = local_host.next_local_terminal_slot(user["id"])
+            slot = local_host.next_local_terminal_slot(user["id"], terminal_scope_id)
             return json.dumps({
                 "success": True,
                 "message": f"已请求在本机管理页打开本机终端 slot {slot}（AI 创建），请稍候。",
                 "slot": slot,
+                "terminal_scope_id": terminal_scope_id,
                 "ui_action": {"action": "create_local_console", "scope": "local", "created_by": "ai", "slot": slot},
             }, ensure_ascii=False)
 
