@@ -5847,6 +5847,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                         streamed_reasoning_text = ""
                         cot_streaming_started = False
                         stream_partial_yielded = False  # 已经向前端推送过模型 token，重试会"接续"，先停止重试
+                        llm_runtime_pause_injected: str | None = None
                         for _llm_try in range(_max_llm_tries):
                             # 单次重试前重置流式累积器；只有「上一轮重试连一个 token 都没收到」时
                             # 才会真正复用此分支，复用后继续重试
@@ -5890,11 +5891,13 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                     try:
                                         item = await asyncio.wait_for(event_queue.get(), timeout=0.35)
                                     except asyncio.TimeoutError:
-                                        # 模型沉默期：抢占 stop 控制 + 周期性 keepalive；
-                                        # 一旦模型开始吐 token，本分支自然不再走（item 立刻可读）
-                                        if not saw_first_byte:
-                                            _stop_ctrl = await _consume_runtime_stop()
-                                            if _stop_ctrl:
+                                        # 周期性轮询运行时控制；模型持续吐 token 时同样生效
+                                        # （原先仅在 saw_first_byte 前检查 stop，导致流式输出中暂停/停止无效）。
+                                        _ctrl = await _consume_runtime_control()
+                                        if _ctrl:
+                                            _a = _ctrl["action"]
+                                            _m = _ctrl["message"]
+                                            if _a == "stop":
                                                 stream_task.cancel()
                                                 try:
                                                     await stream_task
@@ -5906,9 +5909,30 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                                 yield _sse({"runtime_control": {"action": "stop", "accepted": True, "during_llm": True}})
                                                 yield "data: [DONE]\n\n"
                                                 return
-                                            llm_wait_ticks += 1
-                                            if llm_wait_ticks % 5 == 0:
-                                                yield _sse_keepalive()
+                                            if _a in ("pause", "supplement"):
+                                                stream_task.cancel()
+                                                try:
+                                                    await stream_task
+                                                except (asyncio.CancelledError, Exception):
+                                                    pass
+                                                if cot_streaming_started:
+                                                    yield _sse({"cot": {"phase": "pre_tool", "kind": "reasoning_end"}})
+                                                    cot_streaming_started = False
+                                                injected = _m or (
+                                                    "用户要求暂停当前执行，请先回答用户问题，再等待继续指令。"
+                                                    if _a == "pause"
+                                                    else "用户补充了新信息，请结合后继续。"
+                                                )
+                                                last_user_message = injected
+                                                pending_user_msg = {"text": injected, "saved": False}
+                                                await _persist_pending_user_msg()
+                                                messages.append({"role": "user", "content": injected})
+                                                yield _sse({"runtime_control": {"action": _a, "accepted": True, "during_llm": True}})
+                                                llm_runtime_pause_injected = injected
+                                                break
+                                        llm_wait_ticks += 1
+                                        if llm_wait_ticks % 5 == 0:
+                                            yield _sse_keepalive()
                                         continue
                                     item_kind, item_payload = item
                                     if item_kind == "end":
@@ -5974,6 +5998,9 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                         await stream_task
                                     except (asyncio.CancelledError, Exception):
                                         pass
+
+                            if llm_runtime_pause_injected is not None:
+                                break
 
                             # === stream 收尾：根据 done / http_error / exc 三种情形分别处理 ===
                             if stream_exc is not None and not done_event and not http_err_event:
@@ -6086,6 +6113,9 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                             yield _sse({"error": err_full})
                             yield "data: [DONE]\n\n"
                             return
+
+                        if llm_runtime_pause_injected is not None:
+                            continue
 
                         if msg is None:
                             err_full = "AI 请求未返回有效响应（内部状态异常）"
