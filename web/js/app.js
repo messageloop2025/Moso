@@ -6992,137 +6992,37 @@ function initAiLayoutSplitters(layoutId) {
 }
 
 function edgeopsBuildSshChannelTabPanel(tabPanelId, idPrefix) {
-    return '<div id="' + tabPanelId + '" class="terminal-tab-panel">'
-        + '<div class="ssh-channel-layout">'
-        + '<div class="ssh-channel-list-wrap">'
-        + '<div class="ssh-channel-list-header"><span>' + esc(t('hostAi.tabSshChannel')) + '</span>'
-        + '<button type="button" class="btn btn-sm" id="' + idPrefix + 'RefreshList">' + esc(t('hostAi.sshChannelRefreshList')) + '</button></div>'
-        + '<div class="text-muted ssh-channel-hint">' + esc(t('hostAi.sshChannelManualHint')) + '</div>'
-        + '<div id="' + idPrefix + 'List" class="ssh-channel-list"><div class="ssh-channel-empty">' + esc(t('hostAi.sshChannelEmpty')) + '</div></div>'
+    return '<div id="' + tabPanelId + '" class="terminal-tab-panel ssh-channel-page">'
+        + '<div id="' + idPrefix + 'TabsRow" class="ai-console-tabs-row ssh-channel-tabs-row">'
+        + '<button type="button" class="btn btn-sm ssh-channel-refresh-list" id="' + idPrefix + 'RefreshList">' + esc(t('hostAi.refresh')) + '</button>'
         + '</div>'
-        + '<div class="ssh-channel-main">'
-        + '<div class="ssh-channel-toolbar">'
-        + '<span id="' + idPrefix + 'Label" class="ssh-channel-selected-label">' + esc(t('hostAi.sshChannelNoneSelected')) + '</span>'
-        + '<span class="ssh-channel-toolbar-actions">'
+        + '<div id="' + idPrefix + 'Empty" class="ai-console-empty-state" style="flex:1;display:flex;align-items:center;justify-content:center;padding:24px;color:var(--text-muted);font-size:14px;">'
+        + esc(t('hostAi.sshChannelEmptyHint')) + '</div>'
+        + '<div id="' + idPrefix + 'Panels" class="ai-console-panels ssh-channel-panels" style="display:none;flex:1;min-height:0;flex-direction:column"></div>'
+        + '<div class="ssh-channel-monitor-bar">'
+        + '<span class="text-muted ssh-channel-monitor-hint">' + esc(t('hostAi.sshChannelReadOnlyHint')) + '</span>'
         + '<button type="button" class="btn btn-sm" id="' + idPrefix + 'RefreshOutput">' + esc(t('hostAi.sshChannelRefreshOutput')) + '</button>'
-        + '<button type="button" class="btn btn-sm" id="' + idPrefix + 'LiveToggle">' + esc(t('hostAi.sshChannelLiveConnect')) + '</button>'
-        + '</span></div>'
-        + '<div id="' + idPrefix + 'Mount" class="ssh-channel-term-mount"></div>'
-        + '<div class="ssh-channel-term-hint text-muted">' + esc(t('hostAi.sshChannelTermHint')) + '</div>'
-        + '</div></div></div>';
+        + '</div></div>';
 }
 
 function edgeopsInitSshChannelTab(cfg) {
     var SSH_CHANNEL_SNAPSHOT_LINES = cfg.snapshotLines || 80;
-    var selectedId = null;
-    var listEl = document.getElementById(cfg.listId);
-    var mountEl = document.getElementById(cfg.mountId || cfg.outputId);
-    var labelEl = document.getElementById(cfg.labelId);
     var hostFilter = cfg.hostIdFilter != null ? parseInt(cfg.hostIdFilter, 10) : null;
-    var term = null;
-    var fitDispose = null;
-    var termRefit = null;
-    var ws = null;
-    var wsLive = false;
-    var inputViaWs = false;
-    var lastWsLine = 0;
-    var lastWsPartial = '';
-    var lineInputBuffer = '';
+    var tabsRow = document.getElementById(cfg.tabsRowId);
+    var panelsEl = document.getElementById(cfg.panelsId);
+    var emptyEl = document.getElementById(cfg.emptyId);
+    var activeChannelId = null;
+    var channelRecs = [];
 
-    function resetLineInputBuffer() {
-        lineInputBuffer = '';
+    function formatChannelTabLabel(ch) {
+        var cid = parseInt(ch.id, 10);
+        var name = (ch.host_name || ch.host_ip || ('host ' + ch.host_id)).trim();
+        return '#' + cid + ' · ' + name;
     }
 
-    /** 缓冲到 Enter 再发送；Ctrl+C 等控制键立即发送（避免逐字符触发后端自动补 \\n 执行） */
-    function sendChannelRaw(data) {
-        if (!selectedId || !data) return;
-        if (inputViaWs) {
-            if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
-        } else {
-            API.sendSshChannel(selectedId, data).catch(function(err) {
-                showToast((err && err.message) || t('toast.requestFailed'), 'error');
-            });
-        }
-    }
-
-    function handleTermLineInput(data) {
-        if (!selectedId || data == null || data === '') return;
-        if (data.charCodeAt(0) === 27) return;
-        var i, ch, code;
-        for (i = 0; i < data.length; i++) {
-            ch = data[i];
-            code = ch.charCodeAt(0);
-            if (code < 32 && code !== 9 && code !== 10 && code !== 13) {
-                resetLineInputBuffer();
-                sendChannelRaw(ch);
-                continue;
-            }
-            if (ch === '\r' || ch === '\n') {
-                sendChannelRaw(lineInputBuffer + '\n');
-                resetLineInputBuffer();
-                continue;
-            }
-            if (ch === '\x7f' || ch === '\b') {
-                lineInputBuffer = lineInputBuffer.slice(0, -1);
-                continue;
-            }
-            if (code >= 32 || ch === '\t') {
-                lineInputBuffer += ch;
-            }
-        }
-    }
-
-    function setSelectedLabel(id) {
-        if (!labelEl) return;
-        labelEl.textContent = id ? t('hostAi.sshChannelSelected', { id: id }) : t('hostAi.sshChannelNoneSelected');
-    }
-
-    function updateLiveBtn() {
-        var btn = document.getElementById(cfg.liveToggleBtnId);
-        if (!btn) return;
-        btn.textContent = wsLive ? t('hostAi.sshChannelLiveDisconnect') : t('hostAi.sshChannelLiveConnect');
-        btn.classList.toggle('btn-primary', wsLive);
-    }
-
-    function disposeTerm() {
-        if (fitDispose) { fitDispose(); fitDispose = null; termRefit = null; }
-        if (term) { try { term.dispose(); } catch (_e) {} term = null; }
-        if (mountEl) mountEl.innerHTML = '<div class="ssh-channel-output-empty">' + esc(t('hostAi.sshChannelPickChannel')) + '</div>';
-    }
-
-    function ensureTerm() {
-        if (term) return term;
-        if (!mountEl || typeof window.Terminal === 'undefined') {
-            if (mountEl) mountEl.innerHTML = '<div class="ssh-channel-output-empty">' + esc(t('hostAi.sshChannelNoXterm')) + '</div>';
-            return null;
-        }
-        mountEl.innerHTML = '';
-        mountEl.classList.add('ssh-channel-term-mount');
-        term = new window.Terminal({
-            theme: { background: '#0b1020', foreground: '#e2e8f0', cursor: '#e2e8f0' },
-            fontSize: 13,
-            cols: 80,
-            rows: 22,
-            cursorBlink: true,
-            convertEol: true,
-            scrollback: 5000
-        });
-        var fitAddon = null;
-        if (window.FitAddon) try { fitAddon = new window.FitAddon(); term.loadAddon(fitAddon); } catch (_e) { fitAddon = null; }
-        term.open(mountEl);
-        term.onData(handleTermLineInput);
-        var fitResult = edgeopsTerminalFitAfterOpen(term, mountEl, fitAddon, null);
-        fitDispose = fitResult.dispose;
-        termRefit = fitResult.refit;
-        return term;
-    }
-
-    function scrollTermBottom() {
-        if (!term) return;
-        try { term.scrollToBottom(); } catch (_e) {}
-        requestAnimationFrame(function() {
-            try { term.scrollToBottom(); } catch (_e2) {}
-        });
+    function showPanels(show) {
+        if (panelsEl) panelsEl.style.display = show ? 'flex' : 'none';
+        if (emptyEl) emptyEl.style.display = show ? 'none' : 'flex';
     }
 
     function buildSnapshotText(lines, pending, tailText) {
@@ -7137,172 +7037,187 @@ function edgeopsInitSshChannelTab(cfg) {
         return text;
     }
 
-    function writeLinesToTerm(lines, pending, tailText) {
-        if (!ensureTerm()) return;
-        resetLineInputBuffer();
+    function scrollTermBottom(term) {
+        if (!term) return;
+        try { term.scrollToBottom(); } catch (_e) {}
+        requestAnimationFrame(function() {
+            try { term.scrollToBottom(); } catch (_e2) {}
+        });
+    }
+
+    function disposeChannelTerm(rec) {
+        if (!rec) return;
+        if (rec.fitDispose) { rec.fitDispose(); rec.fitDispose = null; rec.refit = null; }
+        if (rec.term) { try { rec.term.dispose(); } catch (_e) {} rec.term = null; }
+    }
+
+    function ensureChannelTerm(rec) {
+        if (!rec || rec.term) return rec ? rec.term : null;
+        if (!rec.mountEl || typeof window.Terminal === 'undefined') {
+            if (rec.mountEl) rec.mountEl.innerHTML = '<div class="ssh-channel-output-empty">' + esc(t('hostAi.sshChannelNoXterm')) + '</div>';
+            return null;
+        }
+        rec.mountEl.innerHTML = '';
+        var term = new window.Terminal({
+            theme: { background: '#0b1020', foreground: '#e2e8f0' },
+            fontSize: 13,
+            disableStdin: true,
+            cursorBlink: false,
+            convertEol: true,
+            scrollback: 8000
+        });
+        var fitAddon = null;
+        if (window.FitAddon) try { fitAddon = new window.FitAddon(); term.loadAddon(fitAddon); } catch (_e) { fitAddon = null; }
+        term.open(rec.mountEl);
+        var fitResult = edgeopsTerminalFitAfterOpen(term, rec.mountEl, fitAddon, null);
+        rec.fitDispose = fitResult.dispose;
+        rec.refit = fitResult.refit;
+        rec.term = term;
+        return term;
+    }
+
+    function writeSnapshotToRec(rec, payload) {
+        var term = ensureChannelTerm(rec);
+        if (!term) return;
         term.clear();
-        var text = buildSnapshotText(lines, pending, tailText);
+        var text = buildSnapshotText(payload.lines, payload.pending_partial, payload.tail_text);
         if (text) {
-            term.write(text, function() { scrollTermBottom(); });
+            term.write(text, function() { scrollTermBottom(term); });
         } else {
-            term.write('\r\n' + t('hostAi.sshChannelNoOutput') + '\r\n', function() { scrollTermBottom(); });
+            term.write('\r\n' + t('hostAi.sshChannelNoOutput') + '\r\n', function() { scrollTermBottom(term); });
         }
     }
 
-    function disconnectWs() {
-        wsLive = false;
-        inputViaWs = false;
-        lastWsLine = 0;
-        lastWsPartial = '';
-        resetLineInputBuffer();
-        if (ws) {
-            try { ws.close(); } catch (_e) {}
-            ws = null;
-        }
-        updateLiveBtn();
+    function getActiveRec() {
+        return channelRecs.filter(function(c) { return c.id === activeChannelId; })[0] || null;
     }
 
-    function connectWs() {
-        if (!selectedId || !API.token) {
-            showToast(t('hostAi.sshChannelPickChannel'), 'info');
-            return;
+    function activateChannel(channelId) {
+        activeChannelId = channelId;
+        channelRecs.forEach(function(rec) {
+            var on = rec.id === channelId;
+            rec.panelEl.style.display = on ? 'flex' : 'none';
+            rec.tabWrap.classList.toggle('active', on);
+            rec.tabBtn.classList.toggle('active', on);
+            if (on && rec.refit) rec.refit();
+        });
+    }
+
+    function removeChannelRec(channelId) {
+        var rec = channelRecs.filter(function(c) { return c.id === channelId; })[0];
+        if (!rec) return;
+        disposeChannelTerm(rec);
+        if (rec.tabWrap && rec.tabWrap.parentNode) rec.tabWrap.remove();
+        if (rec.panelEl && rec.panelEl.parentNode) rec.panelEl.remove();
+        channelRecs = channelRecs.filter(function(c) { return c.id !== channelId; });
+    }
+
+    function upsertChannelTab(ch) {
+        var cid = parseInt(ch.id, 10);
+        if (isNaN(cid)) return null;
+        var existing = channelRecs.filter(function(c) { return c.id === cid; })[0];
+        if (existing) {
+            existing.channel = ch;
+            existing.tabBtn.textContent = formatChannelTabLabel(ch);
+            return existing;
         }
-        if (wsLive) {
-            disconnectWs();
-            return;
-        }
-        if (!ensureTerm()) return;
-        var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        var url = protocol + '//' + location.host + '/api/ssh-channel/' + selectedId + '/ws?token=' + encodeURIComponent(API.token);
-        ws = new WebSocket(url);
-        wsLive = true;
-        updateLiveBtn();
-        ws.onmessage = function(ev) {
-            try {
-                var j = JSON.parse(ev.data);
-                if (j.type === 'ready') {
-                    lastWsLine = 0;
-                    lastWsPartial = '';
-                    inputViaWs = true;
-                    API.readSshChannelLines(selectedId, { last_n: SSH_CHANNEL_SNAPSHOT_LINES, spill: false }).then(function(r) {
-                        writeLinesToTerm(r.lines || [], r.pending_partial || '', r.tail_text);
-                    }).catch(function() {});
-                    try { term.focus(); } catch (_e) {}
-                    return;
-                }
-                if (j.type === 'lines' && j.lines && j.lines.length) {
-                    lastWsPartial = '';
-                    j.lines.forEach(function(ln) {
-                        if (!term) return;
-                        var c = ln.content || '';
-                        term.write(c + (/[\n\r]$/.test(c) ? '' : '\n'));
-                    });
-                    if (j.latest_line_no != null) lastWsLine = j.latest_line_no;
-                    scrollTermBottom();
-                    return;
-                }
-                if (j.type === 'partial' && j.content && term) {
-                    var p = j.content;
-                    if (p !== lastWsPartial) {
-                        if (lastWsPartial && p.indexOf(lastWsPartial) === 0) {
-                            term.write(p.slice(lastWsPartial.length));
-                        } else if (!lastWsPartial) {
-                            term.write(p);
-                        }
-                        lastWsPartial = p;
-                    }
-                    scrollTermBottom();
-                    return;
-                }
-                if (j.type === 'closed') {
-                    showToast(j.message || t('hostAi.sshChannelClosed'), 'info');
-                    disconnectWs();
-                    return;
-                }
-                if (j.type === 'error') {
-                    showToast(j.message || t('toast.connectFailed'), 'error');
-                    disconnectWs();
-                }
-            } catch (_e) {}
+        if (!tabsRow || !panelsEl) return null;
+        var tabWrap = document.createElement('div');
+        tabWrap.className = 'ai-console-tab-wrap' + (channelRecs.length === 0 ? ' active' : '');
+        tabWrap.dataset.channelId = String(cid);
+        var tabBtn = document.createElement('button');
+        tabBtn.type = 'button';
+        tabBtn.className = 'terminal-tab-btn ai-console-tab' + (channelRecs.length === 0 ? ' active' : '');
+        tabBtn.textContent = formatChannelTabLabel(ch);
+        tabWrap.appendChild(tabBtn);
+        var panelEl = document.createElement('div');
+        panelEl.className = 'ai-console-panel ssh-channel-panel terminal-tab-panel' + (channelRecs.length === 0 ? ' active' : '');
+        panelEl.dataset.channelId = String(cid);
+        panelEl.style.display = channelRecs.length === 0 ? 'flex' : 'none';
+        panelEl.style.flexDirection = 'column';
+        var container = document.createElement('div');
+        container.className = 'ai-terminal-container ssh-channel-term-container';
+        var mountEl = document.createElement('div');
+        mountEl.className = 'ai-terminal-mount ssh-channel-term-mount';
+        container.appendChild(mountEl);
+        panelEl.appendChild(container);
+        var refreshListBtn = document.getElementById(cfg.refreshListBtnId);
+        if (refreshListBtn) tabsRow.insertBefore(tabWrap, refreshListBtn);
+        else tabsRow.appendChild(tabWrap);
+        panelsEl.appendChild(panelEl);
+        var rec = {
+            id: cid,
+            channel: ch,
+            tabWrap: tabWrap,
+            tabBtn: tabBtn,
+            panelEl: panelEl,
+            mountEl: mountEl,
+            term: null,
+            fitDispose: null,
+            refit: null
         };
-        ws.onclose = function() { disconnectWs(); };
-        ws.onerror = function() {
-            showToast(t('toast.connectFailed'), 'error');
-            disconnectWs();
+        channelRecs.push(rec);
+        tabBtn.onclick = function() {
+            activateChannel(cid);
+            refreshOutputForRec(rec, false);
         };
+        if (channelRecs.length === 1) {
+            activeChannelId = cid;
+            showPanels(true);
+        }
+        return rec;
     }
 
-    function renderChannelList(channels) {
-        if (!listEl) return;
+    function syncChannelList(channels) {
         var list = channels || [];
         if (hostFilter && !isNaN(hostFilter)) {
             list = list.filter(function(c) { return parseInt(c.host_id, 10) === hostFilter; });
         }
+        var byId = {};
+        list.forEach(function(ch) {
+            var cid = parseInt(ch.id, 10);
+            if (!isNaN(cid)) byId[cid] = ch;
+        });
+        channelRecs.slice().forEach(function(rec) {
+            if (!byId[rec.id]) removeChannelRec(rec.id);
+        });
+        list.forEach(function(ch) { upsertChannelTab(ch); });
         if (!list.length) {
-            listEl.innerHTML = '<div class="ssh-channel-empty">' + esc(t('hostAi.sshChannelEmpty')) + '</div>';
-            if (selectedId) {
-                selectedId = null;
-                disconnectWs();
-                setSelectedLabel(null);
-                disposeTerm();
-            }
+            activeChannelId = null;
+            showPanels(false);
             return;
         }
-        listEl.innerHTML = list.map(function(c) {
-            var cid = parseInt(c.id, 10);
-            var active = selectedId === cid ? ' active' : '';
-            var live = c.status === 'open' && c.memory_connected;
-            var statusText = live ? t('hostAi.sshChannelLive') : (c.status === 'open' ? t('hostAi.statusDisconnected') : t('hostAi.sshChannelClosed'));
-            var title = '#' + cid + ' · ' + (c.host_name || c.host_ip || ('host ' + c.host_id));
-            return '<div class="ssh-channel-item' + active + '" data-id="' + cid + '">'
-                + '<div class="ssh-channel-item-title">' + esc(title) + '</div>'
-                + '<div class="ssh-channel-item-meta">' + esc(c.host_ip || '') + ' · ' + esc(statusText) + '</div>'
-                + '</div>';
-        }).join('');
-        listEl.querySelectorAll('.ssh-channel-item').forEach(function(node) {
-            node.onclick = function() {
-                var cid = parseInt(node.getAttribute('data-id'), 10);
-                if (selectedId === cid) return;
-                disconnectWs();
-                selectedId = cid;
-                resetLineInputBuffer();
-                listEl.querySelectorAll('.ssh-channel-item').forEach(function(n) { n.classList.remove('active'); });
-                node.classList.add('active');
-                setSelectedLabel(selectedId);
-                disposeTerm();
-                refreshOutput(false);
-            };
-        });
-        if (selectedId && !list.some(function(c) { return parseInt(c.id, 10) === selectedId; })) {
-            selectedId = null;
-            disconnectWs();
-            setSelectedLabel(null);
-            disposeTerm();
+        showPanels(true);
+        if (!activeChannelId || !byId[activeChannelId]) {
+            activateChannel(parseInt(list[0].id, 10));
+        } else {
+            activateChannel(activeChannelId);
         }
     }
 
     function loadChannelList(showToastOnOk) {
         return API.listSshChannels({ all_open: true }).then(function(r) {
-            renderChannelList(r.channels || []);
+            syncChannelList(r.channels || []);
             if (showToastOnOk) showToast(t('toast.refreshed'));
         }).catch(function(err) {
             showToast((err && err.message) || t('toast.requestFailed'), 'error');
         });
     }
 
-    function refreshOutput(showToastOnOk) {
-        if (!selectedId) {
-            showToast(t('hostAi.sshChannelPickChannel'), 'info');
+    function refreshOutputForRec(rec, showToastOnOk) {
+        if (!rec) rec = getActiveRec();
+        if (!rec) {
+            showToast(t('hostAi.sshChannelEmptyHint'), 'info');
             return;
         }
-        if (wsLive) {
-            showToast(t('hostAi.sshChannelLiveActiveHint'), 'info');
-            return;
-        }
-        API.readSshChannelLines(selectedId, { last_n: SSH_CHANNEL_SNAPSHOT_LINES, spill: false }).then(function(r) {
-            writeLinesToTerm(r.lines || [], r.pending_partial || '', r.tail_text);
+        API.readSshChannelLines(rec.id, { last_n: SSH_CHANNEL_SNAPSHOT_LINES, spill: false }).then(function(r) {
+            writeSnapshotToRec(rec, {
+                lines: r.lines || [],
+                pending_partial: r.pending_partial || '',
+                tail_text: r.tail_text
+            });
             if (showToastOnOk) showToast(t('toast.refreshed'));
-            if (termRefit) setTimeout(termRefit, 30);
+            if (rec.refit) setTimeout(rec.refit, 30);
         }).catch(function(err) {
             showToast((err && err.message) || t('toast.requestFailed'), 'error');
         });
@@ -7310,17 +7225,16 @@ function edgeopsInitSshChannelTab(cfg) {
 
     var refreshListBtn = document.getElementById(cfg.refreshListBtnId);
     var refreshOutputBtn = document.getElementById(cfg.refreshOutputBtnId);
-    var liveToggleBtn = document.getElementById(cfg.liveToggleBtnId);
     if (refreshListBtn) refreshListBtn.onclick = function() { loadChannelList(true); };
-    if (refreshOutputBtn) refreshOutputBtn.onclick = function() { refreshOutput(true); };
-    if (liveToggleBtn) liveToggleBtn.onclick = connectWs;
-    updateLiveBtn();
+    if (refreshOutputBtn) refreshOutputBtn.onclick = function() { refreshOutputForRec(null, true); };
 
     return {
         refreshList: function() { return loadChannelList(false); },
-        refreshOutput: function() { refreshOutput(false); },
-        refit: function() { if (termRefit) termRefit(); },
-        disconnect: disconnectWs
+        refreshOutput: function() { refreshOutputForRec(null, false); },
+        refit: function() {
+            var rec = getActiveRec();
+            if (rec && rec.refit) rec.refit();
+        }
     };
 }
 
@@ -8445,12 +8359,11 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         });
     }
     var hostAiSshChannelCtl = edgeopsInitSshChannelTab({
-        listId: 'hostAiSshChList',
-        mountId: 'hostAiSshChMount',
-        labelId: 'hostAiSshChLabel',
+        tabsRowId: 'hostAiSshChTabsRow',
+        panelsId: 'hostAiSshChPanels',
+        emptyId: 'hostAiSshChEmpty',
         refreshListBtnId: 'hostAiSshChRefreshList',
         refreshOutputBtnId: 'hostAiSshChRefreshOutput',
-        liveToggleBtnId: 'hostAiSshChLiveToggle',
         hostIdFilter: hostId
     });
     renderHostAiLog();
@@ -9691,12 +9604,11 @@ function renderAIPage() {
         });
     })();
     var aiSshChannelCtl = edgeopsInitSshChannelTab({
-        listId: 'aiSshChList',
-        mountId: 'aiSshChMount',
-        labelId: 'aiSshChLabel',
+        tabsRowId: 'aiSshChTabsRow',
+        panelsId: 'aiSshChPanels',
+        emptyId: 'aiSshChEmpty',
         refreshListBtnId: 'aiSshChRefreshList',
-        refreshOutputBtnId: 'aiSshChRefreshOutput',
-        liveToggleBtnId: 'aiSshChLiveToggle'
+        refreshOutputBtnId: 'aiSshChRefreshOutput'
     });
     document.getElementById('aiLogCopyAll').onclick = copyAiLogFull;
     renderAiLog();

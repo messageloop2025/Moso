@@ -4247,6 +4247,11 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
     flex-direction: column;
     min-height: 0;
 }
+#hostAiTabSshChannel,
+#aiTabSshChannel {
+    flex-direction: column;
+    min-height: 0;
+}
 .ai-console-empty-state {
     flex: 1;
     min-height: 120px;
@@ -4398,7 +4403,46 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
     border-radius: var(--radius);
 }
 
-/* AI 页：SSH 通道管理 tab */
+/* AI 页：SSH 通道只读监视（布局参考控制台 tab） */
+.ssh-channel-tabs-row .ssh-channel-refresh-list {
+    order: 99;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+.ssh-channel-panels {
+    flex: 1;
+    min-height: 0;
+}
+.ssh-channel-term-container {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+.ssh-channel-term-mount {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    background: #0b1020;
+}
+.ssh-channel-term-mount .xterm {
+    height: 100%;
+}
+.ssh-channel-monitor-bar {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 8px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+}
+.ssh-channel-monitor-hint {
+    font-size: 11px;
+}
+
+/* AI 页：SSH 通道管理 tab（旧侧栏布局，保留空状态样式） */
 .ssh-channel-layout {
     display: flex;
     flex: 1;

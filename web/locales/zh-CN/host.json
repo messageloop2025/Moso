@@ -192,6 +192,8 @@
     "sshChannelSelected": "通道 #{{id}}",
     "sshChannelManualHint": "手工刷新，非实时",
     "sshChannelEmpty": "暂无 open 状态的 SSH 通道",
+    "sshChannelEmptyHint": "暂无 open 的 SSH 通道，点击右侧「刷新」加载",
+    "sshChannelReadOnlyHint": "只读监视 · 手工刷新 · 最近 80 行（不影响 AI 后台通道 API）",
     "sshChannelPickChannel": "左侧选择通道后点「刷新输出」",
     "sshChannelNoOutput": "（无输出行）",
     "sshChannelLive": "活跃",
