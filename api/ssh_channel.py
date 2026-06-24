@@ -299,9 +299,14 @@ async def has_new(channel_id: int, after_line: Optional[int] = Query(0), user=De
         raise HTTPException(status_code=404, detail="通道不存在")
     result = SSHChannelManager.get_instance().has_new(channel_id, after_line or 0)
     if result is None:
-        return {"success": True, "has_new": False, "latest_line_no": 0}
-    has_new_val, latest = result
-    return {"success": True, "has_new": has_new_val, "latest_line_no": latest}
+        return {"success": True, "has_new": False, "latest_line_no": 0, "pending_partial": ""}
+    has_new_val, latest, pending = result
+    return {
+        "success": True,
+        "has_new": has_new_val,
+        "latest_line_no": latest,
+        "pending_partial": pending or "",
+    }
 
 
 @router.delete("/{channel_id}")

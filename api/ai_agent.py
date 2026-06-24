@@ -4636,6 +4636,8 @@ def _build_ssh_remote_execution_rules() -> str:
 `ssh_channel_create(host_id)` → 循环 `ssh_channel_send` + `ssh_channel_read_lines` / `ssh_channel_has_new` → 结束后 `ssh_channel_close`。
 同一 channel 内可顺序发多条命令；出现 sudo/密码提示时 read 后再 send 密码（勿与 sudo 同次 send）。
 
+**PTY 与嵌套 SSH**：`ssh_channel_create` 已分配外层 PTY（真实 TTY）。`read_lines` 按 **\\n/\\r** 切行；`password:` 等提示**常无换行**，会出现在 **tail_text / pending_partial**，勿因 `lines` 为空或 `has_new=false` 就认为无输出。**禁止**用空回车探测密码（会被当空密码）。在 channel 内再 SSH 登录其它主机时，交互登录建议 **`ssh -tt user@host`**（强制内层 TTY）；检测到 password 提示后用 **send_service_password** 注入。
+
 **ssh_channel 工具链**：create / list / info / send / read_lines / read_length / has_new / close / close_batch / dump_output。输出过大时用 dump_output 或 read 的 spill，再 read_chat_data 分段读。Web 会话 channel 默认空闲 **1800s** 自动关；集成会话 **3600s**。
 
 **Web 控制台 vs ssh_channel**：控制台 tab 面向**用户可见**；ssh_channel 面向**后台 PTY 会话**（用户不打开终端也能跑交互流程）。可并存：例如 channel 跑编译，控制台给用户看另一条 tail 日志。

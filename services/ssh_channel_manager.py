@@ -128,19 +128,34 @@ class ChannelState:
 
     def get_content_length(self, max_chars: int) -> tuple[str, int, int]:
         with self.lock:
-            if not self.lines:
+            if not self.lines and not self._recv_buffer:
                 return "", 0, 0
-            oldest = self.lines[0].line_no
-            latest = self.lines[-1].line_no
-            total = "".join(e.content for e in self.lines)
+            oldest = self.lines[0].line_no if self.lines else 0
+            latest = self.lines[-1].line_no if self.lines else 0
+            total = "".join(e.content for e in self.lines) + self._recv_buffer
             if len(total) > max_chars:
                 total = total[-max_chars:]
             return total, oldest, latest
 
+    def get_pending_partial(self) -> str:
+        with self.lock:
+            return self._recv_buffer
+
+    def get_tail_text(self, last_n: int = 30) -> str:
+        """已提交行 + 未换行的尾部（password: 等提示常无 \\n）。"""
+        lines, _, _ = self.get_lines(last_n=last_n)
+        parts = [ln.get("content", "") for ln in lines]
+        text = "\n".join(parts)
+        partial = self.get_pending_partial()
+        if partial:
+            text = f"{text}\n{partial}" if text else partial
+        return text
+
     def has_new(self, after_line: int) -> tuple[bool, int]:
         with self.lock:
             latest = self.lines[-1].line_no if self.lines else 0
-            return latest > after_line, latest
+            pending = bool(self._recv_buffer)
+            return latest > after_line or pending, latest
 
     def close(self) -> None:
         if self._closed:
@@ -356,7 +371,7 @@ class SSHChannelManager:
             return None
         return state.get_content_length(max_chars)
 
-    def has_new(self, channel_id: int, after_line: int = 0) -> Optional[tuple[bool, int]]:
+    def has_new(self, channel_id: int, after_line: int = 0) -> Optional[tuple[bool, int, str]]:
         cid = self._norm_channel_id(channel_id)
         if cid is None:
             return None
@@ -364,7 +379,28 @@ class SSHChannelManager:
             state = self._channels.get(cid)
         if not state or state._closed:
             return None
-        return state.has_new(after_line)
+        has, latest = state.has_new(after_line)
+        return has, latest, state.get_pending_partial()
+
+    def get_tail_text(self, channel_id: int, last_n: int = 30) -> Optional[str]:
+        cid = self._norm_channel_id(channel_id)
+        if cid is None:
+            return None
+        with self._channels_lock:
+            state = self._channels.get(cid)
+        if not state or state._closed:
+            return None
+        return state.get_tail_text(last_n=last_n)
+
+    def get_pending_partial(self, channel_id: int) -> Optional[str]:
+        cid = self._norm_channel_id(channel_id)
+        if cid is None:
+            return None
+        with self._channels_lock:
+            state = self._channels.get(cid)
+        if not state or state._closed:
+            return None
+        return state.get_pending_partial()
 
     def get_line_range(self, channel_id: int) -> Optional[tuple[int, int]]:
         cid = self._norm_channel_id(channel_id)

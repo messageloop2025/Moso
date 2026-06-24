@@ -1553,7 +1553,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "ssh_channel_send",
-            "description": "向 SSH 通道发送内容（命令、sudo 密码、控制字符如 Ctrl+C）。同一 channel 内可多次 send 实现顺序交互。",
+            "description": "向 SSH 通道发送内容（命令、控制字符如 Ctrl+C）。**密码须用 send_service_password，勿发明文**。**禁止**用空行/回车「探测」是否等待密码（会被当成空密码提交）。在 channel 内再 SSH 到其它主机时，交互登录建议 `ssh -tt user@host`（强制内层 TTY）；读输出用 read_lines 的 tail_text/pending_partial 判断 password 提示。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1568,7 +1568,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "ssh_channel_read_lines",
-            "description": "按行读取通道输出。可指定 from_line/to_line、last_n、since_line。输出过大时自动落盘并返回 preview + spill_id（可用 read_chat_data 读全量）。",
+            "description": "按行读取通道输出；返回 **tail_text**（含无换行的 password: 提示）与 **pending_partial**。password 提示常无 \\n，勿只看 lines 为空就认为无输出。输出过大时自动落盘 spill。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1602,7 +1602,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "ssh_channel_has_new",
-            "description": "查询通道是否有自某行号以来的新输出。",
+            "description": "查询通道是否有新输出（含无换行的 pending 尾部，如 password: 提示）。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -9782,11 +9782,32 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 since_line=arguments.get("since_line"),
             )
             if result is None:
-                return json.dumps({"success": True, "lines": [], "oldest_line_no": 0, "latest_line_no": 0}, ensure_ascii=False)
+                return json.dumps(
+                    {
+                        "success": True,
+                        "lines": [],
+                        "oldest_line_no": 0,
+                        "latest_line_no": 0,
+                        "pending_partial": "",
+                        "tail_text": "",
+                    },
+                    ensure_ascii=False,
+                )
             lines, oldest, latest = result
-            payload = {"success": True, "lines": lines, "oldest_line_no": oldest, "latest_line_no": latest}
+            mgr = SSHChannelManager.get_instance()
+            last_n = arguments.get("last_n") or 30
+            tail_text = mgr.get_tail_text(int(cid), last_n=last_n) or ""
+            pending = mgr.get_pending_partial(int(cid)) or ""
+            payload = {
+                "success": True,
+                "lines": lines,
+                "oldest_line_no": oldest,
+                "latest_line_no": latest,
+                "pending_partial": pending,
+                "tail_text": tail_text,
+            }
             if arguments.get("spill", True):
-                text = format_lines_as_text(lines)
+                text = tail_text or format_lines_as_text(lines)
                 spill_info = maybe_spill_channel_text(user, session_id, int(cid), text, tool_suffix="read_lines")
                 if spill_info.get("spilled"):
                     payload["spill"] = spill_info
@@ -9841,9 +9862,17 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 return json.dumps({"success": False, "error": "通道不存在"}, ensure_ascii=False)
             result = SSHChannelManager.get_instance().has_new(cid, after_line)
             if result is None:
-                return json.dumps({"success": True, "has_new": False, "latest_line_no": 0}, ensure_ascii=False)
-            has_new_val, latest = result
-            return json.dumps({"success": True, "has_new": has_new_val, "latest_line_no": latest}, ensure_ascii=False)
+                return json.dumps({"success": True, "has_new": False, "latest_line_no": 0, "pending_partial": ""}, ensure_ascii=False)
+            has_new_val, latest, pending = result
+            return json.dumps(
+                {
+                    "success": True,
+                    "has_new": has_new_val,
+                    "latest_line_no": latest,
+                    "pending_partial": pending or "",
+                },
+                ensure_ascii=False,
+            )
 
         if name == "ssh_channel_close":
             cid = arguments.get("channel_id")

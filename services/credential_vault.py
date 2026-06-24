@@ -678,14 +678,10 @@ async def resolve_credential_for_injection(
 
 
 def _ssh_channel_tail_text(channel_id: int, *, last_n: int = 30) -> str:
-    """读取 SSH 通道末尾若干行纯文本，用于密码提示检测（不含行号前缀）。"""
+    """读取 SSH 通道末尾（含无换行的 password: 提示）。"""
     from services.ssh_channel_manager import SSHChannelManager
 
-    result = SSHChannelManager.get_instance().get_lines(int(channel_id), last_n=last_n)
-    if not result:
-        return ""
-    lines, _, _ = result
-    return "\n".join(str(ln.get("content") or "") for ln in lines)
+    return SSHChannelManager.get_instance().get_tail_text(int(channel_id), last_n=last_n) or ""
 
 
 async def inject_password_to_target(
