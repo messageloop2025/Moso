@@ -222,7 +222,17 @@ async def read_lines(
     if result is None:
         return {"success": True, "lines": [], "oldest_line_no": 0, "latest_line_no": 0}
     lines, oldest, latest = result
-    payload = {"success": True, "lines": lines, "oldest_line_no": oldest, "latest_line_no": latest}
+    mgr = SSHChannelManager.get_instance()
+    pending = mgr.get_pending_partial(channel_id) or ""
+    tail_text = mgr.get_tail_text(channel_id, last_n=last_n or 30) or ""
+    payload = {
+        "success": True,
+        "lines": lines,
+        "oldest_line_no": oldest,
+        "latest_line_no": latest,
+        "pending_partial": pending,
+        "tail_text": tail_text,
+    }
     if spill:
         text = format_lines_as_text(lines)
         spill_info = maybe_spill_channel_text(user, session_id, channel_id, text, tool_suffix="read_lines")
@@ -349,20 +359,23 @@ async def channel_websocket(ws: WebSocket, channel_id: int):
             if has_new_result is None:
                 await ws.send_json({"type": "closed", "message": "通道已关闭"})
                 break
-            has_new_val, latest = has_new_result
-            if has_new_val and latest > last_line:
-                result = await asyncio.to_thread(
-                    manager.get_lines, channel_id, None, None, None, last_line
-                )
-                if result:
-                    lines_data, _, latest_no = result
-                    last_line = latest_no
-                    await ws.send_json({
-                        "type": "lines",
-                        "lines": lines_data,
-                        "oldest_line_no": result[1],
-                        "latest_line_no": latest_no,
-                    })
+            has_new_val, latest, pending = has_new_result
+            if has_new_val and (latest > last_line or pending):
+                if latest > last_line:
+                    result = await asyncio.to_thread(
+                        manager.get_lines, channel_id, None, None, None, last_line
+                    )
+                    if result:
+                        lines_data, _, latest_no = result
+                        last_line = latest_no
+                        await ws.send_json({
+                            "type": "lines",
+                            "lines": lines_data,
+                            "oldest_line_no": result[1],
+                            "latest_line_no": latest_no,
+                        })
+                elif pending:
+                    await ws.send_json({"type": "partial", "content": pending})
             try:
                 msg = await asyncio.wait_for(ws.receive_text(), timeout=0.25)
             except asyncio.TimeoutError:

@@ -894,6 +894,32 @@ var API = {
         return this.post('/fs/copy', { path: path, dest_dir: destDir || '', move: !!move });
     },
 
+    /* SSH 通道（AI 后台 PTY） */
+    listSshChannels: function(params) {
+        var q = new URLSearchParams();
+        if (params) {
+            if (params.all_open) q.set('all_open', 'true');
+            if (params.owner_type) q.set('owner_type', params.owner_type);
+            if (params.owner_id != null && params.owner_id !== '') q.set('owner_id', String(params.owner_id));
+        }
+        var qs = q.toString();
+        return this.get('/ssh-channel' + (qs ? '?' + qs : ''));
+    },
+    readSshChannelLines: function(channelId, params) {
+        var q = new URLSearchParams();
+        if (params) {
+            if (params.last_n != null) q.set('last_n', String(params.last_n));
+            if (params.from_line != null) q.set('from_line', String(params.from_line));
+            if (params.to_line != null) q.set('to_line', String(params.to_line));
+            if (params.spill === false) q.set('spill', 'false');
+        }
+        var qs = q.toString();
+        return this.get('/ssh-channel/' + parseInt(channelId, 10) + '/lines' + (qs ? '?' + qs : ''));
+    },
+    sendSshChannel: function(channelId, content) {
+        return this.post('/ssh-channel/' + parseInt(channelId, 10) + '/send', { content: content || '' });
+    },
+
     /* 远程文件系统（SSH 主机） */
     remoteFsList: function(hostId, path) { return this.get('/remote-fs/list?host_id=' + parseInt(hostId, 10) + '&path=' + encodeURIComponent(path || '/')); },
     remoteFsRead: function(hostId, path) { return this.get('/remote-fs/read?host_id=' + parseInt(hostId, 10) + '&path=' + encodeURIComponent(path)); },

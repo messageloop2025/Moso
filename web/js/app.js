@@ -6991,6 +6991,301 @@ function initAiLayoutSplitters(layoutId) {
     setupSplitter(splitters[0]);
 }
 
+function edgeopsBuildSshChannelTabPanel(tabPanelId, idPrefix) {
+    return '<div id="' + tabPanelId + '" class="terminal-tab-panel">'
+        + '<div class="ssh-channel-layout">'
+        + '<div class="ssh-channel-list-wrap">'
+        + '<div class="ssh-channel-list-header"><span>' + esc(t('hostAi.tabSshChannel')) + '</span>'
+        + '<button type="button" class="btn btn-sm" id="' + idPrefix + 'RefreshList">' + esc(t('hostAi.sshChannelRefreshList')) + '</button></div>'
+        + '<div class="text-muted ssh-channel-hint">' + esc(t('hostAi.sshChannelManualHint')) + '</div>'
+        + '<div id="' + idPrefix + 'List" class="ssh-channel-list"><div class="ssh-channel-empty">' + esc(t('hostAi.sshChannelEmpty')) + '</div></div>'
+        + '</div>'
+        + '<div class="ssh-channel-main">'
+        + '<div class="ssh-channel-toolbar">'
+        + '<span id="' + idPrefix + 'Label" class="ssh-channel-selected-label">' + esc(t('hostAi.sshChannelNoneSelected')) + '</span>'
+        + '<span class="ssh-channel-toolbar-actions">'
+        + '<button type="button" class="btn btn-sm" id="' + idPrefix + 'RefreshOutput">' + esc(t('hostAi.sshChannelRefreshOutput')) + '</button>'
+        + '<button type="button" class="btn btn-sm" id="' + idPrefix + 'LiveToggle">' + esc(t('hostAi.sshChannelLiveConnect')) + '</button>'
+        + '</span></div>'
+        + '<div id="' + idPrefix + 'Mount" class="ssh-channel-term-mount"></div>'
+        + '<div class="ssh-channel-term-hint text-muted">' + esc(t('hostAi.sshChannelTermHint')) + '</div>'
+        + '</div></div></div>';
+}
+
+function edgeopsInitSshChannelTab(cfg) {
+    var SSH_CHANNEL_SNAPSHOT_LINES = cfg.snapshotLines || 80;
+    var selectedId = null;
+    var listEl = document.getElementById(cfg.listId);
+    var mountEl = document.getElementById(cfg.mountId || cfg.outputId);
+    var labelEl = document.getElementById(cfg.labelId);
+    var hostFilter = cfg.hostIdFilter != null ? parseInt(cfg.hostIdFilter, 10) : null;
+    var term = null;
+    var fitDispose = null;
+    var termRefit = null;
+    var ws = null;
+    var wsLive = false;
+    var inputViaWs = false;
+    var lastWsLine = 0;
+    var lastWsPartial = '';
+
+    function setSelectedLabel(id) {
+        if (!labelEl) return;
+        labelEl.textContent = id ? t('hostAi.sshChannelSelected', { id: id }) : t('hostAi.sshChannelNoneSelected');
+    }
+
+    function updateLiveBtn() {
+        var btn = document.getElementById(cfg.liveToggleBtnId);
+        if (!btn) return;
+        btn.textContent = wsLive ? t('hostAi.sshChannelLiveDisconnect') : t('hostAi.sshChannelLiveConnect');
+        btn.classList.toggle('btn-primary', wsLive);
+    }
+
+    function disposeTerm() {
+        if (fitDispose) { fitDispose(); fitDispose = null; termRefit = null; }
+        if (term) { try { term.dispose(); } catch (_e) {} term = null; }
+        if (mountEl) mountEl.innerHTML = '<div class="ssh-channel-output-empty">' + esc(t('hostAi.sshChannelPickChannel')) + '</div>';
+    }
+
+    function ensureTerm() {
+        if (term) return term;
+        if (!mountEl || typeof window.Terminal === 'undefined') {
+            if (mountEl) mountEl.innerHTML = '<div class="ssh-channel-output-empty">' + esc(t('hostAi.sshChannelNoXterm')) + '</div>';
+            return null;
+        }
+        mountEl.innerHTML = '';
+        mountEl.classList.add('ssh-channel-term-mount');
+        term = new window.Terminal({
+            theme: { background: '#0b1020', foreground: '#e2e8f0', cursor: '#e2e8f0' },
+            fontSize: 13,
+            cols: 80,
+            rows: 22,
+            cursorBlink: true,
+            convertEol: true,
+            scrollback: 5000
+        });
+        var fitAddon = null;
+        if (window.FitAddon) try { fitAddon = new window.FitAddon(); term.loadAddon(fitAddon); } catch (_e) { fitAddon = null; }
+        term.open(mountEl);
+        term.onData(function(d) {
+            if (!selectedId) return;
+            if (inputViaWs) {
+                if (ws && ws.readyState === WebSocket.OPEN) ws.send(d);
+            } else {
+                API.sendSshChannel(selectedId, d).catch(function(err) {
+                    showToast((err && err.message) || t('toast.requestFailed'), 'error');
+                });
+            }
+        });
+        var fitResult = edgeopsTerminalFitAfterOpen(term, mountEl, fitAddon, null);
+        fitDispose = fitResult.dispose;
+        termRefit = fitResult.refit;
+        return term;
+    }
+
+    function scrollTermBottom() {
+        if (!term) return;
+        try { term.scrollToBottom(); } catch (_e) {}
+        requestAnimationFrame(function() {
+            try { term.scrollToBottom(); } catch (_e2) {}
+        });
+    }
+
+    function buildSnapshotText(lines, pending, tailText) {
+        if (tailText != null && tailText !== '') return tailText;
+        var parts = (lines || []).map(function(ln) { return ln.content || ''; });
+        var text = parts.join('\n');
+        var partial = pending || '';
+        if (partial) {
+            if (text && !/[\n\r]$/.test(text)) text += '\n';
+            text += partial;
+        }
+        return text;
+    }
+
+    function writeLinesToTerm(lines, pending, tailText) {
+        if (!ensureTerm()) return;
+        term.clear();
+        var text = buildSnapshotText(lines, pending, tailText);
+        if (text) {
+            term.write(text, function() { scrollTermBottom(); });
+        } else {
+            term.write('\r\n' + t('hostAi.sshChannelNoOutput') + '\r\n', function() { scrollTermBottom(); });
+        }
+    }
+
+    function disconnectWs() {
+        wsLive = false;
+        inputViaWs = false;
+        lastWsLine = 0;
+        lastWsPartial = '';
+        if (ws) {
+            try { ws.close(); } catch (_e) {}
+            ws = null;
+        }
+        updateLiveBtn();
+    }
+
+    function connectWs() {
+        if (!selectedId || !API.token) {
+            showToast(t('hostAi.sshChannelPickChannel'), 'info');
+            return;
+        }
+        if (wsLive) {
+            disconnectWs();
+            return;
+        }
+        if (!ensureTerm()) return;
+        var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        var url = protocol + '//' + location.host + '/api/ssh-channel/' + selectedId + '/ws?token=' + encodeURIComponent(API.token);
+        ws = new WebSocket(url);
+        wsLive = true;
+        updateLiveBtn();
+        ws.onmessage = function(ev) {
+            try {
+                var j = JSON.parse(ev.data);
+                if (j.type === 'ready') {
+                    lastWsLine = 0;
+                    lastWsPartial = '';
+                    inputViaWs = true;
+                    API.readSshChannelLines(selectedId, { last_n: SSH_CHANNEL_SNAPSHOT_LINES, spill: false }).then(function(r) {
+                        writeLinesToTerm(r.lines || [], r.pending_partial || '', r.tail_text);
+                    }).catch(function() {});
+                    try { term.focus(); } catch (_e) {}
+                    return;
+                }
+                if (j.type === 'lines' && j.lines && j.lines.length) {
+                    lastWsPartial = '';
+                    j.lines.forEach(function(ln) {
+                        if (!term) return;
+                        var c = ln.content || '';
+                        term.write(c + (/[\n\r]$/.test(c) ? '' : '\n'));
+                    });
+                    if (j.latest_line_no != null) lastWsLine = j.latest_line_no;
+                    scrollTermBottom();
+                    return;
+                }
+                if (j.type === 'partial' && j.content && term) {
+                    var p = j.content;
+                    if (p !== lastWsPartial) {
+                        if (lastWsPartial && p.indexOf(lastWsPartial) === 0) {
+                            term.write(p.slice(lastWsPartial.length));
+                        } else if (!lastWsPartial) {
+                            term.write(p);
+                        }
+                        lastWsPartial = p;
+                    }
+                    scrollTermBottom();
+                    return;
+                }
+                if (j.type === 'closed') {
+                    showToast(j.message || t('hostAi.sshChannelClosed'), 'info');
+                    disconnectWs();
+                    return;
+                }
+                if (j.type === 'error') {
+                    showToast(j.message || t('toast.connectFailed'), 'error');
+                    disconnectWs();
+                }
+            } catch (_e) {}
+        };
+        ws.onclose = function() { disconnectWs(); };
+        ws.onerror = function() {
+            showToast(t('toast.connectFailed'), 'error');
+            disconnectWs();
+        };
+    }
+
+    function renderChannelList(channels) {
+        if (!listEl) return;
+        var list = channels || [];
+        if (hostFilter && !isNaN(hostFilter)) {
+            list = list.filter(function(c) { return parseInt(c.host_id, 10) === hostFilter; });
+        }
+        if (!list.length) {
+            listEl.innerHTML = '<div class="ssh-channel-empty">' + esc(t('hostAi.sshChannelEmpty')) + '</div>';
+            if (selectedId) {
+                selectedId = null;
+                disconnectWs();
+                setSelectedLabel(null);
+                disposeTerm();
+            }
+            return;
+        }
+        listEl.innerHTML = list.map(function(c) {
+            var cid = parseInt(c.id, 10);
+            var active = selectedId === cid ? ' active' : '';
+            var live = c.status === 'open' && c.memory_connected;
+            var statusText = live ? t('hostAi.sshChannelLive') : (c.status === 'open' ? t('hostAi.statusDisconnected') : t('hostAi.sshChannelClosed'));
+            var title = '#' + cid + ' · ' + (c.host_name || c.host_ip || ('host ' + c.host_id));
+            return '<div class="ssh-channel-item' + active + '" data-id="' + cid + '">'
+                + '<div class="ssh-channel-item-title">' + esc(title) + '</div>'
+                + '<div class="ssh-channel-item-meta">' + esc(c.host_ip || '') + ' · ' + esc(statusText) + '</div>'
+                + '</div>';
+        }).join('');
+        listEl.querySelectorAll('.ssh-channel-item').forEach(function(node) {
+            node.onclick = function() {
+                var cid = parseInt(node.getAttribute('data-id'), 10);
+                if (selectedId === cid) return;
+                disconnectWs();
+                selectedId = cid;
+                listEl.querySelectorAll('.ssh-channel-item').forEach(function(n) { n.classList.remove('active'); });
+                node.classList.add('active');
+                setSelectedLabel(selectedId);
+                disposeTerm();
+                refreshOutput(false);
+            };
+        });
+        if (selectedId && !list.some(function(c) { return parseInt(c.id, 10) === selectedId; })) {
+            selectedId = null;
+            disconnectWs();
+            setSelectedLabel(null);
+            disposeTerm();
+        }
+    }
+
+    function loadChannelList(showToastOnOk) {
+        return API.listSshChannels({ all_open: true }).then(function(r) {
+            renderChannelList(r.channels || []);
+            if (showToastOnOk) showToast(t('toast.refreshed'));
+        }).catch(function(err) {
+            showToast((err && err.message) || t('toast.requestFailed'), 'error');
+        });
+    }
+
+    function refreshOutput(showToastOnOk) {
+        if (!selectedId) {
+            showToast(t('hostAi.sshChannelPickChannel'), 'info');
+            return;
+        }
+        if (wsLive) {
+            showToast(t('hostAi.sshChannelLiveActiveHint'), 'info');
+            return;
+        }
+        API.readSshChannelLines(selectedId, { last_n: SSH_CHANNEL_SNAPSHOT_LINES, spill: false }).then(function(r) {
+            writeLinesToTerm(r.lines || [], r.pending_partial || '', r.tail_text);
+            if (showToastOnOk) showToast(t('toast.refreshed'));
+            if (termRefit) setTimeout(termRefit, 30);
+        }).catch(function(err) {
+            showToast((err && err.message) || t('toast.requestFailed'), 'error');
+        });
+    }
+
+    var refreshListBtn = document.getElementById(cfg.refreshListBtnId);
+    var refreshOutputBtn = document.getElementById(cfg.refreshOutputBtnId);
+    var liveToggleBtn = document.getElementById(cfg.liveToggleBtnId);
+    if (refreshListBtn) refreshListBtn.onclick = function() { loadChannelList(true); };
+    if (refreshOutputBtn) refreshOutputBtn.onclick = function() { refreshOutput(true); };
+    if (liveToggleBtn) liveToggleBtn.onclick = connectWs;
+    updateLiveBtn();
+
+    return {
+        refreshList: function() { return loadChannelList(false); },
+        refreshOutput: function() { refreshOutput(false); },
+        refit: function() { if (termRefit) termRefit(); },
+        disconnect: disconnectWs
+    };
+}
+
 function initHostAIPanel(hostId, hostName, panel, hostInfo) {
     hostAiLogBuffer = [];
     var hostTypeForCmd = (hostInfo && hostInfo.host_type) ? String(hostInfo.host_type) : '未知';
@@ -7002,13 +7297,14 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         + '<div class="ai-left-sidebar-tabs"><div class="ai-left-sidebar-tab" id="hostAiSidebarTabSessions" data-tab="sessions" title="' + esc(t('hostAi.sessionTabTitle')) + '">' + esc(t('hostAi.sessionList')) + '</div></div>'
         + '<div class="ai-left-sidebar-panel"><div class="chat-history-panel ai-layout-history" id="hostAiLayoutHistory"><div class="chat-history-header"><span>' + esc(t('hostAi.sessionList')) + '</span><span class="chat-history-header-actions"><button type="button" class="btn btn-sm" id="hostAiRefreshSessions" title="' + esc(t('hostAi.refresh')) + '">' + esc(t('hostAi.refresh')) + '</button><button type="button" class="btn btn-sm" id="hostAiClearSessions">' + esc(t('hostAi.clearAll')) + '</button></span></div><div class="chat-history-list-wrap open"><div class="chat-history-list" id="hostAiSessionList"></div></div></div></div></div>'
         + '<div class="card ai-terminal-card ai-layout-terminal" id="hostAiLayoutTerminal">'
-        + '<div class="terminal-tabs ai-terminal-header"><button type="button" class="terminal-tab-btn active" data-tab="hostAiTabConsole">' + esc(t('hostAi.tabConsole')) + '</button><button type="button" class="terminal-tab-btn" data-tab="hostAiTabRemoteFs">' + esc(t('hostAi.tabFs')) + '</button><button type="button" class="terminal-tab-btn" data-tab="hostAiTabLog">' + esc(t('hostAi.tabLog')) + '</button><span class="ai-terminal-header-meta"><span class="ai-terminal-header-title" title="' + esc(sshTitle) + '">' + esc(sshTitle) + '</span><span class="ai-terminal-header-sep">·</span><span id="hostAiTerminalStatus" class="ai-terminal-status">' + esc(t('hostAi.statusDisconnected')) + '</span></span></div>'
+        + '<div class="terminal-tabs ai-terminal-header"><button type="button" class="terminal-tab-btn active" data-tab="hostAiTabConsole">' + esc(t('hostAi.tabConsole')) + '</button><button type="button" class="terminal-tab-btn" data-tab="hostAiTabRemoteFs">' + esc(t('hostAi.tabFs')) + '</button><button type="button" class="terminal-tab-btn" data-tab="hostAiTabSshChannel">' + esc(t('hostAi.tabSshChannel')) + '</button><button type="button" class="terminal-tab-btn" data-tab="hostAiTabLog">' + esc(t('hostAi.tabLog')) + '</button><span class="ai-terminal-header-meta"><span class="ai-terminal-header-title" title="' + esc(sshTitle) + '">' + esc(sshTitle) + '</span><span class="ai-terminal-header-sep">·</span><span id="hostAiTerminalStatus" class="ai-terminal-status">' + esc(t('hostAi.statusDisconnected')) + '</span></span></div>'
         + '<div id="hostAiTabConsole" class="terminal-tab-panel active">'
         + '<div id="hostAiConsoleTabsRow" class="ai-console-tabs-row"><label class="ai-console-auto-switch-label"><input type="checkbox" id="hostAiConsoleNoAutoSwitch"> ' + esc(t('hostAi.noAutoSwitch')) + '</label></div>'
         + '<div id="hostAiConsoleEmptyState" class="ai-console-empty-state" style="flex:1;display:flex;align-items:center;justify-content:center;padding:24px;color:var(--text-muted);font-size:14px;">' + esc(t('hostAi.consoleEmpty')) + '</div>'
         + '<div id="hostAiConsolePanels" class="ai-console-panels" style="display:none;flex:1;min-height:0;flex-direction:column"></div>'
         + '</div>'
         + '<div id="hostAiTabRemoteFs" class="terminal-tab-panel"><div class="remote-fs-layout"><div class="remote-fs-tree-wrap"><div class="remote-fs-tree-header">' + esc(t('hostAi.fsTreeHeader')) + '</div><div id="hostAiRemoteFsTree" class="remote-fs-tree"></div><div id="hostAiRemoteFsCtxMenu" class="remote-fs-ctxmenu"></div></div><div class="remote-fs-main"><div class="remote-fs-toolbar"><input type="text" class="form-control remote-fs-path" id="hostAiRemoteFsPath" placeholder="' + esc(t('hostAi.fsPathPlaceholder')) + '" value="/" readonly><button type="button" class="btn btn-sm" id="hostAiRemoteFsRefresh">' + esc(t('hostAi.fsRefresh')) + '</button><button type="button" class="btn btn-sm" id="hostAiRemoteFsUpload">' + esc(t('hostAi.fsUpload')) + '</button><input type="file" id="hostAiRemoteFsFileInput" style="display:none"><button type="button" class="btn btn-sm" id="hostAiRemoteFsDownload">' + esc(t('hostAi.fsDownload')) + '</button><button type="button" class="btn btn-sm" id="hostAiRemoteFsSave">' + esc(t('hostAi.fsSave')) + '</button></div><div id="hostAiRemoteFsPreview" class="remote-fs-preview"><div class="remote-fs-preview-inner" id="hostAiRemoteFsPreviewInner"><span class="text-muted">' + esc(t('hostAi.fsPreviewHint')) + '</span></div></div></div></div></div>'
+        + edgeopsBuildSshChannelTabPanel('hostAiTabSshChannel', 'hostAiSshCh')
         + '<div id="hostAiTabLog" class="terminal-tab-panel"><div class="ai-log-window"><div class="ai-log-toolbar"><button type="button" class="btn btn-sm" id="hostAiLogCopyAll">' + esc(t('hostAi.logCopyAll')) + '</button></div><div id="hostAiLogEntries" class="ai-log-entries"></div></div></div>'
         + '</div>'
         + '<div class="layout-splitter-vertical" data-layout="host" data-split="terminal" title="' + esc(t('hostAi.splitterTitle')) + '"></div>'
@@ -8095,7 +8391,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
                     if (treeEl && !treeEl.querySelector('ul')) doHostRemoteFsRefresh();
                 }
                 panel.querySelectorAll('.terminal-tabs > .terminal-tab-btn[data-tab]').forEach(function(b) { b.classList.remove('active'); });
-                ['hostAiTabConsole', 'hostAiTabRemoteFs', 'hostAiTabLog'].forEach(function(id) {
+                ['hostAiTabConsole', 'hostAiTabRemoteFs', 'hostAiTabSshChannel', 'hostAiTabLog'].forEach(function(id) {
                     var p = document.getElementById(id);
                     if (p) p.classList.remove('active');
                 });
@@ -8106,9 +8402,19 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
                     var activeConsole = hostAiConsoles.filter(function(c) { return c.slot === hostAiActiveConsoleSlot; })[0] || hostAiConsoles[0];
                     if (activeConsole && activeConsole.refit) activeConsole.refit();
                 }
+                if (tabId === 'hostAiTabSshChannel' && hostAiSshChannelCtl && hostAiSshChannelCtl.refit) hostAiSshChannelCtl.refit();
             };
         });
     }
+    var hostAiSshChannelCtl = edgeopsInitSshChannelTab({
+        listId: 'hostAiSshChList',
+        mountId: 'hostAiSshChMount',
+        labelId: 'hostAiSshChLabel',
+        refreshListBtnId: 'hostAiSshChRefreshList',
+        refreshOutputBtnId: 'hostAiSshChRefreshOutput',
+        liveToggleBtnId: 'hostAiSshChLiveToggle',
+        hostIdFilter: hostId
+    });
     renderHostAiLog();
     // 页面缓存恢复时需对终端做 refit，否则尺寸为 0 导致错乱；按 path 注册以便恢复时调用
     (window._edgeopsRefitByPath = window._edgeopsRefitByPath || {})['/hosts/' + hostId] = function() {
@@ -8572,13 +8878,14 @@ function renderAIPage() {
         + '<div class="ai-left-sidebar-tabs"><div class="ai-left-sidebar-tab" id="aiSidebarTabSessions" data-tab="sessions" title="' + esc(t('hostAi.sessionTabTitle')) + '">' + esc(t('hostAi.sessionList')) + '</div></div>'
         + '<div class="ai-left-sidebar-panel"><div class="chat-history-panel ai-session-list ai-layout-history" id="aiLayoutHistory"><div class="chat-history-header"><span>' + esc(t('hostAi.sessionList')) + '</span><span class="chat-history-header-actions"><button type="button" class="btn btn-sm" id="aiRefreshSessions" title="' + esc(t('hostAi.refresh')) + '">' + esc(t('hostAi.refresh')) + '</button><button type="button" class="btn btn-sm" id="aiClearAllSessions" title="' + esc(t('hostAi.clearAll')) + '">' + esc(t('hostAi.clearAll')) + '</button></span></div><div class="chat-history-list-wrap open"><div class="chat-history-list" id="aiSessionList"></div></div></div></div></div>'
         + '<div class="card ai-terminal-card ai-layout-terminal" id="aiLayoutTerminal">'
-        + '<div class="terminal-tabs ai-terminal-header"><button type="button" class="terminal-tab-btn active" data-tab="aiTabConsole">' + esc(t('hostAi.tabConsole')) + '</button><button type="button" class="terminal-tab-btn" data-tab="aiTabRemoteFs">' + esc(t('hostAi.tabFs')) + '</button><button type="button" class="terminal-tab-btn" data-tab="aiTabLog">' + esc(t('hostAi.tabLog')) + '</button><span class="ai-terminal-header-meta"><span class="ai-terminal-header-title">' + esc(t('ai.globalSshTitle')) + '</span><span class="ai-terminal-header-sep">·</span><span id="aiTerminalStatus" class="ai-terminal-status">' + esc(t('hostAi.statusDisconnected')) + '</span></span></div>'
+        + '<div class="terminal-tabs ai-terminal-header"><button type="button" class="terminal-tab-btn active" data-tab="aiTabConsole">' + esc(t('hostAi.tabConsole')) + '</button><button type="button" class="terminal-tab-btn" data-tab="aiTabRemoteFs">' + esc(t('hostAi.tabFs')) + '</button><button type="button" class="terminal-tab-btn" data-tab="aiTabSshChannel">' + esc(t('hostAi.tabSshChannel')) + '</button><button type="button" class="terminal-tab-btn" data-tab="aiTabLog">' + esc(t('hostAi.tabLog')) + '</button><span class="ai-terminal-header-meta"><span class="ai-terminal-header-title">' + esc(t('ai.globalSshTitle')) + '</span><span class="ai-terminal-header-sep">·</span><span id="aiTerminalStatus" class="ai-terminal-status">' + esc(t('hostAi.statusDisconnected')) + '</span></span></div>'
         + '<div id="aiTabConsole" class="terminal-tab-panel active">'
         + '<div id="aiConsoleTabsRow" class="ai-console-tabs-row"><label class="ai-console-auto-switch-label"><input type="checkbox" id="aiConsoleNoAutoSwitch"> ' + esc(t('hostAi.noAutoSwitch')) + '</label></div>'
         + '<div id="aiConsoleEmptyState" class="ai-console-empty-state" style="flex:1;display:flex;align-items:center;justify-content:center;padding:24px;color:var(--text-muted);font-size:14px;">' + esc(t('hostAi.consoleEmpty')) + '</div>'
         + '<div id="aiConsolePanels" class="ai-console-panels" style="display:none;flex:1;min-height:0;flex-direction:column"></div>'
         + '</div>'
         + '<div id="aiTabRemoteFs" class="terminal-tab-panel"><div class="remote-fs-layout"><div class="remote-fs-tree-wrap"><div class="remote-fs-tree-header">' + esc(t('hostAi.fsTreeHeader')) + '</div><div class="remote-fs-host-row" style="padding:6px 8px;border-bottom:1px solid var(--border);align-items:center;display:flex;gap:8px"><label style="margin-right:0;flex-shrink:0">' + esc(t('ai.fsHostLabel')) + '</label><div id="aiRemoteFsHostPickerMount" style="flex:1;min-width:0"></div></div><div id="aiRemoteFsTree" class="remote-fs-tree"></div><div id="aiRemoteFsCtxMenu" class="remote-fs-ctxmenu"></div></div><div class="remote-fs-main"><div class="remote-fs-toolbar"><input type="text" class="form-control remote-fs-path" id="aiRemoteFsPath" placeholder="' + esc(t('hostAi.fsPathPlaceholder')) + '" value="/" readonly><button type="button" class="btn btn-sm" id="aiRemoteFsRefresh">' + esc(t('hostAi.fsRefresh')) + '</button><button type="button" class="btn btn-sm" id="aiRemoteFsUpload">' + esc(t('hostAi.fsUpload')) + '</button><input type="file" id="aiRemoteFsFileInput" style="display:none"><button type="button" class="btn btn-sm" id="aiRemoteFsDownload">' + esc(t('hostAi.fsDownload')) + '</button><button type="button" class="btn btn-sm" id="aiRemoteFsSave">' + esc(t('hostAi.fsSave')) + '</button></div><div id="aiRemoteFsPreview" class="remote-fs-preview"><div class="remote-fs-preview-inner" id="aiRemoteFsPreviewInner"><span class="text-muted">' + esc(t('ai.fsPreviewNeedHost')) + '</span></div></div></div></div></div>'
+        + edgeopsBuildSshChannelTabPanel('aiTabSshChannel', 'aiSshCh')
         + '<div id="aiTabLog" class="terminal-tab-panel"><div class="ai-log-window"><div class="ai-log-toolbar"><button type="button" class="btn btn-sm" id="aiLogCopyAll">' + esc(t('hostAi.logCopyAll')) + '</button></div><div id="aiLogEntries" class="ai-log-entries"></div></div></div>'
         + '</div>'
         + '<div class="layout-splitter-vertical" data-layout="ai" data-split="terminal" title="' + esc(t('hostAi.splitterTitle')) + '"></div>'
@@ -9341,9 +9648,18 @@ function renderAIPage() {
                     var con = aiConsoles.filter(function(c) { return c.slot === aiActiveConsoleSlot; })[0];
                     if (con && con.refit) con.refit();
                 }
+                if (tabId === 'aiTabSshChannel' && aiSshChannelCtl && aiSshChannelCtl.refit) aiSshChannelCtl.refit();
             };
         });
     })();
+    var aiSshChannelCtl = edgeopsInitSshChannelTab({
+        listId: 'aiSshChList',
+        mountId: 'aiSshChMount',
+        labelId: 'aiSshChLabel',
+        refreshListBtnId: 'aiSshChRefreshList',
+        refreshOutputBtnId: 'aiSshChRefreshOutput',
+        liveToggleBtnId: 'aiSshChLiveToggle'
+    });
     document.getElementById('aiLogCopyAll').onclick = copyAiLogFull;
     renderAiLog();
     var sessionId = null;

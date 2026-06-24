@@ -4398,6 +4398,145 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
     border-radius: var(--radius);
 }
 
+/* AI 页：SSH 通道管理 tab */
+.ssh-channel-layout {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+}
+.ssh-channel-list-wrap {
+    width: 240px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+.ssh-channel-list-header {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    font-weight: 600;
+}
+.ssh-channel-hint {
+    flex-shrink: 0;
+    padding: 4px 8px 6px;
+    font-size: 11px;
+}
+.ssh-channel-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px;
+}
+.ssh-channel-empty {
+    padding: 12px 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+.ssh-channel-item {
+    padding: 8px;
+    margin-bottom: 4px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    cursor: pointer;
+    background: rgba(15, 23, 42, 0.35);
+}
+.ssh-channel-item:hover {
+    border-color: var(--accent);
+}
+.ssh-channel-item.active {
+    border-color: var(--accent);
+    background: rgba(59, 130, 246, 0.12);
+}
+.ssh-channel-item-title {
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+.ssh-channel-item-meta {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+.ssh-channel-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+.ssh-channel-toolbar {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+}
+.ssh-channel-selected-label {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+.ssh-channel-toolbar-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+}
+.ssh-channel-term-mount {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    padding: 4px 6px;
+    background: #0b1020;
+}
+.ssh-channel-term-mount .xterm {
+    height: 100%;
+}
+.ssh-channel-term-hint {
+    flex-shrink: 0;
+    padding: 4px 8px 6px;
+    font-size: 11px;
+    border-top: 1px solid var(--border);
+}
+.ssh-channel-output-empty {
+    color: var(--text-muted);
+}
+.ssh-channel-line {
+    display: flex;
+    gap: 8px;
+    padding: 1px 0;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+.ssh-channel-line-no {
+    flex-shrink: 0;
+    width: 42px;
+    text-align: right;
+    color: var(--text-muted);
+    user-select: none;
+}
+.ssh-channel-line-text {
+    flex: 1;
+    min-width: 0;
+}
+.ssh-channel-input-row {
+    flex-shrink: 0;
+    display: flex;
+    gap: 8px;
+    padding: 8px;
+    border-top: 1px solid var(--border);
+}
+.ssh-channel-input-row .form-control {
+    flex: 1;
+    min-width: 0;
+}
+
 /* AI 执行 Log 窗 */
 .ai-log-window {
     flex: 1;
