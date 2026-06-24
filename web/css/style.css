@@ -4438,6 +4438,11 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
     border-top: 1px solid var(--border);
     font-size: 12px;
 }
+.ssh-channel-monitor-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+}
 .ssh-channel-monitor-hint {
     font-size: 11px;
 }

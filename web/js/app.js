@@ -6636,6 +6636,39 @@ function edgeopsFinishChatStreamRound(opts) {
     return endPhase;
 }
 
+/** 当前页 SSH 通道监视控件（initHostAIPanel / renderAIPage 注册） */
+function edgeopsSetSshChannelMonitorCtl(ctl) {
+    window._edgeopsSshChannelMonitorCtl = ctl || null;
+}
+
+function edgeopsParseSshChannelIdFromToolResult(ev) {
+    if (!ev || !ev.result_preview) return null;
+    var text = String(ev.result_preview);
+    try {
+        var j = JSON.parse(text);
+        if (j.channel_id != null) return parseInt(j.channel_id, 10);
+        if (j.channel && j.channel.id != null) return parseInt(j.channel.id, 10);
+    } catch (_e) {}
+    var m = text.match(/"channel_id"\s*:\s*(\d+)/);
+    return m ? parseInt(m[1], 10) : null;
+}
+
+function edgeopsMaybeSyncSshChannelFromTool(ev) {
+    if (!ev || ev.action === 'executing' || !ev.tool) return;
+    var tool = String(ev.tool);
+    if (tool !== 'ssh_channel_create' && tool !== 'ssh_channel_close' && tool !== 'ssh_channel_close_batch') return;
+    var ctl = window._edgeopsSshChannelMonitorCtl;
+    if (!ctl || typeof ctl.syncFromServer !== 'function') return;
+    var selectId = null;
+    if (tool === 'ssh_channel_create' && ev.action === 'completed') {
+        selectId = edgeopsParseSshChannelIdFromToolResult(ev);
+    }
+    ctl.syncFromServer({
+        selectChannelId: selectId,
+        refreshOutput: ev.action === 'completed'
+    });
+}
+
 function edgeopsOnChatStreamToolEvent(replyWrap, toolsEl, ev, logBuffer, renderLogFn, onAfter, textEl) {
     if (ev.action === 'executing') {
         if (replyWrap && textEl) edgeopsCommitProcessProseSegment(replyWrap, textEl);
@@ -6654,6 +6687,7 @@ function edgeopsOnChatStreamToolEvent(replyWrap, toolsEl, ev, logBuffer, renderL
         logBuffer[logBuffer.length - 1].status = ev.action;
     }
     if (typeof renderLogFn === 'function') renderLogFn();
+    if (ev.action !== 'executing') edgeopsMaybeSyncSshChannelFromTool(ev);
     if (typeof onAfter === 'function') onAfter();
 }
 
@@ -7001,8 +7035,10 @@ function edgeopsBuildSshChannelTabPanel(tabPanelId, idPrefix) {
         + '<div id="' + idPrefix + 'Panels" class="ai-console-panels ssh-channel-panels" style="display:none;flex:1;min-height:0;flex-direction:column"></div>'
         + '<div class="ssh-channel-monitor-bar">'
         + '<span class="text-muted ssh-channel-monitor-hint">' + esc(t('hostAi.sshChannelReadOnlyHint')) + '</span>'
+        + '<span class="ssh-channel-monitor-actions">'
+        + '<button type="button" class="btn btn-sm" id="' + idPrefix + 'LiveWatch">' + esc(t('hostAi.sshChannelLiveWatch')) + '</button>'
         + '<button type="button" class="btn btn-sm" id="' + idPrefix + 'RefreshOutput">' + esc(t('hostAi.sshChannelRefreshOutput')) + '</button>'
-        + '</div></div>';
+        + '</span></div></div>';
 }
 
 function edgeopsInitSshChannelTab(cfg) {
@@ -7013,6 +7049,113 @@ function edgeopsInitSshChannelTab(cfg) {
     var emptyEl = document.getElementById(cfg.emptyId);
     var activeChannelId = null;
     var channelRecs = [];
+    var liveWatchEnabled = false;
+    var liveWs = null;
+    var liveWsChannelId = null;
+    var lastWsLine = 0;
+    var lastWsPartial = '';
+
+    function updateLiveWatchBtn() {
+        var btn = document.getElementById(cfg.liveWatchBtnId);
+        if (!btn) return;
+        var on = liveWatchEnabled && liveWsChannelId === activeChannelId && liveWs;
+        btn.textContent = on ? t('hostAi.sshChannelLiveWatchStop') : t('hostAi.sshChannelLiveWatch');
+        btn.classList.toggle('btn-primary', !!on);
+    }
+
+    function disconnectLiveWatch() {
+        liveWatchEnabled = false;
+        liveWsChannelId = null;
+        lastWsLine = 0;
+        lastWsPartial = '';
+        if (liveWs) {
+            try { liveWs.close(); } catch (_e) {}
+            liveWs = null;
+        }
+        updateLiveWatchBtn();
+    }
+
+    function appendWsLinesToTerm(rec, lines) {
+        if (!rec || !rec.term || !lines || !lines.length) return;
+        lastWsPartial = '';
+        lines.forEach(function(ln) {
+            var c = ln.content || '';
+            rec.term.write(c + (/[\n\r]$/.test(c) ? '' : '\n'));
+        });
+        scrollTermBottom(rec.term);
+    }
+
+    function appendWsPartialToTerm(rec, content) {
+        if (!rec || !rec.term || !content) return;
+        var p = content;
+        if (p === lastWsPartial) return;
+        if (lastWsPartial && p.indexOf(lastWsPartial) === 0) {
+            rec.term.write(p.slice(lastWsPartial.length));
+        } else if (!lastWsPartial) {
+            rec.term.write(p);
+        }
+        lastWsPartial = p;
+        scrollTermBottom(rec.term);
+    }
+
+    function connectLiveWatch(rec) {
+        if (!rec || !API.token) {
+            showToast(t('hostAi.sshChannelEmptyHint'), 'info');
+            return;
+        }
+        if (liveWatchEnabled && liveWsChannelId === rec.id && liveWs) {
+            disconnectLiveWatch();
+            return;
+        }
+        disconnectLiveWatch();
+        liveWatchEnabled = true;
+        liveWsChannelId = rec.id;
+        updateLiveWatchBtn();
+        var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        var url = protocol + '//' + location.host + '/api/ssh-channel/' + rec.id + '/ws?token=' + encodeURIComponent(API.token);
+        liveWs = new WebSocket(url);
+        liveWs.onmessage = function(ev) {
+            try {
+                var j = JSON.parse(ev.data);
+                var target = channelRecs.filter(function(c) { return c.id === liveWsChannelId; })[0];
+                if (j.type === 'ready') {
+                    lastWsLine = 0;
+                    lastWsPartial = '';
+                    API.readSshChannelLines(rec.id, { last_n: SSH_CHANNEL_SNAPSHOT_LINES, spill: false }).then(function(r) {
+                        writeSnapshotToRec(rec, {
+                            lines: r.lines || [],
+                            pending_partial: r.pending_partial || '',
+                            tail_text: r.tail_text
+                        });
+                    }).catch(function() {});
+                    return;
+                }
+                if (j.type === 'lines') {
+                    if (j.latest_line_no != null) lastWsLine = j.latest_line_no;
+                    appendWsLinesToTerm(target || rec, j.lines);
+                    return;
+                }
+                if (j.type === 'partial') {
+                    appendWsPartialToTerm(target || rec, j.content);
+                    return;
+                }
+                if (j.type === 'closed') {
+                    showToast(j.message || t('hostAi.sshChannelClosed'), 'info');
+                    disconnectLiveWatch();
+                    return;
+                }
+                if (j.type === 'error') {
+                    showToast(j.message || t('toast.connectFailed'), 'error');
+                    disconnectLiveWatch();
+                }
+            } catch (_e) {}
+        };
+        liveWs.onclose = function() { disconnectLiveWatch(); };
+        liveWs.onerror = function() {
+            showToast(t('toast.connectFailed'), 'error');
+            disconnectLiveWatch();
+        };
+    }
 
     function formatChannelTabLabel(ch) {
         var cid = parseInt(ch.id, 10);
@@ -7106,6 +7249,7 @@ function edgeopsInitSshChannelTab(cfg) {
     function removeChannelRec(channelId) {
         var rec = channelRecs.filter(function(c) { return c.id === channelId; })[0];
         if (!rec) return;
+        if (liveWsChannelId === channelId) disconnectLiveWatch();
         disposeChannelTerm(rec);
         if (rec.tabWrap && rec.tabWrap.parentNode) rec.tabWrap.remove();
         if (rec.panelEl && rec.panelEl.parentNode) rec.panelEl.remove();
@@ -7159,7 +7303,11 @@ function edgeopsInitSshChannelTab(cfg) {
         channelRecs.push(rec);
         tabBtn.onclick = function() {
             activateChannel(cid);
-            refreshOutputForRec(rec, false);
+            if (liveWatchEnabled) {
+                connectLiveWatch(rec);
+            } else {
+                refreshOutputForRec(rec, false);
+            }
         };
         if (channelRecs.length === 1) {
             activeChannelId = cid;
@@ -7168,7 +7316,7 @@ function edgeopsInitSshChannelTab(cfg) {
         return rec;
     }
 
-    function syncChannelList(channels) {
+    function syncChannelList(channels, preferChannelId) {
         var list = channels || [];
         if (hostFilter && !isNaN(hostFilter)) {
             list = list.filter(function(c) { return parseInt(c.host_id, 10) === hostFilter; });
@@ -7188,16 +7336,19 @@ function edgeopsInitSshChannelTab(cfg) {
             return;
         }
         showPanels(true);
-        if (!activeChannelId || !byId[activeChannelId]) {
+        var prefer = preferChannelId != null ? parseInt(preferChannelId, 10) : NaN;
+        if (!isNaN(prefer) && byId[prefer]) {
+            activateChannel(prefer);
+        } else if (!activeChannelId || !byId[activeChannelId]) {
             activateChannel(parseInt(list[0].id, 10));
         } else {
             activateChannel(activeChannelId);
         }
     }
 
-    function loadChannelList(showToastOnOk) {
+    function loadChannelList(showToastOnOk, preferChannelId) {
         return API.listSshChannels({ all_open: true }).then(function(r) {
-            syncChannelList(r.channels || []);
+            syncChannelList(r.channels || [], preferChannelId);
             if (showToastOnOk) showToast(t('toast.refreshed'));
         }).catch(function(err) {
             showToast((err && err.message) || t('toast.requestFailed'), 'error');
@@ -7207,10 +7358,14 @@ function edgeopsInitSshChannelTab(cfg) {
     function refreshOutputForRec(rec, showToastOnOk) {
         if (!rec) rec = getActiveRec();
         if (!rec) {
-            showToast(t('hostAi.sshChannelEmptyHint'), 'info');
-            return;
+            if (showToastOnOk) showToast(t('hostAi.sshChannelEmptyHint'), 'info');
+            return Promise.resolve();
         }
-        API.readSshChannelLines(rec.id, { last_n: SSH_CHANNEL_SNAPSHOT_LINES, spill: false }).then(function(r) {
+        if (liveWatchEnabled && liveWsChannelId === rec.id) {
+            if (showToastOnOk) showToast(t('hostAi.sshChannelLiveWatchActiveHint'), 'info');
+            return Promise.resolve();
+        }
+        return API.readSshChannelLines(rec.id, { last_n: SSH_CHANNEL_SNAPSHOT_LINES, spill: false }).then(function(r) {
             writeSnapshotToRec(rec, {
                 lines: r.lines || [],
                 pending_partial: r.pending_partial || '',
@@ -7223,18 +7378,41 @@ function edgeopsInitSshChannelTab(cfg) {
         });
     }
 
+    function syncFromServer(opts) {
+        opts = opts || {};
+        return loadChannelList(false, opts.selectChannelId).then(function() {
+            var rec = getActiveRec();
+            if (!rec || opts.refreshOutput === false) return;
+            if (liveWatchEnabled) {
+                connectLiveWatch(rec);
+                return;
+            }
+            return refreshOutputForRec(rec, false);
+        });
+    }
+
+    function onTabShown() {
+        return syncFromServer({ refreshOutput: true });
+    }
+
     var refreshListBtn = document.getElementById(cfg.refreshListBtnId);
     var refreshOutputBtn = document.getElementById(cfg.refreshOutputBtnId);
+    var liveWatchBtn = document.getElementById(cfg.liveWatchBtnId);
     if (refreshListBtn) refreshListBtn.onclick = function() { loadChannelList(true); };
     if (refreshOutputBtn) refreshOutputBtn.onclick = function() { refreshOutputForRec(null, true); };
+    if (liveWatchBtn) liveWatchBtn.onclick = function() { connectLiveWatch(getActiveRec()); };
+    updateLiveWatchBtn();
 
     return {
         refreshList: function() { return loadChannelList(false); },
-        refreshOutput: function() { refreshOutputForRec(null, false); },
+        refreshOutput: function() { return refreshOutputForRec(null, false); },
+        syncFromServer: syncFromServer,
+        onTabShown: onTabShown,
         refit: function() {
             var rec = getActiveRec();
             if (rec && rec.refit) rec.refit();
-        }
+        },
+        disconnectLiveWatch: disconnectLiveWatch
     };
 }
 
@@ -8354,7 +8532,10 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
                     var activeConsole = hostAiConsoles.filter(function(c) { return c.slot === hostAiActiveConsoleSlot; })[0] || hostAiConsoles[0];
                     if (activeConsole && activeConsole.refit) activeConsole.refit();
                 }
-                if (tabId === 'hostAiTabSshChannel' && hostAiSshChannelCtl && hostAiSshChannelCtl.refit) hostAiSshChannelCtl.refit();
+                if (tabId === 'hostAiTabSshChannel' && hostAiSshChannelCtl) {
+                    if (hostAiSshChannelCtl.refit) hostAiSshChannelCtl.refit();
+                    if (hostAiSshChannelCtl.onTabShown) hostAiSshChannelCtl.onTabShown();
+                }
             };
         });
     }
@@ -8364,8 +8545,10 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         emptyId: 'hostAiSshChEmpty',
         refreshListBtnId: 'hostAiSshChRefreshList',
         refreshOutputBtnId: 'hostAiSshChRefreshOutput',
+        liveWatchBtnId: 'hostAiSshChLiveWatch',
         hostIdFilter: hostId
     });
+    edgeopsSetSshChannelMonitorCtl(hostAiSshChannelCtl);
     renderHostAiLog();
     // 页面缓存恢复时需对终端做 refit，否则尺寸为 0 导致错乱；按 path 注册以便恢复时调用
     (window._edgeopsRefitByPath = window._edgeopsRefitByPath || {})['/hosts/' + hostId] = function() {
@@ -9599,7 +9782,10 @@ function renderAIPage() {
                     var con = aiConsoles.filter(function(c) { return c.slot === aiActiveConsoleSlot; })[0];
                     if (con && con.refit) con.refit();
                 }
-                if (tabId === 'aiTabSshChannel' && aiSshChannelCtl && aiSshChannelCtl.refit) aiSshChannelCtl.refit();
+                if (tabId === 'aiTabSshChannel' && aiSshChannelCtl) {
+                    if (aiSshChannelCtl.refit) aiSshChannelCtl.refit();
+                    if (aiSshChannelCtl.onTabShown) aiSshChannelCtl.onTabShown();
+                }
             };
         });
     })();
@@ -9608,8 +9794,10 @@ function renderAIPage() {
         panelsId: 'aiSshChPanels',
         emptyId: 'aiSshChEmpty',
         refreshListBtnId: 'aiSshChRefreshList',
-        refreshOutputBtnId: 'aiSshChRefreshOutput'
+        refreshOutputBtnId: 'aiSshChRefreshOutput',
+        liveWatchBtnId: 'aiSshChLiveWatch'
     });
+    edgeopsSetSshChannelMonitorCtl(aiSshChannelCtl);
     document.getElementById('aiLogCopyAll').onclick = copyAiLogFull;
     renderAiLog();
     var sessionId = null;
