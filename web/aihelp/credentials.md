@@ -288,7 +288,19 @@ AI 在执行 SSH、控制台连接、SCP 上传时，会使用主机关联的凭
 
 ---
 
-## 12. 推荐的使用习惯
+## 13. 服务凭证库（与 SSH 登录凭证不同）
+
+上文讲的是 **SSH 登录**凭证（用毛竹连上已管理主机）。运维中还常需要 **sudo 密码**、**MySQL 密码**、**SSH 到某 IP** 等——这些存入 **服务凭证库**，按 `service + address + port + service_username` 匹配，**不绑定**从哪台主机操作：
+
+- 管理员开启 **`credentials_vault_enabled`**
+- AI 调用 **`add_service_credential`** 保存；密码不可查询
+- 终端出现密码提示时 **`send_service_password`** 自动注入
+
+详见 **[service-credentials.md](service-credentials.md)**。
+
+---
+
+## 14. 推荐的使用习惯
 
 - 凭证命名要清晰
 - 高权限和低权限账号分开

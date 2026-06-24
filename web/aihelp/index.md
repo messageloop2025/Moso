@@ -30,7 +30,8 @@
 
 | 文档 | 说明 |
 |------|------|
-| [credentials.md](credentials.md) | 凭证管理步骤手册（密码型、密钥型、复用与变更） |
+| [credentials.md](credentials.md) | 凭证管理步骤手册（SSH 登录：密码型、密钥型、复用与变更） |
+| [service-credentials.md](service-credentials.md) | **服务凭证库**（sudo/SSH/MySQL；按 service/address/port/username；密码仅可注入） |
 | [hosts.md](hosts.md) | 主机管理步骤手册（新增、验证、编辑、删除、交给 AI） |
 | [host-groups.md](host-groups.md) | 服务器树与主机分组步骤手册 |
 | [terminal.md](terminal.md) | SSH 控制台与终端使用规则、自动切换、AI 边界 |
@@ -61,6 +62,7 @@
 | 你要做什么 | 建议先看 |
 |------|------|
 | 想快速知道这个系统怎么用 | [operations-manual.md](operations-manual.md) |
+| 想保存 sudo / 数据库 / 跳板 SSH 密码供 AI 自动输入 | [service-credentials.md](service-credentials.md)（需管理员开启 `credentials_vault_enabled`） |
 | 想新增主机并连接 SSH | [credentials.md](credentials.md)、[hosts.md](hosts.md) |
 | 想整理服务器树或做分组批量 | [host-groups.md](host-groups.md)、[batch.md](batch.md) |
 | 想配置或切换 AI 模型（多组 Profile） | [model-config.md](model-config.md)、[ai-assistant.md](ai-assistant.md) |

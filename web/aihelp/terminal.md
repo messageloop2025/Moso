@@ -15,7 +15,7 @@
 
 - **send_to_terminal**：向某个 **AI 创建** 的控制台槽位发送文本（命令、控制键等）。支持 `<Ctrl+C>`、`<Ctrl+Z>`、`<Ctrl+D>`、`<Ctrl+L>` 等占位符。
 - **get_terminal_buffer**：获取 **AI 创建** 控制台的最近输出（**末尾**即最新状态）。默认 `tail_only=true`：超长时仅返回最后 40 行；`tail_only=false` 为前 2+后 33 行；`full_output=true` 为全量。**仅供 AI 内部使用**。
-- **sudo 与密码**：不少环境为免密 sudo（NOPASSWD）。AI 应先 `send_to_terminal` 执行 sudo 命令，再 **必须** `get_terminal_buffer` 查看输出；**仅当**末尾出现 `[sudo] password for`、`Password:` 等提示时，才从主机知识取密码或请用户提供，并 **另一次** `send_to_terminal` 发送密码。**禁止**在 sudo 命令后立即跟发密码，**禁止**未看到提示就默认需要密码。
+- **sudo 与密码**：不少环境为免密 sudo（NOPASSWD）。AI 应先 `send_to_terminal` 执行 sudo 命令，再 **必须** `get_terminal_buffer` 查看输出；**仅当**末尾出现 `[sudo] password for`、`Password:` 等提示时才注入密码。**凭证库已启用**（`credentials_vault_enabled=true`）时调用 **`send_service_password`**（target=terminal）；未启用时可从主机知识取密码，但仍须 **另一次** 发送且 **禁止** 在 sudo 同次调用里带密码。**禁止**在 sudo 命令后立即跟发密码，**禁止**未看到提示就默认需要密码。详见 [service-credentials.md](service-credentials.md)。
 
 ### 关键规则
 

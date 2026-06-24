@@ -12996,6 +12996,16 @@ function renderSettings() {
                 + ' <span>' + esc(t('settings.admin.notifyFeedbackCheck')) + '</span></label>'
                 + ' <button type="button" class="btn btn-sm btn-primary" id="settingNotifyAdminOnUserFeedbackSave" style="margin-left:12px">' + esc(t('settings.admin.save')) + '</button>'
                 + '</div></div>';
+            var vaultOn = ((keyVal.credentials_vault_enabled || 'false') + '').toLowerCase() === 'true';
+            html += '<div class="card" style="margin-bottom:16px"><div class="card-header"><h3>' + esc(t('settings.admin.credentialsVaultTitle')) + '</h3></div>'
+                + '<div style="padding:0 16px 16px;font-size:13px">'
+                + '<p class="text-muted" style="margin:0 0 8px">' + t('settings.admin.credentialsVaultIntro') + '</p>'
+                + '<label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer">'
+                + '<input type="checkbox" id="settingCredentialsVaultEnabled"' + (vaultOn ? ' checked' : '') + '>'
+                + ' <span>' + esc(t('settings.admin.credentialsVaultCheck')) + '</span></label>'
+                + ' <button type="button" class="btn btn-sm btn-primary" id="settingCredentialsVaultEnabledSave" style="margin-left:12px">' + esc(t('settings.admin.save')) + '</button>'
+                + '<p class="text-muted" style="margin:10px 0 0;font-size:12px">' + t('settings.admin.credentialsVaultHint') + '</p>'
+                + '</div></div>';
             html += '<div class="card" style="margin-bottom:16px"><div class="card-header"><h3>' + esc(t('settings.admin.loginAnnouncementTitle')) + '</h3></div>'
                 + '<div style="padding:0 16px 16px;font-size:13px">'
                 + '<p class="text-muted" style="margin:0 0 8px">' + t('settings.admin.loginAnnouncementIntro') + '</p>'
@@ -13018,6 +13028,7 @@ function renderSettings() {
             var rest = settings.filter(function(s) {
                 if (emailKeys.indexOf(s.key) !== -1) return false;
                 if (s.key === 'notify_admin_on_user_feedback') return false;
+                if (s.key === 'credentials_vault_enabled') return false;
                 if (s.key === 'login_announcement_md') return false;
                 return true;
             });
@@ -13162,6 +13173,17 @@ function renderSettings() {
                         .then(function() { showToast(t('toast.saved')); })
                         .catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); })
                         .finally(function() { notifySave.disabled = false; });
+                };
+            }
+            var vaultSave = document.getElementById('settingCredentialsVaultEnabledSave');
+            if (vaultSave) {
+                vaultSave.onclick = function() {
+                    var on = !!(document.getElementById('settingCredentialsVaultEnabled') || {}).checked;
+                    vaultSave.disabled = true;
+                    API.updateSetting('credentials_vault_enabled', on ? 'true' : 'false')
+                        .then(function() { showToast(t('toast.saved')); })
+                        .catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); })
+                        .finally(function() { vaultSave.disabled = false; });
                 };
             }
             var annPreviewBtn = document.getElementById('settingLoginAnnouncementPreviewBtn');

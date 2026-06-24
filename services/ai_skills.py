@@ -65,6 +65,7 @@ from api.terminal import (
     find_preferred_ai_terminal_for_host,
     format_terminal_tab_label,
     normalize_terminal_scope_id,
+    resolve_ai_slot as resolve_ai_slot_for_user,
     terminals_snapshot_for_ai,
     wait_for_terminal_session_ready,
 )
@@ -759,6 +760,101 @@ TOOLS = [
                     "text": {"type": "string", "description": "要追加的文本（可多行）"},
                 },
                 "required": ["host_id", "text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_service_credentials",
+            "description": "列出当前用户的服务凭证**元数据**（id、service、address、port、service_username、label、has_password 等）。**绝不返回密码**。注入前应先调用本工具，结合终端提示与用户确认选用哪条 credential_id，再调用 send_service_password(credential_id=...)。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string", "description": "可选，按服务类型过滤，如 sudo、mysql、ssh"},
+                    "address": {"type": "string", "description": "可选，按目标地址过滤；sudo 通常留空"},
+                    "port": {"type": "integer", "description": "可选，按端口过滤"},
+                    "service_username": {"type": "string", "description": "可选，按服务账户名过滤"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_service_credential",
+            "description": "新增服务凭证（密码写入后**不可查询**）。描述访问某服务所需的账号密码，**不绑定**从哪台主机操作。典型：sudo、MySQL、SSH 到某 IP。同一 service+address 下不同用户用 service_username 区分。可设 linked_host_id / linked_credential_id 引用平台已有 SSH 登录凭证而无需重复存密码。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string", "description": "服务类型：sudo、ssh、mysql、postgres、redis、ftp、other 等"},
+                    "password": {"type": "string", "description": "密码（写入后不可查询；设 linked_* 时可省略）"},
+                    "address": {"type": "string", "description": "目标地址/IP；sudo 留空表示本机 sudo"},
+                    "port": {"type": "integer", "description": "端口；省略则用该 service 默认（ssh=22, mysql=3306 等）"},
+                    "service_username": {"type": "string", "description": "服务账户名（SSH 用户、DB 用户等）"},
+                    "label": {"type": "string", "description": "简短标签"},
+                    "notes": {"type": "string", "description": "备注"},
+                    "linked_host_id": {"type": "integer", "description": "可选；目标 SSH 主机在本平台管理时，复用其登录密码"},
+                    "linked_credential_id": {"type": "integer", "description": "可选；引用「凭证管理」中 credentials.id 的登录密码"},
+                },
+                "required": ["service"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_service_credential",
+            "description": "更新服务凭证元数据或密码（按 id）。**不可查询原密码**；若需改密码请传新 password。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "credential_id": {"type": "integer", "description": "凭证 id（来自 list_service_credentials）"},
+                    "service": {"type": "string"},
+                    "password": {"type": "string", "description": "新密码（可选）"},
+                    "address": {"type": "string"},
+                    "port": {"type": "integer"},
+                    "service_username": {"type": "string"},
+                    "label": {"type": "string"},
+                    "notes": {"type": "string"},
+                    "linked_host_id": {"type": "integer"},
+                    "linked_credential_id": {"type": "integer"},
+                },
+                "required": ["credential_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_service_credential",
+            "description": "删除一条服务凭证（按 id）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "credential_id": {"type": "integer", "description": "凭证 id"},
+                },
+                "required": ["credential_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_service_password",
+            "description": "在 terminal / ssh_channel / local_terminal **已出现密码提示**时，由服务端按 credential_id 从凭证库取密码并写入 PTY stdin。**工具结果不含密码，模型不得索要或回显密码**。**推荐**：先 list_service_credentials → 与用户确认 credential_id → 本工具传入 credential_id + target（及 host_id/slot 或 channel_id）。勿用 send_to_terminal 发明文密码。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "credential_id": {"type": "integer", "description": "要使用的凭证 id（来自 list_service_credentials；推荐必填，由 AI/用户选定）"},
+                    "target": {"type": "string", "enum": ["terminal", "ssh_channel", "local_terminal"], "description": "注入目标：Web 控制台 / SSH 通道 / 本机控制台"},
+                    "host_id": {"type": "integer", "description": "target=terminal 时必填：Web 控制台所在主机 ID（仅定位注入目标，不参与查凭证）"},
+                    "channel_id": {"type": "integer", "description": "target=ssh_channel 时必填：ssh_channel_create 返回的通道 id"},
+                    "slot": {"type": "integer", "description": "控制台槽位（terminal/local_terminal 可选）"},
+                    "require_password_prompt": {"type": "boolean", "description": "默认 true：须先读 buffer/通道确认有密码提示再注入"},
+                },
+                "required": ["target", "credential_id"],
             },
         },
     },
@@ -5992,69 +6088,20 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             return out
 
         def resolve_ai_slot(requested_slot, host_id_hint=None) -> tuple[int | None, str | None]:
-            items = ssh_ai_terminals()
-            ai_slots = {int(it["slot"]): it for it in items if it.get("slot") is not None}
-            if host_id_hint is not None:
-                try:
-                    match = find_preferred_ai_terminal_for_host(
-                        user["id"], int(host_id_hint), terminal_scope_id, prefer_idle=True
-                    )
-                    if match and match.get("slot") is not None:
-                        slot_id = int(match["slot"])
-                        if requested_slot is None or requested_slot == slot_id:
-                            return slot_id, None
-                except (TypeError, ValueError):
-                    pass
-            if not items:
-                snap = terminals_snapshot_for_ai(user["id"], terminal_scope_id, default_terminal_slot)
-                hint = ""
-                if snap["user_terminals"]:
-                    hint = "（界面有用户控制台但 AI 不可操作，请 connect_terminal 创建 AI 控制台）"
-                return None, f"当前 scope 内没有 AI 创建的 SSH 控制台，请先 list_terminals 或 connect_terminal(host_id){hint}"
-            if requested_slot is not None:
-                try:
-                    requested_slot = int(requested_slot)
-                except (TypeError, ValueError):
-                    return None, "slot 须为整数"
-                if requested_slot not in ai_slots:
-                    labels = ", ".join(
-                        f"slot={s}({format_terminal_tab_label(ai_slots[s])})" for s in sorted(ai_slots.keys())
-                    )
-                    return None, f"slot {requested_slot} 不是 AI 控制台或不存在。可用：{labels}"
-                return requested_slot, None
-            if default_terminal_slot is not None and default_terminal_slot in ai_slots:
-                return default_terminal_slot, None
-            connected = sorted(
-                s for s, it in ai_slots.items() if it.get("connected")
+            return resolve_ai_slot_for_user(
+                user["id"],
+                terminal_scope_id,
+                requested_slot,
+                host_id_hint,
+                default_terminal_slot,
             )
-            if connected:
-                return connected[0], None
-            return min(ai_slots.keys()), None
 
         def resolve_local_slot(requested_slot) -> tuple[int | None, str | None]:
             from api import local_host
 
-            items = local_host.get_local_terminals_for_user(user["id"], terminal_scope_id)
-            slots = {int(it["slot"]): it for it in items if it.get("slot") is not None}
-            if not slots:
-                return None, (
-                    "当前页面 scope 内没有本机控制台，请先 create_local_console 或在本机管理页打开控制台"
-                )
-            if requested_slot is not None:
-                try:
-                    requested_slot = int(requested_slot)
-                except (TypeError, ValueError):
-                    return None, "slot 须为整数"
-                if requested_slot not in slots:
-                    labels = ", ".join(f"slot={s}" for s in sorted(slots.keys()))
-                    return None, f"slot {requested_slot} 不存在于当前页面。可用：{labels}"
-                return requested_slot, None
-            if default_terminal_slot is not None and default_terminal_slot in slots:
-                return default_terminal_slot, None
-            ai_items = [s for s, it in slots.items() if (it.get("created_by") or "") == "ai"]
-            if ai_items:
-                return min(ai_items), None
-            return min(slots.keys()), None
+            return local_host.resolve_local_slot(
+                user["id"], terminal_scope_id, requested_slot, default_terminal_slot
+            )
 
         if name in LOCAL_ONLY_TOOLS:
             scope_val = (scope or "default").strip().lower() or "default"
@@ -6062,6 +6109,23 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 return json.dumps({"success": False, "error": "该功能仅在本机管理会话中可用，当前为 AI 助手或主机详情会话"}, ensure_ascii=False)
             if not _is_admin(user):
                 return json.dumps({"success": False, "error": "本机管理仅管理员可用"}, ensure_ascii=False)
+        if name in (
+            "list_service_credentials",
+            "add_service_credential",
+            "update_service_credential",
+            "delete_service_credential",
+            "send_service_password",
+        ):
+            from services.credential_vault import credentials_vault_enabled
+
+            if not await credentials_vault_enabled():
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": "凭证库功能未启用。请管理员在系统设置中将 credentials_vault_enabled 设为 true。",
+                    },
+                    ensure_ascii=False,
+                )
         if name == "list_hosts":
             db = await get_db()
             group_id = arguments.get("group_id")
@@ -7844,6 +7908,127 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             )
             await db.commit()
             return json.dumps({"success": True, "message": "已追加到该主机的 AI 知识"}, ensure_ascii=False)
+
+        if name == "list_service_credentials":
+            from services.credential_vault import list_credentials_for_user
+
+            items = await list_credentials_for_user(
+                user["id"],
+                service=arguments.get("service"),
+                address=arguments.get("address"),
+                port=int(arguments["port"]) if arguments.get("port") is not None else None,
+                service_username=arguments.get("service_username"),
+            )
+            return json.dumps({"success": True, "credentials": items, "count": len(items)}, ensure_ascii=False)
+
+        if name == "add_service_credential":
+            from services.credential_vault import add_credential
+
+            service = arguments.get("service")
+            password = arguments.get("password")
+            if not service:
+                return json.dumps({"success": False, "error": "需要 service"}, ensure_ascii=False)
+            if not password and not arguments.get("linked_host_id") and not arguments.get("linked_credential_id"):
+                return json.dumps(
+                    {"success": False, "error": "需要 password，或设置 linked_host_id / linked_credential_id"},
+                    ensure_ascii=False,
+                )
+            try:
+                item = await add_credential(
+                    user,
+                    service=str(service),
+                    password=str(password) if password is not None else None,
+                    address=str(arguments.get("address") or ""),
+                    port=int(arguments["port"]) if arguments.get("port") is not None else None,
+                    service_username=str(arguments.get("service_username") or ""),
+                    label=str(arguments.get("label") or ""),
+                    notes=str(arguments.get("notes") or ""),
+                    linked_host_id=int(arguments["linked_host_id"]) if arguments.get("linked_host_id") else None,
+                    linked_credential_id=int(arguments["linked_credential_id"]) if arguments.get("linked_credential_id") else None,
+                )
+            except ValueError as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+            return json.dumps(
+                {"success": True, "message": "凭证已保存（密码不可查询）", "credential": item},
+                ensure_ascii=False,
+            )
+
+        if name == "update_service_credential":
+            from services.credential_vault import update_credential
+
+            cid = arguments.get("credential_id")
+            if cid is None:
+                return json.dumps({"success": False, "error": "缺少 credential_id"}, ensure_ascii=False)
+            try:
+                item = await update_credential(
+                    user,
+                    int(cid),
+                    service=arguments.get("service"),
+                    password=arguments.get("password"),
+                    address=arguments.get("address"),
+                    port=int(arguments["port"]) if arguments.get("port") is not None else None,
+                    service_username=arguments.get("service_username"),
+                    label=arguments.get("label"),
+                    notes=arguments.get("notes"),
+                    linked_host_id=int(arguments["linked_host_id"]) if arguments.get("linked_host_id") is not None else None,
+                    linked_credential_id=int(arguments["linked_credential_id"]) if arguments.get("linked_credential_id") is not None else None,
+                )
+            except ValueError as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+            return json.dumps({"success": True, "message": "凭证已更新", "credential": item}, ensure_ascii=False)
+
+        if name == "delete_service_credential":
+            from services.credential_vault import delete_credential
+
+            cid = arguments.get("credential_id")
+            if cid is None:
+                return json.dumps({"success": False, "error": "缺少 credential_id"}, ensure_ascii=False)
+            try:
+                await delete_credential(user, int(cid))
+            except ValueError as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+            return json.dumps({"success": True, "message": "凭证已删除"}, ensure_ascii=False)
+
+        if name == "send_service_password":
+            from services.credential_vault import perform_service_password_injection
+
+            host_id = arguments.get("host_id")
+            target = (arguments.get("target") or "terminal").strip().lower()
+            if target == "terminal" and host_id is None:
+                return json.dumps({"success": False, "error": "target=terminal 时需要 host_id（控制台所在主机）"}, ensure_ascii=False)
+            require_prompt = arguments.get("require_password_prompt")
+            if require_prompt is None:
+                require_prompt = True
+            else:
+                require_prompt = bool(require_prompt)
+
+            if host_id is not None:
+                row_h = await _get_host_row(host_id)
+                if not row_h:
+                    return json.dumps({"success": False, "error": f"主机 ID={host_id} 不存在"}, ensure_ascii=False)
+                if not await _can_access_host_with_shares(row_h, user):
+                    return json.dumps({"success": False, "error": "无权操作该主机"}, ensure_ascii=False)
+
+            if arguments.get("credential_id") is None:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": "缺少 credential_id。请先 list_service_credentials 查看元数据，与用户确认后传入 credential_id 再注入。",
+                    },
+                    ensure_ascii=False,
+                )
+
+            result = await perform_service_password_injection(
+                user,
+                credential_id=int(arguments["credential_id"]),
+                target=target,
+                host_id=int(host_id) if host_id is not None else None,
+                slot=arguments.get("slot"),
+                channel_id=arguments.get("channel_id"),
+                terminal_scope_id=terminal_scope_id,
+                require_password_prompt=require_prompt,
+            )
+            return json.dumps(result, ensure_ascii=False)
 
         if name == "get_host_prompt":
             host_id = arguments.get("host_id")

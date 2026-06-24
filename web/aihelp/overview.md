@@ -67,7 +67,7 @@
 
 可以把 毛竹 理解成 8 个主要模块：
 
-1. **凭证管理**：维护 SSH 登录认证信息
+1. **凭证管理**：维护 SSH 登录认证信息；**服务凭证库**（可选，管理员开启）按 service/address/port/username 保存 sudo/SSH/MySQL 等密码，供 AI 自动注入 — 见 [service-credentials.md](service-credentials.md)
 2. **主机管理**：维护主机列表、连接、检测类型
 3. **服务器树 / 分组**：组织主机范围
 4. **SSH 控制台**：做持续交互式操作
@@ -86,6 +86,7 @@
 2. 看 [hosts.md](hosts.md)
 3. 如需控制台操作，再看 [terminal.md](terminal.md)
 4. 如需让 AI 接手，再看 [ai-assistant.md](ai-assistant.md)
+5. 若需保存 sudo 等密码供 AI 自动输入（非 SSH 登录凭证），见 [service-credentials.md](service-credentials.md)
 
 ### 路径二：准备脚本并下发到主机
 

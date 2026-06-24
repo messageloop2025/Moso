@@ -1774,6 +1774,34 @@ def get_local_terminals_for_user(user_id: int, scope_id: str | None = None) -> l
     return out
 
 
+def resolve_local_slot(
+    user_id: int,
+    scope_id: str | None = None,
+    requested_slot: int | None = None,
+    default_terminal_slot: int | None = None,
+) -> tuple[int | None, str | None]:
+    """解析本机管理控制台 slot（与 execute_tool 内逻辑一致）。"""
+    items = get_local_terminals_for_user(user_id, scope_id)
+    slots = {int(it["slot"]): it for it in items if it.get("slot") is not None}
+    if not slots:
+        return None, "当前页面 scope 内没有本机控制台，请先 create_local_console 或在本机管理页打开控制台"
+    if requested_slot is not None:
+        try:
+            requested_slot = int(requested_slot)
+        except (TypeError, ValueError):
+            return None, "slot 须为整数"
+        if requested_slot not in slots:
+            labels = ", ".join(f"slot={s}" for s in sorted(slots.keys()))
+            return None, f"slot {requested_slot} 不存在于当前页面。可用：{labels}"
+        return requested_slot, None
+    if default_terminal_slot is not None and default_terminal_slot in slots:
+        return default_terminal_slot, None
+    ai_items = [s for s, it in slots.items() if (it.get("created_by") or "") == "ai"]
+    if ai_items:
+        return min(ai_items), None
+    return min(slots.keys()), None
+
+
 def get_local_terminal_buffer(
     user_id: int, slot: int, scope_id: str | None = None
 ) -> tuple[str, bool]:

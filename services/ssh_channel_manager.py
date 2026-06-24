@@ -303,10 +303,19 @@ class SSHChannelManager:
             return "SSH 连接失败"
         return None
 
+    def _norm_channel_id(self, channel_id) -> int | None:
+        try:
+            return int(channel_id)
+        except (TypeError, ValueError):
+            return None
+
     def send(self, channel_id: int, content: str) -> Optional[str]:
         """向通道发送内容（含控制字符）。成功返回 None，失败返回错误信息。"""
+        cid = self._norm_channel_id(channel_id)
+        if cid is None:
+            return "无效的 channel_id"
         with self._channels_lock:
-            state = self._channels.get(channel_id)
+            state = self._channels.get(cid)
         if not state or state._closed:
             return "通道不存在或已关闭"
         try:
@@ -328,43 +337,61 @@ class SSHChannelManager:
         last_n: Optional[int] = None,
         since_line: Optional[int] = None,
     ) -> Optional[tuple[list[dict], int, int]]:
+        cid = self._norm_channel_id(channel_id)
+        if cid is None:
+            return None
         with self._channels_lock:
-            state = self._channels.get(channel_id)
+            state = self._channels.get(cid)
         if not state or state._closed:
             return None
         return state.get_lines(from_line=from_line, to_line=to_line, last_n=last_n, since_line=since_line)
 
     def get_content_length(self, channel_id: int, max_chars: int) -> Optional[tuple[str, int, int]]:
+        cid = self._norm_channel_id(channel_id)
+        if cid is None:
+            return None
         with self._channels_lock:
-            state = self._channels.get(channel_id)
+            state = self._channels.get(cid)
         if not state or state._closed:
             return None
         return state.get_content_length(max_chars)
 
     def has_new(self, channel_id: int, after_line: int = 0) -> Optional[tuple[bool, int]]:
+        cid = self._norm_channel_id(channel_id)
+        if cid is None:
+            return None
         with self._channels_lock:
-            state = self._channels.get(channel_id)
+            state = self._channels.get(cid)
         if not state or state._closed:
             return None
         return state.has_new(after_line)
 
     def get_line_range(self, channel_id: int) -> Optional[tuple[int, int]]:
+        cid = self._norm_channel_id(channel_id)
+        if cid is None:
+            return None
         with self._channels_lock:
-            state = self._channels.get(channel_id)
+            state = self._channels.get(cid)
         if not state or state._closed:
             return None
         return state.oldest_line_no, state.latest_line_no
 
     def close_channel(self, channel_id: int) -> None:
+        cid = self._norm_channel_id(channel_id)
+        if cid is None:
+            return
         with self._channels_lock:
-            state = self._channels.get(channel_id)
+            state = self._channels.get(cid)
         if state:
             state.close()
             with self._channels_lock:
-                self._channels.pop(channel_id, None)
-        self._mark_pending_db_close(channel_id)
+                self._channels.pop(cid, None)
+        self._mark_pending_db_close(cid)
 
     def has_channel(self, channel_id: int) -> bool:
+        cid = self._norm_channel_id(channel_id)
+        if cid is None:
+            return False
         with self._channels_lock:
-            state = self._channels.get(channel_id)
+            state = self._channels.get(cid)
         return state is not None and not state._closed

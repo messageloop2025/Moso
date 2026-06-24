@@ -1324,6 +1324,61 @@ async def _migrate_user_skills(db: aiosqlite.Connection) -> None:
     await db.commit()
 
 
+async def _migrate_host_service_credentials(db: aiosqlite.Connection) -> None:
+    """幂等版「032」：服务凭证表 + settings.credentials_vault_enabled。"""
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS host_service_credentials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            host_id INTEGER,
+            service TEXT NOT NULL DEFAULT '',
+            address TEXT NOT NULL DEFAULT '',
+            port INTEGER,
+            service_username TEXT NOT NULL DEFAULT '',
+            label TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT '',
+            password_enc TEXT NOT NULL DEFAULT '',
+            linked_credential_id INTEGER,
+            linked_host_id INTEGER,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (host_id) REFERENCES hosts(id) ON DELETE SET NULL,
+            FOREIGN KEY (linked_credential_id) REFERENCES credentials(id) ON DELETE SET NULL,
+            FOREIGN KEY (linked_host_id) REFERENCES hosts(id) ON DELETE SET NULL
+        )
+        """
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_hsc_user ON host_service_credentials(user_id)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_hsc_user_lookup "
+        "ON host_service_credentials(user_id, service, address, port, service_username)"
+    )
+    await db.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('credentials_vault_enabled', 'false')"
+    )
+    await db.commit()
+
+
+async def _migrate_service_credentials_port(db: aiosqlite.Connection) -> None:
+    """幂等版「033」：port 列 + host_id 可空（旧表重建）。"""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent / "migrations" / "033_service_credentials_port.py"
+    if not path.is_file():
+        return
+    spec = importlib.util.spec_from_file_location("migration_033_sn", path)
+    if not spec or not spec.loader:
+        return
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    await mod.upgrade(db)
+
+
 async def _migrate_user_search_config(db: aiosqlite.Connection) -> None:
     """幂等版「014」：用户搜索服务配置表（每用户每 provider 一行）。"""
     await db.execute(
@@ -1469,6 +1524,8 @@ async def _ensure_full_schema_safety_net(db: aiosqlite.Connection) -> None:
         ("user_mcp_servers", _migrate_user_mcp_servers),
         ("user_mcp_servers chat_scope_*", _migrate_user_mcp_chat_scopes),
         ("user_skills", _migrate_user_skills),
+        ("host_service_credentials", _migrate_host_service_credentials),
+        ("host_service_credentials port + nullable host_id", _migrate_service_credentials_port),
         # SCHEMA_SQL 里也声明了、但保留作双保险
         ("ai_host_knowledge", _migrate_ai_host_knowledge),
         ("ai_host_prompts", _migrate_ai_host_prompts),
@@ -1549,6 +1606,7 @@ _REQUIRED_TABLES: tuple[str, ...] = (
     "mcp_agent_task_controls",
     "user_mcp_servers",
     "user_skills",
+    "host_service_credentials",
 )
 
 
@@ -1671,6 +1729,7 @@ def default_application_settings_items() -> list[tuple[str, str]]:
             "login_widget_message_board_enabled": "true",
             "login_widget_public_messages_enabled": "true",
             "ai_output_locale": "",
+            "credentials_vault_enabled": "false",
         }.items()
     )
 

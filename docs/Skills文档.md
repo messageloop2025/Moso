@@ -23,7 +23,7 @@
 | run_workflow_template | 跑一条已保存的模板：取 payload → 用 `variable_overrides` 做 `${var}` 替换 → 内联执行 `delegate_chain`（复用全部安全门禁与流式进度）。`dry_run=true` 只返回 `{resolved_payload, declared_variables, missing_variables, steps_preview}` 供用户预览。真跑前 `confirmed=true`；成功后 `run_count+1, last_run_at=now`。返回沿用 delegate_chain 形态并附带 `_template_id/_template_name` | template_id, variable_overrides?, host_id_override?, dry_run?, confirmed?, stop_on_failure? |
 | delegate_to_edgeops_ai | **内部 AI 递归**：起一个 毛竹 子 AI 对话（独立 system_prompt + `allowed_tools` 白名单 + 短生命周期），跑完返回最终 Markdown。不走 SSH，只消耗主 AI 的 LLM 账号。硬限制递归深度=2，子 AI 不允许再调此技能。典型用途：写报告 / 代码 reviewer / 结果聚合。返回 `{final_text, steps_used, duration_sec, depth, tool_calls_summary, truncated}` | task, system_prompt, allowed_tools?, max_steps?, max_depth?, timeout_sec?, context_hint? |
 | ssh_execute | 在指定主机上执行 SSH 命令；长任务可用 detach 后台写日志，再用 poll_log 读尾部 | host_id, command?, timeout?, detach?, poll_log?, log_path?, tail_lines? |
-| send_to_terminal | 向当前用户 SSH 终端注入输入（命令/密码等）；可指定 slot。成功时前端可能收到 ui_action（switch_console）并自动切换到该控制台 | text, slot? |
+| send_to_terminal | 向当前用户 SSH 终端注入输入（命令、控制键等）；**勿用于发送密码明文**——凭证库开启时用 send_service_password | text, slot? |
 | connect_terminal | 请求前端自动连接指定主机终端 | host_id |
 | list_terminals | 查询当前 AI 助手页所有控制台列表（slot、host_id、created_by、connected） | — |
 | create_console | 在 AI 助手页动态创建新控制台并连接指定主机（多机协同） | host_id |
@@ -48,6 +48,24 @@
 | get_host_knowledge | 获取指定主机的 AI 知识（账户、密码、路径等） | host_id |
 | update_host_knowledge | 设置或覆盖指定主机的 AI 知识 | host_id, content |
 | append_host_knowledge | 向指定主机 AI 知识末尾追加内容 | host_id, text |
+
+---
+
+## 2.0 服务凭证库（需 `credentials_vault_enabled`）
+
+按 **用户** 保存 sudo/SSH/MySQL 等密码；匹配 `service + address + port + service_username`；**不绑定操作主机**。`send_service_password` 的 `host_id` 仅用于 Web 控制台注入目标。
+
+> 存储 **sudo / 数据库 / 跳板 SSH** 等密码；与 SSH **登录**凭证（`credentials` 表）分离。密码 **不可查询**，仅 **`send_service_password`** 在 terminal / ssh_channel / local_terminal **已出现密码提示** 时注入 stdin。功能关闭时上述工具不会出现在 AI 工具列表中。
+
+| 名称 | 说明 | 主要参数 |
+|------|------|----------|
+| list_service_credentials | 列出当前用户服务凭证元数据（无 password） | service?, address?, port?, service_username? |
+| add_service_credential | 新增服务凭证 | service, password?, address?, port?, service_username?, label?, linked_host_id?, linked_credential_id? |
+| update_service_credential | 更新元数据或密码 | credential_id, … |
+| delete_service_credential | 删除 | credential_id |
+| send_service_password | 按 service/address/port/username 匹配并注入 | target, service?, address?, port?, service_username?, credential_id?, host_id?（terminal 注入目标）, slot?, channel_id? |
+
+**sudo 流程**：`send_to_terminal` 发 sudo → `get_terminal_buffer` 确认提示 → `send_service_password`。`ssh_execute` 非交互，不能注入。
 
 ---
 

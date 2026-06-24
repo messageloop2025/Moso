@@ -4765,8 +4765,8 @@ def _build_system_prompt() -> str:
 - 能力/规则/工具链/配置等**可展示的描述性信息**应使用 update_host_prompt / append_host_prompt 写入主机级提示词，而非主机知识库。
 - sudo 与密码（终端交互，**必须先观察输出再决定是否输入**）：
   - 不少账号已配置免密 sudo（NOPASSWD），**默认假定无需密码**。不要在一开始就向用户索要 sudo 密码，也不要凭「主机知识里有 sudo 密码」就预防性输入。
-  - **禁止**在 `send_to_terminal` 中把 sudo 命令与密码写在同一次调用里，也**禁止**连续两次调用「先发 sudo、紧接着立刻发密码」。正确流程：① `send_to_terminal` **仅**发送 sudo 命令（一条）；② **必须**调用 `get_terminal_buffer` 查看缓冲区末尾；③ **仅当**输出中明确出现 sudo 密码提示（如 `[sudo] password for`、`Password:`、`口令：` 等）时，才从主机知识取密码或向用户询问，再 **另一次** `send_to_terminal` **仅**发送密码；④ 若未出现上述提示（命令已继续、出现 root 提示符 `#`、正常后续输出等），说明免密 sudo 或已认证成功，**不要**再发送任何密码，也**不要**向用户索要。
-  - **Web 控制台**与 **ssh_channel** 交互流程相同：先 send / read 末尾；**仅当**出现 sudo 密码提示时才另一次 send 密码。ssh_channel 用 `ssh_channel_send` + `ssh_channel_read_lines`（看末尾行）。
+  - **禁止**在 `send_to_terminal` 中把 sudo 命令与密码写在同一次调用里，也**禁止**连续两次调用「先发 sudo、紧接着立刻发密码」。正确流程：① `send_to_terminal` **仅**发送 sudo 命令（一条）；② **必须**调用 `get_terminal_buffer` 查看缓冲区末尾；③ **仅当**输出中明确出现 sudo 密码提示（如 `[sudo] password for`、`Password:`、`口令：` 等）时，才注入密码——**凭证库已启用时**调用 `send_service_password`（勿用 send_to_terminal 发明文）；未启用时从主机知识取密码或请用户保存后再注入；④ 若未出现上述提示（命令已继续、出现 root 提示符 `#`、正常后续输出等），说明免密 sudo 或已认证成功，**不要**再发送任何密码，也**不要**向用户索要。
+  - **Web 控制台**与 **ssh_channel** 交互流程相同：先 send / read 末尾；**仅当**出现 sudo 密码提示时：**先** `list_service_credentials` 选定 `credential_id`（可与用户 `ask_user_choice`），**再** `send_service_password(credential_id=…, target=terminal|ssh_channel, host_id|channel_id=…)`。密码由服务端注入，**禁止**用 send_to_terminal 发明文，**禁止**让模型读取或回显密码。
   - 若 sudo 后输出看似无变化，可 `get_terminal_buffer(next_poll_in_seconds=2～5)` 或 `ssh_channel_has_new` 再读；仍无密码提示则视为无需输入，勿猜测性发密码。
   - `ssh_execute` 等非交互执行同理：先看返回是否含密码提示或认证失败，再决定是否换用 **ssh_channel_*** / Web 控制台或请用户提供密码；不要默认在 command 后拼接密码。
 
@@ -5414,7 +5414,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
 {rows[0]["content"].strip()}
 """
         else:
-            host_knowledge_ctx = "\n## 当前控制台所在主机的 AI 知识\n（暂无；仅当 get_terminal_buffer 确认控制台出现 sudo 密码提示后，才从知识取密码或请用户提供并 update_host_knowledge 记录；不少账号为免密 sudo，禁止 sudo 后未看输出就发密码）\n"
+            host_knowledge_ctx = "\n## 当前控制台所在主机的 AI 知识\n（暂无；出现 sudo 等密码提示时：若凭证库已启用用 send_service_password + add_service_credential；否则 update_host_knowledge 记录后注入；不少账号为免密 sudo，禁止未看 buffer 就发密码）\n"
 
     # 主机级提示词（按用户独立保存；主机分享时不共用）：会话绑机 > 请求 context_host_id（全局页远程文件树/显式关注）> 当前控制台
     host_prompt_ctx = ""
@@ -5608,6 +5608,15 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
             full_system += _skills_sec
     except Exception as _usk_exc:
         logger.debug("注入 user skills 失败 sid=%s: %s", session_id, _usk_exc)
+
+    try:
+        from services.credential_vault import build_credential_vault_system_section
+
+        _vault_sec = await build_credential_vault_system_section()
+        if _vault_sec:
+            full_system += _vault_sec
+    except Exception as _vault_exc:
+        logger.debug("注入 credential vault 失败 sid=%s: %s", session_id, _vault_exc)
 
     _focus_hid = session_row.get("host_id") if session_row else None
     try:
@@ -7403,6 +7412,15 @@ async def run_ops_integration_chat_complete(
             full_system += _skills_sec
     except Exception as _usk_exc:
         logger.debug("集成注入 user skills 失败 sid=%s: %s", sid, _usk_exc)
+
+    try:
+        from services.credential_vault import build_credential_vault_system_section
+
+        _vault_sec = await build_credential_vault_system_section()
+        if _vault_sec:
+            full_system += _vault_sec
+    except Exception as _vault_exc:
+        logger.debug("集成注入 credential vault 失败 sid=%s: %s", sid, _vault_exc)
 
     try:
         _integ_rt = await get_runtime_context_for_session(

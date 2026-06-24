@@ -298,6 +298,9 @@ async def resolve_chat_tools(
     user: dict,
     session_host_id: int | None = None,
 ) -> list:
+    from services.credential_vault import filter_credential_vault_tools
+
+    base_tools = await filter_credential_vault_tools(base_tools)
     scope_val = (session_scope or "default").strip().lower() or "default"
     if scope_val == "task":
         return base_tools

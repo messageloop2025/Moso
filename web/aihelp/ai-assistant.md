@@ -40,7 +40,8 @@
 - 在指定主机上执行 SSH 命令（ssh_execute）、向已打开的控制台发送输入（send_to_terminal）。
 - 上传/下载文件：**scp_push** / **scp_pull**（SFTP 流式传输，支持大文件与目录 `recursive=true`，调用卡显示传输进度）。
 - 创建/管理批量任务（batch_create、list、detail、cancel、retry）。
-- 管理主机知识（get/update/append_host_knowledge）：记录该主机上的账户、密码、路径等机密信息，供 AI 在操作该主机时使用（如 sudo 密码），**不会在回复中原文展示**。
+- 管理主机知识（get/update/append_host_knowledge）：记录路径、端口约定等非密码说明；**sudo/数据库等密码在凭证库开启时应存 `add_service_credential`，勿写明文进知识库**（见 [service-credentials.md](service-credentials.md)）。
+- **服务凭证库**（需管理员开启 `credentials_vault_enabled`）：`list/add/update/delete_service_credential` 按 service+address+port+username 管理密码（**不可查询**）；终端出现密码提示时用 **`send_service_password`** 注入。详见 [service-credentials.md](service-credentials.md)。
 - **主机级 AI 提示词**（get/update/append_host_prompt）：按「用户 × 主机」独立保存，描述该主机**独有的规则 / 能力 / 工具链 / 配置**（如已装 gh cli、cursor cli、opencode；数据目录约定；禁忌操作等）。主机维度会话中会自动注入 system 提示；主机分享给其它用户时不共用。
 - **跨主机搜索能力**（search_hosts_by_prompt）：在 AI 助手或主机聊天中可问「帮我找一下装了 gh cli 的主机」「哪些机器配了 cursor cli」等，AI 会按关键字/正则搜索当前用户维护的主机级提示词，支持按分组（group_id）或标签（tag_ids）限定范围。
 - **主机能力画像**（probe_host_capabilities / get_host_capabilities）：对一台主机说「画像一下」「看看这台机有啥」，AI 会一次 SSH 自检 OS、硬件、以及近百种常用 CLI（云 CLI 如 aliyun/aws/gcloud/kubectl/terraform；AI CLI 如 cursor-agent/opencode/aider/claude/codex；安全/渗透类如 nmap/nikto/sqlmap/hydra/hashcat/msfconsole/tshark；语言运行时/DevOps/数据库客户端），将结构化画像以 Markdown 写入主机级提示词的哨兵块内（`<!-- EDGEOPS:HOST_PROFILE v1 -->`），**用户在哨兵之外手写的规则不会被覆盖**；默认 24 小时内复用缓存。画像完成后，后续 AI 规划"用 cursor-agent 改代码、用 aliyun 管云资源、在 Kali 上做渗透"等都会基于真实能力来决策，避免误调用不存在的工具。也可对 AI 说「哪些机器装了 nmap」「哪些机器有 cursor-agent」，结合上一条的 `search_hosts_by_prompt` 就能直接检索到这些能力标签。

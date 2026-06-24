@@ -450,6 +450,57 @@ def format_terminals_mapping_for_prompt(
     return "\n".join(lines)
 
 
+def resolve_ai_slot(
+    user_id: int,
+    scope_id: str | None = None,
+    requested_slot: int | None = None,
+    host_id_hint: int | None = None,
+    default_terminal_slot: int | None = None,
+) -> tuple[int | None, str | None]:
+    """解析 AI 可操作的 Web 控制台 slot（与 execute_tool 内逻辑一致）。"""
+    scope_id = normalize_terminal_scope_id(scope_id)
+    items = [
+        _enrich_terminal_item(it)
+        for it in get_terminals_for_user(user_id, scope_id)
+        if (it.get("created_by") or "") == "ai"
+    ]
+    ai_slots = {int(it["slot"]): it for it in items if it.get("slot") is not None}
+    if host_id_hint is not None:
+        try:
+            match = find_preferred_ai_terminal_for_host(
+                user_id, int(host_id_hint), scope_id, prefer_idle=True
+            )
+            if match and match.get("slot") is not None:
+                slot_id = int(match["slot"])
+                if requested_slot is None or requested_slot == slot_id:
+                    return slot_id, None
+        except (TypeError, ValueError):
+            pass
+    if not items:
+        snap = terminals_snapshot_for_ai(user_id, scope_id, default_terminal_slot)
+        hint = ""
+        if snap["user_terminals"]:
+            hint = "（界面有用户控制台但 AI 不可操作，请 connect_terminal 创建 AI 控制台）"
+        return None, f"当前 scope 内没有 AI 创建的 SSH 控制台，请先 list_terminals 或 connect_terminal(host_id){hint}"
+    if requested_slot is not None:
+        try:
+            requested_slot = int(requested_slot)
+        except (TypeError, ValueError):
+            return None, "slot 须为整数"
+        if requested_slot not in ai_slots:
+            labels = ", ".join(
+                f"slot={s}({format_terminal_tab_label(ai_slots[s])})" for s in sorted(ai_slots.keys())
+            )
+            return None, f"slot {requested_slot} 不是 AI 控制台或不存在。可用：{labels}"
+        return requested_slot, None
+    if default_terminal_slot is not None and default_terminal_slot in ai_slots:
+        return default_terminal_slot, None
+    connected = sorted(s for s, it in ai_slots.items() if it.get("connected"))
+    if connected:
+        return connected[0], None
+    return min(ai_slots.keys()), None
+
+
 def get_terminal_buffer_for_user(user_id: int, slot: int | None = None, scope_id: str | None = None) -> tuple[str, bool]:
     """供 Agent 内部调用：返回指定控制台的 (buffer 文本, 是否已连接)。slot 为空则用默认 (0)。"""
     if slot is None:

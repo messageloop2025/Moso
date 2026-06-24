@@ -83,6 +83,7 @@ async def api_exception_handler(request, exc):
 from api.auth import router as auth_router
 from api.users import router as users_router
 from api.credentials import router as credentials_router
+from api.service_credentials import router as service_credentials_router
 from api.hosts import router as hosts_router
 from api.host_groups import router as host_groups_router
 from api.host_tags import router as host_tags_router
@@ -129,6 +130,7 @@ app.include_router(integration_mcp_router)
 app.include_router(integration_claw_ops_router)
 app.include_router(users_router)
 app.include_router(credentials_router)
+app.include_router(service_credentials_router)
 app.include_router(hosts_router)
 app.include_router(host_groups_router)
 app.include_router(host_tags_router)

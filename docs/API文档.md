@@ -636,6 +636,24 @@ AI 通过 `create_chat_artifact` 技能写入的报告/数据包/HTML 等；落�
 
 **反馈邮件通知（管理员）**：`settings.notify_admin_on_user_feedback`（默认 `false`）。开启后任意用户提交新反馈时，由 `services/feedback_notify.py` 走**全局 SMTP** 给所有"绑定邮箱的管理员"发简短通知；带 30 秒去抖避免短时间内多条反馈刷屏；未配置 SMTP 或未绑邮箱则不发并仅记日志。
 
+**服务凭证库（管理员）**：`settings.credentials_vault_enabled`（默认 `false`）。开启后用户通过 AI/REST 管理 `host_service_credentials`（按 service+address+port+username 匹配；密码不可查，仅 `send_service_password` 注入）。详见 `web/aihelp/service-credentials.md`。
+
+---
+
+## 14.6 服务凭证 REST API
+
+需登录；功能未开启时除 `/enabled` 外返回 **403**。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | /service-credentials/enabled | `{ enabled, settings_key }` |
+| GET | /service-credentials | 列出当前用户凭证元数据（query: service?, address?, port?, service_username?） |
+| POST | /service-credentials | 新增（body: service, password?, address?, port?, service_username?, linked_*?） |
+| PUT | /service-credentials/{id} | 更新（password 可选） |
+| DELETE | /service-credentials/{id} | 删除 |
+
+响应 **不含** 密码明文。完整路径前缀：`/api/service-credentials`。
+
 ---
 
 ## 14.5 反馈与登录留言板（迁移 015）
