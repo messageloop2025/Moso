@@ -767,20 +767,69 @@ query：`spill_id`、`date_subdir`（如 `2026/05/22`）、`mode?`（head/tail/h
 
 ## 17. SSH 交互通道（/ssh-channel）
 
-无界面持久 SSH TTY，供集成 Agent、OpenClaw、后台任务使用。设计见 [SSH通道与后台任务设计.md](SSH通道与后台任务设计.md)。
+带 PTY 的持久 SSH TTY，供 AI 工具、集成 Agent、OpenClaw、定时/触发任务使用；Web **「SSH通道管理」** Tab 通过本组 API **只读监视**输出。设计见 [SSH通道与后台任务设计.md](SSH通道与后台任务设计.md)。
+
+**隔离**：所有接口按 `user_id` 鉴权；列表可按 `owner_type` + `owner_id`（`session` / `task`）过滤；`all_open=true` 时返回当前用户全部 **open** 通道。
+
+**空闲关断**（创建时 `idle_close_sec` 可覆盖）：
+
+| 场景 | 默认 idle |
+|------|-----------|
+| Web 浏览器 AI 会话 | 1800s |
+| 集成 body 带 `session_id` | 3600s |
+
+### REST 概要
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | /ssh-channel | 列表。`all_open=true` 列出全部 open 通道 |
-| POST | /ssh-channel | 创建。body：`host_id`、`session_id?`（集成绑定，idle 默认 600s）、`idle_close_sec?` |
-| GET | /ssh-channel/{id} | 详情。`check_alive?` |
-| POST | /ssh-channel/{id}/send | 写入 stdin。body：`content` |
-| GET | /ssh-channel/{id}/lines | 按行读。`since_line?`、`last_n?`、`from_line?`、`to_line?`、`session_id?` |
-| GET | /ssh-channel/{id}/read | 按字符读。`max_chars?`、`session_id?` |
-| GET | /ssh-channel/{id}/has-new | 轮询新输出。`after_line?` |
-| POST | /ssh-channel/{id}/dump | 导出缓冲到 spill |
+| GET | /ssh-channel | 列表。`owner_type?`、`owner_id?`；**`all_open=true`** 列出全部 open |
+| POST | /ssh-channel | 创建。body：`host_id`、`owner_type?`、`owner_id?`、`session_id?`（集成绑定）、`input_timeout_sec?`、`output_timeout_sec?`、`idle_close_sec?` |
+| GET | /ssh-channel/{id} | 详情。`check_alive?` 探测主机 TCP |
+| POST | /ssh-channel/{id}/send | 写入 stdin。body：`content`（支持 `<Ctrl+C>` 等占位符，经管理器展开） |
+| GET | /ssh-channel/{id}/lines | 按行读（见下） |
+| GET | /ssh-channel/{id}/read | 按字符读最近输出。`max_chars?`、`spill?`、`session_id?` |
+| GET | /ssh-channel/{id}/has-new | 轮询新输出。`after_line?`；含 **`pending_partial`** |
+| POST | /ssh-channel/{id}/dump | 导出缓冲到 spill 文件 |
 | DELETE | /ssh-channel/{id} | 关闭 |
 | POST | /ssh-channel/close-batch | 批量关。body：`session_id?` 或 `owner_type` + `owner_id` |
+
+### GET /ssh-channel/{id}/lines
+
+query：`from_line?`、`to_line?`、`last_n?`、`since_line?`、`spill?`（默认 true）、`session_id?`
+
+**响应字段**（除 `lines` 外）：
+
+| 字段 | 说明 |
+|------|------|
+| `lines` | 行对象数组，每项含 `line_no`、`content`、可选 `is_soft_wrap` |
+| `oldest_line_no` / `latest_line_no` | 缓冲行号范围 |
+| **`pending_partial`** | 尚未以 `\n`/`\r` 结束的**当前行片段**（如 `password:` 提示） |
+| **`tail_text`** | 最近 N 行文本 + pending 的合成视图（UI 快照与 AI 读 tail 推荐用此字段） |
+| `text` / `text_preview` | `spill=true` 且未落盘时为全文；过大时 `spill` + preview |
+
+> **AI 读 channel 输出**：除 `lines` 外务必看 **`tail_text` / `pending_partial`**；勿因 `lines` 为空或 `has_new=false` 误判无输出。
+
+### GET /ssh-channel/{id}/has-new
+
+返回：`has_new`、`latest_line_no`、**`pending_partial`**（有未完成行时 `has_new` 可为 true）。
+
+### WebSocket /api/ssh-channel/{id}/ws
+
+query：**`token`**（JWT，与 REST 相同）。
+
+**服务端 → 客户端**（JSON）：
+
+| type | 说明 |
+|------|------|
+| `ready` | 连接就绪，`channel_id` |
+| `lines` | 新行块：`lines`、`oldest_line_no`、`latest_line_no` |
+| `partial` | 未完成行：`content` |
+| `closed` | 通道已关闭 |
+| `error` | 错误信息 |
+
+**客户端 → 服务端**：可发**文本**写入通道 stdin（集成/调试）；Web **「SSH通道管理」实时监视** UI **仅订阅、不发送**。
+
+断线后可凭同一 `channel_id` 重连；通道仍 open 则继续推送。
 
 大输出可能返回 `spill_id` + `storage_subdir`，用 **§16** `/integration/spill/read` 分段读取。
 

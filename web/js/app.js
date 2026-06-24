@@ -7058,7 +7058,7 @@ function edgeopsInitSshChannelTab(cfg) {
     function updateLiveWatchBtn() {
         var btn = document.getElementById(cfg.liveWatchBtnId);
         if (!btn) return;
-        var on = liveWatchEnabled && liveWsChannelId === activeChannelId && liveWs;
+        var on = liveWatchEnabled && liveWsChannelId === activeChannelId;
         btn.textContent = on ? t('hostAi.sshChannelLiveWatchStop') : t('hostAi.sshChannelLiveWatch');
         btn.classList.toggle('btn-primary', !!on);
     }
@@ -7114,6 +7114,7 @@ function edgeopsInitSshChannelTab(cfg) {
         var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
         var url = protocol + '//' + location.host + '/api/ssh-channel/' + rec.id + '/ws?token=' + encodeURIComponent(API.token);
         liveWs = new WebSocket(url);
+        liveWs.onopen = function() { updateLiveWatchBtn(); };
         liveWs.onmessage = function(ev) {
             try {
                 var j = JSON.parse(ev.data);
@@ -7244,6 +7245,7 @@ function edgeopsInitSshChannelTab(cfg) {
             rec.tabBtn.classList.toggle('active', on);
             if (on && rec.refit) rec.refit();
         });
+        updateLiveWatchBtn();
     }
 
     function removeChannelRec(channelId) {

@@ -15,7 +15,7 @@
 
 - 完全由 AI 控制、支持交互（如 sudo 密码、vi）、支持 Ctrl+C 等控制字符。
 - **sudo 密码**：出现 `[sudo] password for` 等提示时，凭证库开启后应调用 **`send_service_password`**（target=`ssh_channel`），勿在 `ssh_channel_send` 中发送明文密码。见 `web/aihelp/service-credentials.md`。
-- 具有“控制台效果”的 TTY 通道；与现有 Web SSH 控制台不同，本通道**纯后端**，直接与 AI 通信（或通过 WebSocket 再连，WebSocket 断开后可重连同一 Channel）。
+- 具有“控制台效果”的 TTY 通道；与现有 **Web SSH 控制台**不同，本通道**以后台 PTY 为主**，AI 经工具链直接读写；可选 **WebSocket 挂接**（断线后可重连同一 Channel）。Web **「SSH通道管理」** Tab 对该通道**只读监视**，不向 stdin 发送（见 §7.4）。
 - 以**用户会话**或**后台任务**为边界：
   - **Web 会话**：本机管理 / AI 助手 / 主机详情 的 AI 各自可创建仅属于当前会话的 Channel。
   - **后台任务**：无会话 ID，有 **task_id**；同一 task_id 可创建多个 Channel 连多台主机，不同 task_id 之间 Channel 不可见。
@@ -33,6 +33,7 @@
   - 读倒数 N 行；
   - 自上次读取以来的全部新内容；
   - 查询是否有新输出（是否有新增行）。
+- **未完成行（pending_partial）**：尚未以 `\n`/`\r` 结束的当前片段（如 `password:` 提示）单独暴露；**tail_text** 为最近 N 行与 pending 的合成视图。`has_new` 在 pending 非空时也为 true。REST `/lines`、`/has-new` 与 AI `ssh_channel_read_lines` / `ssh_channel_has_new` 均返回上述字段。
 
 ### 2.3 Channel 基本信息（AI 可查）
 
@@ -140,16 +141,26 @@
 
 ## 7. 前后端 API 概要
 
-### 7.1 SSH Channel（后端）
+### 7.1 SSH Channel（后端 REST + WS）
 
-- `POST /api/ssh-channel`：创建通道（body: host_id, owner_type, owner_id, input_timeout, output_timeout, idle_close_seconds）。
-- `GET /api/ssh-channel`：列表（query: owner_type, owner_id）。
-- `GET /api/ssh-channel/{id}`：详情与行号范围。
+- `POST /api/ssh-channel`：创建（body: host_id, owner_type, owner_id, session_id?, 超时参数, idle_close_sec；Web 默认 idle 1800s，集成 session 默认 3600s）。
+- `GET /api/ssh-channel`：列表（query: owner_type, owner_id, **all_open**）。
+- `GET /api/ssh-channel/{id}`：详情与行号范围；`check_alive?`。
 - `POST /api/ssh-channel/{id}/send`：发送内容。
-- `GET /api/ssh-channel/{id}/lines`：读行（from_line, to_line, last_n, since_line）。
-- `GET /api/ssh-channel/{id}/has-new`：是否有新输出。
-- `DELETE /api/ssh-channel/{id}`：关闭。
-- `WS /api/ssh-channel/{id}/ws`：挂接 WebSocket（可选）。
+- `GET /api/ssh-channel/{id}/lines`：读行；响应含 **pending_partial**、**tail_text**。
+- `GET /api/ssh-channel/{id}/read`：按字符读。
+- `GET /api/ssh-channel/{id}/has-new`：是否有新输出（含 pending）。
+- `POST /api/ssh-channel/{id}/dump`：导出 spill。
+- `DELETE /api/ssh-channel/{id}`：关闭；`POST /api/ssh-channel/close-batch`：批量关。
+- `WS /api/ssh-channel/{id}/ws?token=`：推送 `ready` / `lines` / `partial` / `closed` / `error`；可重连。详见《API 文档》§17。
+
+### 7.4 Web UI「SSH通道管理」（只读）
+
+- **位置**：AI 助手页、主机详情 AI 页 → 左侧终端区 Tab（控制台 / 文件系统 / **SSH通道管理** / Log）。
+- **列表**：`GET /api/ssh-channel?all_open=true`；主机页按 host 过滤。
+- **输出**：xterm 只读；「刷新输出」≈ `GET /lines?last_n=80`；「实时监视」≈ WS 订阅（UI **不 send**）。
+- **同步**：AI 聊天 `ssh_channel_create` / `close` / `close_batch` 完成后前端自动刷新；用户再次打开 Tab 或整页刷新后打开 Tab 时自动拉列表。
+- **帮助**：`web/aihelp/ssh-channel.md`。
 
 ### 7.2 触发任务
 
@@ -172,6 +183,6 @@
 2. **Phase 2**：SSH Channel 管理器（TTY、Paramiko Channel、行缓冲、超时与空闲关闭）；AI Skills 实现 Channel 创建/发送/读行/关闭。
 3. **Phase 3**：触发任务执行引擎（调用 AI + SSH Channel）；触发接口与“定时任务完成/失败/主动呼叫”的对接。
 4. **Phase 4**：定时任务调度器（crontab 解析、到点启动 Agent）；执行历史与会话式存储。
-5. **Phase 5**：前端菜单、触发任务/定时任务列表与历史页、Channel 的 WebSocket 重连（若需）。
+5. **Phase 5**：触发/定时任务 Web 列表与历史、Channel WebSocket 重连、**AI 页「SSH通道管理」只读 Tab**（xterm + 实时监视 + 与聊天工具事件同步）。侧栏独立「SSH 通道」菜单项仍为可选扩展。
 
 本文档仅描述设计与接口；具体字段以迁移脚本与 API 实现为准。

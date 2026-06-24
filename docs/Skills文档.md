@@ -360,20 +360,22 @@
 
 ## 16. SSH Channel 与后台任务（TTY 通道 / 触发任务 / 定时任务）
 
-设计详见《SSH通道与后台任务设计.md》。后台任务以用户与任务 ID 隔离；SSH 通道按会话或任务边界创建，支持按行缓冲与超时关闭。
+设计详见《SSH通道与后台任务设计.md》。后台任务以用户与任务 ID 隔离；SSH 通道按会话或任务边界创建，支持按行缓冲、**pending_partial / tail_text**（无换行提示）与超时关闭。Web **「SSH通道管理」** Tab 只读监视，见 `web/aihelp/ssh-channel.md`。
 
 ### SSH Channel（TTY 通道）
 
 | 名称 | 说明 | 主要参数 |
 |------|------|----------|
 | ssh_channel_create | 创建属于当前会话或指定任务的 SSH TTY 通道 | host_id, owner_type?, owner_id?, input_timeout_sec?, output_timeout_sec?, idle_close_sec? |
-| ssh_channel_list | 列出当前会话/任务下的 SSH 通道清单 | owner_type?, owner_id? |
+| ssh_channel_list | 列出 SSH 通道；`all_open=true` 列全部 open | owner_type?, owner_id?, all_open? |
 | ssh_channel_info | 获取指定通道详情（主机信息、行号范围） | channel_id |
 | ssh_channel_send | 向通道发送内容（含控制字符） | channel_id, content |
-| ssh_channel_read_lines | 按行读取输出（from_line/to_line、last_n、since_line） | channel_id, from_line?/to_line?/last_n?/since_line? |
+| ssh_channel_read_lines | 按行读；返回 **tail_text**、**pending_partial**（password 等无换行提示） | channel_id, from_line?/to_line?/last_n?/since_line? |
 | ssh_channel_read_length | 按字符数读取通道输出（最近 max_chars 字符） | channel_id, max_chars? |
-| ssh_channel_has_new | 查询是否有自某行号以来的新输出 | channel_id, after_line? |
+| ssh_channel_has_new | 是否有新输出（含 pending_partial） | channel_id, after_line? |
 | ssh_channel_close | 关闭指定通道 | channel_id |
+| ssh_channel_close_batch | 按 owner 或 session 批量关闭 | owner_type?, owner_id?, session_id? |
+| ssh_channel_dump_output | 导出通道缓冲到 spill | channel_id, max_chars? |
 
 ### 触发任务（供定时任务发现与调用）
 
@@ -439,7 +441,7 @@
 | Skills 表 | /skills GET | list_prompt_skills、get_prompt_skill |
 | 个人 MCP | /api/user-mcp-servers CRUD、import、export、test、refresh-tools | list/configure/import/export/test/refresh/delete_user_mcp_* |
 | 个人 Agent Skills | /api/user-skills（须 skills_enabled） | list/get/save/delete/scan_user_skills |
-| SSH Channel | /api/ssh-channel 列表/创建/详情/发送/按行读/关闭 | ssh_channel_create、ssh_channel_list、ssh_channel_info、ssh_channel_send、ssh_channel_read_lines、ssh_channel_has_new、ssh_channel_close |
+| SSH Channel | /api/ssh-channel REST + WS；Web「SSH通道管理」只读 Tab | ssh_channel_create/list/info/send/read_lines/read_length/has_new/close/close_batch/dump_output |
 | 触发任务 | /api/triggered-tasks CRUD、exposed、trigger、runs、runs/{run_id}/messages | triggered_task_list、triggered_task_list_exposed、triggered_task_status、triggered_task_get、triggered_task_create、triggered_task_update、triggered_task_delete、triggered_task_trigger、triggered_task_current_run_history |
 | 定时任务 | /api/scheduled-tasks CRUD、runs、run-now、triggered-list、runs/{run_id}/messages | scheduled_task_list、scheduled_task_status、scheduled_task_get、scheduled_task_create、scheduled_task_update、scheduled_task_delete、scheduled_task_current_run_history、scheduled_task_run_now |
 | 用户发信 | /api/user-mail-config GET/PUT | get_user_mail_settings、update_user_mail_settings、send_email（另：send_bind_email_code / verify_bind_email / unbind_email 为账户邮箱绑定，走**系统**SMTP） |

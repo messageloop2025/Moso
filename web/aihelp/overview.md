@@ -117,6 +117,7 @@
 ### AI 与终端的边界
 
 - AI 只能操作 **AI 创建** 的 SSH 控制台
+- AI 还可通过 **ssh_channel_*** 使用后台 PTY 通道（用户可在 **「SSH通道管理」** Tab 只读查看，见 [ssh-channel.md](ssh-channel.md)）
 - AI 不会抢占用户自己创建的终端
 - 若用户正在手工操作自己的终端，AI 不会强行切换过去
 

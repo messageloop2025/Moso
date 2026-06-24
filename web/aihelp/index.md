@@ -35,6 +35,7 @@
 | [hosts.md](hosts.md) | 主机管理步骤手册（新增、验证、编辑、删除、交给 AI） |
 | [host-groups.md](host-groups.md) | 服务器树与主机分组步骤手册 |
 | [terminal.md](terminal.md) | SSH 控制台与终端使用规则、自动切换、AI 边界 |
+| [ssh-channel.md](ssh-channel.md) | **SSH 通道**（ssh_channel_*）与「SSH通道管理」只读监视 Tab |
 | [filesystem.md](filesystem.md) | 文件系统 `web/fs` 步骤手册（脚本、模板、上传材料、`chats/` 附件与成果物） |
 | [batch.md](batch.md) | 批量操作步骤手册（巡检、上传、脚本、重启） |
 | [ai-assistant.md](ai-assistant.md) | AI 助手使用与配置（低交互、运行中补充、聊天附件含 Office/PDF、流式分块 Markdown、会话级提示词、终端边界、Markdown/公式/图形化输出） |
@@ -67,6 +68,7 @@
 | 想整理服务器树或做分组批量 | [host-groups.md](host-groups.md)、[batch.md](batch.md) |
 | 想配置或切换 AI 模型（多组 Profile） | [model-config.md](model-config.md)、[ai-assistant.md](ai-assistant.md) |
 | 想让 AI 帮你运维，或在 AI 执行中补充/暂停/停止 | [ai-assistant.md](ai-assistant.md)、[terminal.md](terminal.md) |
+| 想查看 AI 创建的 SSH 通道输出（只读） | [ssh-channel.md](ssh-channel.md)、[terminal.md](terminal.md) |
 | 想用 OpenClaw / Cursor / 外部 Agent 调 毛竹 | [external-integration.md](external-integration.md) |
 | 想给 毛竹 的 AI 接入自己的 MCP 服务器（filesystem/Notion 等） | [external-integration.md](external-integration.md)（反向集成 · MCP）、导航「MCP 配置」 |
 | 想给 毛竹 的 AI 配置个人 Agent Skills（SKILL.md） | [external-integration.md](external-integration.md)（反向集成 · Skills）；管理员先在用户管理开启 Skills |

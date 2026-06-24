@@ -19,8 +19,10 @@
 | 读取特定内容长度（按字符数） | ✅ 已实现 | GET /api/ssh-channel/{id}/read?max_chars=、Skill ssh_channel_read_length |
 | 行缓存：默认 1000 行，FIFO 淘汰最老行 | ✅ 已实现 | DEFAULT_MAX_LINES=1000，超出 popleft |
 | 每行长度不超过标准长度，超长软换行；AI 能识别软换行 | ✅ 已实现 | DEFAULT_LINE_WIDTH=120，返回行含 is_soft_wrap |
-| 行号、最新/最老行号、has_new 查询 | ✅ 已实现 | oldest_line_no/latest_line_no、has_new 由管理器提供 |
-| 纯后端、直接与 AI 通信；WebSocket 断线后可重连同一 Channel | ✅ 已实现 | WS /api/ssh-channel/{id}/ws，query 传 token，服务端推送 lines/closed/error，客户端可发输入 |
+| 行号、最新/最老行号、has_new 查询 | ✅ 已实现 | oldest_line_no/latest_line_no、has_new 由管理器提供；**pending_partial 非空时 has_new 为 true** |
+| pending_partial / tail_text（无换行提示如 password:） | ✅ 已实现 | REST /lines、/has-new；AI read_lines / has_new；Web 快照与 WS partial |
+| 纯后端、直接与 AI 通信；WebSocket 断线后可重连同一 Channel | ✅ 已实现 | WS /api/ssh-channel/{id}/ws，query 传 token，服务端推送 ready/lines/partial/closed/error |
+| Web「SSH通道管理」Tab 只读监视 open 通道 | ✅ 已实现 | web/js/app.js：列表 Tab、xterm 快照/实时监视、AI create/close 自动同步、切 Tab 自动刷新 |
 | 前后端 API 与 AI Skills | ✅ 已实现 | 创建/列表/详情/发送/按行读/按字符读/has_new/关闭 均已接管理器 |
 
 ---
@@ -96,5 +98,6 @@
 1. ~~**可选**：Channel 的 WebSocket 端点。~~ **已实现**：`WS /api/ssh-channel/{id}/ws`，query 传 `token`，服务端推送 `ready`/`lines`/`closed`/`error`，客户端发文本即写入通道。
 2. ~~**可选**：主机是否存在（存活探测）。~~ **已实现**：`GET /api/ssh-channel/{id}/host-alive`、`GET /api/hosts/{id}/alive`，以及通道详情 `?check_alive=1`。
 3. ~~**可选**：触发/定时任务历史按任务名、状态全局筛选。~~ **已实现**：GET /api/triggered-tasks/all-runs、GET /api/scheduled-tasks/all-runs 及前端「全部执行历史」筛选。
+4. **文档**：Web UI 与 REST/WS 说明见 `web/aihelp/ssh-channel.md`、`docs/API文档.md` §17。
 
 当前实现阶段：**Phase 1～5** 与上述可选项均已完成。

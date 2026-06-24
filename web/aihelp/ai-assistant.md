@@ -37,7 +37,7 @@
 ## 能力概览
 
 - 列出/查询主机、凭证、分组、维护历史、最佳实践。
-- 在指定主机上执行 SSH 命令（ssh_execute）、向已打开的控制台发送输入（send_to_terminal）。
+- 在指定主机上执行 SSH 命令（**ssh_execute**）、多步/交互任务（**ssh_channel_***：create → send → read_lines/has_new → close）、向已打开的 **Web 控制台**发送输入（**send_to_terminal**）。
 - 上传/下载文件：**scp_push** / **scp_pull**（SFTP 流式传输，支持大文件与目录 `recursive=true`，调用卡显示传输进度）。
 - 创建/管理批量任务（batch_create、list、detail、cancel、retry）。
 - 管理主机知识（get/update/append_host_knowledge）：记录路径、端口约定等非密码说明；**sudo/数据库等密码在凭证库开启时应存 `add_service_credential`，勿写明文进知识库**（见 [service-credentials.md](service-credentials.md)）。
@@ -263,6 +263,14 @@ Docker 镜像需安装 `libmagic1` 与 Python 包 `markitdown`；依赖变更后
 - **用户终端保护**：若用户自行切换到「用户创建」的控制台，自动切换暂停；AI 不会为了执行命令而把界面抢切过去。
 - **恢复时机**：再切换到「AI 创建」的控制台后恢复。
 - **关闭**：勾选「不自动切换」后，AI 仍可向控制台发送内容，但界面不再自动切台。本机管理页控制台同样支持上述行为。
+
+---
+
+## SSH 通道与「SSH通道管理」Tab
+
+- **ssh_channel_***：后台 PTY 会话，适合安装编译、sudo 密码、嵌套 SSH、Ctrl+C 等多步交互；用户**不必**打开 Web 控制台。读输出时注意 **`tail_text` / `pending_partial`**（无换行的 `password:` 等提示）。
+- **Web 控制台**：用户要**边看边操作**时用 `send_to_terminal` + `get_terminal_buffer`。
+- **SSH通道管理 Tab**（左侧终端区）：**只读监视** AI 已创建的 open 通道；支持手工刷新与 WebSocket **实时监视**（按钮在监视中显示「关闭监视」）。AI 聊天里 create/close 通道后列表**自动更新**；整页刷新后再打开该 Tab 会**自动拉列表**与服务端对齐。详见 [ssh-channel.md](ssh-channel.md)。
 
 ---
 
