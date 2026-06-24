@@ -767,14 +767,23 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "list_service_credentials",
-            "description": "列出当前用户的服务凭证**元数据**（id、service、address、port、service_username、label、has_password 等）。**绝不返回密码**。注入前应先调用本工具，结合终端提示与用户确认选用哪条 credential_id，再调用 send_service_password(credential_id=...)。",
+            "description": "搜索/列出服务凭证**元数据**（含 last_accessed_at、has_password；**绝不返回密码**）。**跨机 SSH/SCP/MySQL 等必须先调用本工具**：按目标 **IP+service** 查找（scp/sftp/rsync 按 **ssh** 凭证；command_hint 可传 `scp …@172.31.0.1:…` 或 `ssh 172.31.0.1`）。返回 `resolution`：`use_credential` 直接用 `suggested_credential_id`；`user_choice` 须 ask_user_choice；`ask_user_identity` 无凭证须问用户（指定用户名 / 当前控制台 whoami）。**禁止**默认用当前机登录用户充当目标 SSH 用户。同用户多条重复凭证已去重保留最新。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "service": {"type": "string", "description": "可选，按服务类型过滤，如 sudo、mysql、ssh"},
-                    "address": {"type": "string", "description": "可选，按目标地址过滤；sudo 通常留空"},
-                    "port": {"type": "integer", "description": "可选，按端口过滤"},
-                    "service_username": {"type": "string", "description": "可选，按服务账户名过滤"},
+                    "command_hint": {"type": "string", "description": "待执行命令，推断 service+address（scp→ssh）；不因 user@ 隐藏其它用户凭证"},
+                    "service": {"type": "string", "description": "服务类型：ssh、mysql、sudo 等（scp 请填 ssh）"},
+                    "address": {"type": "string", "description": "目标 IP/域名"},
+                    "keyword": {"type": "string", "description": "模糊搜索：id、address、service_username、label、notes、service"},
+                    "port": {"type": "integer", "description": "按端口过滤"},
+                    "service_username": {"type": "string", "description": "仅当已确定用户名时过滤；选凭证阶段通常留空"},
+                    "sort_by": {
+                        "type": "string",
+                        "enum": ["last_accessed_at", "created_at", "updated_at", "service", "address", "service_username", "id"],
+                        "description": "排序字段，默认 last_accessed_at",
+                    },
+                    "sort_order": {"type": "string", "enum": ["asc", "desc"], "description": "排序方向，默认 desc"},
+                    "limit": {"type": "integer", "description": "最多返回条数，默认 50，最大 200"},
                 },
                 "required": [],
             },
@@ -843,7 +852,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "send_service_password",
-            "description": "在 terminal / ssh_channel / local_terminal **已出现密码提示**时，由服务端按 credential_id 从凭证库取密码并写入 PTY stdin。**工具结果不含密码，模型不得索要或回显密码**。**推荐**：先 list_service_credentials → 与用户确认 credential_id → 本工具传入 credential_id + target（及 host_id/slot 或 channel_id）。勿用 send_to_terminal 发明文密码。",
+            "description": "在 terminal / ssh_channel / local_terminal 由服务端按 credential_id 从凭证库取密码并写入 PTY stdin。**调用即注入**（默认不再二次检测 buffer 是否含 password 字样；AI 应先 read_lines/get_terminal_buffer 判断时机）。**工具结果不含密码**，禁止用 ssh_channel_send/send_to_terminal 发明文。须 credential_id + target（terminal 需 host_id；ssh_channel 需 channel_id）。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -852,7 +861,7 @@ TOOLS = [
                     "host_id": {"type": "integer", "description": "target=terminal 时必填：Web 控制台所在主机 ID（仅定位注入目标，不参与查凭证）"},
                     "channel_id": {"type": "integer", "description": "target=ssh_channel 时必填：ssh_channel_create 返回的通道 id"},
                     "slot": {"type": "integer", "description": "控制台槽位（terminal/local_terminal 可选）"},
-                    "require_password_prompt": {"type": "boolean", "description": "默认 true：须先读 buffer/通道确认有密码提示再注入"},
+                    "require_password_prompt": {"type": "boolean", "description": "默认 false：直接注入。仅当 true 时服务端再读 buffer/通道尾部校验是否有密码提示"},
                 },
                 "required": ["target", "credential_id"],
             },
@@ -7910,16 +7919,21 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             return json.dumps({"success": True, "message": "已追加到该主机的 AI 知识"}, ensure_ascii=False)
 
         if name == "list_service_credentials":
-            from services.credential_vault import list_credentials_for_user
+            from services.credential_vault import search_credentials_for_user
 
-            items = await list_credentials_for_user(
+            result = await search_credentials_for_user(
                 user["id"],
                 service=arguments.get("service"),
                 address=arguments.get("address"),
                 port=int(arguments["port"]) if arguments.get("port") is not None else None,
                 service_username=arguments.get("service_username"),
+                keyword=arguments.get("keyword"),
+                command_hint=arguments.get("command_hint"),
+                sort_by=arguments.get("sort_by"),
+                sort_order=arguments.get("sort_order"),
+                limit=int(arguments["limit"]) if arguments.get("limit") is not None else None,
             )
-            return json.dumps({"success": True, "credentials": items, "count": len(items)}, ensure_ascii=False)
+            return json.dumps({"success": True, **result}, ensure_ascii=False)
 
         if name == "add_service_credential":
             from services.credential_vault import add_credential
@@ -7998,7 +8012,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 return json.dumps({"success": False, "error": "target=terminal 时需要 host_id（控制台所在主机）"}, ensure_ascii=False)
             require_prompt = arguments.get("require_password_prompt")
             if require_prompt is None:
-                require_prompt = True
+                require_prompt = False
             else:
                 require_prompt = bool(require_prompt)
 
@@ -8018,13 +8032,32 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     ensure_ascii=False,
                 )
 
+            channel_id = arguments.get("channel_id")
+            if target == "ssh_channel":
+                if channel_id is None:
+                    return json.dumps(
+                        {"success": False, "error": "target=ssh_channel 时需要 channel_id"},
+                        ensure_ascii=False,
+                    )
+                db = await get_db()
+                await reconcile_channel_if_stale(db, user, int(channel_id))
+                ch_rows = await db.execute_fetchall(
+                    "SELECT id FROM ssh_channels WHERE id = ? AND user_id = ? AND status = 'open'",
+                    (int(channel_id), user["id"]),
+                )
+                if not ch_rows:
+                    return json.dumps(
+                        {"success": False, "error": "SSH 通道不存在或已关闭"},
+                        ensure_ascii=False,
+                    )
+
             result = await perform_service_password_injection(
                 user,
                 credential_id=int(arguments["credential_id"]),
                 target=target,
                 host_id=int(host_id) if host_id is not None else None,
                 slot=arguments.get("slot"),
-                channel_id=arguments.get("channel_id"),
+                channel_id=int(channel_id) if channel_id is not None else None,
                 terminal_scope_id=terminal_scope_id,
                 require_password_prompt=require_prompt,
             )

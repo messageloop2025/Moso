@@ -9,7 +9,8 @@ from services.credential_vault import (
     add_credential,
     credentials_vault_enabled,
     delete_credential,
-    list_credentials_for_user,
+    get_credential_for_user,
+    search_credentials_for_user,
     perform_service_password_injection,
     update_credential,
 )
@@ -50,7 +51,7 @@ class ServiceCredentialInject(BaseModel):
     slot: Optional[int] = None
     channel_id: Optional[int] = None
     scope_id: Optional[str] = None
-    require_password_prompt: bool = True
+    require_password_prompt: bool = False
 
 
 async def _require_vault_enabled():
@@ -69,17 +70,36 @@ async def list_service_credentials(
     address: Optional[str] = Query(None),
     port: Optional[int] = Query(None),
     service_username: Optional[str] = Query(None),
+    keyword: Optional[str] = Query(None, description="模糊搜索 id/address/username/label/notes/service"),
+    command_hint: Optional[str] = Query(None, description="从命令推断 service/address 等并过滤"),
+    sort_by: Optional[str] = Query("last_accessed_at"),
+    sort_order: Optional[str] = Query("desc"),
+    limit: Optional[int] = Query(50, ge=1, le=200),
     user=Depends(get_current_user),
 ):
     await _require_vault_enabled()
-    items = await list_credentials_for_user(
+    result = await search_credentials_for_user(
         user["id"],
         service=service,
         address=address,
         port=port,
         service_username=service_username,
+        keyword=keyword,
+        command_hint=command_hint,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        limit=limit,
     )
-    return {"success": True, "credentials": items, "count": len(items)}
+    return {"success": True, **result}
+
+
+@router.get("/{credential_id}")
+async def get_service_credential(credential_id: int, user=Depends(get_current_user)):
+    await _require_vault_enabled()
+    item = await get_credential_for_user(user["id"], credential_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="凭证不存在")
+    return {"success": True, "credential": item}
 
 
 @router.post("")

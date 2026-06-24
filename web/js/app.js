@@ -1017,7 +1017,11 @@ function edgeopsInstallRuntimeControlBar(opts) {
     bar.appendChild(pauseBtn);
     bar.appendChild(sendBtn);
     bar.appendChild(stopBtn);
+    var awaitingHint = document.createElement('span');
+    awaitingHint.className = 'ai-runtime-awaiting-hint';
+    awaitingHint.style.display = 'none';
     composeRow.insertBefore(bar, inputArea.nextSibling);
+    composeRow.insertBefore(awaitingHint, bar);
     edgeopsInitChatTextarea(input);
     edgeopsBindChatSubmit(input, function() { sendBtn.click(); });
 
@@ -1044,20 +1048,23 @@ function edgeopsInstallRuntimeControlBar(opts) {
     stopBtn.onclick = function() { fire('stop', input.value || ''); };
     function setRuntimeMode(flag, awaitingConfirm) {
         var wasActive = composeRow.classList.contains('runtime-control-active');
-        var active = !!flag || !!awaitingConfirm;
-        composeRow.classList.toggle('runtime-control-active', active);
-        composeRow.classList.toggle('runtime-awaiting-confirm', !!awaitingConfirm);
-        bar.style.display = active ? 'flex' : 'none';
-        inputArea.style.display = (flag && !awaitingConfirm) ? 'none' : '';
-        if (!active) inputArea.style.display = '';
-        if (!active) {
+        var streaming = !!flag;
+        var awaiting = !!awaitingConfirm;
+        composeRow.classList.toggle('runtime-control-active', streaming);
+        composeRow.classList.toggle('runtime-awaiting-confirm', awaiting);
+        bar.style.display = streaming ? 'flex' : 'none';
+        awaitingHint.style.display = (awaiting && !streaming) ? '' : 'none';
+        if (awaiting && !streaming) awaitingHint.textContent = tip.textContent;
+        inputArea.style.display = streaming ? 'none' : '';
+        if (!streaming && !awaiting) inputArea.style.display = '';
+        if (!streaming && !awaiting) {
             input.value = '';
             if (input._edgeopsAutoResize) try { input._edgeopsAutoResize(); } catch (_e) {}
             tip.textContent = t('hostAi.runtimeTipCompact');
             if (wasActive) focusChatInput();
-        } else if (!wasActive && !awaitingConfirm) {
+        } else if (streaming && !wasActive) {
             focusRuntimeInput();
-        } else if (awaitingConfirm) {
+        } else if (awaiting && !streaming) {
             focusChatInput();
         }
     }
@@ -1066,7 +1073,11 @@ function edgeopsInstallRuntimeControlBar(opts) {
             if (flag === 'awaiting' || flag === 'awaiting_confirm') setRuntimeMode(false, true);
             else setRuntimeMode(!!flag && flag !== 'awaiting', !!awaitingConfirm);
         },
-        note: function(text) { tip.textContent = text || t('hostAi.runtimeTipCompact'); }
+        note: function(text) {
+            var noteText = text || t('hostAi.runtimeTipCompact');
+            tip.textContent = noteText;
+            if (awaitingHint.style.display !== 'none') awaitingHint.textContent = noteText;
+        }
     };
     inputArea._edgeopsRuntimeCtl = ctl;
     return ctl;
@@ -6455,13 +6466,19 @@ function edgeopsMakeChatStreamingUISetter(opts) {
         var composeRow = input && input.closest ? input.closest('.chat-input-area') : null;
         if (composeRow) {
             composeRow.classList.toggle('runtime-awaiting-confirm', !!awaiting);
-            if (idle) composeRow.classList.remove('runtime-control-active');
+            if (idle) {
+                composeRow.classList.remove('runtime-control-active');
+                composeRow.classList.remove('runtime-awaiting-confirm');
+            }
         }
         if (input) {
             input.disabled = !!active && !awaiting;
-            if (idle) input.style.display = '';
+            if (idle || awaiting) {
+                input.style.display = '';
+                input.disabled = false;
+            }
         }
-        if (sendBtn) sendBtn.style.display = (active && !awaiting) ? 'none' : '';
+        if (sendBtn) sendBtn.style.display = active ? 'none' : '';
         if (newBtn) newBtn.style.display = active ? 'none' : '';
         var ctl = opts.runtimeCtl;
         if (ctl && typeof ctl.setStreaming === 'function') {
@@ -9773,16 +9790,133 @@ function renderAIPage() {
 }
 
 // ── 凭证管理 ──
+function edgeopsFmtSvcCredTime(v) {
+    if (!v) return '-';
+    try { return String(v).replace('T', ' ').slice(0, 19); } catch (_e) { return String(v); }
+}
+
+function openServiceCredentialModal(editId) {
+    var isEdit = editId != null && editId !== 'null';
+    function buildForm(data) {
+        data = data || {};
+        return '<div class="form-group"><label>' + esc(t('pages.creds.svcFieldService')) + '</label>'
+            + '<input class="form-control" id="svcCredFormService" value="' + esc(data.service || '') + '" placeholder="sudo / ssh / mysql"></div>'
+            + '<div class="form-group"><label>' + esc(t('pages.creds.svcFieldAddress')) + '</label>'
+            + '<input class="form-control" id="svcCredFormAddress" value="' + esc(data.address || '') + '"></div>'
+            + '<div class="form-group"><label>' + esc(t('pages.creds.svcFieldPort')) + '</label>'
+            + '<input class="form-control" id="svcCredFormPort" type="number" value="' + esc(data.port != null ? data.port : '') + '"></div>'
+            + '<div class="form-group"><label>' + esc(t('pages.creds.svcFieldUsername')) + '</label>'
+            + '<input class="form-control" id="svcCredFormUsername" value="' + esc(data.service_username || '') + '"></div>'
+            + '<div class="form-group"><label>' + esc(t('pages.creds.svcFieldLabel')) + '</label>'
+            + '<input class="form-control" id="svcCredFormLabel" value="' + esc(data.label || '') + '"></div>'
+            + '<div class="form-group"><label>' + esc(t('pages.creds.svcFieldNotes')) + '</label>'
+            + '<textarea class="form-control" id="svcCredFormNotes" rows="2">' + esc(data.notes || '') + '</textarea></div>'
+            + '<div class="form-group"><label>' + esc(isEdit ? t('pages.creds.svcFieldPassword') : t('pages.creds.svcFieldPasswordNew')) + '</label>'
+            + '<input class="form-control" id="svcCredFormPassword" type="password" autocomplete="new-password"></div>';
+    }
+    function openWith(data) {
+        showModal(isEdit ? t('pages.creds.svcEdit') : t('pages.creds.svcAdd'), buildForm(data), edgeopsModalFooterCancelSave('submitServiceCredential(' + (isEdit ? editId : 'null') + ')'));
+    }
+    if (isEdit) {
+        API.getServiceCredential(editId).then(function(r) { openWith(r.credential || {}); }).catch(function(err) { showToast(err.message, 'error'); });
+    } else {
+        openWith({});
+    }
+}
+
+function submitServiceCredential(editId) {
+    var isEdit = editId != null && editId !== 'null';
+    var body = {
+        service: (document.getElementById('svcCredFormService') && document.getElementById('svcCredFormService').value.trim()) || '',
+        address: (document.getElementById('svcCredFormAddress') && document.getElementById('svcCredFormAddress').value.trim()) || '',
+        service_username: (document.getElementById('svcCredFormUsername') && document.getElementById('svcCredFormUsername').value.trim()) || '',
+        label: (document.getElementById('svcCredFormLabel') && document.getElementById('svcCredFormLabel').value.trim()) || '',
+        notes: (document.getElementById('svcCredFormNotes') && document.getElementById('svcCredFormNotes').value.trim()) || ''
+    };
+    var portEl = document.getElementById('svcCredFormPort');
+    if (portEl && portEl.value.trim()) body.port = parseInt(portEl.value, 10);
+    var pwdEl = document.getElementById('svcCredFormPassword');
+    if (pwdEl && pwdEl.value) body.password = pwdEl.value;
+    if (!body.service) { showToast(t('pages.creds.svcFieldService'), 'warning'); return; }
+    if (!isEdit && !body.password) { showToast(t('pages.creds.svcFieldPasswordNew'), 'warning'); return; }
+    var p = isEdit ? API.updateServiceCredential(editId, body) : API.createServiceCredential(body);
+    p.then(function() {
+        closeModal();
+        showToast(t('toast.saved'));
+        if (typeof window._edgeopsReloadServiceCreds === 'function') window._edgeopsReloadServiceCreds();
+    }).catch(function(err) { showToast(err.message || t('toast.requestFailed'), 'error'); });
+}
+
+function deleteServiceCredential(id) {
+    showConfirm(t('common.delete'), t('pages.creds.svcConfirmDelete')).then(function(ok) {
+        if (!ok) return;
+        API.deleteServiceCredential(id).then(function() {
+            showToast(t('toast.deleted'));
+            if (typeof window._edgeopsReloadServiceCreds === 'function') window._edgeopsReloadServiceCreds();
+        }).catch(function(err) { showToast(err.message, 'error'); });
+    });
+}
+
 function renderCredentialsPage() {
     renderLayout();
     var el = getPageEl();
     el.innerHTML = '<div class="topbar"><h2>' + esc(t('nav.credentials')) + '</h2><div class="topbar-actions"><button type="button" class="btn" id="credPageRefreshBtn">' + esc(t('common.refresh')) + '</button></div></div>'
-        + '<div class="page-content"><div class="tabs"><div class="tab active" data-tab="password">' + esc(t('pages.creds.tabPassword')) + '</div><div class="tab" data-tab="key">' + esc(t('pages.creds.tabKey')) + '</div></div>'
+        + '<div class="page-content"><div class="tabs"><div class="tab active" data-tab="password">' + esc(t('pages.creds.tabPassword')) + '</div><div class="tab" data-tab="key">' + esc(t('pages.creds.tabKey')) + '</div>'
+        + '<div class="tab" data-tab="service" id="credServiceTab" style="display:none">' + esc(t('pages.creds.tabService')) + '</div></div>'
         + '<div id="credPasswordPanel" class="cred-tab-panel"><div id="credPasswordList" class="table-container"></div><div id="credPasswordPagination"></div></div>'
-        + '<div id="credKeyPanel" class="cred-tab-panel" style="display:none"><div id="credKeyList" class="table-container"></div><div id="credKeyPagination"></div></div></div>';
+        + '<div id="credKeyPanel" class="cred-tab-panel" style="display:none"><div id="credKeyList" class="table-container"></div><div id="credKeyPagination"></div></div>'
+        + '<div id="credServicePanel" class="cred-tab-panel" style="display:none"><div class="toolbar" style="margin-bottom:10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center">'
+        + '<input class="form-control" id="svcCredKeyword" style="max-width:220px" placeholder="' + esc(t('pages.creds.svcSearchPh')) + '">'
+        + '<input class="form-control" id="svcCredService" style="max-width:120px" placeholder="' + esc(t('pages.creds.svcServicePh')) + '">'
+        + '<select class="form-control" id="svcCredSortBy" style="max-width:140px"><option value="last_accessed_at">' + esc(t('pages.creds.svcSortLastAccess')) + '</option>'
+        + '<option value="updated_at">' + esc(t('pages.creds.svcSortUpdated')) + '</option><option value="created_at">' + esc(t('pages.creds.svcSortCreated')) + '</option>'
+        + '<option value="service">' + esc(t('pages.creds.svcSortService')) + '</option><option value="address">' + esc(t('pages.creds.svcSortAddress')) + '</option>'
+        + '<option value="service_username">' + esc(t('pages.creds.svcSortUsername')) + '</option><option value="id">' + esc(t('pages.creds.svcSortId')) + '</option></select>'
+        + '<select class="form-control" id="svcCredSortOrder" style="max-width:100px"><option value="desc">' + esc(t('pages.creds.svcOrderDesc')) + '</option>'
+        + '<option value="asc">' + esc(t('pages.creds.svcOrderAsc')) + '</option></select>'
+        + '<button type="button" class="btn btn-sm" id="svcCredSearchBtn">' + esc(t('common.search')) + '</button>'
+        + '<button type="button" class="btn btn-sm btn-primary" id="svcCredAddBtn">' + esc(t('pages.creds.svcAdd')) + '</button></div>'
+        + '<div id="credServiceList" class="table-container"></div></div></div>';
     var activeTab = 'password';
+    var serviceVaultEnabled = false;
     var paginationPw = appendPaginationBar(document.getElementById('credPasswordPagination'), 20);
     var paginationKey = appendPaginationBar(document.getElementById('credKeyPagination'), 20);
+    function loadServiceCreds() {
+        if (!serviceVaultEnabled) return;
+        var params = {
+            keyword: (document.getElementById('svcCredKeyword') && document.getElementById('svcCredKeyword').value.trim()) || undefined,
+            service: (document.getElementById('svcCredService') && document.getElementById('svcCredService').value.trim()) || undefined,
+            sort_by: document.getElementById('svcCredSortBy') ? document.getElementById('svcCredSortBy').value : 'last_accessed_at',
+            sort_order: document.getElementById('svcCredSortOrder') ? document.getElementById('svcCredSortOrder').value : 'desc',
+            limit: 200
+        };
+        API.listServiceCredentials(params).then(function(r) {
+            var list = r.credentials || [];
+            var box = document.getElementById('credServiceList');
+            if (!box) return;
+            if (!list.length) {
+                box.innerHTML = '<p class="empty-state">' + esc(t('pages.creds.svcEmpty')) + '</p>';
+                return;
+            }
+            box.innerHTML = '<table class="data-table sortable-table"><thead><tr>'
+                + '<th>' + esc(t('pages.creds.thSvcId')) + '</th><th>' + esc(t('pages.creds.thSvcService')) + '</th>'
+                + '<th>' + esc(t('pages.creds.thSvcAddress')) + '</th><th>' + esc(t('pages.creds.thSvcPort')) + '</th>'
+                + '<th>' + esc(t('pages.creds.thSvcUser')) + '</th><th>' + esc(t('pages.creds.thSvcLabel')) + '</th>'
+                + '<th>' + esc(t('pages.creds.thSvcHasPwd')) + '</th><th>' + esc(t('pages.creds.thSvcLastAccess')) + '</th>'
+                + '<th>' + esc(t('pages.creds.thSvcUpdated')) + '</th><th>' + esc(t('pages.hosts.thAction')) + '</th></tr></thead><tbody>'
+                + list.map(function(c) {
+                    return '<tr><td>' + esc(c.id) + '</td><td>' + esc(c.service || '') + '</td><td>' + esc(c.address || '') + '</td>'
+                        + '<td>' + esc(c.port != null ? c.port : '') + '</td><td>' + esc(c.service_username || '') + '</td>'
+                        + '<td>' + esc(c.label || '') + '</td><td>' + (c.has_password ? '✓' : '-') + '</td>'
+                        + '<td>' + esc(edgeopsFmtSvcCredTime(c.last_accessed_at)) + '</td>'
+                        + '<td>' + esc(edgeopsFmtSvcCredTime(c.updated_at)) + '</td>'
+                        + '<td><button class="btn btn-sm" onclick="openServiceCredentialModal(' + c.id + ')">' + esc(t('hostDetail.edit')) + '</button> '
+                        + '<button class="btn btn-sm btn-danger" onclick="deleteServiceCredential(' + c.id + ')">' + esc(t('common.delete')) + '</button></td></tr>';
+                }).join('') + '</tbody></table>';
+            initDataTableSortFilter(box);
+        }).catch(function(err) { showToast(err.message, 'error'); });
+    }
+    window._edgeopsReloadServiceCreds = loadServiceCreds;
     function loadPasswordCreds() {
         var params = { page: paginationPw.getPage(), page_size: paginationPw.getPageSize(), type: 'password' };
         API.listCredentials(params).then(function(r) {
@@ -9822,12 +9956,25 @@ function renderCredentialsPage() {
             this.classList.add('active');
             document.getElementById('credPasswordPanel').style.display = activeTab === 'password' ? 'block' : 'none';
             document.getElementById('credKeyPanel').style.display = activeTab === 'key' ? 'block' : 'none';
+            document.getElementById('credServicePanel').style.display = activeTab === 'service' ? 'block' : 'none';
+            if (activeTab === 'service') loadServiceCreds();
         };
     });
+    var svcSearchBtn = document.getElementById('svcCredSearchBtn');
+    if (svcSearchBtn) svcSearchBtn.onclick = loadServiceCreds;
+    var svcAddBtn = document.getElementById('svcCredAddBtn');
+    if (svcAddBtn) svcAddBtn.onclick = function() { openServiceCredentialModal(null); };
+    API.serviceCredentialsEnabled().then(function(r) {
+        serviceVaultEnabled = !!(r && r.enabled);
+        var tab = document.getElementById('credServiceTab');
+        if (tab && serviceVaultEnabled) tab.style.display = '';
+    }).catch(function() {});
     var credPageRefreshBtn = document.getElementById('credPageRefreshBtn');
     if (credPageRefreshBtn) {
         credPageRefreshBtn.onclick = function() {
-            if (activeTab === 'key') loadKeyCreds(); else loadPasswordCreds();
+            if (activeTab === 'service') loadServiceCreds();
+            else if (activeTab === 'key') loadKeyCreds();
+            else loadPasswordCreds();
             showToast(t('toast.refreshed'));
         };
     }

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from database import get_db
@@ -41,8 +42,42 @@ DEFAULT_PORTS: dict[str, int] = {
 
 _PUBLIC_COLUMNS = (
     "id, user_id, host_id, service, address, port, service_username, label, notes, "
-    "linked_credential_id, linked_host_id, created_at, updated_at"
+    "linked_credential_id, linked_host_id, created_at, updated_at, last_accessed_at"
 )
+
+# 列表/详情 SELECT：含 password_enc 存在性，但不向 API 返回明文
+_SELECT_PUBLIC = (
+    _PUBLIC_COLUMNS
+    + ", (CASE WHEN COALESCE(TRIM(password_enc), '') != '' THEN 1 ELSE 0 END) AS _pwd_present"
+)
+
+_SORT_COLUMNS = {
+    "last_accessed_at": "COALESCE(last_accessed_at, created_at)",
+    "created_at": "created_at",
+    "updated_at": "updated_at",
+    "service": "lower(service)",
+    "address": "lower(address)",
+    "service_username": "lower(service_username)",
+    "id": "id",
+}
+
+_COMMAND_SERVICE_TOKENS: dict[str, str] = {
+    "ssh": "ssh",
+    "scp": "ssh",
+    "sftp": "ssh",
+    "rsync": "ssh",
+    "mysql": "mysql",
+    "mysqldump": "mysql",
+    "mariadb": "mysql",
+    "psql": "postgres",
+    "pg_dump": "postgres",
+    "redis-cli": "redis",
+    "mongo": "mongodb",
+    "mongosh": "mongodb",
+    "ftp": "ftp",
+    "lftp": "ftp",
+    "sudo": "sudo",
+}
 
 
 def _norm(s: str | None) -> str:
@@ -108,11 +143,275 @@ async def filter_credential_vault_tools(tools: list) -> list:
 def row_to_public_dict(row: dict) -> dict:
     """列表/详情用：绝不包含 password_enc 明文。"""
     d = dict(row)
-    has_stored = bool(_norm(row.get("password_enc") or ""))
+    has_stored = bool(row.get("_pwd_present")) or bool(_norm(row.get("password_enc") or ""))
     has_link = bool(row.get("linked_host_id") or row.get("linked_credential_id"))
     d.pop("password_enc", None)
+    d.pop("_pwd_present", None)
     d["has_password"] = has_stored or has_link
     return d
+
+
+def infer_credential_hints_from_command(command: str) -> dict[str, Any]:
+    """从待执行命令推断可能匹配的 service/address/port/username（供 AI 搜索凭证）。"""
+    cmd = (command or "").strip()
+    if not cmd:
+        return {}
+    lower = cmd.lower()
+    parts = lower.split()
+    first = parts[0] if parts else ""
+    service = _COMMAND_SERVICE_TOKENS.get(first)
+    if "sudo" in lower and not service:
+        service = "sudo"
+
+    address: str | None = None
+    port: int | None = None
+    service_username: str | None = None
+
+    user_host = re.search(
+        r"(?:@|^|\s)([A-Za-z0-9._-]+)@"
+        r"([A-Za-z0-9._-]+(?:\.[A-Za-z0-9._-]+)*|\d{1,3}(?:\.\d{1,3}){3})",
+        cmd,
+    )
+    if user_host:
+        service = service or "ssh"
+        service_username = user_host.group(1)
+        address = user_host.group(2)
+
+    host_flag = re.search(r"(?:^|\s)-h\s+(\S+)", cmd, re.I)
+    if host_flag:
+        address = address or host_flag.group(1)
+        if not service and host_flag:
+            service = service or "mysql"
+
+    user_flag = re.search(r"(?:^|\s)-u\s+(\S+)", cmd, re.I)
+    if user_flag:
+        service_username = service_username or user_flag.group(1)
+
+    port_cap = re.search(r"(?:^|\s)-P\s+(\d+)(?:\s|$)", cmd)
+    if port_cap:
+        port = int(port_cap.group(1))
+
+    ssh_port = re.search(r"(?:^|\s)-p\s+(\d+)(?:\s|$)", cmd, re.I)
+    if ssh_port and (service in (None, "ssh") or first in ("ssh", "scp", "sftp", "rsync")):
+        service = service or "ssh"
+        port = port or int(ssh_port.group(1))
+
+    if not address and first in ("ssh", "scp", "sftp", "rsync"):
+        bare = re.search(
+            r"(?:^|\s)(?:ssh|scp|sftp|rsync)\s+(?:[^\s]+\s+)?([A-Za-z0-9._-]+(?:\.[A-Za-z0-9._-]+)*|\d{1,3}(?:\.\d{1,3}){3})(?:\s|:|$)",
+            cmd,
+            re.I,
+        )
+        if bare and "@" not in bare.group(1):
+            service = service or "ssh"
+            address = bare.group(1)
+
+    out: dict[str, Any] = {}
+    if service:
+        out["service"] = service
+    if address:
+        out["address"] = address
+    if port is not None:
+        out["port"] = port
+    if service_username:
+        out["service_username"] = service_username
+    return out
+
+
+def _normalize_sort(sort_by: str | None, sort_order: str | None) -> tuple[str, str]:
+    key = (sort_by or "last_accessed_at").strip().lower()
+    if key not in _SORT_COLUMNS:
+        key = "last_accessed_at"
+    order = (sort_order or "desc").strip().lower()
+    if order not in ("asc", "desc"):
+        order = "desc"
+    return key, order
+
+
+def _credential_identity_key(row: dict) -> tuple:
+    svc = _norm(row.get("service")).lower() or "other"
+    addr = _norm_addr(row.get("address"))
+    uname = _norm(row.get("service_username")).lower()
+    return (svc, addr, effective_port(svc, row.get("port")), uname)
+
+
+def _credential_recency_key(row: dict) -> tuple:
+    la = row.get("last_accessed_at") or ""
+    ua = row.get("updated_at") or ""
+    ca = row.get("created_at") or ""
+    rid = int(row.get("id") or 0)
+    return (str(la), str(ua), str(ca), rid)
+
+
+def dedupe_credentials_keep_newest(items: list[dict]) -> list[dict]:
+    """同一 service+address+port+service_username 仅保留最新一条。"""
+    best: dict[tuple, dict] = {}
+    for row in items:
+        k = _credential_identity_key(row)
+        if k not in best or _credential_recency_key(row) > _credential_recency_key(best[k]):
+            best[k] = row
+    out = list(best.values())
+    out.sort(key=_credential_recency_key, reverse=True)
+    return out
+
+
+def apply_credential_resolution(
+    result: dict[str, Any],
+    items: list[dict],
+    *,
+    inferred: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """根据去重后的候选集写入 resolution / suggested_credential_id / need_user_choice。"""
+    inferred = inferred or {}
+    deduped = dedupe_credentials_keep_newest(items)
+    result["credentials"] = deduped
+    result["count"] = len(deduped)
+    if items and len(items) != len(deduped):
+        result["deduped_from"] = len(items)
+
+    svc = inferred.get("service") or (deduped[0].get("service") if len(deduped) == 1 else None)
+    addr = inferred.get("address") or (deduped[0].get("address") if len(deduped) == 1 else None)
+
+    if not deduped:
+        result["resolution"] = "ask_user_identity"
+        result["need_user_choice"] = False
+        result["choice_hint"] = (
+            f"未找到 service={svc or '?'} address={addr or '?'} 的服务凭证。"
+            "请 ask_user_choice：① 用户指定登录用户名；② 使用当前控制台/会话用户名（whoami，勿臆测其它默认用户）；"
+            "选定后 add_service_credential 保存，或确认无密码后执行。"
+        )
+        return result
+
+    if len(deduped) == 1:
+        result["resolution"] = "use_credential"
+        result["suggested_credential_id"] = deduped[0].get("id")
+        result["need_user_choice"] = False
+        result["choice_hint"] = (
+            f"仅 1 条匹配凭证 id={deduped[0].get('id')} "
+            f"({deduped[0].get('service_username') or '无用户名'})，可直接用于 send_service_password。"
+        )
+        return result
+
+    result["resolution"] = "user_choice"
+    result["need_user_choice"] = True
+    result["choice_hint"] = (
+        f"匹配到 {len(deduped)} 条不同登录身份的服务凭证（已合并同用户重复项，各保留最新）。"
+        "请 ask_user_choice 展示 id、service_username、label、has_password，让用户选定 credential_id。"
+        "**禁止**默认使用当前控制台登录用户名，除非用户明确选择。"
+    )
+    return result
+
+
+async def search_credentials_for_user(
+    user_id: int,
+    *,
+    service: str | None = None,
+    address: str | None = None,
+    port: int | None = None,
+    service_username: str | None = None,
+    host_id: int | None = None,
+    credential_id: int | None = None,
+    keyword: str | None = None,
+    command_hint: str | None = None,
+    sort_by: str | None = "last_accessed_at",
+    sort_order: str | None = "desc",
+    limit: int | None = 50,
+    resolve: bool = True,
+) -> dict[str, Any]:
+    """搜索/列出凭证元数据；支持 command_hint 推断过滤、去重取最新、自动 resolution。"""
+    inferred: dict[str, Any] = {}
+    if command_hint:
+        inferred = infer_credential_hints_from_command(command_hint)
+        service = service or inferred.get("service")
+        if address is None and inferred.get("address"):
+            address = inferred.get("address")
+        if port is None and inferred.get("port") is not None:
+            port = inferred.get("port")
+        # 选凭证阶段不按命令里的 user@ 过滤：先列出该 IP+service 下全部身份，避免默认当前机用户
+        if not service_username and inferred.get("service_username"):
+            inferred["command_username"] = inferred.get("service_username")
+
+    db = await get_db()
+    sql = f"SELECT {_SELECT_PUBLIC} FROM host_service_credentials WHERE user_id = ?"
+    params: list[Any] = [user_id]
+
+    if credential_id is not None:
+        sql += " AND id = ?"
+        params.append(int(credential_id))
+    if service:
+        sql += " AND lower(service) = lower(?)"
+        params.append(_norm(service))
+    if address is not None:
+        addr = _norm_addr(address)
+        if addr:
+            sql += " AND lower(address) = lower(?)"
+            params.append(addr)
+        elif service and _norm(service).lower() == "sudo":
+            sql += " AND (address = '' OR address IS NULL)"
+    if service_username:
+        sql += " AND lower(service_username) = lower(?)"
+        params.append(_norm(service_username))
+    if host_id is not None:
+        sql += " AND host_id = ?"
+        params.append(host_id)
+
+    kw = _norm(keyword)
+    if kw:
+        like = f"%{kw.lower()}%"
+        sql += (
+            " AND (CAST(id AS TEXT) LIKE ? OR lower(address) LIKE ?"
+            " OR lower(service_username) LIKE ? OR lower(label) LIKE ?"
+            " OR lower(notes) LIKE ? OR lower(service) LIKE ?)"
+        )
+        params.extend([like, like, like, like, like, like])
+
+    sort_key, sort_ord = _normalize_sort(sort_by, sort_order)
+    sql += f" ORDER BY {_SORT_COLUMNS[sort_key]} {sort_ord.upper()}, id DESC"
+
+    lim = 50 if limit is None else max(1, min(int(limit), 200))
+    sql += " LIMIT ?"
+    params.append(lim)
+
+    rows = await db.execute_fetchall(sql, params)
+    items = [row_to_public_dict(dict(r)) for r in rows]
+    if port is not None:
+        items = [i for i in items if ports_match(i.get("service"), i.get("port"), port)]
+
+    result: dict[str, Any] = {
+        "credentials": items,
+        "count": len(items),
+    }
+    if inferred:
+        result["inferred_hints"] = inferred
+    if resolve and (command_hint or service or address):
+        apply_credential_resolution(result, items, inferred=inferred)
+    elif command_hint and len(items) > 1:
+        result["need_user_choice"] = True
+        result["resolution"] = "user_choice"
+        result["choice_hint"] = "匹配到多条凭证，请 ask_user_choice 让用户选定 credential_id"
+    elif command_hint and len(items) == 1:
+        result["suggested_credential_id"] = items[0].get("id")
+        result["resolution"] = "use_credential"
+    return result
+
+
+async def get_credential_for_user(user_id: int, credential_id: int) -> dict | None:
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        f"SELECT {_SELECT_PUBLIC} FROM host_service_credentials WHERE id = ? AND user_id = ?",
+        (credential_id, user_id),
+    )
+    return row_to_public_dict(dict(rows[0])) if rows else None
+
+
+async def touch_credential_access(user_id: int, credential_id: int) -> None:
+    db = await get_db()
+    await db.execute(
+        "UPDATE host_service_credentials SET last_accessed_at = CURRENT_TIMESTAMP "
+        "WHERE id = ? AND user_id = ?",
+        (int(credential_id), user_id),
+    )
+    await db.commit()
 
 
 async def list_credentials_for_user(
@@ -123,28 +422,26 @@ async def list_credentials_for_user(
     port: int | None = None,
     service_username: str | None = None,
     host_id: int | None = None,
+    keyword: str | None = None,
+    command_hint: str | None = None,
+    sort_by: str | None = "last_accessed_at",
+    sort_order: str | None = "desc",
+    limit: int | None = 50,
 ) -> list[dict]:
-    db = await get_db()
-    sql = f"SELECT {_PUBLIC_COLUMNS} FROM host_service_credentials WHERE user_id = ?"
-    params: list[Any] = [user_id]
-    if service:
-        sql += " AND lower(service) = lower(?)"
-        params.append(_norm(service))
-    if address is not None:
-        sql += " AND lower(address) = lower(?)"
-        params.append(_norm_addr(address))
-    if service_username:
-        sql += " AND lower(service_username) = lower(?)"
-        params.append(_norm(service_username))
-    if host_id is not None:
-        sql += " AND host_id = ?"
-        params.append(host_id)
-    sql += " ORDER BY updated_at DESC, id DESC"
-    rows = await db.execute_fetchall(sql, params)
-    items = [row_to_public_dict(dict(r)) for r in rows]
-    if port is not None:
-        items = [i for i in items if ports_match(i.get("service"), i.get("port"), port)]
-    return items
+    result = await search_credentials_for_user(
+        user_id,
+        service=service,
+        address=address,
+        port=port,
+        service_username=service_username,
+        host_id=host_id,
+        keyword=keyword,
+        command_hint=command_hint,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        limit=limit,
+    )
+    return result["credentials"]
 
 
 async def add_credential(
@@ -197,7 +494,7 @@ async def add_credential(
     rid = (await db.execute_fetchall("SELECT last_insert_rowid() AS id"))[0]
     cid = rid["id"] if isinstance(rid, dict) else rid[0]
     rows = await db.execute_fetchall(
-        f"SELECT {_PUBLIC_COLUMNS} FROM host_service_credentials WHERE id = ? AND user_id = ?",
+        f"SELECT {_SELECT_PUBLIC} FROM host_service_credentials WHERE id = ? AND user_id = ?",
         (cid, user["id"]),
     )
     return row_to_public_dict(dict(rows[0]))
@@ -267,7 +564,7 @@ async def update_credential(
     )
     await db.commit()
     rows = await db.execute_fetchall(
-        f"SELECT {_PUBLIC_COLUMNS} FROM host_service_credentials WHERE id = ? AND user_id = ?",
+        f"SELECT {_SELECT_PUBLIC} FROM host_service_credentials WHERE id = ? AND user_id = ?",
         (credential_id, user["id"]),
     )
     return row_to_public_dict(dict(rows[0]))
@@ -380,6 +677,17 @@ async def resolve_credential_for_injection(
     return row, pwd
 
 
+def _ssh_channel_tail_text(channel_id: int, *, last_n: int = 30) -> str:
+    """读取 SSH 通道末尾若干行纯文本，用于密码提示检测（不含行号前缀）。"""
+    from services.ssh_channel_manager import SSHChannelManager
+
+    result = SSHChannelManager.get_instance().get_lines(int(channel_id), last_n=last_n)
+    if not result:
+        return ""
+    lines, _, _ = result
+    return "\n".join(str(ln.get("content") or "") for ln in lines)
+
+
 async def inject_password_to_target(
     user: dict,
     *,
@@ -458,7 +766,7 @@ async def perform_service_password_injection(
     slot: int | None = None,
     channel_id: int | None = None,
     terminal_scope_id: str | None = None,
-    require_password_prompt: bool = True,
+    require_password_prompt: bool = False,
     tail_text: str | None = None,
 ) -> dict:
     """程序化注入：按 credential_id 查凭证库 → 写 PTY stdin。密码不出现在返回值中。供 AI 工具 / REST 共用。"""
@@ -473,10 +781,11 @@ async def perform_service_password_injection(
             if target == "ssh_channel":
                 if channel_id is None:
                     return {"success": False, "error": "ssh_channel 需要 channel_id"}
-                from services.ssh_channel_manager import SSHChannelManager
+                from services.ssh_channel_service import reconcile_channel_if_stale
 
-                result = SSHChannelManager.get_instance().get_lines(int(channel_id), last_n=30)
-                tail_text = "\n".join(result[0]) if result else ""
+                db = await get_db()
+                await reconcile_channel_if_stale(db, user, int(channel_id))
+                tail_text = _ssh_channel_tail_text(int(channel_id))
             elif target == "local_terminal":
                 from api import local_host
 
@@ -527,6 +836,7 @@ async def perform_service_password_injection(
     if not ok:
         return {"success": False, "error": msg}
     cid = cred_row.get("id") if cred_row else int(credential_id)
+    await touch_credential_access(user["id"], int(cid))
     await log_credential_injection_audit(
         user_id=user["id"],
         host_id=int(host_id) if host_id is not None else None,
@@ -586,25 +896,31 @@ async def build_credential_vault_system_section() -> str:
 凭证按用户保存；**密码仅存在于服务端**，AI **只能看元数据、不能读密码**，也**禁止在回复中向用户重复索要已保存的密码**。
 
 ### 设计原则（必须遵守）
-1. **AI 负责决策**：查凭证表、与用户确认、选定 `credential_id`、选定注入目标（terminal / ssh_channel）。
-2. **工具负责注入**：`send_service_password(credential_id, target, …)` 在服务端查库写 PTY stdin；**密码不出现在工具返回 JSON 与模型上下文中**。
-3. **不要自动瞎猜**：不要跳过 list/确认直接靠 service+address 模糊匹配；不要 `send_to_terminal` 发明文密码。
+1. **先查凭证、再定身份、再执行**：从 A 机 SSH/MySQL/SCP 等到 B 机时，**先** `list_service_credentials(service=…, address=目标IP, command_hint=待执行命令)`；**禁止**默认用当前控制台登录用户名充当目标机 SSH 用户。
+2. **SCP/SFTP/rsync 与 SSH 共用凭证**：这些命令本质走 SSH，查凭证时 **`service=ssh`**（`command_hint` 含 scp 时会自动推断为 ssh）。
+3. **resolution 字段**（工具返回）：`use_credential`→直接用 `suggested_credential_id`；`user_choice`→**ask_user_choice** 让用户选 id；`ask_user_identity`→无凭证，**ask_user_choice** 提供「指定用户名 / 使用当前控制台用户名(whoami)」后再 `add_service_credential`。
+4. **同用户重复凭证**：列表已按 service+address+port+username **去重保留最新**（last_accessed_at / updated_at / id）。
+5. **注入**：选定 `credential_id` 后 `send_service_password`；密码不进模型上下文；勿 `ssh_channel_send` 发明文。
 
 ### 可用工具
-- `list_service_credentials` — 元数据（id、service、address、port、service_username、label、has_password）
+- `list_service_credentials` — 搜索（command_hint、service、address；**不因命令里 user@ 而隐藏其它用户凭证**）
 - `add_service_credential` / `update_service_credential` / `delete_service_credential`
-- `send_service_password` — **唯一**注入入口（须传 `credential_id` + `target`）
+- `send_service_password` — 密码注入（须 credential_id）
 
-### 标准流程（Web 控制台 terminal）
-1. `send_to_terminal` **仅**发命令（如 sudo、ssh user@host）
-2. `get_terminal_buffer` 看末尾是否出现 password 提示
-3. `list_service_credentials`（可按 service/address 过滤）→ 若无合适条目则 `add_service_credential`（用户口述时）或 `ask_user_choice`
-4. `send_service_password(credential_id=…, target=terminal, host_id=控制台主机, slot=…)`
+### 跨机登录选凭证（SSH / SCP / MySQL 等）
+1. 明确 **目标 IP/域名** 与 **服务类型**（scp→ssh；mysql→mysql）
+2. `list_service_credentials(command_hint="ssh 172.31.0.1" 或 "scp … user@172.31.0.1:…")` 或 `service="ssh", address="172.31.0.1"`
+3. 看 `resolution`：
+   - **use_credential**：用 `suggested_credential_id` 构造 `ssh user@host` 或注入密码
+   - **user_choice**：ask_user_choice 列出各条 `service_username` / label / id
+   - **ask_user_identity**：ask_user_choice（指定用户名 | 使用当前控制台 whoami 用户名）→ 无则 add_service_credential
+4. 出现 password 提示 → `send_service_password(credential_id, target=…)`
 
-### 标准流程（ssh_channel，逻辑相同）
-1. `ssh_channel_send` 发命令 → `ssh_channel_read_lines` 看末尾提示
-2. `list_service_credentials` → 选定 `credential_id`
-3. `send_service_password(credential_id=…, target=ssh_channel, channel_id=…)`
+### 标准流程（ssh_channel）
+1. `ssh_channel_send` 发 **ssh/scp 等命令**（用户名应来自上一步选定的凭证，勿臆测）
+2. `ssh_channel_read_lines` 确认交互状态
+3. `list_service_credentials` 选 credential_id
+4. `send_service_password(credential_id, target=ssh_channel, channel_id=…)`
 
 ### 与 SSH 登录凭证（credentials 表）的区别
 `credentials` + hosts = **毛竹 SSH 连主机**；本库 = **连上之后还要登录的服务**（sudo / 跳板 ssh / mysql 等）。

@@ -4764,6 +4764,7 @@ def _build_system_prompt() -> str:
 - 用户告知某台主机的账户、密码、Token、私钥口令、数据库连接凭据等**机密信息**时，用 update_host_knowledge 或 append_host_knowledge 记录到该主机下；之后在「当前控制台所在主机的 AI 知识」中会自动注入，供你使用。**严禁**在回复中原文引用或展示这些机密。
 - 能力/规则/工具链/配置等**可展示的描述性信息**应使用 update_host_prompt / append_host_prompt 写入主机级提示词，而非主机知识库。
 - sudo 与密码（终端交互，**必须先观察输出再决定是否输入**）：
+  - **跨机 SSH/SCP/MySQL 等（凭证库启用时）**：从当前控制台 SSH/SCP 到**另一 IP** 前，**先** `list_service_credentials(service=目标服务, address=目标IP, command_hint=待执行命令)`——**scp/sftp/rsync 按 service=ssh**；看 `resolution`：唯一→`suggested_credential_id`；多条→**ask_user_choice**；无→**ask_user_choice**（用户指定用户名 | 使用当前控制台 whoami）再 `add_service_credential`。**禁止**默认用当前机登录用户充当目标 SSH 用户；同用户重复凭证工具已去重保留最新。
   - 不少账号已配置免密 sudo（NOPASSWD），**默认假定无需密码**。不要在一开始就向用户索要 sudo 密码，也不要凭「主机知识里有 sudo 密码」就预防性输入。
   - **禁止**在 `send_to_terminal` 中把 sudo 命令与密码写在同一次调用里，也**禁止**连续两次调用「先发 sudo、紧接着立刻发密码」。正确流程：① `send_to_terminal` **仅**发送 sudo 命令（一条）；② **必须**调用 `get_terminal_buffer` 查看缓冲区末尾；③ **仅当**输出中明确出现 sudo 密码提示（如 `[sudo] password for`、`Password:`、`口令：` 等）时，才注入密码——**凭证库已启用时**调用 `send_service_password`（勿用 send_to_terminal 发明文）；未启用时从主机知识取密码或请用户保存后再注入；④ 若未出现上述提示（命令已继续、出现 root 提示符 `#`、正常后续输出等），说明免密 sudo 或已认证成功，**不要**再发送任何密码，也**不要**向用户索要。
   - **Web 控制台**与 **ssh_channel** 交互流程相同：先 send / read 末尾；**仅当**出现 sudo 密码提示时：**先** `list_service_credentials` 选定 `credential_id`（可与用户 `ask_user_choice`），**再** `send_service_password(credential_id=…, target=terminal|ssh_channel, host_id|channel_id=…)`。密码由服务端注入，**禁止**用 send_to_terminal 发明文，**禁止**让模型读取或回显密码。

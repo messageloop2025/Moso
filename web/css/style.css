@@ -4506,10 +4506,18 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
     border-top: 0;
     background: transparent;
 }
+.ai-runtime-awaiting-hint {
+    font-size: 12px;
+    color: var(--warning, #d97706);
+    white-space: nowrap;
+    align-self: center;
+    flex-shrink: 0;
+    margin-right: 4px;
+}
 .chat-input-area.runtime-control-active {
     align-items: center;
 }
-.chat-input-area.runtime-control-active .chat-low-interaction-toggle {
+.chat-input-area.runtime-control-active:not(.runtime-awaiting-confirm) .chat-low-interaction-toggle {
     display: none;
 }
 .chat-input-area.runtime-control-active .ai-runtime-control-inline {
@@ -4521,8 +4529,14 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
 .chat-input-area.runtime-awaiting-confirm .chat-input-multiline:not(.ai-runtime-control-input) {
     opacity: 1;
 }
-.chat-input-area.runtime-awaiting-confirm .ai-runtime-control-tip {
+.chat-input-area.runtime-awaiting-confirm .ai-runtime-awaiting-hint {
     color: var(--warning, #d97706);
+}
+.chat-input-area .btn-primary {
+    flex-shrink: 0;
+}
+.chat-input-area .btn-sm {
+    flex-shrink: 0;
 }
 .ai-reply-incomplete-banner {
     margin-top: 10px;

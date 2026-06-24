@@ -24,11 +24,13 @@
 
 | 字段 | 说明 |
 |------|------|
+| `last_accessed_at` | **最近使用**时间（`send_service_password` 成功注入时更新） |
 | `service` | 服务/协议：`sudo`、`ssh`、`mysql`、`postgres`、`redis`、`ftp`、`other` 等 |
 | `address` | 目标 IP/域名；**sudo 留空**表示本机 sudo |
 | `port` | 端口；省略或 NULL 时使用默认（ssh=22、mysql=3306、postgres=5432、ftp=21…） |
 | `service_username` | 服务账户名；**同一 service+address 下不同用户**用此字段区分 |
 | `label` / `notes` | 标签与备注（可查询） |
+| `has_password` | **是否有可用密码**（库中已存 `password_enc`，或设置了 `linked_host_id` / `linked_credential_id`）；列表 API 计算该字段，**不返回明文** |
 | `linked_host_id` | 可选：目标 SSH 主机已在平台管理时，复用其 **登录密码** |
 | `linked_credential_id` | 可选：引用「凭证管理」中 `credentials.id` 的登录密码 |
 | 密码 | 写入后 **不可查询**；设 `linked_*` 时可不存明文 |
@@ -78,13 +80,27 @@ add_service_credential(
 )
 ```
 
+### 跨机登录选凭证（SSH / SCP / MySQL）
+
+从 **A 机** 连 **B 机**（或 scp 到 B）时：
+
+1. **先查凭证**：`list_service_credentials(service="ssh", address="B的IP", command_hint="ssh …" 或 "scp …")`  
+   - **scp / sftp / rsync 一律按 `service=ssh` 查凭证**（走 SSH 认证）
+2. 看返回 **`resolution`**：
+   - `use_credential` → 用 `suggested_credential_id` 里的 `service_username` 构造命令
+   - `user_choice` → **ask_user_choice** 让用户选 credential_id
+   - `ask_user_identity` → 无凭证：**ask_user_choice**（① 指定用户名 ② 使用当前控制台 whoami）
+3. **禁止**默认用「当前 SSH 控制台登录用户」当作目标机用户
+4. 同 `service+address+port+username` 多条重复 → 工具**自动保留最新**
+5. 出现 password 提示 → `send_service_password(credential_id, …)`
+
 ---
 
 ## 4. AI 工具
 
 | 工具 | 作用 |
 |------|------|
-| `list_service_credentials` | 列出当前用户凭证元数据（可按 service/address/port/username 过滤） |
+| `list_service_credentials` | 搜索/列出凭证元数据（`command_hint`、keyword、过滤、排序；含 `last_accessed_at`） |
 | `add_service_credential` | 新增 |
 | `update_service_credential` | 更新元数据或密码 |
 | `delete_service_credential` | 删除 |
@@ -98,7 +114,7 @@ add_service_credential(
 
 1. `send_to_terminal` 仅发命令  
 2. `get_terminal_buffer` 确认出现 password 提示  
-3. `list_service_credentials` → 与用户确认 `credential_id`（无则 `add_service_credential`）  
+3. `list_service_credentials(command_hint=待执行命令)` → 与用户确认 `credential_id`（多条则 `ask_user_choice`；无则 `add_service_credential`）  
 4. `send_service_password(credential_id=…, target=terminal, host_id=…, slot=…)`
 
 **SSH 通道（ssh_channel）** — 同上，步骤 1–2 换 `ssh_channel_send` + `ssh_channel_read_lines`；步骤 4 用 `target=ssh_channel, channel_id=…`。
@@ -114,7 +130,8 @@ add_service_credential(
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/enabled` | 是否已开启 |
-| GET | `/` | 列出当前用户凭证元数据 |
+| GET | `/` | 搜索/列出（query：`keyword`、`command_hint`、`service`、`sort_by`、`sort_order` 等） |
+| GET | `/{id}` | 单条详情（无密码） |
 | POST | `/` | 新增（body 含 `service`；`password` 或 `linked_*`） |
 | PUT | `/{id}` | 更新 |
 | DELETE | `/{id}` | 删除 |
@@ -130,7 +147,7 @@ add_service_credential(
 | `channel_id` | ssh_channel 时必填 | SSH 通道 id |
 | `slot` | 否 | 控制台槽位 |
 | `scope_id` | 否 | 终端 scope |
-| `require_password_prompt` | 否 | 默认 `true`：须检测到 password 提示再注入 |
+| `require_password_prompt` | 否 | 默认 `false`：直接注入；设为 `true` 时须检测到 password 提示再注入 |
 
 响应不含明文密码；失败时 HTTP 400，`detail` 为 `{ success: false, error: "..." }`。
 

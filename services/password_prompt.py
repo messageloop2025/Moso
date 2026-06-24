@@ -8,12 +8,15 @@ _PASSWORD_PROMPT_PATTERNS = (
     re.compile(r"\[sudo\]\s+password\s+for\s+", re.I),
     re.compile(r"\bsudo:\s*.*password", re.I),
     re.compile(r"password\s*:\s*$", re.I),
+    re.compile(r"password\s*:\s*", re.I),
+    re.compile(r"'s\s+password\s*:", re.I),
     re.compile(r"passphrase\s+for\s+key", re.I),
     re.compile(r"enter\s+password\s+for\s+", re.I),
     re.compile(r"\'(?:password|passwd)\'\s*:\s*$", re.I),
     re.compile(r"mysql.*password:", re.I),
     re.compile(r"postgresql.*password\s+for\s+user", re.I),
     re.compile(r"redis.*auth", re.I),
+    re.compile(r"permission denied,\s*please try again", re.I),
 )
 
 

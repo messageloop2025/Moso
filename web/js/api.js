@@ -254,6 +254,19 @@ var API = {
     deleteCredential: function(id) { return this.del('/credentials/' + id); },
     generateKey: function(keyType, keyBits) { return this.post('/credentials/generate-key', { key_type: keyType || 'RSA', key_bits: keyBits || 2048 }); },
 
+    serviceCredentialsEnabled: function() { return this.get('/service-credentials/enabled'); },
+    listServiceCredentials: function(params) {
+        var q = params && Object.keys(params).length ? '?' + new URLSearchParams(Object.keys(params).reduce(function(acc, k) {
+            if (params[k] !== undefined && params[k] !== null && params[k] !== '') acc[k] = params[k];
+            return acc;
+        }, {})).toString() : '';
+        return this.get('/service-credentials' + q);
+    },
+    getServiceCredential: function(id) { return this.get('/service-credentials/' + parseInt(id, 10)); },
+    createServiceCredential: function(data) { return this.post('/service-credentials', data || {}); },
+    updateServiceCredential: function(id, data) { return this.put('/service-credentials/' + parseInt(id, 10), data || {}); },
+    deleteServiceCredential: function(id) { return this.del('/service-credentials/' + parseInt(id, 10)); },
+
     listHostGroups: function() { return this.get('/host-groups'); },
     hostGroupsTree: function() { return this.get('/host-groups/tree'); },
     getHostGroup: function(id) { return this.get('/host-groups/' + id); },

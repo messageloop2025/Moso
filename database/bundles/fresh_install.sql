@@ -1,5 +1,5 @@
 -- 毛竹 fresh install SQL snapshot
--- schema_version target after apply: 33
+-- schema_version target after apply: 35
 -- generated_at_utc: 2026-06-24T04:50:40Z
 -- Regenerate: python scripts/regenerate_fresh_install_sql.py
 
@@ -200,6 +200,7 @@ CREATE TABLE host_service_credentials (
             linked_host_id INTEGER,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            last_accessed_at DATETIME,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
             FOREIGN KEY (host_id) REFERENCES hosts(id) ON DELETE SET NULL,
             FOREIGN KEY (linked_credential_id) REFERENCES credentials(id) ON DELETE SET NULL,
@@ -338,7 +339,7 @@ CREATE TABLE schema_version (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     version INTEGER NOT NULL DEFAULT 0
 );
-INSERT INTO "schema_version" VALUES(1,33);
+INSERT INTO "schema_version" VALUES(1,35);
 CREATE TABLE server_maintenance_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     host TEXT NOT NULL,
@@ -653,6 +654,7 @@ CREATE INDEX idx_user_mcp_servers_user ON user_mcp_servers(user_id, enabled);
 CREATE INDEX idx_user_skills_user ON user_skills(user_id, enabled);
 CREATE INDEX idx_hsc_user ON host_service_credentials(user_id);
 CREATE INDEX idx_hsc_user_lookup ON host_service_credentials(user_id, service, address, port, service_username);
+CREATE INDEX idx_hsc_user_last_access ON host_service_credentials(user_id, last_accessed_at);
 DELETE FROM "sqlite_sequence";
 INSERT INTO "sqlite_sequence" VALUES('users',1);
 INSERT INTO "sqlite_sequence" VALUES('skills',3);

@@ -1343,6 +1343,7 @@ async def _migrate_host_service_credentials(db: aiosqlite.Connection) -> None:
             linked_host_id INTEGER,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            last_accessed_at DATETIME,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
             FOREIGN KEY (host_id) REFERENCES hosts(id) ON DELETE SET NULL,
             FOREIGN KEY (linked_credential_id) REFERENCES credentials(id) ON DELETE SET NULL,
@@ -1372,6 +1373,22 @@ async def _migrate_service_credentials_port(db: aiosqlite.Connection) -> None:
     if not path.is_file():
         return
     spec = importlib.util.spec_from_file_location("migration_033_sn", path)
+    if not spec or not spec.loader:
+        return
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    await mod.upgrade(db)
+
+
+async def _migrate_service_credentials_last_accessed(db: aiosqlite.Connection) -> None:
+    """幂等版「034」：last_accessed_at 列。"""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent / "migrations" / "034_service_credentials_last_accessed.py"
+    if not path.is_file():
+        return
+    spec = importlib.util.spec_from_file_location("migration_034_sn", path)
     if not spec or not spec.loader:
         return
     mod = importlib.util.module_from_spec(spec)
@@ -1526,6 +1543,7 @@ async def _ensure_full_schema_safety_net(db: aiosqlite.Connection) -> None:
         ("user_skills", _migrate_user_skills),
         ("host_service_credentials", _migrate_host_service_credentials),
         ("host_service_credentials port + nullable host_id", _migrate_service_credentials_port),
+        ("host_service_credentials last_accessed_at", _migrate_service_credentials_last_accessed),
         # SCHEMA_SQL 里也声明了、但保留作双保险
         ("ai_host_knowledge", _migrate_ai_host_knowledge),
         ("ai_host_prompts", _migrate_ai_host_prompts),
