@@ -198,7 +198,7 @@
     "sshChannelClosed": "已关闭",
     "sshChannelSent": "已发送",
     "sshChannelLastLines": "最后 {{n}} 行",
-    "sshChannelTermHint": "xterm 终端：支持 ANSI 颜色；可直接输入；点「刷新输出」看最近 80 行快照，或「实时连接」跟踪输出",
+    "sshChannelTermHint": "xterm 终端：支持 ANSI 颜色；输入后按 Enter 发送整行（Ctrl+C 等立即发送）；刷新输出看最近 80 行，或「实时连接」跟踪输出",
     "sshChannelLiveConnect": "实时连接",
     "sshChannelLiveDisconnect": "断开实时",
     "sshChannelLiveActiveHint": "实时连接中，请断开后再用手动刷新",

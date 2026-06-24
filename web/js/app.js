@@ -7027,6 +7027,50 @@ function edgeopsInitSshChannelTab(cfg) {
     var inputViaWs = false;
     var lastWsLine = 0;
     var lastWsPartial = '';
+    var lineInputBuffer = '';
+
+    function resetLineInputBuffer() {
+        lineInputBuffer = '';
+    }
+
+    /** 缓冲到 Enter 再发送；Ctrl+C 等控制键立即发送（避免逐字符触发后端自动补 \\n 执行） */
+    function sendChannelRaw(data) {
+        if (!selectedId || !data) return;
+        if (inputViaWs) {
+            if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
+        } else {
+            API.sendSshChannel(selectedId, data).catch(function(err) {
+                showToast((err && err.message) || t('toast.requestFailed'), 'error');
+            });
+        }
+    }
+
+    function handleTermLineInput(data) {
+        if (!selectedId || data == null || data === '') return;
+        if (data.charCodeAt(0) === 27) return;
+        var i, ch, code;
+        for (i = 0; i < data.length; i++) {
+            ch = data[i];
+            code = ch.charCodeAt(0);
+            if (code < 32 && code !== 9 && code !== 10 && code !== 13) {
+                resetLineInputBuffer();
+                sendChannelRaw(ch);
+                continue;
+            }
+            if (ch === '\r' || ch === '\n') {
+                sendChannelRaw(lineInputBuffer + '\n');
+                resetLineInputBuffer();
+                continue;
+            }
+            if (ch === '\x7f' || ch === '\b') {
+                lineInputBuffer = lineInputBuffer.slice(0, -1);
+                continue;
+            }
+            if (code >= 32 || ch === '\t') {
+                lineInputBuffer += ch;
+            }
+        }
+    }
 
     function setSelectedLabel(id) {
         if (!labelEl) return;
@@ -7066,16 +7110,7 @@ function edgeopsInitSshChannelTab(cfg) {
         var fitAddon = null;
         if (window.FitAddon) try { fitAddon = new window.FitAddon(); term.loadAddon(fitAddon); } catch (_e) { fitAddon = null; }
         term.open(mountEl);
-        term.onData(function(d) {
-            if (!selectedId) return;
-            if (inputViaWs) {
-                if (ws && ws.readyState === WebSocket.OPEN) ws.send(d);
-            } else {
-                API.sendSshChannel(selectedId, d).catch(function(err) {
-                    showToast((err && err.message) || t('toast.requestFailed'), 'error');
-                });
-            }
-        });
+        term.onData(handleTermLineInput);
         var fitResult = edgeopsTerminalFitAfterOpen(term, mountEl, fitAddon, null);
         fitDispose = fitResult.dispose;
         termRefit = fitResult.refit;
@@ -7104,6 +7139,7 @@ function edgeopsInitSshChannelTab(cfg) {
 
     function writeLinesToTerm(lines, pending, tailText) {
         if (!ensureTerm()) return;
+        resetLineInputBuffer();
         term.clear();
         var text = buildSnapshotText(lines, pending, tailText);
         if (text) {
@@ -7118,6 +7154,7 @@ function edgeopsInitSshChannelTab(cfg) {
         inputViaWs = false;
         lastWsLine = 0;
         lastWsPartial = '';
+        resetLineInputBuffer();
         if (ws) {
             try { ws.close(); } catch (_e) {}
             ws = null;
@@ -7228,6 +7265,7 @@ function edgeopsInitSshChannelTab(cfg) {
                 if (selectedId === cid) return;
                 disconnectWs();
                 selectedId = cid;
+                resetLineInputBuffer();
                 listEl.querySelectorAll('.ssh-channel-item').forEach(function(n) { n.classList.remove('active'); });
                 node.classList.add('active');
                 setSelectedLabel(selectedId);

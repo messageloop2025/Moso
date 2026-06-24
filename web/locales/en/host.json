@@ -198,7 +198,7 @@
     "sshChannelClosed": "closed",
     "sshChannelSent": "Sent",
     "sshChannelLastLines": "Last {{n}} lines",
-    "sshChannelTermHint": "xterm: ANSI colors; type directly; Refresh shows last 80 lines, or Live connect to stream",
+    "sshChannelTermHint": "xterm: ANSI colors; press Enter to send the line (Ctrl+C sends immediately); Refresh for last 80 lines, or Live connect",
     "sshChannelLiveConnect": "Live connect",
     "sshChannelLiveDisconnect": "Disconnect live",
     "sshChannelLiveActiveHint": "Live mode active — disconnect before manual refresh",
