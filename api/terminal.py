@@ -327,7 +327,48 @@ def list_ai_terminals_for_host(user_id: int, host_id: int, scope_id: str | None 
         else:
             enriched["buffer_idle"] = None
         out.append(enriched)
+    out_slots = {int(x.get("slot") or 0) for x in out}
+    for p in list_pending_ai_terminals(user_id, scope_id):
+        if int(p.get("host_id") or 0) != host_id:
+            continue
+        slot = int(p.get("slot") or 0)
+        if slot in out_slots:
+            continue
+        enriched = _enrich_terminal_item(dict(p))
+        enriched["buffer_idle"] = None
+        out.append(enriched)
     out.sort(key=lambda x: int(x.get("slot") or 0))
+    return out
+
+
+def list_pending_ai_terminals(user_id: int, scope_id: str | None = None) -> list[dict]:
+    """前端尚未完成 WS 握手、但已预分配 slot 的 AI 控制台（connect/create 的 pending 队列）。"""
+    scope_id = normalize_terminal_scope_id(scope_id)
+    key = (user_id, scope_id)
+    out: list[dict] = []
+    for item in _pending_console_creations.get(key, []):
+        if (item.get("created_by") or "ai") != "ai":
+            continue
+        try:
+            slot = max(0, min(int(item.get("slot") or 0), 31))
+            host_id = int(item.get("host_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        out.append(
+            {
+                "slot": slot,
+                "scope_id": scope_id,
+                "host_id": host_id,
+                "host_name": "",
+                "host_ip": "",
+                "host_port": 22,
+                "host_aliases": [],
+                "created_by": "ai",
+                "connected": False,
+                "pending": True,
+            }
+        )
+    out.sort(key=lambda x: x["slot"])
     return out
 
 
@@ -391,6 +432,15 @@ def terminals_snapshot_for_ai(
             ai_items.append(enriched)
         else:
             user_items.append(enriched)
+    ai_slots_seen = {int(x.get("slot") or 0) for x in ai_items}
+    for p in list_pending_ai_terminals(user_id, scope_id):
+        slot_i = int(p.get("slot") or 0)
+        if slot_i in ai_slots_seen:
+            continue
+        enriched = _enrich_terminal_item(dict(p))
+        enriched["buffer_idle"] = None
+        ai_items.append(enriched)
+    ai_items.sort(key=lambda x: int(x.get("slot") or 0))
     return {
         "scope_id": scope_id,
         "preferred_slot": preferred_slot,
@@ -423,12 +473,18 @@ def format_terminals_mapping_for_prompt(
     else:
         lines.append("【AI 可操作控制台】send_to_terminal / get_terminal_buffer / close_console 仅能使用下列 slot：")
         for t in ai:
-            st = "已连接" if t.get("connected") else "未连接/握手中"
-            idle_note = ""
             if t.get("connected"):
+                st = "已连接"
+                idle_note = ""
                 slot_i = int(t.get("slot") or 0)
                 idle = terminal_buffer_looks_idle(user_id, slot_i, scope_id)
                 idle_note = " buffer_idle=是(可发新命令)" if idle else " buffer_idle=否(可能仍有程序占用)"
+            elif t.get("pending"):
+                st = "连接中"
+                idle_note = ""
+            else:
+                st = "未连接"
+                idle_note = ""
             lines.append(
                 f"  slot={t['slot']} tab={t['tab_label']} host_id={t.get('host_id')} "
                 f"ip={t.get('host_ip')}:{t.get('host_port')} status={st}{idle_note}"
@@ -444,8 +500,10 @@ def format_terminals_mapping_for_prompt(
         "② 有空闲 slot（buffer_idle=是）时优先复用，勿无故再开；"
         "③ 现有终端被长期任务占用、或要在并行 session 里执行新任务时，调用 create_console(host_id) 新开终端（**同一 host 允许多个 AI 控制台**）；"
         "④ 用户明确要求「再开一个终端/新开控制台」时，必须 create_console(host_id)，不得拒绝；"
-        "⑤ connect_terminal 仅在尚无该 host 的 AI 控制台、或只需切到已有空闲 slot 时使用；"
-        "⑥ send_to_terminal/get_terminal_buffer 失败时先看返回里的 terminals 快照，勿立刻 ssh_execute 替代。"
+        "⑤ connect_terminal 仅在尚无该 host 的 AI 控制台、或只需切到已有空闲 slot 时使用（首连也会预分配 slot 并等待就绪）；"
+        "⑥ connect_terminal 之后若 get_terminal_buffer 仍无输出/未连接，用 list_terminals + get_terminal_buffer(next_poll_in_seconds=2～5) 重试，"
+        "**禁止**立刻 create_console（除非要并行第二个 session 或用户明确要求再开一个）；"
+        "⑦ send_to_terminal/get_terminal_buffer 失败时先看返回里的 terminals 快照，勿立刻 ssh_execute 替代。"
     )
     return "\n".join(lines)
 
@@ -465,6 +523,12 @@ def resolve_ai_slot(
         if (it.get("created_by") or "") == "ai"
     ]
     ai_slots = {int(it["slot"]): it for it in items if it.get("slot") is not None}
+    for p in list_pending_ai_terminals(user_id, scope_id):
+        slot = int(p.get("slot") or 0)
+        if slot not in ai_slots:
+            enriched = _enrich_terminal_item(dict(p))
+            ai_slots[slot] = enriched
+            items.append(enriched)
     if host_id_hint is not None:
         try:
             match = find_preferred_ai_terminal_for_host(
@@ -491,7 +555,10 @@ def resolve_ai_slot(
             labels = ", ".join(
                 f"slot={s}({format_terminal_tab_label(ai_slots[s])})" for s in sorted(ai_slots.keys())
             )
-            return None, f"slot {requested_slot} 不是 AI 控制台或不存在。可用：{labels}"
+            pending_note = ""
+            if requested_slot in {int(p.get("slot") or 0) for p in list_pending_ai_terminals(user_id, scope_id)}:
+                pending_note = "（该 slot 正在连接中，可 get_terminal_buffer(next_poll_in_seconds=2～5) 重试）"
+            return None, f"slot {requested_slot} 不是 AI 控制台或尚未就绪。可用：{labels}{pending_note}"
         return requested_slot, None
     if default_terminal_slot is not None and default_terminal_slot in ai_slots:
         return default_terminal_slot, None

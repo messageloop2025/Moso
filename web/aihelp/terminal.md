@@ -2,13 +2,17 @@
 
 本系统中「控制台」与「终端」同义，均指对**单台主机**建立的 **Web SSH 连接**及其交互界面。
 
-> **与 SSH 通道（ssh_channel）不同**：AI 还可创建**后台 PTY 通道**（`ssh_channel_*` 工具），用户可在 **「SSH通道管理」** Tab **只读监视**输出，但不能在该 Tab 输入。详见 [ssh-channel.md](ssh-channel.md)。
+> **与 SSH 通道（ssh_channel）不同**：AI 还可创建**后台 PTY 通道**（用户说「**打开通道 / SSH 通道**」时用 `ssh_channel_*`）。用户说「**打开终端 / 打开某主机**」且未提「通道」时，指的是本页 **Web 控制台**（`connect_terminal` / `create_console`）。详见 [ssh-channel.md](ssh-channel.md)。
 
 ---
 
 ## 打开与关闭控制台
 
-- **打开**：在主机管理或 AI 助手页，选择主机后「连接」；或由 AI 调用 **connect_terminal(host_id)** / **create_console(host_id)** 建立 SSH 连接并显示终端。用户也可点击「+ 新建控制台」再选主机连接。
+- **打开**：在主机管理或 AI 助手页，选择主机后「连接」；或由 AI 调用 **connect_terminal(host_id)**（首连/复用已有）或 **create_console(host_id)**（强制再开一个并行 tab）建立 SSH 连接并显示终端。用户也可点击「+ 新建控制台」再选主机连接。
+- **connect_terminal vs create_console**：
+  - **connect_terminal**：该 host **还没有** AI 控制台时用来**首次连接**（会预分配 slot 并等待就绪）；已有控制台时**切到空闲 slot**，**不会**再开一个。
+  - **create_console**：同一 host **再开一个**并行 tab（例如现有终端在跑长任务、或用户说「再开一个终端」）。
+  - connect_terminal 后若读 buffer 暂不可用，应 **list_terminals + get_terminal_buffer(next_poll_in_seconds=2～5)** 重试，**不要**立刻 create_console。
 - **关闭**：用户可点击终端标签旁的 **×** 关闭该控制台；AI 可调用 **close_console(slot)** 关闭由 AI 创建的控制台（仅可关闭 created_by 为 ai 的）。
 
 ---

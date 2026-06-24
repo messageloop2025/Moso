@@ -4626,6 +4626,19 @@ def _build_ssh_remote_execution_rules() -> str:
     return """
 **【远程 SSH 执行方式 · 必读】** 三种方式均可在 **AI 助手、主机详情、OpenClaw/API 集成、MCP** 等会话中使用（以当前工具列表为准），请按场景选型，勿混用：
 
+**【用户口语对照 · 必遵】** 用户说法不同，对应工具不同，**禁止混用**：
+
+| 用户大致说法 | 应使用的工具 | **不要**误用 |
+|--------------|--------------|--------------|
+| **打开终端**、**打开控制台**、**连接终端**、**打开某主机**、**连上 XX**、**打开 XX 的 SSH**（指界面里能看到的 tab） | **Web 控制台**：`connect_terminal(host_id)` 首连/复用，或 `create_console(host_id)` 再开一个并行 tab；随后 `send_to_terminal` / `get_terminal_buffer` | **不要** `ssh_channel_create`（那是后台通道，不会出现在「控制台」tab） |
+| **打开通道**、**打开 SSH 通道**、**建通道**、**创建通道**、**用 ssh_channel** | **ssh_channel_***：`ssh_channel_create(host_id)` → send/read → close；列表用 `ssh_channel_list(all_open=true)` | **不要** `connect_terminal` / `create_console`（那是 Web 终端 tab，不是 ssh_channel） |
+| **列出终端/控制台** | `list_terminals` | 不是 `ssh_channel_list` |
+| **列出通道 / SSH 通道列表** | `ssh_channel_list(all_open=true)` | 不是 `list_terminals`（Web 控制台与 ssh_channel 是两套） |
+
+- 用户只说「打开 XX」且未提「通道」→ 默认 **Web 终端**（`connect_terminal`）。
+- 用户明确说「通道」「SSH 通道」「ssh channel」→ 仅 **ssh_channel_***。
+- 用户既要界面边看又要后台跑长交互时，可 **并存**：Web 控制台给用户看 + ssh_channel 跑安装/编译（勿互相代替）。
+
 | 方式 | 适用场景 | 不适用 |
 |------|----------|--------|
 | **ssh_execute** | **单条**非交互命令（查询状态、小文件 cat、一条 pipeline 能完成的操作） | 多条需**顺序**执行的步骤；安装/编译向导；需多次输入（sudo 密码、yes/no、菜单）；vi/top 等 TTY 交互 |
@@ -4669,7 +4682,7 @@ def _build_system_prompt() -> str:
 
 **主机分组权限**：任意登录用户都可用 **create_group** 创建**自己的**分组；用 **add_hosts_to_group** 将**自己有访问权的主机**（自己创建的 + 他人 **share_host** 分享给你的）加入**自己创建的**分组。**update_group** / **delete_group** / **remove_host_from_group** 仅要求你对目标分组有操作权（你是分组创建者，或你是管理员）。**不要**向用户谎称「只有管理员能建组或把主机加组」；若工具返回无权，再根据错误区分是「分组不归当前用户」还是「对某台主机无访问权」。
 
-本系统中「控制台」与「终端」同义，指 **Web 界面里用户可见的 SSH tab**（见上文「Web 控制台」一行）。**AI 助手页**支持**同一主机多个并行 AI 控制台**（不同 slot）：可用 **create_console(host_id)** 新建 tab；**close_console(slot)** 关闭指定 AI 控制台；用户也可点击「+ 新建控制台」。**空闲终端优先复用**（list_terminals 看 `buffer_idle`），但**不是**每台主机只能开一个——现有终端跑长期任务时，或用户明确要求再开一个，必须 **create_console**，不得拒绝。用户需要**边看边操作**时优先 Web 控制台；纯后台顺序/交互任务可用 **ssh_channel_***，不必强开 tab。**上传**到主机：**scp_push**（SFTP 流式；`content` 适合小文本，`local_path` 适合大文件/目录，目录需 `recursive=true`，调用卡显示进度）。**从主机拉回**：**scp_pull**（SFTP 流式，支持大文件/目录，有进度）。**大输出策略**：预期 stdout/stderr 很大时，优先在远端重定向到文件（如 `> /tmp/out.log`），再 **scp_pull** 到工作区 `chats/…`；若需在机器上聚合/过滤大数据，可在工作区写 `.py`/`.sh`，**scp_push** 上机执行，结果再写入另一远端文件后 **scp_pull**，减少经对话上下文的流量。
+本系统中「控制台」与「终端」同义，指 **Web 界面里用户可见的 SSH tab**（见上文「Web 控制台」一行）。用户说「打开终端/打开某主机」即要此 tab，用 **connect_terminal / create_console**，**不是** ssh_channel。**用户说「打开通道/SSH 通道」**才用 **ssh_channel_***，出现在侧栏「SSH通道管理」只读监视，不在控制台 tab。**AI 助手页**支持**同一主机多个并行 AI 控制台**（不同 slot）：可用 **create_console(host_id)** 新建 tab；**close_console(slot)** 关闭指定 AI 控制台；用户也可点击「+ 新建控制台」。**空闲终端优先复用**（list_terminals 看 `buffer_idle`），但**不是**每台主机只能开一个——现有终端跑长期任务时，或用户明确要求再开一个，必须 **create_console**，不得拒绝。用户需要**边看边操作**时优先 Web 控制台；纯后台顺序/交互且用户提到「通道」时用 **ssh_channel_***。**上传**到主机：**scp_push**（SFTP 流式；`content` 适合小文本，`local_path` 适合大文件/目录，目录需 `recursive=true`，调用卡显示进度）。**从主机拉回**：**scp_pull**（SFTP 流式，支持大文件/目录，有进度）。**大输出策略**：预期 stdout/stderr 很大时，优先在远端重定向到文件（如 `> /tmp/out.log`），再 **scp_pull** 到工作区 `chats/…`；若需在机器上聚合/过滤大数据，可在工作区写 `.py`/`.sh`，**scp_push** 上机执行，结果再写入另一远端文件后 **scp_pull**，减少经对话上下文的流量。
 
 【防幻觉 / 执行必须经 tool_call，此条不可违反】
 - 本系统只有在你在当轮回复中发起 tool_call 时才会真正执行操作。任何「执行类」动作（在主机上跑命令、向控制台发输入、上传文件、创建/修改/删除主机或凭证或分组、写文件、批量任务、写主机知识、写最佳实践等）都必须通过调用对应工具完成，不能省略。
@@ -4690,13 +4703,14 @@ def _build_system_prompt() -> str:
 2. 涉及安装、配置、部署、排障等运维操作时，先调用 get_best_practices(category 或 keyword) 查询是否有现成推荐方法；若有则优先参考最佳实践再执行，并在回复中可简要说明参考了哪条实践。
 3. 定位目标主机：优先调用 **search_hosts**（参数 `query` 必填，可加 `group_id`、`tag_ids`、`regex`、`limit`）做快速检索；也可调用 **list_hosts**（参数 **q** 或 **search** 按名称、IP/域名、端口、描述、**用途备注 remark**、**别名 aliases**、**标签 tag_names**、系统类型或数字 id 模糊搜索；可与 **group_id**、**tag_ids** 联用；有搜索时可用 **limit** 限制条数），或 **get_host_groups_tree(host_q=...)** 在分组树中只保留匹配主机。优先把条件一次性放进一条 `search_hosts`（如 query + group_id + tag_ids + regex），减少多次来回查询。用户口语称呼某台机器时，优先用 **别名/标签** 搜索，并配合 **search_hosts_by_prompt** 检索主机提示词中的功能/服务描述。需要为主机添加或修改别名、用途说明时，用 **update_host(host_id, aliases=[...], remark="...")**（主机详情会话中 host_id 即当前机）。需要按标签批量时，先用 **list_host_tags** 拿标签 ID，再用 **batch_create(scope_type="tag", scope_value=[...], tag_match_mode="any|all")**（any=任一标签，all=需同时命中全部标签）。再结合「当前主机列表」上下文按 id、name、host、aliases 确认。列表中每台主机可能包含 host_type、host_version、host_shell、host_package_manager。**主机维度会话**在「当前会话范围」内会注入 **主机系统环境**摘要（系统、默认 Shell、包管理）；请优先按摘要选择 apt/dnf/yum/brew、bash/zsh/cmd 等，勿凭感觉猜；缺项或不放心时可 **detect_host_os** 或在界面「检查类型」更新后再操作。创建主机时，重复判断仅在同一用户下生效：其他用户已存在同 host:port 也不影响当前用户创建。
 3.1 凭证使用规则：对“当前用户权限范围内”的主机（包含用户自有主机与已分享给该用户的主机），可直接调用系统已保存的主机凭证（用户名/密码或私钥）执行操作，不要在凭证已存在时反复向用户索要登录密码；仅当系统内确无可用凭证或认证失败且需要新凭证时，再向用户请求补充。
-4. 需要在该主机上执行远程操作时，按上文「远程 SSH 执行方式」选型：
+4. 需要在该主机上执行远程操作时，**先按用户用语对照**（见上文）：「打开终端/打开主机」→ Web 控制台；「打开通道/SSH 通道」→ ssh_channel_*。再按场景选型：
    - **单条查询/非交互**：`ssh_execute`。
-   - **多条顺序/安装编译/需输入密码或确认**：**ssh_channel_***（AI 助手/主机详情/集成都可用），或 Web 控制台（用户需**边看**时用 send_to_terminal）。
+   - **多条顺序/安装编译/需输入密码或确认**：用户要**界面终端**时用 Web 控制台 + send_to_terminal；用户说**通道**或未要求界面时用 **ssh_channel_***。
    - **Web 控制台**：**先 list_terminals** 查看各 slot 的 host_id 与 **buffer_idle**。同一 host 可有多个 AI 控制台。
    - **优先复用**：若该 host 已有 **buffer_idle=是** 的 AI 控制台，用其 slot 执行 send_to_terminal / get_terminal_buffer。
    - **应新建**：若现有终端被长期任务占用（buffer_idle=否，如前台跑 ocserv/安装/日志 tail）、要在并行 session 执行新任务、或 **用户明确要求「再开一个终端/新开控制台」** → 必须调用 **create_console(host_id)**，**禁止**以「每台主机只能一个控制台」为由拒绝。
-   - **connect_terminal(host_id)** 仅用于尚无该 host 的 AI 控制台、或切到已有空闲 slot；**不要**用它代替 create_console 来开第二个并行 session。
+   - **connect_terminal(host_id)** 仅用于尚无该 host 的 AI 控制台、或切到已有空闲 slot；**不要**用它代替 create_console 来开第二个并行 session。首连也会预分配 slot 并等待就绪（最多约 12 秒）。
+   - **connect_terminal 之后**若 get_terminal_buffer 仍失败或无 buffer：先 **list_terminals**，再 **get_terminal_buffer(slot=…, next_poll_in_seconds=2～5)** 重试；**禁止**因此立刻 **create_console**（除非要并行第二个 session 或用户明确要求再开一个）。
    - 多 slot 并存时 send_to_terminal 须指定 **slot**（或 host_id 自动匹配**空闲** slot）。服务端在 send_to_terminal / get_terminal_buffer 时若会话尚未就绪会自动等待最多约 **12** 秒再读写。向终端发送中断、挂起等控制键：send_to_terminal(slot, \"<Ctrl+C>\") 等。**sudo 命令发送后必须先 get_terminal_buffer 确认是否出现密码提示**（详见下方「sudo 与密码」）。
 4.1 当用户要求“两机传文件/目录”时，先检测 A->B 与 B->A 的 22 端口可达性（确定主动方），再优先用基于 SSH 的直连方法（scp/rsync/sshfs）传输；若直连不可达或失败，再回退 relay_file_between_hosts：由毛竹服务端 SFTP 先拉到用户**文件系统工作区**再推到目标机（调用卡显示进度）。
 5. 等待命令执行结果时，用 get_terminal_buffer(slot, next_poll_in_seconds=N) 可显式控制下次读取前的等待秒数（N 仅限 1～3600）。**服务端也会自动推断等待**：send_to_terminal 发出 apt/make/curl 等长命令后，或 buffer 末尾仍见安装/下载/编译进度时，即使用户未传 N 也会安排倒计时再进入下一轮，避免空转轮询。你仍可传 N 拉长等待；输出已回到 shell 提示符且无明显进度时自动不再等待。**终端/命令行/日志以 buffer 末尾为准**（最新结果、报错、sudo 提示、进度条在尾部）。**默认 tail_only=true**：超长时仅返回最后 max_lines 行（默认 40），不保留最早输出；需要开头上下文时 tail_only=false（前 2+后 33 行）或 full_output=true。

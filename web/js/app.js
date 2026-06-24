@@ -2639,6 +2639,7 @@ function edgeopsReplayPersistedToolTrace(toolsEl, steps, opts) {
             });
         }
     }
+    edgeopsScheduleSshChannelSync({ refreshOutput: false, delayMs: 0 });
     edgeopsCotMarkStreamDone(toolsEl);
     edgeopsCotCollapsePanelAfterStream(toolsEl);
 }
@@ -6358,45 +6359,48 @@ function edgeopsCotOnToolExecuting(toolsEl, ev) {
 function edgeopsCotOnToolFinished(toolsEl, ev) {
     if (!toolsEl || !ev || !ev.tool) return;
     var panel = toolsEl.querySelector('.ai-cot-panel');
-    if (!panel) return;
-    var st = edgeopsGetCotState(panel);
-    var target = st.activeToolEl;
-    if (!target || (target.dataset.toolName && target.dataset.toolName !== ev.tool)) {
-        var all = panel.querySelectorAll('.ai-cot-step-tool.ai-tool-executing');
-        target = all.length ? all[all.length - 1] : null;
+    if (panel) {
+        var st = edgeopsGetCotState(panel);
+        var target = st.activeToolEl;
+        if (!target || (target.dataset.toolName && target.dataset.toolName !== ev.tool)) {
+            var all = panel.querySelectorAll('.ai-cot-step-tool.ai-tool-executing');
+            target = all.length ? all[all.length - 1] : null;
+        }
+        if (target) {
+            target.classList.remove('ai-tool-executing');
+            var ok = ev.action === 'completed';
+            target.classList.add(ok ? 'ai-tool-completed' : 'ai-tool-failed');
+            var badge = target.querySelector('.ai-cot-tool-badge');
+            if (badge) {
+                badge.classList.remove('ai-cot-badge-running');
+                badge.classList.add(ok ? 'ai-cot-badge-done' : 'ai-cot-badge-fail');
+                badge.textContent = typeof t === 'function' ? (ok ? t('hostAi.toolDone') : t('hostAi.toolFailed')) : (ok ? 'ok' : 'fail');
+            }
+            var headProgress = target.querySelector('.ai-cot-transfer-head-progress');
+            if (headProgress) headProgress.remove();
+            var previewRaw = ev.result_preview != null ? String(ev.result_preview) : '';
+            var previewTrim = previewRaw.trim();
+            var backfilledStream = false;
+            if (previewTrim) {
+                backfilledStream = edgeopsCotBackfillExecutionOutputIfEmpty(target, previewRaw.slice(0, 12000));
+            }
+            if (previewTrim && !backfilledStream) {
+                var preR = document.createElement('pre');
+                preR.className = 'ai-cot-result-preview';
+                preR.textContent = previewRaw.slice(0, 12000);
+                var labR = typeof t === 'function' ? t('hostAi.cotResultLabel') : 'Result';
+                var extras = target.querySelector('.ai-cot-tool-extras');
+                if (extras) extras.appendChild(edgeopsCotMakeDetails('ai-cot-details-result', labR, preR));
+                else target.appendChild(edgeopsCotMakeDetails('ai-cot-details-result', labR, preR));
+                try { edgeopsCotAppendMcpFetchedImages(extras || target, previewRaw); } catch (_imgE) {}
+            }
+            if (st.activeToolEl === target) st.activeToolEl = null;
+            var live = panel.querySelector('.ai-cot-live');
+            if (live) live.textContent = '';
+            edgeopsCotRefreshHeader(panel);
+        }
     }
-    if (!target) return;
-    target.classList.remove('ai-tool-executing');
-    var ok = ev.action === 'completed';
-    target.classList.add(ok ? 'ai-tool-completed' : 'ai-tool-failed');
-    var badge = target.querySelector('.ai-cot-tool-badge');
-    if (badge) {
-        badge.classList.remove('ai-cot-badge-running');
-        badge.classList.add(ok ? 'ai-cot-badge-done' : 'ai-cot-badge-fail');
-        badge.textContent = typeof t === 'function' ? (ok ? t('hostAi.toolDone') : t('hostAi.toolFailed')) : (ok ? 'ok' : 'fail');
-    }
-    var headProgress = target.querySelector('.ai-cot-transfer-head-progress');
-    if (headProgress) headProgress.remove();
-    var previewRaw = ev.result_preview != null ? String(ev.result_preview) : '';
-    var previewTrim = previewRaw.trim();
-    var backfilledStream = false;
-    if (previewTrim) {
-        backfilledStream = edgeopsCotBackfillExecutionOutputIfEmpty(target, previewRaw.slice(0, 12000));
-    }
-    if (previewTrim && !backfilledStream) {
-        var preR = document.createElement('pre');
-        preR.className = 'ai-cot-result-preview';
-        preR.textContent = previewRaw.slice(0, 12000);
-        var labR = typeof t === 'function' ? t('hostAi.cotResultLabel') : 'Result';
-        var extras = target.querySelector('.ai-cot-tool-extras');
-        if (extras) extras.appendChild(edgeopsCotMakeDetails('ai-cot-details-result', labR, preR));
-        else target.appendChild(edgeopsCotMakeDetails('ai-cot-details-result', labR, preR));
-        try { edgeopsCotAppendMcpFetchedImages(extras || target, previewRaw); } catch (_imgE) {}
-    }
-    if (st.activeToolEl === target) st.activeToolEl = null;
-    var live = panel.querySelector('.ai-cot-live');
-    if (live) live.textContent = '';
-    edgeopsCotRefreshHeader(panel);
+    if (ev.action !== 'executing') edgeopsMaybeSyncSshChannelFromTool(ev);
 }
 
 function edgeopsCotMarkStreamDone(toolsEl) {
@@ -6642,14 +6646,15 @@ function edgeopsSetSshChannelMonitorCtl(ctl) {
 }
 
 function edgeopsParseSshChannelIdFromToolResult(ev) {
-    if (!ev || !ev.result_preview) return null;
+    if (!ev || ev.result_preview == null) return null;
     var text = String(ev.result_preview);
     try {
         var j = JSON.parse(text);
         if (j.channel_id != null) return parseInt(j.channel_id, 10);
+        if (j.id != null) return parseInt(j.id, 10);
         if (j.channel && j.channel.id != null) return parseInt(j.channel.id, 10);
     } catch (_e) {}
-    var m = text.match(/"channel_id"\s*:\s*(\d+)/);
+    var m = text.match(/"channel_id"\s*:\s*(\d+)/) || text.match(/"id"\s*:\s*(\d+)/);
     return m ? parseInt(m[1], 10) : null;
 }
 
@@ -6658,15 +6663,32 @@ function edgeopsMaybeSyncSshChannelFromTool(ev) {
     var tool = String(ev.tool);
     if (tool !== 'ssh_channel_create' && tool !== 'ssh_channel_close' && tool !== 'ssh_channel_close_batch') return;
     var ctl = window._edgeopsSshChannelMonitorCtl;
-    if (!ctl || typeof ctl.syncFromServer !== 'function') return;
-    var selectId = null;
-    if (tool === 'ssh_channel_create' && ev.action === 'completed') {
-        selectId = edgeopsParseSshChannelIdFromToolResult(ev);
+    if (!ctl) return;
+    if (tool === 'ssh_channel_create' && ev.action === 'completed' && typeof ctl.applyCreateFromToolResult === 'function') {
+        ctl.applyCreateFromToolResult(ev);
     }
-    ctl.syncFromServer({
-        selectChannelId: selectId,
-        refreshOutput: ev.action === 'completed'
-    });
+    if (typeof ctl.syncFromServer === 'function') {
+        ctl.syncFromServer({
+            selectChannelId: (tool === 'ssh_channel_create' && ev.action === 'completed')
+                ? edgeopsParseSshChannelIdFromToolResult(ev) : null,
+            refreshOutput: ev.action === 'completed'
+        });
+    }
+}
+
+var _edgeopsSshChannelSyncTimer = null;
+function edgeopsScheduleSshChannelSync(opts) {
+    opts = opts || {};
+    if (_edgeopsSshChannelSyncTimer) clearTimeout(_edgeopsSshChannelSyncTimer);
+    _edgeopsSshChannelSyncTimer = setTimeout(function() {
+        _edgeopsSshChannelSyncTimer = null;
+        var ctl = window._edgeopsSshChannelMonitorCtl;
+        if (!ctl || typeof ctl.syncFromServer !== 'function') return;
+        ctl.syncFromServer({
+            selectChannelId: opts.selectChannelId != null ? opts.selectChannelId : null,
+            refreshOutput: opts.refreshOutput !== false
+        });
+    }, opts.delayMs != null ? opts.delayMs : 120);
 }
 
 function edgeopsOnChatStreamToolEvent(replyWrap, toolsEl, ev, logBuffer, renderLogFn, onAfter, textEl) {
@@ -7318,8 +7340,35 @@ function edgeopsInitSshChannelTab(cfg) {
         return rec;
     }
 
+    function applyCreateFromToolResult(ev) {
+        if (!ev || ev.action !== 'completed' || String(ev.tool) !== 'ssh_channel_create') return;
+        var text = String(ev.result_preview || '');
+        var ch = null;
+        try {
+            var j = JSON.parse(text);
+            if (j && j.success && j.id != null) ch = j;
+        } catch (_e) {}
+        if (!ch) {
+            var cid = edgeopsParseSshChannelIdFromToolResult(ev);
+            if (!cid) return;
+            ch = { id: cid, channel_id: cid, status: 'open' };
+        }
+        upsertChannelTab({
+            id: ch.id != null ? ch.id : ch.channel_id,
+            host_id: ch.host_id,
+            host_name: ch.host_name,
+            host_ip: ch.host_ip,
+            status: ch.status || 'open'
+        });
+        showPanels(true);
+        var preferId = parseInt(ch.id != null ? ch.id : ch.channel_id, 10);
+        if (!isNaN(preferId)) activateChannel(preferId);
+    }
+
     function syncChannelList(channels, preferChannelId) {
-        var list = channels || [];
+        var list = (channels || []).filter(function(c) {
+            return String(c.status || 'open').toLowerCase() === 'open';
+        });
         if (hostFilter && !isNaN(hostFilter)) {
             list = list.filter(function(c) { return parseInt(c.host_id, 10) === hostFilter; });
         }
@@ -7409,6 +7458,7 @@ function edgeopsInitSshChannelTab(cfg) {
         refreshList: function() { return loadChannelList(false); },
         refreshOutput: function() { return refreshOutputForRec(null, false); },
         syncFromServer: syncFromServer,
+        applyCreateFromToolResult: applyCreateFromToolResult,
         onTabShown: onTabShown,
         refit: function() {
             var rec = getActiveRec();
@@ -7834,6 +7884,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
                 streamedText: streamedText, logBuffer: hostAiLogBuffer, renderLogFn: renderHostAiLog,
                 formatMd: fmtMd, setStreamingUI: setStreamingUI
             });
+            edgeopsScheduleSshChannelSync({ refreshOutput: true });
         }
         hostAiAbortController = new AbortController();
         var hostAiUntrackAbort = edgeopsTrackChatAbortController(hostAiAbortController);
@@ -8237,7 +8288,12 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
             return;
         }
         if (ua.action === 'connect_terminal' && ua.host_id === parseInt(hostId, 10)) {
-            ensureHostAiConsole(parseInt(hostId, 10), 'ai');
+            if (ua.slot != null) {
+                createNewHostAiConsole(ua.slot, ua.created_by || 'ai');
+            } else {
+                ensureHostAiConsole(parseInt(hostId, 10), 'ai');
+            }
+            pollHostPendingConsoleCreations();
             showToast(t('toast.creatingAiConsole'));
             return;
         }
@@ -9398,7 +9454,13 @@ function renderAIPage() {
             return;
         }
         if (ua.action === 'connect_terminal' && ua.host_id) {
-            ensureAiConsole(parseInt(ua.host_id, 10), 'ai');
+            var hid = parseInt(ua.host_id, 10);
+            if (ua.slot != null) {
+                createNewAiConsole(hid, ua.slot, ua.created_by || 'ai');
+            } else {
+                ensureAiConsole(hid, 'ai');
+            }
+            pollAiPendingConsoleCreations();
             showToast(t('toast.creatingAiConsoleUnicode'));
             return;
         }
@@ -9999,6 +10061,7 @@ function renderAIPage() {
                 streamedText: streamedText, logBuffer: aiLogBuffer, renderLogFn: renderAiLog,
                 formatMd: fmtMd, setStreamingUI: setStreamingUI
             });
+            edgeopsScheduleSshChannelSync({ refreshOutput: true });
         }
         aiAbortController = new AbortController();
         var aiUntrackAbort = edgeopsTrackChatAbortController(aiAbortController);

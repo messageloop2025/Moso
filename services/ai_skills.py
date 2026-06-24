@@ -665,10 +665,13 @@ TOOLS = [
         "function": {
             "name": "connect_terminal",
             "description": (
-                "请求前端连接指定主机的 AI 控制台（不强制新建 tab）。"
+                "在 **Web 界面**打开/连接指定主机的 **SSH 控制台 tab**（用户能在「控制台」里看到）。"
+                "用户说「打开终端」「打开某主机」「连上 XX」且**未提「通道」**时用本工具。"
                 "若该 host 已有 AI 控制台，优先切到 buffer_idle=是的空闲 slot；"
-                "仅当尚无该 host 的 AI 控制台时才新建。"
+                "仅当尚无该 host 的 AI 控制台时首连（预分配 slot 并等待就绪）。"
+                "**禁止**在用户要「SSH 通道/打开通道」时用本工具——那种情况用 ssh_channel_create。"
                 "用户要求「再开一个/新开终端」或现有终端被长期任务占用时，请用 create_console 而非本工具。"
+                "connect_terminal 后若 get_terminal_buffer 暂不可用，请 list_terminals 并带 next_poll_in_seconds 重试，勿立刻 create_console。"
             ),
             "parameters": {
                 "type": "object",
@@ -683,7 +686,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "list_terminals",
-            "description": "查询当前聊天区域内 AI 可操作的 SSH 控制台列表（含 tab_label、connected、host 映射、buffer_idle 是否空闲）。只返回 AI 创建的控制台。多控制台/多主机场景下**必须先调用**再 send_to_terminal。",
+            "description": "查询当前聊天区域内 **Web SSH 控制台** tab 列表（含 tab_label、connected、host 映射、buffer_idle）。用户说「列出终端/控制台」时用本工具；**不是** ssh_channel_list。只返回 AI 创建的控制台。多控制台/多主机场景下**必须先调用**再 send_to_terminal。",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -692,7 +695,8 @@ TOOLS = [
         "function": {
             "name": "create_console",
             "description": (
-                "在 AI 助手页**新建并连接**一个控制台 tab（同一 host 可多次调用以并行多个 session）。"
+                "在 AI 助手页**新建并连接**一个 **Web 控制台 tab**（界面「控制台」里可见）。"
+                "用户说「再开一个终端/新开控制台」时用本工具；**不是** ssh_channel。"
                 "现有终端被长期任务占用、要在新 session 执行命令、或用户明确要求再开一个终端时，必须调用本工具。"
                 "不要以「每台主机只能一个控制台」为由拒绝；list_terminals 后仍无 buffer_idle=是的 slot 时也应 create_console。"
             ),
@@ -1501,11 +1505,12 @@ TOOLS = [
         "function": {
             "name": "ssh_channel_create",
             "description": (
-                "创建 SSH **PTY 交互通道**（真实 TTY），用于**多条顺序命令**、编译、安装环境、sudo 密码、菜单、vi、Ctrl+C 等。"
-                "**AI 助手、主机详情、OpenClaw/API 集成、MCP 均可用**（不仅限于集成）。"
-                "流程：create → send → read_lines/has_new → … → close。"
+                "创建 **SSH 通道**（后台 PTY，**不是** Web 控制台 tab）。"
+                "用户说「打开通道」「打开 SSH 通道」「建通道」「用 ssh_channel」时用本工具。"
+                "用户只说「打开终端/打开某主机」且未提「通道」时，应改用 connect_terminal/create_console，**禁止**用本工具。"
+                "用于多条顺序命令、编译、安装、sudo 密码、菜单、vi、Ctrl+C 等。"
+                "流程：create → send → read_lines/has_new → … → close；列表在侧栏「SSH通道管理」。"
                 "Web 会话默认空闲 1800s 关断；集成会话默认 3600s。"
-                "用户需要在界面**边看边操作**时，可改用 Web 控制台 send_to_terminal；后台自动化优先本工具。"
             ),
             "parameters": {
                 "type": "object",
@@ -1525,7 +1530,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "ssh_channel_list",
-            "description": "列出 SSH 通道（含主机 IP、别名、用途 remark、提示词摘要、类型/版本/shell）。all_open=true 时列出当前用户全部 open 通道。",
+            "description": "列出 **ssh_channel 后台通道**（open 状态）。用户说「列出通道/SSH 通道」时用本工具（all_open=true）；用户说「列出终端/控制台」时用 list_terminals，二者不同。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -7749,12 +7754,17 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 slot_id = int(existing["slot"])
                 idle = existing.get("buffer_idle")
                 idle_txt = "空闲" if idle else "可能仍有任务占用"
+                connected = bool(existing.get("connected"))
+                if not connected:
+                    connected = await wait_for_terminal_session_ready(
+                        user["id"], slot_id, terminal_scope_id
+                    )
                 return json.dumps(attach_terminals_snapshot({
                     "success": True,
                     "reused": True,
                     "message": (
                         f"主机 {host_id} 已有 AI 控制台 slot={slot_id}（tab={existing.get('tab_label')}，"
-                        f"connected={existing.get('connected')}，{idle_txt}），已切到该 slot，未新建。"
+                        f"connected={connected}，{idle_txt}），已切到该 slot，未新建。"
                         f"若需并行第二个 session 请 create_console(host_id)。"
                     ),
                     "slot": slot_id,
@@ -7762,18 +7772,46 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     "host_name": (row.get("name") or "").strip(),
                     "host_ip": (row.get("host") or "").strip(),
                     "host_port": int(row.get("port") or 22),
-                    "connected": existing.get("connected"),
+                    "connected": connected,
                     "buffer_idle": idle,
                     "ui_action": {"action": "switch_console", "slot": slot_id, "scope": "ai"},
                 }), ensure_ascii=False)
+            slot = add_pending_console_creation(
+                user["id"], int(host_id), "ai", scope_id=terminal_scope_id
+            )
+            tab_label = format_terminal_tab_label({
+                "host_id": int(host_id),
+                "host_name": (row.get("name") or "").strip(),
+                "host_ip": (row.get("host") or "").strip(),
+                "slot": slot,
+                "created_by": "ai",
+            })
+            ready = await wait_for_terminal_session_ready(
+                user["id"], slot, terminal_scope_id
+            )
+            ready_msg = "已连接就绪" if ready else "前端仍在连接中（已等待约 12 秒，可 list_terminals 再查）"
             return json.dumps(attach_terminals_snapshot({
                 "success": True,
-                "message": "已请求前端连接新 AI 控制台；后续 send_to_terminal / get_terminal_buffer 最多等待约 12 秒就绪。",
+                "first_connect": True,
+                "slot": slot,
+                "connected": ready,
+                "tab_label": tab_label,
+                "message": (
+                    f"已为 host_id={host_id} 连接 AI 控制台 slot={slot}（tab={tab_label}），{ready_msg}。"
+                    f"后续 send_to_terminal / get_terminal_buffer 请使用 slot={slot}。"
+                    f"若 get_terminal_buffer 仍无输出，请带 next_poll_in_seconds 重试，勿立刻 create_console。"
+                    f"若需并行第二个 session 请 create_console(host_id)。"
+                ),
                 "host_id": int(host_id),
                 "host_name": (row.get("name") or "").strip(),
                 "host_ip": (row.get("host") or "").strip(),
                 "host_port": int(row.get("port") or 22),
-                "ui_action": {"action": "connect_terminal", "host_id": host_id},
+                "ui_action": {
+                    "action": "connect_terminal",
+                    "host_id": int(host_id),
+                    "slot": slot,
+                    "created_by": "ai",
+                },
             }), ensure_ascii=False)
 
         if name == "list_terminals":

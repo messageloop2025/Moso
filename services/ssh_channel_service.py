@@ -362,10 +362,10 @@ async def list_channels_for_user(
     for r in rows:
         d = dict(r)
         cid = int(d.get("id") or 0)
-        if d.get("status") == "open" and not manager.has_channel(cid):
-            await mark_channel_closed_in_db(db, cid, user["id"])
-            d["status"] = "closed"
-        d["memory_connected"] = manager.has_channel(cid) if d.get("status") == "open" else False
+        # 列表接口只读：勿因当前 worker 内存中无连接就把 DB 标 closed（多 worker / 刚创建后立即 list 会误杀通道）
+        d["memory_connected"] = (
+            manager.has_channel(cid) if d.get("status") == "open" else False
+        )
         if "host_aliases_raw" in d:
             d["host_aliases"] = _parse_aliases(d.pop("host_aliases_raw"))
             d["host_remark"] = (d.get("host_remark") or "").strip()

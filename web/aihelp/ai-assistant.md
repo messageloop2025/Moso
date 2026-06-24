@@ -268,9 +268,10 @@ Docker 镜像需安装 `libmagic1` 与 Python 包 `markitdown`；依赖变更后
 
 ## SSH 通道与「SSH通道管理」Tab
 
-- **ssh_channel_***：后台 PTY 会话，适合安装编译、sudo 密码、嵌套 SSH、Ctrl+C 等多步交互；用户**不必**打开 Web 控制台。读输出时注意 **`tail_text` / `pending_partial`**（无换行的 `password:` 等提示）。
-- **Web 控制台**：用户要**边看边操作**时用 `send_to_terminal` + `get_terminal_buffer`。
-- **SSH通道管理 Tab**（左侧终端区）：**只读监视** AI 已创建的 open 通道；支持手工刷新与 WebSocket **实时监视**（按钮在监视中显示「关闭监视」）。AI 聊天里 create/close 通道后列表**自动更新**；整页刷新后再打开该 Tab 会**自动拉列表**与服务端对齐。详见 [ssh-channel.md](ssh-channel.md)。
+- **用户用语**：用户说 **「打开通道 / SSH 通道 / 建通道」** → 使用 **`ssh_channel_*`**（`ssh_channel_create` → send → read → close）。用户说 **「打开终端 / 打开某主机 / 连上 XX」** 且**未提「通道」** → 使用 **Web 控制台**（`connect_terminal` / `create_console` + `send_to_terminal`），**不要**用 `ssh_channel_create`。
+- **ssh_channel_***：后台 PTY 会话，适合安装编译、sudo 密码、嵌套 SSH、Ctrl+C 等多步交互；输出可在侧栏 **「SSH通道管理」** 只读监视。
+- **Web 控制台**：用户要在 **「控制台」tab 里边看边操作** 时用 `send_to_terminal` + `get_terminal_buffer`。
+- **SSH通道管理 Tab**（左侧终端区）：**只读监视** AI 已创建的 open 通道；AI 聊天里 create/close 通道后列表**自动更新**。详见 [ssh-channel.md](ssh-channel.md)。
 
 ---
 
