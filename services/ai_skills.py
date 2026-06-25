@@ -57,6 +57,7 @@ from services.site_time import (
 from api.terminal import (
     send_to_user_terminal,
     get_terminal_buffer_for_user,
+    get_terminal_session_state,
     get_terminals_for_user,
     get_terminal_session_meta_for_user,
     add_pending_console_creation,
@@ -131,6 +132,8 @@ from services.cli_agent_delegate import (
     HostConnInfo as _HostConnInfoCls,
 )
 from services.text_abbrev import abbreviate_terminal_buffer
+from services.terminal_input import is_control_only
+from services.terminal_poll import resolve_terminal_poll_seconds
 from services.workflow_templates import (
     save_template as _save_workflow_template,
     list_templates as _list_workflow_templates,
@@ -170,6 +173,49 @@ def _skill_fs_path_guard(path: str) -> str | None:
 def _is_admin(user: dict) -> bool:
     r = (user.get("role") or "").strip().lower()
     return r in ("admin", "manager") or user.get("role") == "管理员"
+
+
+_TERMINAL_STATUS_KEYS = (
+    "connected", "exists", "pending", "session_state", "buffer_idle", "ready_for_input",
+    "can_send", "can_send_command", "can_read_buffer", "last_line", "busy_reason",
+    "waiting_password", "waiting_interactive", "disconnect_reason", "buffer_chars",
+)
+
+
+def _terminal_status_payload(state: dict | None) -> dict:
+    state = state or {}
+    return {k: state.get(k) for k in _TERMINAL_STATUS_KEYS}
+
+
+def _terminal_send_guard_message(state: dict, text: str) -> str | None:
+    """若不应 send_to_terminal 则返回错误说明，否则 None。"""
+    if state.get("pending"):
+        return (
+            "控制台仍在连接中（session_state=pending）。"
+            "请 get_terminal_status 或 get_terminal_buffer(next_poll_in_seconds=2～5) 后再试。"
+        )
+    if not state.get("connected") or state.get("session_state") == "disconnected":
+        msg = (
+            f"终端已断开（connected=false，disconnect_reason={state.get('disconnect_reason') or 'unknown'}），"
+            "无法 send_to_terminal；断开一般不可恢复，请 connect_terminal/create_console 新建。"
+        )
+        if state.get("can_read_buffer"):
+            msg += " 仍可用 get_terminal_buffer 读取会话缓冲区内最后输出。"
+        return msg
+    if is_control_only(text):
+        return None
+    if state.get("can_send_command"):
+        return None
+    if state.get("waiting_password") or state.get("waiting_interactive"):
+        return None
+    ss = state.get("session_state") or "busy"
+    reason = state.get("busy_reason") or "running"
+    last = (state.get("last_line") or "")[:120]
+    tail = f" 末行: {last!r}" if last else ""
+    return (
+        f"终端正忙（session_state={ss}, busy_reason={reason}），勿发新 shell 命令；"
+        f"请 get_terminal_buffer(next_poll_in_seconds=…) 轮询直至 buffer_idle=是，或发送 <Ctrl+C>。{tail}"
+    )
 
 
 TOOLS = [
@@ -645,7 +691,9 @@ TOOLS = [
             "name": "send_to_terminal",
             "description": (
                 "向指定 **Web 界面 AI 控制台**注入输入（用户可在 tab 中实时看到）。"
-                "仅可操作 AI 创建的 SSH 控制台。操作前先 list_terminals；同一 host 可有多个 slot，优先选 buffer_idle=是的空闲终端。"
+                "仅可操作 AI 创建的 SSH 控制台。操作前先 list_terminals 或 get_terminal_status；"
+                "connected=false 时禁止调用（终端已断）；session_state=busy 时勿发新命令（可 <Ctrl+C> 或轮询 buffer）。"
+                "同一 host 可有多个 slot，优先选 buffer_idle=是的空闲终端。"
                 "未指定 slot 时可按 host_id 自动匹配空闲 slot；若现有终端被长期任务占用，应 create_console 新开。"
                 "**多条顺序/交互任务**且用户不必看界面时，优先 ssh_channel_*，不必强开 Web tab。"
             ),
@@ -686,7 +734,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "list_terminals",
-            "description": "查询当前聊天区域内 **Web SSH 控制台** tab 列表（含 tab_label、connected、host 映射、buffer_idle）。用户说「列出终端/控制台」时用本工具；**不是** ssh_channel_list。只返回 AI 创建的控制台。多控制台/多主机场景下**必须先调用**再 send_to_terminal。",
+            "description": "查询当前聊天区域内 **Web SSH 控制台** tab 列表（含 tab_label、connected、session_state、buffer_idle、can_send）。用户说「列出终端/控制台」时用本工具；**不是** ssh_channel_list。只返回 AI 创建的控制台。多控制台/多主机场景下**必须先调用**再 send_to_terminal。",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -1911,7 +1959,15 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_terminal_buffer",
-            "description": "获取指定 AI 控制台的最近输出（滚动缓冲**末尾**即最新状态）。sudo/报错/进度看 buffer 最后几行。默认 tail_only=true：超长时仅返回最后 max_lines 行（默认 40），不保留最早输出；需开头上下文时 tail_only=false（前 2+后 33 行）或 full_output=true。可用 next_poll_in_seconds 轮询长任务。",
+            "description": (
+                "获取指定 AI 控制台的最近输出（滚动缓冲**末尾**即最新状态）。"
+                "返回含 connected/session_state/buffer_idle/can_send 等状态字段。"
+                "sudo/报错/进度看 buffer 最后几行。"
+                "connected=false 时仍可读缓冲但禁止 send_to_terminal。"
+                "默认 tail_only=true：超长时仅返回最后 max_lines 行（默认 40）；"
+                "需开头上下文时 tail_only=false 或 full_output=true。"
+                "可用 next_poll_in_seconds 轮询长任务；轻量查状态用 get_terminal_status。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1921,6 +1977,31 @@ TOOLS = [
                     "tail_only": {"type": "boolean", "description": "默认 true：超过 max_lines 时仅返回最后 max_lines 行（推荐日常轮询）。false 则保留前 2 行 + 后 33 行。"},
                     "max_lines": {"type": "integer", "description": "tail_only 或省略模式下的最大行数，默认 40，范围 10～200。"},
                     "next_poll_in_seconds": {"type": "integer", "description": "建议下次再读取终端前等待的秒数，仅限 1～3600。不传时服务端仍可能根据刚发送的命令或 buffer 进度自动安排等待（apt/make/下载等）。"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_terminal_status",
+            "description": (
+                "查询 AI 控制台 **通/断**（connected）与 **闲/忙**（buffer_idle / session_state）。"
+                "send_to_terminal 前可先调用：connected=false 时禁止发送；"
+                "session_state=busy 时勿发新命令，应 get_terminal_buffer 轮询；"
+                "session_state=idle 且 can_send_command=true 时可发新 shell 命令。"
+                "比 get_terminal_buffer 更轻，默认不含完整输出。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "slot": {"type": "integer", "description": "控制台槽位；不传则按 host_id 或默认 AI slot"},
+                    "host_id": {"type": "integer", "description": "可选：按主机 ID 自动选择 AI 控制台 slot"},
+                    "include_last_lines": {
+                        "type": "integer",
+                        "description": "可选，附带 buffer 末尾行数（1～20），默认 0 不附带",
+                    },
                 },
                 "required": [],
             },
@@ -7702,6 +7783,17 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 if slot_err:
                     return json.dumps({"success": False, "error": slot_err, "terminal_scope_id": terminal_scope_id}, ensure_ascii=False)
 
+                st = local_host.get_local_terminal_session_state(user["id"], slot, terminal_scope_id)
+                guard = _terminal_send_guard_message(st, text)
+                if guard:
+                    return json.dumps({
+                        "success": False,
+                        "error": guard,
+                        "slot": slot,
+                        "terminal_scope_id": terminal_scope_id,
+                        "status": _terminal_status_payload(st),
+                    }, ensure_ascii=False)
+
                 ok = await local_host.send_to_local_terminal(user["id"], slot, text, terminal_scope_id)
                 if not ok:
                     await local_host.wait_for_local_terminal_ready(user["id"], slot, terminal_scope_id)
@@ -7718,6 +7810,23 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             slot, slot_err = resolve_ai_slot(slot, arguments.get("host_id"))
             if slot_err:
                 return json.dumps(attach_terminals_snapshot({"success": False, "error": slot_err}), ensure_ascii=False)
+
+            st = get_terminal_session_state(user["id"], slot, terminal_scope_id)
+            if not st.get("connected"):
+                await wait_for_terminal_session_ready(user["id"], slot, terminal_scope_id)
+                st = get_terminal_session_state(user["id"], slot, terminal_scope_id)
+            guard = _terminal_send_guard_message(st, text)
+            if guard:
+                return json.dumps(
+                    attach_terminals_snapshot(attach_terminal_host_fields({
+                        "success": False,
+                        "error": guard,
+                        "slot": slot,
+                        "status": _terminal_status_payload(st),
+                    }, slot)),
+                    ensure_ascii=False,
+                )
+
             ok = send_to_user_terminal(user["id"], text, slot, scope_id=terminal_scope_id)
             if not ok:
                 await wait_for_terminal_session_ready(user["id"], slot, terminal_scope_id)
@@ -7735,8 +7844,62 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 "success": True,
                 "message": "已发送到 AI 控制台",
                 "slot": slot,
+                "status": _terminal_status_payload(get_terminal_session_state(user["id"], slot, terminal_scope_id)),
                 "ui_action": {"action": "switch_console", "slot": slot, "scope": "ai"},
             }, slot)), ensure_ascii=False)
+
+        if name == "get_terminal_status":
+            slot = arguments.get("slot")
+            include_last = 0
+            if arguments.get("include_last_lines") is not None:
+                try:
+                    include_last = max(0, min(20, int(arguments.get("include_last_lines"))))
+                except (TypeError, ValueError):
+                    include_last = 0
+            if (scope or "").strip().lower() == "local":
+                from api import local_host
+
+                if slot is not None:
+                    try:
+                        slot = int(slot)
+                        slot = max(0, min(slot, 31))
+                    except (TypeError, ValueError):
+                        slot = None
+                slot, slot_err = resolve_local_slot(slot)
+                if slot_err:
+                    return json.dumps({"success": False, "error": slot_err, "terminal_scope_id": terminal_scope_id}, ensure_ascii=False)
+                st = local_host.get_local_terminal_session_state(user["id"], slot, terminal_scope_id)
+                if st.get("pending") or (st.get("exists") and not st.get("connected")):
+                    await local_host.wait_for_local_terminal_ready(user["id"], slot, terminal_scope_id)
+                    st = local_host.get_local_terminal_session_state(user["id"], slot, terminal_scope_id)
+                out = {
+                    "success": True,
+                    "slot": slot,
+                    "terminal_scope_id": terminal_scope_id,
+                    "scope": "local",
+                    **_terminal_status_payload(st),
+                }
+            else:
+                slot, slot_err = resolve_ai_slot(slot, arguments.get("host_id"))
+                if slot_err:
+                    return json.dumps(attach_terminals_snapshot({"success": False, "error": slot_err}), ensure_ascii=False)
+                st = get_terminal_session_state(user["id"], slot, terminal_scope_id)
+                if st.get("pending") or (st.get("exists") and not st.get("connected")):
+                    await wait_for_terminal_session_ready(user["id"], slot, terminal_scope_id)
+                    st = get_terminal_session_state(user["id"], slot, terminal_scope_id)
+                out = attach_terminals_snapshot(attach_terminal_host_fields({
+                    "success": True,
+                    "slot": slot,
+                    **_terminal_status_payload(st),
+                }, slot))
+            if include_last > 0 and st.get("can_read_buffer"):
+                if (scope or "").strip().lower() == "local":
+                    buf, _ = local_host.get_local_terminal_buffer(user["id"], slot, terminal_scope_id)
+                else:
+                    buf, _ = get_terminal_buffer_for_user(user["id"], slot, scope_id=terminal_scope_id)
+                lines = (buf or "").splitlines()
+                out["buffer_tail_lines"] = lines[-include_last:] if lines else []
+            return json.dumps(out, ensure_ascii=False)
 
         if name == "connect_terminal":
             host_id = arguments.get("host_id")
@@ -10404,9 +10567,22 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     max_lines=max_lines,
                 )
             if (scope or "").strip().lower() == "local":
-                out = {"success": True, "buffer": buf, "connected": connected, "slot": slot, "terminal_scope_id": terminal_scope_id}
+                out = {
+                    "success": True,
+                    "buffer": buf,
+                    "connected": connected,
+                    "slot": slot,
+                    "terminal_scope_id": terminal_scope_id,
+                    **_terminal_status_payload(local_host.get_local_terminal_session_state(user["id"], slot, terminal_scope_id)),
+                }
             else:
-                out = attach_terminals_snapshot(attach_terminal_host_fields({"success": True, "buffer": buf, "connected": connected, "slot": slot}, slot))
+                out = attach_terminals_snapshot(attach_terminal_host_fields({
+                    "success": True,
+                    "buffer": buf,
+                    "connected": connected,
+                    "slot": slot,
+                    **_terminal_status_payload(get_terminal_session_state(user["id"], slot, terminal_scope_id)),
+                }, slot))
             if abbreviated:
                 out["abbreviated"] = True
                 out["total_lines"] = total_lines

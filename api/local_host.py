@@ -23,6 +23,7 @@ import config
 from database import get_db
 from api.filesystem import get_user_fs_root
 from services.terminal_input import expand_control_keys, is_control_only
+from services.terminal_state import analyze_terminal_buffer, merge_connection_flags
 from api.auth import get_current_user, require_admin, _is_admin_role, user_dict_for_websocket_from_token
 from api.terminal import normalize_terminal_scope_id
 
@@ -1755,6 +1756,7 @@ def get_local_terminals_for_user(user_id: int, scope_id: str | None = None) -> l
             continue
         if _drop_local_session_if_stale(uid, slot, session, session_scope) or not _local_session_alive(session):
             continue
+        st = get_local_terminal_session_state(uid, slot, session_scope)
         out.append({
             "slot": slot,
             "scope_id": session_scope,
@@ -1769,6 +1771,11 @@ def get_local_terminals_for_user(user_id: int, scope_id: str | None = None) -> l
             "buffer_chars": sum(len(x) for x in (session.get("buffer") or [])),
             "reader_alive": session.get("reader_alive"),
             "reader_exit_reason": session.get("reader_exit_reason"),
+            "buffer_idle": st.get("buffer_idle"),
+            "session_state": st.get("session_state"),
+            "can_send": st.get("can_send"),
+            "can_send_command": st.get("can_send_command"),
+            "can_read_buffer": st.get("can_read_buffer"),
         })
     out.sort(key=lambda x: x["slot"])
     return out
@@ -1802,6 +1809,59 @@ def resolve_local_slot(
     return min(slots.keys()), None
 
 
+def get_local_terminal_session_state(
+    user_id: int, slot: int, scope_id: str | None = None
+) -> dict:
+    """本机控制台通/断、闲/忙（与 SSH 控制台同一套启发式）。"""
+    slot = max(0, min(int(slot), 31))
+    scope_id = normalize_terminal_scope_id(scope_id)
+    key = _local_session_key(user_id, slot, scope_id)
+    session = _local_sessions.get(key)
+    if not session:
+        base = analyze_terminal_buffer("", connected=False, host_type=None)
+        return merge_connection_flags(
+            base,
+            connected=False,
+            exists=False,
+            pending=False,
+            can_read_buffer=False,
+            disconnect_reason="no_session",
+        ) | {"buffer_chars": 0, "slot": slot, "scope_id": scope_id}
+
+    if _drop_local_session_if_stale(user_id, slot, session, scope_id):
+        base = analyze_terminal_buffer("", connected=False, host_type=None)
+        return merge_connection_flags(
+            base,
+            connected=False,
+            exists=False,
+            pending=False,
+            can_read_buffer=False,
+            disconnect_reason="session_stale",
+        ) | {"buffer_chars": 0, "slot": slot, "scope_id": scope_id}
+
+    pending = _local_session_pending(session)
+    connected = _local_session_alive(session)
+    buf = "".join(session.get("buffer") or [])
+    host_type = "windows" if sys.platform == "win32" else "linux"
+    analysis = analyze_terminal_buffer(buf, connected=connected, host_type=host_type)
+    disconnect_reason = None
+    if not connected:
+        if pending:
+            disconnect_reason = "connecting"
+        elif session.get("reader_alive") is False:
+            disconnect_reason = session.get("reader_exit_reason") or "reader_exited"
+        else:
+            disconnect_reason = "proc_exited"
+    return merge_connection_flags(
+        analysis,
+        connected=connected and not pending,
+        exists=True,
+        pending=pending,
+        can_read_buffer=True,
+        disconnect_reason=disconnect_reason if not connected else None,
+    ) | {"buffer_chars": len(buf), "slot": slot, "scope_id": scope_id}
+
+
 def get_local_terminal_buffer(
     user_id: int, slot: int, scope_id: str | None = None
 ) -> tuple[str, bool]:
@@ -1828,6 +1888,7 @@ async def local_buffer(slot: int = 0, scope_id: str | None = None, user=Depends(
         return {"success": True, "buffer": "", "connected": False, "slot": slot, "scope_id": scope_id}
     buf = "".join(session.get("buffer") or [])
     connected = not _drop_local_session_if_stale(user["id"], slot, session, scope_id) and _local_session_alive(session)
+    status = get_local_terminal_session_state(user["id"], slot, scope_id)
     return {
         "success": True,
         "buffer": buf,
@@ -1838,6 +1899,10 @@ async def local_buffer(slot: int = 0, scope_id: str | None = None, user=Depends(
         "last_output_at": session.get("last_output_at"),
         "reader_alive": session.get("reader_alive"),
         "reader_exit_reason": session.get("reader_exit_reason"),
+        **{k: status.get(k) for k in (
+            "session_state", "buffer_idle", "ready_for_input", "can_send", "can_send_command",
+            "can_read_buffer", "last_line", "busy_reason", "waiting_password", "waiting_interactive",
+        )},
     }
 
 

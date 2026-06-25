@@ -20,8 +20,21 @@
 ## AI 与控制台配合
 
 - **send_to_terminal**：向某个 **AI 创建** 的控制台槽位发送文本（命令、控制键等）。支持 `<Ctrl+C>`、`<Ctrl+Z>`、`<Ctrl+D>`、`<Ctrl+L>` 等占位符。
-- **get_terminal_buffer**：获取 **AI 创建** 控制台的最近输出（**末尾**即最新状态）。默认 `tail_only=true`：超长时仅返回最后 40 行；`tail_only=false` 为前 2+后 33 行；`full_output=true` 为全量。**仅供 AI 内部使用**。
+- **get_terminal_status**：轻量查询控制台 **通/断**（`connected`）与 **闲/忙**（`buffer_idle` / `session_state`）。`connected=false` 时**禁止** `send_to_terminal`；`session_state=busy` 时勿发新 shell 命令，应 `get_terminal_buffer` 轮询。
+- **get_terminal_buffer**：获取 **AI 创建** 控制台的最近输出（**末尾**即最新状态），并附带与 `get_terminal_status` 相同的状态字段。默认 `tail_only=true`：超长时仅返回最后 40 行；`tail_only=false` 为前 2+后 33 行；`full_output=true` 为全量。**仅供 AI 内部使用**。
 - **sudo 与密码**：不少环境为免密 sudo（NOPASSWD）。AI 应先 `send_to_terminal` 执行 sudo 命令，再 **必须** `get_terminal_buffer` 查看输出；**仅当**末尾出现 `[sudo] password for`、`Password:` 等提示时才注入密码。**凭证库已启用**（`credentials_vault_enabled=true`）时调用 **`send_service_password`**（target=terminal）；未启用时可从主机知识取密码，但仍须 **另一次** 发送且 **禁止** 在 sudo 同次调用里带密码。**禁止**在 sudo 命令后立即跟发密码，**禁止**未看到提示就默认需要密码。详见 [service-credentials.md](service-credentials.md)。
+
+### 终端状态（通/断 · 闲/忙）
+
+| 字段 | 含义 |
+|------|------|
+| `connected` | **通/断**：PTY/SSH 通道是否仍存活。`false` 表示已断开，一般**不可恢复**，勿再 `send_to_terminal`。 |
+| `session_state` | `idle`（已回提示符）、`busy`（命令仍在跑）、`waiting_password`、`waiting_input`、`pending`（连接中）、`disconnected`、`missing` |
+| `buffer_idle` | **闲/忙**：`true` 表示 buffer 末尾像 shell 提示符，可发**新**命令 |
+| `can_send_command` | `connected` 且 `buffer_idle` 且无密码/交互等待时为 `true` |
+| `can_read_buffer` | 会话记录仍在内存时可读最后输出（断开瞬间可能仍有缓冲） |
+
+PTY 没有标准「就绪」协议，服务端通过输出末尾启发式判断（提示符、`sudo` 密码、进度条、`--More--` 等）。操作前先 `list_terminals` 或 `get_terminal_status`。
 
 ### 关键规则
 

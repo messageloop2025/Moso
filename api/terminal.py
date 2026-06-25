@@ -7,7 +7,6 @@
 import asyncio
 import json
 import logging
-import re
 import socket
 from typing import Optional
 
@@ -20,6 +19,7 @@ from api.hosts import _resolve_host_auth, parse_host_aliases_cell
 from services.ssh_shell import open_shell_session
 from services.ssh_connect import friendly_ssh_error
 from services.terminal_input import expand_control_keys, is_control_only
+from services.terminal_state import analyze_terminal_buffer, merge_connection_flags
 import paramiko
 
 logger = logging.getLogger("edgeops.terminal")
@@ -323,9 +323,17 @@ def list_ai_terminals_for_host(user_id: int, host_id: int, scope_id: str | None 
         enriched = _enrich_terminal_item(dict(it))
         slot = int(enriched.get("slot") or 0)
         if enriched.get("connected"):
-            enriched["buffer_idle"] = terminal_buffer_looks_idle(user_id, slot, scope_id)
+            st = get_terminal_session_state(user_id, slot, scope_id)
+            enriched["buffer_idle"] = st.get("buffer_idle")
+            enriched["session_state"] = st.get("session_state")
+            enriched["can_send"] = st.get("can_send")
+            enriched["can_send_command"] = st.get("can_send_command")
         else:
-            enriched["buffer_idle"] = None
+            st = get_terminal_session_state(user_id, slot, scope_id)
+            enriched["buffer_idle"] = st.get("buffer_idle")
+            enriched["session_state"] = st.get("session_state")
+            enriched["can_send"] = st.get("can_send")
+            enriched["can_send_command"] = st.get("can_send_command")
         out.append(enriched)
     out_slots = {int(x.get("slot") or 0) for x in out}
     for p in list_pending_ai_terminals(user_id, scope_id):
@@ -335,7 +343,11 @@ def list_ai_terminals_for_host(user_id: int, host_id: int, scope_id: str | None 
         if slot in out_slots:
             continue
         enriched = _enrich_terminal_item(dict(p))
-        enriched["buffer_idle"] = None
+        st = get_terminal_session_state(user_id, slot, scope_id)
+        enriched["buffer_idle"] = st.get("buffer_idle")
+        enriched["session_state"] = st.get("session_state")
+        enriched["can_send"] = st.get("can_send")
+        enriched["can_send_command"] = st.get("can_send_command")
         out.append(enriched)
     out.sort(key=lambda x: int(x.get("slot") or 0))
     return out
@@ -374,22 +386,72 @@ def list_pending_ai_terminals(user_id: int, scope_id: str | None = None) -> list
 
 def terminal_buffer_looks_idle(user_id: int, slot: int, scope_id: str | None = None) -> bool:
     """buffer 末尾是否像已回到 shell 提示符（可安全注入新命令）。"""
-    buf, connected = get_terminal_buffer_for_user(user_id, slot, scope_id)
-    if not connected:
+    state = get_terminal_session_state(user_id, slot, scope_id)
+    if state.get("pending") or not state.get("connected"):
         return False
-    tail = (buf or "")[-800:].rstrip()
-    if not tail:
-        return True
-    last_line = tail.splitlines()[-1].strip()
-    if not last_line:
-        return True
-    if re.search(r"[\$#]\s*$", last_line):
-        return True
-    if re.search(r">\s*$", last_line):
-        return True
-    if re.search(r"\]\s*[\$#]\s*$", last_line):
-        return True
-    return False
+    return bool(state.get("buffer_idle"))
+
+
+def _ssh_channel_connected(session: dict | None) -> bool:
+    if not session:
+        return False
+    ch = session.get("channel")
+    return bool(ch is not None and not ch.exit_status_ready())
+
+
+def _ssh_disconnect_reason(session: dict | None) -> str | None:
+    if not session:
+        return "no_session"
+    ch = session.get("channel")
+    if ch is None:
+        return "no_channel"
+    if ch.exit_status_ready():
+        return "channel_closed"
+    return None
+
+
+def get_terminal_session_state(
+    user_id: int,
+    slot: int | None = None,
+    scope_id: str | None = None,
+) -> dict:
+    """返回指定控制台的通/断、闲/忙及 AI 是否应 send/read。"""
+    if slot is None:
+        slot = TERMINAL_SLOT_AI
+    else:
+        slot = max(0, min(int(slot), 31))
+    scope_id = normalize_terminal_scope_id(scope_id)
+    session = _user_sessions.get((user_id, scope_id, slot))
+    pending = any(
+        int(p.get("slot") or 0) == slot
+        for p in list_pending_ai_terminals(user_id, scope_id)
+    )
+    if not session:
+        base = analyze_terminal_buffer("", connected=False, host_type=None)
+        return merge_connection_flags(
+            base,
+            connected=False,
+            exists=pending,
+            pending=pending,
+            can_read_buffer=False,
+            disconnect_reason="no_session" if not pending else "connecting",
+        ) | {"buffer_chars": 0, "slot": slot, "scope_id": scope_id}
+
+    buf = "".join(session.get("buffer") or [])
+    connected = _ssh_channel_connected(session)
+    analysis = analyze_terminal_buffer(
+        buf,
+        connected=connected,
+        host_type=session.get("host_type"),
+    )
+    return merge_connection_flags(
+        analysis,
+        connected=connected,
+        exists=True,
+        pending=False,
+        can_read_buffer=True,
+        disconnect_reason=_ssh_disconnect_reason(session) if not connected else None,
+    ) | {"buffer_chars": len(buf), "slot": slot, "scope_id": scope_id}
 
 
 def find_preferred_ai_terminal_for_host(
@@ -425,10 +487,12 @@ def terminals_snapshot_for_ai(
         enriched = _enrich_terminal_item(it)
         if (it.get("created_by") or "") == "ai":
             slot_i = int(enriched.get("slot") or 0)
-            if enriched.get("connected"):
-                enriched["buffer_idle"] = terminal_buffer_looks_idle(user_id, slot_i, scope_id)
-            else:
-                enriched["buffer_idle"] = None
+            st = get_terminal_session_state(user_id, slot_i, scope_id)
+            enriched["buffer_idle"] = st.get("buffer_idle")
+            enriched["session_state"] = st.get("session_state")
+            enriched["can_send"] = st.get("can_send")
+            enriched["can_send_command"] = st.get("can_send_command")
+            enriched["can_read_buffer"] = st.get("can_read_buffer")
             ai_items.append(enriched)
         else:
             user_items.append(enriched)
@@ -438,7 +502,12 @@ def terminals_snapshot_for_ai(
         if slot_i in ai_slots_seen:
             continue
         enriched = _enrich_terminal_item(dict(p))
-        enriched["buffer_idle"] = None
+        st = get_terminal_session_state(user_id, slot_i, scope_id)
+        enriched["buffer_idle"] = st.get("buffer_idle")
+        enriched["session_state"] = st.get("session_state")
+        enriched["can_send"] = st.get("can_send")
+        enriched["can_send_command"] = st.get("can_send_command")
+        enriched["can_read_buffer"] = st.get("can_read_buffer")
         ai_items.append(enriched)
     ai_items.sort(key=lambda x: int(x.get("slot") or 0))
     return {
@@ -475,16 +544,20 @@ def format_terminals_mapping_for_prompt(
         for t in ai:
             if t.get("connected"):
                 st = "已连接"
-                idle_note = ""
-                slot_i = int(t.get("slot") or 0)
-                idle = terminal_buffer_looks_idle(user_id, slot_i, scope_id)
-                idle_note = " buffer_idle=是(可发新命令)" if idle else " buffer_idle=否(可能仍有程序占用)"
+                ss = t.get("session_state") or "unknown"
+                idle = t.get("buffer_idle")
+                if idle is True:
+                    idle_note = f" session_state={ss} buffer_idle=是(可发新命令)"
+                elif idle is False:
+                    idle_note = f" session_state={ss} buffer_idle=否(勿发新命令，可 get_terminal_buffer 轮询或 <Ctrl+C>)"
+                else:
+                    idle_note = f" session_state={ss}"
             elif t.get("pending"):
                 st = "连接中"
-                idle_note = ""
+                idle_note = f" session_state={t.get('session_state') or 'pending'}"
             else:
-                st = "未连接"
-                idle_note = ""
+                st = "未连接/已断开"
+                idle_note = f" session_state={t.get('session_state') or 'disconnected'} can_send=否(勿 send_to_terminal，可 get_terminal_buffer 读末次输出)"
             lines.append(
                 f"  slot={t['slot']} tab={t['tab_label']} host_id={t.get('host_id')} "
                 f"ip={t.get('host_ip')}:{t.get('host_port')} status={st}{idle_note}"
@@ -496,14 +569,16 @@ def format_terminals_mapping_for_prompt(
             st = "已连接" if t.get("connected") else "未连接"
             lines.append(f"  slot={t['slot']} tab={t['tab_label']} host_id={t.get('host_id')} status={st}")
     lines.append(
-        "规则：① 操作前先 list_terminals（同一 host 可有多个 AI slot，看 buffer_idle）；"
-        "② 有空闲 slot（buffer_idle=是）时优先复用，勿无故再开；"
-        "③ 现有终端被长期任务占用、或要在并行 session 里执行新任务时，调用 create_console(host_id) 新开终端（**同一 host 允许多个 AI 控制台**）；"
-        "④ 用户明确要求「再开一个终端/新开控制台」时，必须 create_console(host_id)，不得拒绝；"
-        "⑤ connect_terminal 仅在尚无该 host 的 AI 控制台、或只需切到已有空闲 slot 时使用（首连也会预分配 slot 并等待就绪）；"
-        "⑥ connect_terminal 之后若 get_terminal_buffer 仍无输出/未连接，用 list_terminals + get_terminal_buffer(next_poll_in_seconds=2～5) 重试，"
+        "规则：① 操作前先 list_terminals 或 get_terminal_status（同一 host 可有多个 AI slot，看 connected/buffer_idle/session_state）；"
+        "② connected=false 或 session_state=disconnected 时**禁止** send_to_terminal（终端已断，一般不可恢复），仅可 get_terminal_buffer 读缓冲；"
+        "③ session_state=busy 时勿发新 shell 命令，用 get_terminal_buffer(next_poll_in_seconds=…) 等待回到 idle；"
+        "④ 有空闲 slot（buffer_idle=是/session_state=idle）时优先复用，勿无故再开；"
+        "⑤ 现有终端被长期任务占用、或要在并行 session 里执行新任务时，调用 create_console(host_id) 新开终端（**同一 host 允许多个 AI 控制台**）；"
+        "⑥ 用户明确要求「再开一个终端/新开控制台」时，必须 create_console(host_id)，不得拒绝；"
+        "⑦ connect_terminal 仅在尚无该 host 的 AI 控制台、或只需切到已有空闲 slot 时使用（首连也会预分配 slot 并等待就绪）；"
+        "⑧ connect_terminal 之后若 get_terminal_buffer 仍无输出/未连接，用 list_terminals + get_terminal_buffer(next_poll_in_seconds=2～5) 重试，"
         "**禁止**立刻 create_console（除非要并行第二个 session 或用户明确要求再开一个）；"
-        "⑦ send_to_terminal/get_terminal_buffer 失败时先看返回里的 terminals 快照，勿立刻 ssh_execute 替代。"
+        "⑨ send_to_terminal/get_terminal_buffer 失败时先看返回里的 terminals 快照与 session_state，勿立刻 ssh_execute 替代。"
     )
     return "\n".join(lines)
 
@@ -747,7 +822,18 @@ async def get_terminal_buffer(slot: int | None = None, scope_id: str | None = No
     slot = max(0, min(slot if slot is not None else TERMINAL_SLOT_AI, 31))
     scope_id = normalize_terminal_scope_id(scope_id)
     buf, connected = get_terminal_buffer_for_user(user["id"], slot, scope_id=scope_id)
-    return {"success": True, "buffer": buf, "connected": connected, "slot": slot, "scope_id": scope_id}
+    status = get_terminal_session_state(user["id"], slot, scope_id=scope_id)
+    return {
+        "success": True,
+        "buffer": buf,
+        "connected": connected,
+        "slot": slot,
+        "scope_id": scope_id,
+        **{k: status.get(k) for k in (
+            "session_state", "buffer_idle", "ready_for_input", "can_send", "can_send_command",
+            "can_read_buffer", "last_line", "busy_reason", "waiting_password", "waiting_interactive",
+        )},
+    }
 
 
 @router.get("/list")
