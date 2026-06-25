@@ -2495,7 +2495,7 @@ function edgeopsFinalizeProcessProsePanel(replyWrap, textEl, collapsePanel) {
     edgeopsBindFrozenProseItemsIn(replyWrap);
 }
 
-function edgeopsFlushAssistantStreamText(replyWrap, textEl, streamedText, toolsEl) {
+function edgeopsApplyAssistantStreamTextPaint(replyWrap, textEl, streamedText, toolsEl) {
     var clean = stripThinkTags(streamedText || '');
     if (replyWrap) replyWrap._edgeopsProseStreamText = clean;
     if (replyWrap && toolsEl && clean.trim()) edgeopsMaybeEnableProcessProse(replyWrap, toolsEl);
@@ -2516,6 +2516,55 @@ function edgeopsFlushAssistantStreamText(replyWrap, textEl, streamedText, toolsE
         if (panel) edgeopsRefreshReplyProseHeader(panel, { live: !!(renderText && renderText.trim()) });
     }
 }
+
+function edgeopsCancelAssistantStreamTextFlush(textEl) {
+    if (!textEl || textEl._edgeopsStreamFlushRaf == null) return;
+    try { cancelAnimationFrame(textEl._edgeopsStreamFlushRaf); } catch (_e) {}
+    textEl._edgeopsStreamFlushRaf = null;
+}
+
+function edgeopsRunAssistantStreamTextFlush(textEl) {
+    if (!textEl || !textEl._edgeopsStreamFlushPending) return;
+    edgeopsCancelAssistantStreamTextFlush(textEl);
+    var pending = textEl._edgeopsStreamFlushPending;
+    textEl._edgeopsStreamFlushPending = null;
+    edgeopsApplyAssistantStreamTextPaint(
+        pending.replyWrap,
+        textEl,
+        pending.streamedText,
+        pending.toolsEl
+    );
+}
+
+/** 流式正文刷新：可见时每帧合并一次 DOM；后台/切页立即刷满，避免返回后「逐字回放」。 */
+function edgeopsFlushAssistantStreamText(replyWrap, textEl, streamedText, toolsEl) {
+    if (!textEl) return;
+    textEl._edgeopsStreamFlushPending = {
+        replyWrap: replyWrap,
+        streamedText: streamedText,
+        toolsEl: toolsEl
+    };
+    if (typeof document !== 'undefined' && document.hidden) {
+        edgeopsRunAssistantStreamTextFlush(textEl);
+        return;
+    }
+    if (textEl._edgeopsStreamFlushRaf != null) return;
+    textEl._edgeopsStreamFlushRaf = requestAnimationFrame(function() {
+        textEl._edgeopsStreamFlushRaf = null;
+        edgeopsRunAssistantStreamTextFlush(textEl);
+    });
+}
+
+(function edgeopsInstallStreamVisibilityFlush() {
+    if (typeof document === 'undefined' || window._edgeopsStreamVisibilityFlush) return;
+    window._edgeopsStreamVisibilityFlush = true;
+    document.addEventListener('visibilitychange', function() {
+        if (document.hidden) return;
+        document.querySelectorAll('.ai-reply-text').forEach(function(el) {
+            if (el._edgeopsStreamFlushPending) edgeopsRunAssistantStreamTextFlush(el);
+        });
+    });
+})();
 
 function edgeopsResolveStreamFinalText(replyWrap, streamedText, hasTools) {
     return edgeopsResolveProcessFinalText(replyWrap, streamedText, hasTools);
@@ -6724,6 +6773,7 @@ function edgeopsFinalizeAssistantStreamReply(opts) {
     var logBuffer = opts.logBuffer;
     var renderLogFn = opts.renderLogFn;
     if (!replyWrap) return 'idle';
+    if (textEl) edgeopsRunAssistantStreamTextFlush(textEl);
     var hadOpenTools = edgeopsCotHasOpenToolSteps(toolsEl);
     if (hadOpenTools) edgeopsMarkOpenToolRowsFailed(toolsEl, logBuffer, renderLogFn);
     replyWrap.classList.remove('ai-reply-stream');

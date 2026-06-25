@@ -727,18 +727,9 @@ var API = {
                 else if (data.stream_status) onEvent({ stream_status: data.stream_status });
             }
 
-            /** content / cot 若在同一 read 回调里连续派发，主线程来不及重绘会像「整段闪现」；插入 setTimeout(0) 保持顺序并让出渲染时机 */
+            /** 保持 SSE 事件顺序；后台标签页勿用 setTimeout(0)（会被节流到 ~1s，切回后像「放电影」）。 */
             function enqueueDispatch(data) {
-                var defer = !!(data && (data.content || data.cot));
                 dispatchQueue = dispatchQueue.then(function() {
-                    if (defer) {
-                        return new Promise(function(resolve) {
-                            setTimeout(function() {
-                                try { dispatchSseData(data); } catch (e) {}
-                                resolve();
-                            }, 0);
-                        });
-                    }
                     try { dispatchSseData(data); } catch (e) {}
                     return Promise.resolve();
                 });
@@ -756,6 +747,7 @@ var API = {
                     var lines = buf.split('\n');
                     buf = lines.pop() || '';
                     var hitDone = false;
+                    var batchContent = '';
                     for (var li = 0; li < lines.length; li++) {
                         var line = lines[li];
                         if (line.indexOf('data: ') !== 0) continue;
@@ -766,9 +758,19 @@ var API = {
                             continue;
                         }
                         try {
-                            enqueueDispatch(JSON.parse(payload));
+                            var parsed = JSON.parse(payload);
+                            if (parsed && parsed.content) {
+                                batchContent += parsed.content;
+                                continue;
+                            }
+                            if (batchContent) {
+                                enqueueDispatch({ content: batchContent });
+                                batchContent = '';
+                            }
+                            enqueueDispatch(parsed);
                         } catch (e) {}
                     }
+                    if (batchContent) enqueueDispatch({ content: batchContent });
                     if (hitDone) {
                         return dispatchQueue.then(function() { return streamSessionId; });
                     }
