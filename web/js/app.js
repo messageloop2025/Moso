@@ -3857,6 +3857,69 @@ function edgeopsRenderEchartsBlock(block) {
     block.setAttribute('data-diagram-ready', '1');
 }
 
+var EDGEOPS_SVG_FORBIDDEN_TAGS = {
+    script: 1, foreignobject: 1, iframe: 1, object: 1, embed: 1, link: 1, audio: 1, video: 1
+};
+
+function edgeopsExtractSvgMarkup(source) {
+    var text = String(source || '').trim();
+    if (!text) throw new Error(typeof t === 'function' ? t('ui.diagram.svgEmpty') : 'SVG is empty');
+    var match = text.match(/<svg[\s\S]*<\/svg>/i);
+    if (match) return match[0];
+    throw new Error(typeof t === 'function' ? t('ui.diagram.svgInvalid') : 'Invalid SVG markup');
+}
+
+function edgeopsSanitizeSvgMarkup(source) {
+    var svgText = edgeopsExtractSvgMarkup(source);
+    var doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
+    if (doc.querySelector('parsererror')) {
+        throw new Error(typeof t === 'function' ? t('ui.diagram.svgInvalid') : 'Invalid SVG markup');
+    }
+    var svg = doc.documentElement;
+    if (!svg || String(svg.tagName || '').toLowerCase() !== 'svg') {
+        throw new Error(typeof t === 'function' ? t('ui.diagram.svgInvalid') : 'Invalid SVG markup');
+    }
+    if (!svg.getAttribute('xmlns')) svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    (function walk(node) {
+        if (!node || node.nodeType !== 1) return;
+        var tag = String(node.tagName || '').toLowerCase();
+        if (EDGEOPS_SVG_FORBIDDEN_TAGS[tag]) {
+            node.remove();
+            return;
+        }
+        var attrs = node.attributes ? Array.prototype.slice.call(node.attributes) : [];
+        attrs.forEach(function(attr) {
+            var name = String(attr.name || '').toLowerCase();
+            var val = String(attr.value || '');
+            if (name.indexOf('on') === 0) {
+                node.removeAttribute(attr.name);
+                return;
+            }
+            if ((name === 'href' || name === 'xlink:href') && /^\s*javascript:/i.test(val)) {
+                node.removeAttribute(attr.name);
+            }
+        });
+        var children = node.childNodes ? Array.prototype.slice.call(node.childNodes) : [];
+        children.forEach(walk);
+    })(svg);
+    if (!svg.getAttribute('viewBox') && svg.getAttribute('width') && svg.getAttribute('height')) {
+        svg.setAttribute('viewBox', '0 0 ' + svg.getAttribute('width') + ' ' + svg.getAttribute('height'));
+    }
+    svg.removeAttribute('width');
+    svg.removeAttribute('height');
+    svg.setAttribute('class', 'chat-diagram-svg');
+    return new XMLSerializer().serializeToString(svg);
+}
+
+function edgeopsRenderSvgBlock(block) {
+    var source = edgeopsReadDiagramSource(block);
+    var canvasEl = block.querySelector('.chat-diagram-canvas');
+    if (!canvasEl) throw new Error(typeof t === 'function' ? t('ui.diagram.renderFailed') : 'render failed');
+    var svgHtml = edgeopsSanitizeSvgMarkup(source);
+    canvasEl.innerHTML = '<div class="chat-diagram-svg-wrap">' + svgHtml + '</div>';
+    block.setAttribute('data-diagram-ready', '1');
+}
+
 function edgeopsRenderDiagramBlock(block) {
     if (!block || block.getAttribute('data-diagram-ready') === '1') return Promise.resolve();
     var type = block.getAttribute('data-diagram-type');
@@ -3868,6 +3931,7 @@ function edgeopsRenderDiagramBlock(block) {
     if (type === 'mermaid') return edgeopsRenderMermaidBlock(block).catch(function(err) { edgeopsSetDiagramError(block, err); });
     if (type === 'markmap') return Promise.resolve().then(function() { edgeopsRenderMarkmapBlock(block); }).catch(function(err) { edgeopsSetDiagramError(block, err); });
     if (type === 'echarts') return Promise.resolve().then(function() { edgeopsRenderEchartsBlock(block); }).catch(function(err) { edgeopsSetDiagramError(block, err); });
+    if (type === 'svg') return Promise.resolve().then(function() { edgeopsRenderSvgBlock(block); }).catch(function(err) { edgeopsSetDiagramError(block, err); });
     edgeopsSetDiagramError(block, t('ui.diagram.unsupported'));
     return Promise.resolve();
 }
@@ -3887,13 +3951,117 @@ function edgeopsCloseDiagramPreview() {
     if (overlay) overlay.remove();
 }
 
-function edgeopsSetPreviewZoom(stage, label, zoom) {
+function edgeopsSetPreviewZoom(overlay, label, zoom) {
+    if (!overlay) return;
     zoom = Math.max(0.5, Math.min(3, zoom || 1));
-    if (stage) {
-        stage.setAttribute('data-zoom', String(zoom));
-        stage.style.transform = 'scale(' + zoom + ')';
-    }
+    var stage = overlay.querySelector('.edgeops-diagram-preview-stage');
+    if (stage) stage.setAttribute('data-zoom', String(zoom));
     if (label) label.textContent = Math.round(zoom * 100) + '%';
+    edgeopsApplyDiagramPreviewLayout(overlay);
+}
+
+function edgeopsGetDiagramPreviewPadding(scrollEl) {
+    if (!scrollEl) return { x: 32, y: 32 };
+    var style = window.getComputedStyle(scrollEl);
+    return {
+        x: (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0),
+        y: (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0)
+    };
+}
+
+function edgeopsApplyDiagramPreviewLayout(overlay) {
+    if (!overlay) return;
+    var scrollEl = overlay.querySelector('.edgeops-diagram-preview-scroll');
+    var stage = overlay.querySelector('.edgeops-diagram-preview-stage');
+    var previewBlock = overlay.querySelector('.edgeops-diagram-preview-block');
+    if (!scrollEl || !stage || !previewBlock) return;
+    var pad = edgeopsGetDiagramPreviewPadding(scrollEl);
+    var zoom = parseFloat(stage.getAttribute('data-zoom') || '1') || 1;
+    var baseW = Math.max(160, scrollEl.clientWidth - pad.x);
+    var baseH = Math.max(160, scrollEl.clientHeight - pad.y);
+    stage.style.width = Math.round(baseW * zoom) + 'px';
+    stage.style.height = Math.round(baseH * zoom) + 'px';
+    var canvasEl = previewBlock.querySelector('.chat-diagram-canvas');
+    if (canvasEl) {
+        canvasEl.style.width = baseW + 'px';
+        canvasEl.style.height = baseH + 'px';
+        canvasEl.style.boxSizing = 'border-box';
+        if (zoom !== 1) {
+            canvasEl.style.transform = 'scale(' + zoom + ')';
+            canvasEl.style.transformOrigin = 'top left';
+        } else {
+            canvasEl.style.transform = '';
+        }
+    }
+    if (previewBlock._edgeopsEchart && typeof previewBlock._edgeopsEchart.resize === 'function') {
+        previewBlock._edgeopsEchart.resize();
+    }
+}
+
+function edgeopsCenterDiagramPreviewModal(modal) {
+    if (!modal) return;
+    var w = modal.offsetWidth || 640;
+    var h = modal.offsetHeight || 480;
+    modal.style.left = Math.max(8, Math.round((window.innerWidth - w) / 2)) + 'px';
+    modal.style.top = Math.max(8, Math.round((window.innerHeight - h) / 2)) + 'px';
+}
+
+function edgeopsBindDiagramPreviewDrag(header, modal) {
+    if (!header || !modal) return;
+    header.addEventListener('pointerdown', function(ev) {
+        if (ev.button !== 0) return;
+        if (ev.target.closest('button') || ev.target.closest('.edgeops-diagram-preview-actions')) return;
+        ev.preventDefault();
+        var rect = modal.getBoundingClientRect();
+        var startX = ev.clientX;
+        var startY = ev.clientY;
+        var startLeft = rect.left;
+        var startTop = rect.top;
+        modal.style.transform = 'none';
+        modal.style.left = startLeft + 'px';
+        modal.style.top = startTop + 'px';
+        header.classList.add('is-dragging');
+        try { header.setPointerCapture(ev.pointerId); } catch (_cap) {}
+        function onMove(e) {
+            var nextLeft = startLeft + (e.clientX - startX);
+            var nextTop = startTop + (e.clientY - startY);
+            var maxLeft = Math.max(8, window.innerWidth - modal.offsetWidth - 8);
+            var maxTop = Math.max(8, window.innerHeight - modal.offsetHeight - 8);
+            modal.style.left = Math.min(Math.max(8, nextLeft), maxLeft) + 'px';
+            modal.style.top = Math.min(Math.max(8, nextTop), maxTop) + 'px';
+        }
+        function onUp(e) {
+            header.classList.remove('is-dragging');
+            try { header.releasePointerCapture(e.pointerId); } catch (_rel) {}
+            header.removeEventListener('pointermove', onMove);
+            header.removeEventListener('pointerup', onUp);
+            header.removeEventListener('pointercancel', onUp);
+        }
+        header.addEventListener('pointermove', onMove);
+        header.addEventListener('pointerup', onUp);
+        header.addEventListener('pointercancel', onUp);
+    });
+}
+
+function edgeopsBindDiagramPreviewResize(overlay) {
+    if (!overlay || typeof ResizeObserver === 'undefined') return;
+    var modal = overlay.querySelector('.edgeops-diagram-preview-modal');
+    var scrollEl = overlay.querySelector('.edgeops-diagram-preview-scroll');
+    var ro = new ResizeObserver(function() {
+        edgeopsApplyDiagramPreviewLayout(overlay);
+    });
+    if (modal) ro.observe(modal);
+    if (scrollEl) ro.observe(scrollEl);
+}
+
+function edgeopsToggleDiagramPreviewSource(overlay) {
+    if (!overlay) return;
+    var sourceEl = overlay.querySelector('.edgeops-diagram-preview-source');
+    var btn = overlay.querySelector('[data-preview-action="toggle-source"]');
+    if (!sourceEl || !btn) return;
+    var visible = sourceEl.style.display !== 'none';
+    sourceEl.style.display = visible ? 'none' : 'block';
+    btn.textContent = visible ? t('ui.diagram.expandSource') : t('ui.diagram.collapseSource');
 }
 
 function edgeopsOpenDiagramPreview(block) {
@@ -3905,21 +4073,27 @@ function edgeopsOpenDiagramPreview(block) {
     var type = block.getAttribute('data-diagram-type') || 'diagram';
     overlay.innerHTML = ''
         + '<div class="modal edgeops-diagram-preview-modal">'
-        + '<div class="modal-header"><h3>' + t('ui.diagram.previewTitle') + '</h3><div class="edgeops-diagram-preview-actions">'
+        + '<div class="modal-header edgeops-diagram-preview-header" title="' + esc(t('ui.diagram.dragPreview')) + '">'
+        + '<h3>' + t('ui.diagram.previewTitle') + '</h3>'
+        + '<div class="edgeops-diagram-preview-actions">'
         + '<button type="button" class="btn btn-sm" data-preview-action="zoom-out">-</button>'
         + '<span class="edgeops-diagram-preview-zoom">100%</span>'
         + '<button type="button" class="btn btn-sm" data-preview-action="zoom-in">+</button>'
         + '<button type="button" class="btn btn-sm" data-preview-action="reset">' + t('ui.diagram.reset') + '</button>'
+        + '<button type="button" class="btn btn-sm" data-preview-action="toggle-source">' + t('ui.diagram.expandSource') + '</button>'
         + '<button type="button" class="btn btn-sm btn-primary" data-preview-action="png">' + t('ui.diagram.exportPng') + '</button>'
         + '<button type="button" class="btn btn-sm" data-preview-action="svg">' + t('ui.diagram.exportSvg') + '</button>'
         + '<button type="button" class="modal-close" data-preview-action="close">&times;</button>'
         + '</div></div>'
         + '<div class="modal-body edgeops-diagram-preview-body">'
         + '<div class="edgeops-diagram-preview-scroll"><div class="edgeops-diagram-preview-stage"></div></div>'
-        + '<pre class="chat-diagram-source edgeops-diagram-preview-source"><code></code></pre>'
+        + '<pre class="chat-diagram-source edgeops-diagram-preview-source" style="display:none"><code></code></pre>'
         + '</div>'
         + '</div>';
     document.body.appendChild(overlay);
+    var modal = overlay.querySelector('.edgeops-diagram-preview-modal');
+    var header = overlay.querySelector('.edgeops-diagram-preview-header');
+    var scrollEl = overlay.querySelector('.edgeops-diagram-preview-scroll');
     var stage = overlay.querySelector('.edgeops-diagram-preview-stage');
     var zoomLabel = overlay.querySelector('.edgeops-diagram-preview-zoom');
     var previewBlock = document.createElement('div');
@@ -3931,9 +4105,12 @@ function edgeopsOpenDiagramPreview(block) {
     stage.appendChild(previewBlock);
     var sourceCode = overlay.querySelector('.edgeops-diagram-preview-source code');
     if (sourceCode) sourceCode.textContent = edgeopsReadDiagramSource(block);
-    edgeopsSetPreviewZoom(stage, zoomLabel, 1);
+    edgeopsCenterDiagramPreviewModal(modal);
+    edgeopsBindDiagramPreviewDrag(header, modal);
+    edgeopsBindDiagramPreviewResize(overlay);
+    edgeopsSetPreviewZoom(overlay, zoomLabel, 1);
     Promise.resolve(edgeopsRenderDiagramBlock(previewBlock)).then(function() {
-        edgeopsSetPreviewZoom(stage, zoomLabel, 1);
+        edgeopsApplyDiagramPreviewLayout(overlay);
     });
     overlay.addEventListener('click', function(e) {
         if (e.target === overlay) {
@@ -3945,9 +4122,10 @@ function edgeopsOpenDiagramPreview(block) {
         var action = btn.getAttribute('data-preview-action');
         var currentZoom = parseFloat(stage.getAttribute('data-zoom') || '1') || 1;
         if (action === 'close') edgeopsCloseDiagramPreview();
-        else if (action === 'zoom-in') edgeopsSetPreviewZoom(stage, zoomLabel, currentZoom + 0.2);
-        else if (action === 'zoom-out') edgeopsSetPreviewZoom(stage, zoomLabel, currentZoom - 0.2);
-        else if (action === 'reset') edgeopsSetPreviewZoom(stage, zoomLabel, 1);
+        else if (action === 'zoom-in') edgeopsSetPreviewZoom(overlay, zoomLabel, currentZoom + 0.2);
+        else if (action === 'zoom-out') edgeopsSetPreviewZoom(overlay, zoomLabel, currentZoom - 0.2);
+        else if (action === 'reset') edgeopsSetPreviewZoom(overlay, zoomLabel, 1);
+        else if (action === 'toggle-source') edgeopsToggleDiagramPreviewSource(overlay);
         else if (action === 'png') edgeopsExportDiagram(previewBlock, 'png');
         else if (action === 'svg') edgeopsExportDiagram(previewBlock, 'svg');
     });
@@ -3962,6 +4140,16 @@ function edgeopsExportDiagram(block, format) {
         var dataUrl = chart.getDataURL({ type: format === 'svg' ? 'svg' : 'png', pixelRatio: 2, backgroundColor: '#0f172a' });
         edgeopsDownloadDataUrl(baseName + '.' + (format === 'svg' ? 'svg' : 'png'), dataUrl);
         return Promise.resolve();
+    }
+    if (type === 'svg' && format === 'svg') {
+        try {
+            var svgOut = edgeopsSanitizeSvgMarkup(edgeopsReadDiagramSource(block));
+            edgeopsDownloadBlob(baseName + '.svg', new Blob([svgOut], { type: 'image/svg+xml;charset=utf-8' }));
+            return Promise.resolve();
+        } catch (svgErr) {
+            showToast((svgErr && svgErr.message) || t('ui.diagram.renderFailed'), 'error');
+            return Promise.resolve();
+        }
     }
     var svgEl = edgeopsGetDiagramSvg(block);
     if (format === 'svg' && svgEl) {

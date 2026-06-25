@@ -278,7 +278,12 @@
       "markmapNotLoaded": "Markmap library failed to load",
       "echartsLibNotLoaded": "ECharts library failed to load",
       "echartsEmpty": "ECharts option is empty",
-      "echartsParse": "Cannot parse ECharts option; use JSON or a JS object literal"
+      "echartsParse": "Cannot parse ECharts option; use JSON or a JS object literal",
+      "svgEmpty": "SVG source is empty",
+      "svgInvalid": "Invalid SVG; output a complete <svg>...</svg> fragment",
+      "resizePreview": "Drag the corner to resize the dialog",
+      "resizePreviewWidth": "Drag the corner to resize the dialog",
+      "dragPreview": "Drag the title bar to move the preview"
     },
     "table": { "sortClick": "Click to sort" },
     "loadFailedH3": "Load failed",

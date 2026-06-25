@@ -278,7 +278,12 @@
       "markmapNotLoaded": "Markmap 资源未加载",
       "echartsLibNotLoaded": "ECharts 资源未加载",
       "echartsEmpty": "ECharts 配置为空",
-      "echartsParse": "无法解析 ECharts 配置，请输出 JSON 或 JS 对象字面量"
+      "echartsParse": "无法解析 ECharts 配置，请输出 JSON 或 JS 对象字面量",
+      "svgEmpty": "SVG 源码为空",
+      "svgInvalid": "SVG 格式无效，请输出完整的 <svg>...</svg> 片段",
+      "resizePreview": "拖拽右下角调整外框宽高",
+      "resizePreviewWidth": "拖拽右下角调整外框宽高",
+      "dragPreview": "按住标题栏拖动预览窗"
     },
     "table": { "sortClick": "点击排序" },
     "loadFailedH3": "加载失败",

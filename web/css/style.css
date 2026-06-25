@@ -2173,6 +2173,17 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
     display: block;
     max-width: none;
 }
+.chat-diagram-svg-wrap {
+    display: flex;
+    justify-content: center;
+    width: 100%;
+}
+.chat-diagram-svg-wrap svg,
+.chat-diagram-svg {
+    display: block;
+    max-width: 100%;
+    height: auto;
+}
 .chat-diagram-canvas .mermaid text,
 .chat-diagram-canvas .mermaid span,
 .chat-diagram-canvas .markmap text,
@@ -2284,17 +2295,46 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
     word-break: break-word;
 }
 .edgeops-diagram-preview-overlay {
-    align-items: center;
-    justify-content: center;
-    padding: 24px;
+    position: fixed;
+    inset: 0;
     z-index: 1300;
+    background: rgba(2, 6, 23, 0.62);
+    backdrop-filter: blur(2px);
 }
 .edgeops-diagram-preview-modal {
-    width: min(94vw, 1320px);
-    max-width: min(94vw, 1320px);
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    width: min(88vw, 960px);
+    height: min(78vh, 720px);
+    min-width: 360px;
+    min-height: 320px;
+    max-width: 96vw;
     max-height: 92vh;
+    margin: 0;
+    resize: both;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
+    z-index: 1301;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+}
+.edgeops-diagram-preview-header {
+    cursor: move;
+    user-select: none;
+    touch-action: none;
+    flex-shrink: 0;
+}
+.edgeops-diagram-preview-header.is-dragging {
+    cursor: grabbing;
+}
+.edgeops-diagram-preview-header h3 {
+    cursor: move;
+}
+.edgeops-diagram-preview-header .edgeops-diagram-preview-actions,
+.edgeops-diagram-preview-header button {
+    cursor: default;
+    touch-action: auto;
 }
 .edgeops-diagram-preview-actions {
     display: flex;
@@ -2311,11 +2351,14 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
     display: flex;
     flex-direction: column;
     gap: 12px;
+    flex: 1 1 auto;
     min-height: 0;
+    overflow: hidden;
 }
 .edgeops-diagram-preview-scroll {
     flex: 1 1 auto;
     min-height: 0;
+    width: 100%;
     overflow: auto;
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -2323,20 +2366,62 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
     padding: 16px;
 }
 .edgeops-diagram-preview-stage {
-    transform-origin: top left;
-    width: max-content;
-    min-width: 100%;
+    position: relative;
+    box-sizing: border-box;
 }
 .edgeops-diagram-preview-block {
-    min-width: max-content;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+    width: 100%;
+    height: 100%;
+    min-height: 100%;
+    box-shadow: none;
+    margin: 0;
+    border: none;
+    background: transparent;
+}
+.edgeops-diagram-preview-block .chat-diagram-toolbar {
+    display: none;
 }
 .edgeops-diagram-preview-block .chat-diagram-canvas {
-    min-height: 520px;
+    min-height: 0;
+    height: 100%;
+    width: 100%;
+    padding: 0;
+    margin: 0;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+}
+.edgeops-diagram-preview-block .chat-diagram-canvas svg,
+.edgeops-diagram-preview-block .chat-diagram-echarts,
+.edgeops-diagram-preview-block .chat-diagram-svg-wrap,
+.edgeops-diagram-preview-block .chat-diagram-svg-wrap svg,
+.edgeops-diagram-preview-block .chat-diagram-svg,
+.edgeops-diagram-preview-block .markmap {
+    display: block;
+    width: 100% !important;
+    height: 100% !important;
+    max-width: 100%;
+    max-height: 100%;
+}
+.edgeops-diagram-preview-block .chat-diagram-svg-wrap {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.edgeops-diagram-preview-block .chat-diagram-svg-wrap svg {
+    width: auto !important;
+    height: auto !important;
+    max-width: 100%;
+    max-height: 100%;
 }
 .edgeops-diagram-preview-source {
     margin: 0;
-    max-height: 18vh;
+    flex: 0 0 auto;
+    max-height: 28vh;
     overflow: auto;
 }
 .chat-md-table-wrap {
@@ -3669,20 +3754,28 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
     }
     .edgeops-diagram-preview-overlay {
         padding: 0;
-        align-items: stretch;
     }
     .edgeops-diagram-preview-modal {
-        width: 100%;
+        left: 0 !important;
+        top: 0 !important;
+        width: 100vw !important;
+        height: 100vh !important;
         max-width: none;
-        max-height: 100vh;
+        max-height: none;
+        min-width: 0;
+        min-height: 0;
         border-radius: 0;
+        resize: none;
+    }
+    .edgeops-diagram-preview-header {
+        cursor: default;
+    }
+    .edgeops-diagram-preview-scroll {
+        padding: 10px;
     }
     .edgeops-diagram-preview-actions {
         flex-wrap: wrap;
         justify-content: flex-end;
-    }
-    .edgeops-diagram-preview-scroll {
-        padding: 10px;
     }
     .edgeops-diagram-preview-block .chat-diagram-canvas {
         min-height: 320px;
