@@ -99,7 +99,8 @@ async def _resolve_ai_credentials(db, user: dict, settings: dict[str, str]) -> t
             "success": False,
             "error": f"系统共享 Key 配额已用尽（上限 {trial.get('limit', SYSTEM_AI_USAGE_LIMIT)}）",
         }
-    if require_api_key(provider, api_key) and not api_key:
+    own_base = (settings.get("ai_base_url") or "").strip()
+    if require_api_key(provider, api_key, own_base_url=own_base, resolved_base_url=base_url) and not api_key:
         return "", "", "", {"success": False, "error": "AI 未配置 API Key"}
     return base_url, api_key, provider, None
 

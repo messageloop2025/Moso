@@ -2425,8 +2425,13 @@ async def _build_active_model_runtime_ctx(
         used = trial_info.get("used", 0)
         rem = trial_info.get("remaining", max(0, lim - used))
         key_source = f"系统共享 API Key（配额 {used}/{lim}，剩余 {rem}）"
-    elif not require_api_key(provider, user_key):
-        key_source = f"当前 provider（{provider or 'auto'}）无需 API Key"
+    elif not require_api_key(
+        provider,
+        user_key,
+        own_base_url=_resolve_user_own_base_url(prof),
+        resolved_base_url=base_url,
+    ):
+        key_source = "当前 endpoint 无需 API Key（本地/自建推理服务或 Profile 已指定 Base URL）"
     else:
         key_source = "未配置用户 Key（具体以本轮能否调用为准）"
 
@@ -3039,6 +3044,35 @@ async def _user_profile_context(db, user_id: int) -> tuple[dict | None, str]:
         if rows:
             own_base = (rows[0]["base_url"] or "").strip()
     return prof, own_base
+
+
+def _resolve_user_own_base_url(profile_row: dict | None, user_own_base: str = "") -> str:
+    if profile_row:
+        return (profile_row.get("base_url") or "").strip()
+    return (user_own_base or "").strip()
+
+
+_AI_KEY_REQUIRED_MSG = (
+    "AI 未配置 API Key。使用管理员全局云 endpoint 时会走系统共享 Key 或需填写 Key；"
+    "在 Profile 中填写自有 Base URL（Ollama / LM Studio / LocalAI / vLLM 等 OpenAI 兼容本地服务）后 Key 可留空。"
+)
+
+
+async def _raise_if_api_key_required(
+    db,
+    user_id: int,
+    *,
+    provider: str,
+    api_key: str,
+    base_url: str,
+    trial_info: dict | None = None,
+) -> None:
+    prof, user_own_base = await _user_profile_context(db, user_id)
+    own_base = _resolve_user_own_base_url(prof, user_own_base)
+    if trial_info and trial_info.get("exhausted"):
+        return
+    if require_api_key(provider, api_key, own_base_url=own_base, resolved_base_url=base_url) and not api_key:
+        raise HTTPException(status_code=400, detail=_AI_KEY_REQUIRED_MSG)
 
 
 async def _maybe_apply_system_shared_key(
@@ -4066,8 +4100,9 @@ async def summarize_session_prompt(
             status_code=403,
             detail=f"系统共享 Key 调用配额已用尽（上限 {trial.get('limit', SYSTEM_AI_USAGE_LIMIT)} 次）。请在「系统设置 → 我的 AI 配置」填写自有 Base URL / API Key / Model 以解除次数限制，或联系管理员重置配额计数。",
         )
-    if require_api_key(provider, api_key) and not api_key:
-        raise HTTPException(status_code=400, detail="AI 未配置 API Key，请在「AI 配置」中填写")
+    await _raise_if_api_key_required(
+        db, user["id"], provider=provider, api_key=api_key, base_url=base_url, trial_info=trial,
+    )
 
     # 只把「用户要求」和「助手的指令/决策」传给 AI，不传程序输出的日志
     lines = []
@@ -4090,7 +4125,7 @@ async def summarize_session_prompt(
 """
     api_url = ensure_chat_completions_url(base_url)
     model = normalize_model(provider, settings.get("ai_model") or "")
-    headers = prepare_headers(provider, api_key)
+    headers = prepare_headers(provider, api_key, base_url)
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(90.0)) as client:
             resp = await client.post(
@@ -4242,8 +4277,9 @@ async def summarize_host_prompt(
             status_code=403,
             detail=f"系统共享 Key 调用配额已用尽（上限 {trial.get('limit', SYSTEM_AI_USAGE_LIMIT)} 次）。请在「系统设置 → 我的 AI 配置」填写自有 Base URL / API Key / Model 以解除次数限制，或联系管理员重置配额计数。",
         )
-    if require_api_key(provider, api_key) and not api_key:
-        raise HTTPException(status_code=400, detail="AI 未配置 API Key，请在「AI 配置」中填写")
+    await _raise_if_api_key_required(
+        db, user["id"], provider=provider, api_key=api_key, base_url=base_url, trial_info=trial,
+    )
 
     lines = []
     for r in msg_rows:
@@ -4268,7 +4304,7 @@ async def summarize_host_prompt(
 """
     api_url = ensure_chat_completions_url(base_url)
     model = normalize_model(provider, settings.get("ai_model") or "")
-    headers = prepare_headers(provider, api_key)
+    headers = prepare_headers(provider, api_key, base_url)
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(90.0)) as client:
             resp = await client.post(
@@ -4376,8 +4412,9 @@ async def summarize_session_title(session_id: int, user=Depends(get_current_user
             status_code=403,
             detail=f"系统共享 Key 调用配额已用尽（上限 {trial.get('limit', SYSTEM_AI_USAGE_LIMIT)} 次）。请在「系统设置 → 我的 AI 配置」填写自有 Base URL / API Key / Model 以解除次数限制，或联系管理员重置配额计数。",
         )
-    if require_api_key(provider, api_key) and not api_key:
-        raise HTTPException(status_code=400, detail="请先在 AI 配置中填写 API Key")
+    await _raise_if_api_key_required(
+        db, user["id"], provider=provider, api_key=api_key, base_url=base_url, trial_info=trial,
+    )
     model = normalize_model(provider, settings.get("ai_model") or "")
     # 先检查是否有消息，避免用户等待后才发现无消息
     msg_count = await db.execute_fetchall(
@@ -5068,7 +5105,7 @@ async def _call_assistant_ai(
         provider = detect_provider(base_url)
     api_url = ensure_chat_completions_url(base_url)
     model = normalize_model(provider, model)
-    headers = prepare_headers(provider, api_key)
+    headers = prepare_headers(provider, api_key, base_url)
     _ap = _build_assistant_system_prompt()
     system_prompt = f"{(output_lang_section or '').strip()}\n\n{_ap}".strip() if (output_lang_section or "").strip() else _ap
     user_content = f"""用户原始指令：\n{user_goal[:2000]}\n\n{_config.PRODUCT_NAME_ZH}当前输出：\n{(ops_response or '')[:3000]}"""
@@ -5200,7 +5237,7 @@ async def _summarize_session_title(
         provider = detect_provider(base_url)
         api_url = ensure_chat_completions_url(base_url)
         model_norm = normalize_model(provider, model)
-        headers = prepare_headers(provider, api_key)
+        headers = prepare_headers(provider, api_key, base_url)
         system_content = (
             "根据以下对话总结成一句简短的中文会话标题，不超过20字，不要引号不要句号，直接输出标题内容。"
             "严禁在标题中包含、引用或复述任何密码、凭证、私钥、主机账户等敏感信息；仅输出简短中性标题。"
@@ -5261,8 +5298,9 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
     api_key, base_url, trial_info = await _maybe_apply_system_shared_key(
         db, user["id"], settings=settings, base_url=base_url, provider=provider, api_key=api_key,
     )
-    if require_api_key(provider, api_key) and not api_key and not (trial_info and trial_info.get("exhausted")):
-        raise HTTPException(status_code=400, detail="AI 未配置 API Key，请在「系统设置」中配置（Ollama 可留空）")
+    await _raise_if_api_key_required(
+        db, user["id"], provider=provider, api_key=api_key, base_url=base_url, trial_info=trial_info,
+    )
 
     provider = _effective_provider(settings, base_url)
 
@@ -5760,7 +5798,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
             write=15.0,
             pool=15.0,
         )
-        headers = prepare_headers(provider, api_key)
+        headers = prepare_headers(provider, api_key, base_url)
         last_user_message = req.message
         assistant_rounds = 0
         force_tool_retries = 0
@@ -7068,10 +7106,14 @@ async def run_ops_integration_chat_complete(
             "trial": trial_info,
             "session_id": session_id,
         }
-    if require_api_key(provider, api_key) and not api_key:
+    try:
+        await _raise_if_api_key_required(
+            db, user["id"], provider=provider, api_key=api_key, base_url=base_url, trial_info=trial_info,
+        )
+    except HTTPException as exc:
         return {
             "success": False,
-            "error": "AI 未配置 API Key",
+            "error": str(exc.detail),
             "session_id": session_id,
         }
 
@@ -7507,7 +7549,7 @@ async def run_ops_integration_chat_complete(
     tool_scope = "integration"
     exec_scope = "default"
     timeout = httpx.Timeout(connect=30.0, read=300.0, write=30.0, pool=30.0)
-    headers = prepare_headers(provider, api_key)
+    headers = prepare_headers(provider, api_key, base_url)
     last_user_message = msg_in
     assistant_rounds = 0
 

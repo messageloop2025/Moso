@@ -8,6 +8,7 @@
 import json
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 # 提供商类型
 PROVIDER_ALIYUN = "aliyun"
@@ -54,11 +55,11 @@ def normalize_model(provider: str, model: str) -> str:
     return name
 
 
-def prepare_headers(provider: str, api_key: str) -> dict[str, str]:
-    """生成请求头。Ollama 可不带 Authorization，阿里/OpenAI 使用 Bearer。"""
+def prepare_headers(provider: str, api_key: str, base_url: str | None = None) -> dict[str, str]:
+    """生成请求头。本地/自建 endpoint 或无 Key 要求时不带 Authorization。"""
     headers = {"Content-Type": "application/json"}
     key = (api_key or "").strip()
-    if provider == PROVIDER_OLLAMA and not key:
+    if not require_api_key(provider, key, own_base_url=base_url, resolved_base_url=base_url):
         return headers
     if key:
         headers["Authorization"] = f"Bearer {key}"
@@ -149,9 +150,49 @@ def is_ollama(provider: str) -> bool:
     return provider == PROVIDER_OLLAMA
 
 
-def require_api_key(provider: str, api_key: str) -> bool:
-    """当前配置下是否必须提供 API Key（Ollama 可免）。"""
+def is_local_or_self_hosted_base_url(base_url: str | None) -> bool:
+    """本机 / 内网推理地址（Ollama、LM Studio、LocalAI、vLLM 等）通常可不填 API Key。"""
+    raw = (base_url or "").strip()
+    if not raw:
+        return False
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower()
+    port = parsed.port
+    if not host:
+        return False
+    if re.search(r":11434(?:/|$|\?)", raw.lower().replace(" ", "")):
+        return True
+    if host in ("localhost", "127.0.0.1", "::1", "0.0.0.0") or host.endswith(".local"):
+        return True
+    if re.match(r"^10\.", host) or re.match(r"^192\.168\.", host) or re.match(r"^172\.(1[6-9]|2\d|3[01])\.", host):
+        return True
+    if port in (11434, 11435, 1234, 8080, 8000, 5000, 3000, 8888, 7860):
+        return True
+    return False
+
+
+def require_api_key(
+    provider: str,
+    api_key: str,
+    *,
+    own_base_url: str | None = None,
+    resolved_base_url: str | None = None,
+) -> bool:
+    """当前配置下是否必须提供 API Key。
+
+    Profile / user_ai_config 已填写 Base URL 时 Key 可选（本地 Ollama、LM Studio、LocalAI、
+    vLLM 等 OpenAI 兼容服务均适用）；仅在使用全局默认云 endpoint 且无 Key 时才强制要求。
+    """
+    if (api_key or "").strip():
+        return False
     if provider == PROVIDER_OLLAMA:
+        return False
+    if (own_base_url or "").strip():
+        return False
+    if is_local_or_self_hosted_base_url(resolved_base_url):
         return False
     return True
 
@@ -170,8 +211,6 @@ def should_use_system_shared_api_key(
     """
     if (api_key or "").strip():
         return False
-    if not require_api_key(provider, api_key):
-        return False
     own_base = ""
     if profile_row:
         if (profile_row.get("api_key") or "").strip():
@@ -182,6 +221,8 @@ def should_use_system_shared_api_key(
     elif user_own_base_url:
         own_base = (user_own_base_url or "").strip()
     if own_base:
+        return False
+    if not require_api_key(provider, api_key, own_base_url=own_base):
         return False
     return True
 
