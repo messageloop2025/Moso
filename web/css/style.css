@@ -4653,12 +4653,16 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
     background: var(--bg-secondary);
     box-sizing: border-box;
 }
-.host-ai-chat-bar .host-ai-clear-n {
+.host-ai-chat-bar .ai-profile-quick-switch {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    margin-right: 8px;
 }
-.host-ai-chat-bar .host-ai-clear-n input { padding: 4px 6px; }
+.host-ai-chat-bar .ai-profile-quick-select {
+    max-width: 120px;
+    min-width: 72px;
+    padding-right: 1.5rem;
+}
 .ai-chat-container .chat-messages {
     flex: 1;
     min-height: 0;

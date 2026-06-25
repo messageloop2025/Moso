@@ -7491,7 +7491,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         + '</div>'
         + '<div class="layout-splitter-vertical" data-layout="host" data-split="terminal" title="' + esc(t('hostAi.splitterTitle')) + '"></div>'
         + '<div class="chat-container ai-chat-container ai-layout-chat" id="hostAiLayoutChat" style="flex:1;min-width:0">'
-        + '<div class="host-ai-chat-bar"><label class="ai-profile-quick-switch" style="display:inline-flex;align-items:center;margin-right:8px"><select class="form-control form-control-sm" title="' + esc(t('modelConfig.quickSwitchLabel')) + '" id="hostAiProfileQuickSwitch" style="max-width:220px;min-width:140px"></select></label><button type="button" class="btn btn-sm" id="hostAiSessionPromptBtn" title="' + esc(t('hostAi.barSessionPromptTitle')) + '">' + esc(t('hostAi.barSessionPrompt')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptBtn" title="' + esc(t('hostAi.barHostPromptTitle')) + '">' + esc(t('hostAi.barHostPrompt')) + '</button><button type="button" class="btn btn-sm" id="hostAiClearChat">' + esc(t('hostAi.clearChat')) + '</button><span class="host-ai-clear-n"><input type="number" id="hostAiClearN" min="1" value="10" style="width:84px">' + esc(t('hostAi.clearN')) + '</span><button type="button" class="btn btn-sm" id="hostAiClearLastN">' + esc(t('hostAi.clearGtN')) + '</button><button type="button" class="btn btn-sm" id="hostAiExportMd" title="' + esc(t('hostAi.exportMdTitle')) + '">' + esc(t('hostAi.exportMd')) + '</button><button type="button" class="btn btn-sm" id="hostAiToggleTerminalBtn">' + esc(t('hostAi.hideTerminal')) + '</button><button type="button" class="btn btn-sm btn-primary" id="hostAiNewSession">' + esc(t('hostAi.newSession')) + '</button></div>'
+        + '<div class="host-ai-chat-bar"><label class="ai-profile-quick-switch"><select class="form-control form-control-sm ai-profile-quick-select" title="' + esc(t('modelConfig.quickSwitchLabel')) + '" id="hostAiProfileQuickSwitch"></select></label><button type="button" class="btn btn-sm" id="hostAiSessionPromptBtn" title="' + esc(t('hostAi.barSessionPromptTitle')) + '">' + esc(t('hostAi.barSessionPrompt')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptBtn" title="' + esc(t('hostAi.barHostPromptTitle')) + '">' + esc(t('hostAi.barHostPrompt')) + '</button><button type="button" class="btn btn-sm" id="hostAiClearChat">' + esc(t('hostAi.clearChat')) + '</button><button type="button" class="btn btn-sm" id="hostAiExportMd" title="' + esc(t('hostAi.exportMdTitle')) + '">' + esc(t('hostAi.exportMd')) + '</button><button type="button" class="btn btn-sm" id="hostAiToggleTerminalBtn">' + esc(t('hostAi.hideTerminal')) + '</button><button type="button" class="btn btn-sm btn-primary" id="hostAiNewSession">' + esc(t('hostAi.newSession')) + '</button></div>'
         + '<div id="hostAiSessionPromptModal" class="modal-overlay" style="display:none"><div class="modal modal-session-prompt"><div class="modal-header"><span>' + esc(t('hostAi.sessionPromptTitle')) + '</span><button type="button" class="modal-close" id="hostAiSessionPromptClose">&times;</button></div><div class="modal-body"><div class="session-prompt-toolbar"><button type="button" class="btn btn-sm active" id="hostAiSessionPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm" id="hostAiSessionPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button></div><div id="hostAiSessionPromptEditWrap"><textarea id="hostAiSessionPromptText" class="form-control" rows="6" placeholder="' + esc(t('hostAi.sessionPromptPlaceholder')) + '"></textarea></div><div id="hostAiSessionPromptPreview" class="session-prompt-preview" style="display:none"></div><div class="modal-actions" style="margin-top:8px"><button type="button" class="btn btn-sm btn-primary" id="hostAiSessionPromptSave">' + esc(t('hostAi.sessionPromptSave')) + '</button><button type="button" class="btn btn-sm" id="hostAiSessionPromptSummarize" title="' + esc(t('hostAi.sessionSummarizeReplaceTitle')) + '">' + esc(t('hostDetail.promptSummarize')) + '</button><button type="button" class="btn btn-sm" id="hostAiSessionPromptAppend" title="' + esc(t('hostAi.sessionSummarizeAppendTitle')) + '">' + esc(t('hostDetail.promptAppend')) + '</button><button type="button" class="btn btn-sm" id="hostAiSessionPromptCancel">' + esc(t('hostAi.sessionPromptClose')) + '</button></div></div></div></div>'
         + '<div id="hostAiHostPromptModal" class="modal-overlay" style="display:none"><div class="modal modal-session-prompt"><div class="modal-header"><span>' + esc(t('hostAi.hostPromptModalTitle')) + '</span><button type="button" class="modal-close" id="hostAiHostPromptClose">&times;</button></div><div class="modal-body"><div class="text-muted" style="margin-bottom:6px;font-size:12px">' + hostModalHint + '</div><div class="session-prompt-toolbar"><button type="button" class="btn btn-sm active" id="hostAiHostPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button></div><div id="hostAiHostPromptEditWrap"><textarea id="hostAiHostPromptText" class="form-control" rows="10" placeholder="' + esc(t('hostAi.hostPromptModalTextareaPh')) + '"></textarea></div><div id="hostAiHostPromptPreview" class="session-prompt-preview" style="display:none"></div><div class="modal-actions" style="margin-top:8px"><button type="button" class="btn btn-sm btn-primary" id="hostAiHostPromptSave">' + esc(t('hostDetail.promptSave')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptSummarize" title="' + esc(t('hostAi.hostSummarizeReplaceTitle')) + '">' + esc(t('hostDetail.promptSummarize')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptAppend" title="' + esc(t('hostAi.hostSummarizeAppendTitle')) + '">' + esc(t('hostDetail.promptAppend')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptCancel">' + esc(t('hostAi.sessionPromptClose')) + '</button></div></div></div></div>'
         + '<div class="chat-messages" id="hostAiMessages"></div>'
@@ -7640,16 +7640,6 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
             loadSession(sessionId);
             showToast(t('toast.chatCleared'));
         }).catch(function(err) { showToast(err.message || t('toast.clearFailed'), 'error'); });
-    };
-    document.getElementById('hostAiClearLastN').onclick = function() {
-        if (!sessionId) { showToast(t('toast.selectOrCreateSession')); return; }
-        var n = parseInt(document.getElementById('hostAiClearN').value, 10) || 10;
-        n = Math.max(1, Math.min(10000, n));
-        if (!confirm(t('confirm.keepNMessages', {n: n}))) return;
-        API.clearSessionMessages(sessionId, { clear: 'after', keep_n: n }).then(function() {
-            loadSession(sessionId);
-            showToast(t('toast.clearedAfterN', {n: n}));
-        }).catch(function(err) { showToast(err.message || t('toast.opFailed'), 'error'); });
     };
     (function() {
         var modal = document.getElementById('hostAiSessionPromptModal');
@@ -9082,7 +9072,7 @@ function renderAIPage() {
         + '</div>'
         + '<div class="layout-splitter-vertical" data-layout="ai" data-split="terminal" title="' + esc(t('hostAi.splitterTitle')) + '"></div>'
         + '<div class="chat-container ai-chat-container ai-layout-chat" id="aiLayoutChat">'
-        + '<div class="host-ai-chat-bar"><label class="ai-profile-quick-switch" style="display:inline-flex;align-items:center;margin-right:8px"><select class="form-control form-control-sm" title="' + esc(t('modelConfig.quickSwitchLabel')) + '" id="aiProfileQuickSwitch" style="max-width:220px;min-width:140px"></select></label><button type="button" class="btn btn-sm" id="aiSessionPromptBtn" title="' + esc(t('hostAi.barSessionPromptTitle')) + '">' + esc(t('ai.promptButtonShort')) + '</button><button type="button" class="btn btn-sm" id="aiClearChat">' + esc(t('hostAi.clearChat')) + '</button><span class="host-ai-clear-n"><input type="number" id="aiClearN" min="1" value="10" style="width:84px">' + esc(t('hostAi.clearN')) + '</span><button type="button" class="btn btn-sm" id="aiClearLastN">' + esc(t('hostAi.clearGtN')) + '</button><button type="button" class="btn btn-sm" id="aiExportMd" title="' + esc(t('hostAi.exportMdTitle')) + '">' + esc(t('hostAi.exportMd')) + '</button><button type="button" class="btn btn-sm" id="aiToggleTerminalBtn">' + esc(t('hostAi.hideTerminal')) + '</button><button type="button" class="btn btn-sm mobile-ai-inline-only" id="aiMobileInlineTerminalBtn">' + esc(t('ai.collapseInlineTerminal')) + '</button><button type="button" class="btn btn-sm btn-primary" id="aiNewSessionTop">' + esc(t('hostAi.newSession')) + '</button></div>'
+        + '<div class="host-ai-chat-bar"><label class="ai-profile-quick-switch"><select class="form-control form-control-sm ai-profile-quick-select" title="' + esc(t('modelConfig.quickSwitchLabel')) + '" id="aiProfileQuickSwitch"></select></label><button type="button" class="btn btn-sm" id="aiSessionPromptBtn" title="' + esc(t('hostAi.barSessionPromptTitle')) + '">' + esc(t('ai.promptButtonShort')) + '</button><button type="button" class="btn btn-sm" id="aiClearChat">' + esc(t('hostAi.clearChat')) + '</button><button type="button" class="btn btn-sm" id="aiExportMd" title="' + esc(t('hostAi.exportMdTitle')) + '">' + esc(t('hostAi.exportMd')) + '</button><button type="button" class="btn btn-sm" id="aiToggleTerminalBtn">' + esc(t('hostAi.hideTerminal')) + '</button><button type="button" class="btn btn-sm mobile-ai-inline-only" id="aiMobileInlineTerminalBtn">' + esc(t('ai.collapseInlineTerminal')) + '</button><button type="button" class="btn btn-sm btn-primary" id="aiNewSessionTop">' + esc(t('hostAi.newSession')) + '</button></div>'
         + '<div id="aiSessionPromptModal" class="modal-overlay" style="display:none"><div class="modal modal-session-prompt"><div class="modal-header"><span>' + esc(t('hostAi.sessionPromptTitle')) + '</span><button type="button" class="modal-close" id="aiSessionPromptClose">&times;</button></div><div class="modal-body"><div class="session-prompt-toolbar"><button type="button" class="btn btn-sm active" id="aiSessionPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm" id="aiSessionPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button></div><div id="aiSessionPromptEditWrap"><textarea id="aiSessionPromptText" class="form-control" rows="6" placeholder="' + esc(t('hostAi.sessionPromptPlaceholder')) + '"></textarea></div><div id="aiSessionPromptPreview" class="session-prompt-preview" style="display:none"></div><div class="modal-actions" style="margin-top:8px"><button type="button" class="btn btn-sm btn-primary" id="aiSessionPromptSave">' + esc(t('hostAi.sessionPromptSave')) + '</button><button type="button" class="btn btn-sm" id="aiSessionPromptSummarize" title="' + esc(t('hostAi.sessionSummarizeReplaceTitle')) + '">' + esc(t('hostDetail.promptSummarize')) + '</button><button type="button" class="btn btn-sm" id="aiSessionPromptAppend" title="' + esc(t('hostAi.sessionSummarizeAppendTitle')) + '">' + esc(t('hostDetail.promptAppend')) + '</button><button type="button" class="btn btn-sm" id="aiSessionPromptCancel">' + esc(t('hostAi.sessionPromptClose')) + '</button></div></div></div></div>'
         + '<div class="chat-messages" id="aiMessages"></div>'
         + '<div class="chat-input-area"><label class="chat-low-interaction-toggle" title="' + esc(t('hostAi.lowInteractionTitle')) + '"><input type="checkbox" id="aiLowInteractionToggle"> ' + esc(t('hostAi.lowInteractionLabel')) + '</label><textarea class="form-control chat-input-multiline" id="aiInput" rows="1" enterkeyhint="send" spellcheck="false"></textarea><button class="btn btn-primary" id="aiSend">' + esc(t('hostAi.send')) + '</button><button type="button" class="btn btn-sm" id="aiNewSessionBtn">' + esc(t('hostAi.newSession')) + '</button></div></div>'
@@ -10235,16 +10225,6 @@ function renderAIPage() {
             loadSession(sessionId);
             showToast(t('toast.chatCleared'));
         }).catch(function(err) { showToast(err.message || t('toast.clearFailed'), 'error'); });
-    };
-    document.getElementById('aiClearLastN').onclick = function() {
-        if (!sessionId) { showToast(t('toast.selectOrCreateSession')); return; }
-        var n = parseInt(document.getElementById('aiClearN').value, 10) || 10;
-        n = Math.max(1, Math.min(10000, n));
-        if (!confirm(t('confirm.keepNMessages', {n: n}))) return;
-        API.clearSessionMessages(sessionId, { clear: 'after', keep_n: n }).then(function() {
-            loadSession(sessionId);
-            showToast(t('toast.clearedAfterN', {n: n}));
-        }).catch(function(err) { showToast(err.message || t('toast.opFailed'), 'error'); });
     };
     (function() {
         var modal = document.getElementById('aiSessionPromptModal');
@@ -13183,6 +13163,24 @@ function edgeopsCollectAiConfigPayload(idPrefix, meta) {
     };
 }
 
+function edgeopsSyncProfileQuickSwitchTitle(selectEl, profiles) {
+    if (!selectEl) return;
+    var fallback = typeof t === 'function' ? t('modelConfig.quickSwitchLabel') : '';
+    if (!profiles || !profiles.length) {
+        selectEl.title = fallback;
+        return;
+    }
+    var pid = parseInt(selectEl.value, 10);
+    var p = profiles.filter(function(x) { return parseInt(x.id, 10) === pid; })[0];
+    if (p && p.model) {
+        selectEl.title = (p.name || ('#' + p.id)) + ' · ' + p.model;
+    } else if (p && p.name) {
+        selectEl.title = p.name;
+    } else {
+        selectEl.title = fallback;
+    }
+}
+
 function edgeopsMountAiProfileQuickSwitch(selectEl, userId, onActivated) {
     if (!selectEl) return;
     API.listAIProfiles(userId).then(function(r) {
@@ -13201,15 +13199,17 @@ function edgeopsMountAiProfileQuickSwitch(selectEl, userId, onActivated) {
             var opt = document.createElement('option');
             opt.value = String(p.id);
             var label = p.name || ('#' + p.id);
-            if (p.model) label += ' · ' + p.model;
             if (p.is_active) label += ' ✓';
             opt.textContent = label;
+            if (p.model) opt.title = p.model;
             if (p.is_active || p.id === activeId) opt.selected = true;
             selectEl.appendChild(opt);
         });
         if (selectEl.value) lastVal = selectEl.value;
+        edgeopsSyncProfileQuickSwitchTitle(selectEl, profiles);
         selectEl.onchange = function() {
             var pid = parseInt(selectEl.value, 10);
+            edgeopsSyncProfileQuickSwitchTitle(selectEl, profiles);
             if (!pid || _aiProfileQuickSwitchBusy || String(pid) === lastVal) return;
             _aiProfileQuickSwitchBusy = true;
             API.activateAIProfile(pid, userId).then(function() {
@@ -13936,7 +13936,7 @@ function renderLocalPage() {
         + '</div>'
         + '<div class="layout-splitter-vertical" data-layout="local" data-split="terminal" title="' + esc(t('ai.local.splitterTitle')) + '"></div>'
         + '<div class="chat-container ai-chat-container ai-layout-chat" id="localLayoutChat">'
-        + '<div class="host-ai-chat-bar"><label class="ai-profile-quick-switch" style="display:inline-flex;align-items:center;margin-right:8px"><select class="form-control form-control-sm" title="' + esc(t('modelConfig.quickSwitchLabel')) + '" id="localAiProfileQuickSwitch" style="max-width:220px;min-width:140px"></select></label><button type="button" class="btn btn-sm" id="localAiSessionPromptBtn" title="' + esc(t('hostAi.barSessionPromptTitle')) + '">' + esc(t('ai.promptButtonShort')) + '</button><button type="button" class="btn btn-sm" id="localAiClearChat">' + esc(t('hostAi.clearChat')) + '</button><span class="host-ai-clear-n"><input type="number" id="localAiClearN" min="1" value="10" style="width:84px">' + esc(t('hostAi.clearN')) + '</span><button type="button" class="btn btn-sm" id="localAiClearLastN">' + esc(t('hostAi.clearGtN')) + '</button><button type="button" class="btn btn-sm" id="localAiExportMd">' + esc(t('hostAi.exportMd')) + '</button><button type="button" class="btn btn-sm" id="localAiToggleTerminalBtn">' + esc(t('hostAi.hideTerminal')) + '</button><button type="button" class="btn btn-sm btn-primary" id="localAiNewSession">' + esc(t('hostAi.newSession')) + '</button></div>'
+        + '<div class="host-ai-chat-bar"><label class="ai-profile-quick-switch"><select class="form-control form-control-sm ai-profile-quick-select" title="' + esc(t('modelConfig.quickSwitchLabel')) + '" id="localAiProfileQuickSwitch"></select></label><button type="button" class="btn btn-sm" id="localAiSessionPromptBtn" title="' + esc(t('hostAi.barSessionPromptTitle')) + '">' + esc(t('ai.promptButtonShort')) + '</button><button type="button" class="btn btn-sm" id="localAiClearChat">' + esc(t('hostAi.clearChat')) + '</button><button type="button" class="btn btn-sm" id="localAiExportMd">' + esc(t('hostAi.exportMd')) + '</button><button type="button" class="btn btn-sm" id="localAiToggleTerminalBtn">' + esc(t('hostAi.hideTerminal')) + '</button><button type="button" class="btn btn-sm btn-primary" id="localAiNewSession">' + esc(t('hostAi.newSession')) + '</button></div>'
         + '<div id="localAiSessionPromptModal" class="modal-overlay" style="display:none"><div class="modal modal-session-prompt"><div class="modal-header"><span>' + esc(t('hostAi.sessionPromptTitle')) + '</span><button type="button" class="modal-close" id="localAiSessionPromptClose">&times;</button></div><div class="modal-body"><div class="session-prompt-toolbar"><button type="button" class="btn btn-sm active" id="localAiSessionPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm" id="localAiSessionPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button></div><div id="localAiSessionPromptEditWrap"><textarea id="localAiSessionPromptText" class="form-control" rows="6" placeholder="' + esc(t('hostAi.sessionPromptPlaceholder')) + '"></textarea></div><div id="localAiSessionPromptPreview" class="session-prompt-preview" style="display:none"></div><div class="modal-actions" style="margin-top:8px"><button type="button" class="btn btn-sm btn-primary" id="localAiSessionPromptSave">' + esc(t('hostAi.sessionPromptSave')) + '</button><button type="button" class="btn btn-sm" id="localAiSessionPromptCancel">' + esc(t('hostAi.sessionPromptClose')) + '</button></div></div></div></div>'
         + '<div class="chat-messages" id="localMessages"></div>'
         + '<div class="chat-input-area"><label class="chat-low-interaction-toggle" title="' + esc(t('hostAi.lowInteractionTitle')) + '"><input type="checkbox" id="localLowInteractionToggle"> ' + esc(t('hostAi.lowInteractionLabel')) + '</label><textarea class="form-control chat-input-multiline" id="localInput" rows="1" enterkeyhint="send" spellcheck="false"></textarea><button class="btn btn-primary" id="localSend">' + esc(t('hostAi.send')) + '</button><button type="button" class="btn btn-sm" id="localNewSessionBtn">' + esc(t('hostAi.newSession')) + '</button></div>'
@@ -14199,13 +14199,6 @@ function renderLocalPage() {
         if (!currentSessionId) { showToast(t('toast.selectOrCreateSession')); return; }
         if (!confirm(t('confirm.clearSessionChat'))) return;
         API.clearSessionMessages(currentSessionId, { clear: 'all' }).then(function() { loadLocalSession(currentSessionId); showToast(t('toast.chatCleared')); }).catch(function(err) { showToast(err.message || t('toast.clearFailed'), 'error'); });
-    };
-    document.getElementById('localAiClearLastN').onclick = function() {
-        if (!currentSessionId) { showToast(t('toast.selectOrCreateSession')); return; }
-        var n = parseInt(document.getElementById('localAiClearN').value, 10) || 10;
-        n = Math.max(1, Math.min(10000, n));
-        if (!confirm(t('confirm.keepNMessages', {n: n}))) return;
-        API.clearSessionMessages(currentSessionId, { clear: 'after', keep_n: n }).then(function() { loadLocalSession(currentSessionId); showToast(t('toast.clearedAfterN', {n: n})); }).catch(function(err) { showToast(err.message || t('toast.opFailed'), 'error'); });
     };
     document.getElementById('localAiExportMd').onclick = function() { exportChatToMarkdown(currentSessionId); };
     document.getElementById('localAiNewSession').onclick = document.getElementById('localNewSession').onclick;
