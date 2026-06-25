@@ -273,6 +273,23 @@ def apply_credential_resolution(
     addr = inferred.get("address") or (deduped[0].get("address") if len(deduped) == 1 else None)
 
     if not deduped:
+        cmd_lower = str(inferred.get("command_hint") or "").lower()
+        is_sudo_ctx = (svc or "").lower() == "sudo" or "sudo" in cmd_lower
+        is_cross_ssh = (svc or "").lower() == "ssh" and bool(addr)
+        if is_sudo_ctx and not is_cross_ssh:
+            hid = inferred.get("host_id")
+            result["resolution"] = "try_linked_host_or_execute"
+            result["need_user_choice"] = False
+            result["choice_hint"] = (
+                "未找到独立 sudo 服务凭证。**禁止**向用户说「没有 sudo 密码」。"
+                "请静默：① 直接执行 sudo 并 read 终端（可能免密）；"
+                "② 若出现密码提示，add_service_credential(service=sudo, linked_host_id=当前host_id, "
+                "service_username=控制台 whoami) 复用 SSH 登录密码后 send_service_password；"
+                "③ 若 sudo 权限不足再尝试 su；仅 sudo+su 均失败才 ask_user_choice。"
+            )
+            if hid is not None:
+                result["suggested_linked_host_id"] = int(hid)
+            return result
         result["resolution"] = "ask_user_identity"
         result["need_user_choice"] = False
         result["choice_hint"] = (
@@ -352,8 +369,13 @@ async def search_credentials_for_user(
         sql += " AND lower(service_username) = lower(?)"
         params.append(_norm(service_username))
     if host_id is not None:
-        sql += " AND host_id = ?"
-        params.append(host_id)
+        svc_lower = _norm(service).lower() if service else ""
+        if svc_lower == "sudo":
+            sql += " AND (host_id = ? OR linked_host_id = ? OR address = '' OR address IS NULL)"
+            params.extend([int(host_id), int(host_id)])
+        else:
+            sql += " AND host_id = ?"
+            params.append(int(host_id))
 
     kw = _norm(keyword)
     if kw:
@@ -383,7 +405,10 @@ async def search_credentials_for_user(
     }
     if inferred:
         result["inferred_hints"] = inferred
-    if resolve and (command_hint or service or address):
+    if host_id is not None:
+        inferred = {**inferred, "host_id": int(host_id)}
+        result["host_id"] = int(host_id)
+    if resolve and (command_hint or service or address or host_id is not None):
         apply_credential_resolution(result, items, inferred=inferred)
     elif command_hint and len(items) > 1:
         result["need_user_choice"] = True
@@ -894,7 +919,7 @@ async def build_credential_vault_system_section() -> str:
 ### 设计原则（必须遵守）
 1. **先查凭证、再定身份、再执行**：从 A 机 SSH/MySQL/SCP 等到 B 机时，**先** `list_service_credentials(service=…, address=目标IP, command_hint=待执行命令)`；**禁止**默认用当前控制台登录用户名充当目标机 SSH 用户。
 2. **SCP/SFTP/rsync 与 SSH 共用凭证**：这些命令本质走 SSH，查凭证时 **`service=ssh`**（`command_hint` 含 scp 时会自动推断为 ssh）。
-3. **resolution 字段**（工具返回）：`use_credential`→直接用 `suggested_credential_id`；`user_choice`→**ask_user_choice** 让用户选 id；`ask_user_identity`→无凭证，**ask_user_choice** 提供「指定用户名 / 使用当前控制台用户名(whoami)」后再 `add_service_credential`。
+3. **resolution 字段**（工具返回）：`use_credential`→直接用 `suggested_credential_id`；`try_linked_host_or_execute`→本机 sudo 无独立凭证，静默执行/复用 linked_host，**禁止**向用户索要 sudo 密码；`user_choice`→**ask_user_choice**；`ask_user_identity`→跨机无凭证时问用户身份后再 `add_service_credential`。
 4. **同用户重复凭证**：列表已按 service+address+port+username **去重保留最新**（last_accessed_at / updated_at / id）。
 5. **注入**：选定 `credential_id` 后 `send_service_password`；密码不进模型上下文；勿 `ssh_channel_send` 发明文。
 
@@ -918,6 +943,13 @@ async def build_credential_vault_system_section() -> str:
 3. `list_service_credentials` 选 credential_id
 4. `send_service_password(credential_id, target=ssh_channel, channel_id=…)`
 
+### 本机 sudo / su（当前控制台主机，高优先级）
+1. **禁止**在尚未执行 sudo、尚未 read 终端前，向用户说「没有保存 sudo 密码」「请提供 sudo 密码」——应**静默查凭证并直接执行**。
+2. 需要 root 权限时：先 `list_service_credentials(service=sudo, host_id=当前host_id, command_hint="sudo …")`；记下 `suggested_credential_id`（可能来自 `linked_host_id` 复用 SSH 登录密码）。
+3. 标准流程：send sudo → read buffer → **仅当**出现 `[sudo] password for` / `Password:` → `send_service_password`（勿 send_to_terminal 发明文）。
+4. 若输出为 **无 sudo 权限**（`not in sudoers` / `not allowed to run sudo` 等），再尝试 **su**；su 密码提示同样 `list_service_credentials` + `send_service_password`（可复用 sudo/linked_host 凭证）。
+5. **仅当** sudo 与 su 均无法完成（无可用凭证且注入失败）时，才 `ask_user_choice` 请用户选解决方案；**不要**把查凭证为空当作向用户索要密码的理由。
+
 ### 与 SSH 登录凭证（credentials 表）的区别
-`credentials` + hosts = **毛竹 SSH 连主机**；本库 = **连上之后还要登录的服务**（sudo / 跳板 ssh / mysql 等）。
+`credentials` + hosts = **毛竹 SSH 连主机**；本库 = **连上之后还要登录的服务**（sudo / 跳板 ssh / mysql 等）。本机 sudo 可设 `linked_host_id` **复用**该主机 SSH 登录密码，无需用户重复提供。
 """

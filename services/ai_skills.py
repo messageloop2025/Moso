@@ -819,13 +819,14 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "list_service_credentials",
-            "description": "搜索/列出服务凭证**元数据**（含 last_accessed_at、has_password；**绝不返回密码**）。**跨机 SSH/SCP/MySQL 等必须先调用本工具**：按目标 **IP+service** 查找（scp/sftp/rsync 按 **ssh** 凭证；command_hint 可传 `scp …@172.31.0.1:…` 或 `ssh 172.31.0.1`）。返回 `resolution`：`use_credential` 直接用 `suggested_credential_id`；`user_choice` 须 ask_user_choice；`ask_user_identity` 无凭证须问用户（指定用户名 / 当前控制台 whoami）。**禁止**默认用当前机登录用户充当目标 SSH 用户。同用户多条重复凭证已去重保留最新。",
+            "description": "搜索/列出服务凭证**元数据**（含 last_accessed_at、has_password、linked_host_id；**绝不返回密码**）。**本机 sudo**：`service=sudo, host_id=当前host_id, command_hint=\"sudo …\"`（可匹配 linked_host 复用 SSH 登录密码）。**跨机 SSH/SCP/MySQL 等必须先调用**：按目标 **IP+service** 查找（scp/sftp/rsync 按 **ssh**）。返回 `resolution`：`use_credential`→直接用 `suggested_credential_id`；`try_linked_host_or_execute`→静默执行 sudo/复用 linked_host，**禁止**向用户说没有 sudo 密码；`user_choice`→ask_user_choice；`ask_user_identity`→跨机无凭证时问用户身份。**禁止**默认用当前机登录用户充当**目标 SSH 机**用户。同用户重复凭证已去重保留最新。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "command_hint": {"type": "string", "description": "待执行命令，推断 service+address（scp→ssh）；不因 user@ 隐藏其它用户凭证"},
                     "service": {"type": "string", "description": "服务类型：ssh、mysql、sudo 等（scp 请填 ssh）"},
-                    "address": {"type": "string", "description": "目标 IP/域名"},
+                    "address": {"type": "string", "description": "目标 IP/域名；本机 sudo 通常留空"},
+                    "host_id": {"type": "integer", "description": "当前控制台/操作主机 ID；查本机 sudo 时传入，可匹配 linked_host_id 复用 SSH 登录密码"},
                     "keyword": {"type": "string", "description": "模糊搜索：id、address、service_username、label、notes、service"},
                     "port": {"type": "integer", "description": "按端口过滤"},
                     "service_username": {"type": "string", "description": "仅当已确定用户名时过滤；选凭证阶段通常留空"},
@@ -8128,6 +8129,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 address=arguments.get("address"),
                 port=int(arguments["port"]) if arguments.get("port") is not None else None,
                 service_username=arguments.get("service_username"),
+                host_id=int(arguments["host_id"]) if arguments.get("host_id") is not None else None,
                 keyword=arguments.get("keyword"),
                 command_hint=arguments.get("command_hint"),
                 sort_by=arguments.get("sort_by"),
