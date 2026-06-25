@@ -51,7 +51,7 @@ Gateway **启动**或 **`edgeops_gateway_ping`** 时拉取 **`GET /api/integrati
 
 **编排式后台 ops（orchestrate）仅 MCP**，本插件不提供。
 
-Hermes 用户见 [claw-skills](../claw-skills/README.md)；**Cursor MCP** 见 [services/edgeops_mcp](../services/edgeops_mcp/README.md)（47 工具超集）。
+Hermes 用户见 [claw-skills](../claw-skills/README.md)；**Cursor MCP** 见 [services/edgeops_mcp](../services/edgeops_mcp/README.md)（49 工具超集）。
 
 ---
 

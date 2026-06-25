@@ -125,6 +125,44 @@ export const FALLBACK_EXTENDED_TOOLS: ManifestToolDef[] = [
     },
   },
   {
+    name: "edgeops_list_service_credentials",
+    label: "Moso · 搜索服务凭证",
+    description:
+      "搜索服务凭证元数据（不含密码）。command_hint / service+address / keyword；需 credentials_vault_enabled。",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        command_hint: { type: "string" },
+        service: { type: "string" },
+        address: { type: "string" },
+        port: { type: "integer" },
+        service_username: { type: "string" },
+        keyword: { type: "string" },
+        sort_by: { type: "string" },
+        sort_order: { type: "string" },
+        limit: { type: "integer" },
+      },
+    },
+  },
+  {
+    name: "edgeops_send_service_password",
+    label: "Moso · 注入服务密码",
+    description:
+      "按 credential_id 向 ssh_channel/terminal 注入密码；target=ssh_channel 时需 channel_id。",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        credential_id: { type: "integer" },
+        target: { type: "string", enum: ["terminal", "ssh_channel", "local_terminal"] },
+        channel_id: { type: "integer" },
+        host_id: { type: "integer" },
+        slot: { type: "integer" },
+        require_password_prompt: { type: "boolean" },
+      },
+      required: ["credential_id", "target"],
+    },
+  },
+  {
     name: "edgeops_remote_fs_list",
     label: "Moso · 远程目录",
     description: "SFTP list",

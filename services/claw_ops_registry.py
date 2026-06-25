@@ -13,7 +13,7 @@ from typing import Any
 from database import get_db
 
 # manifest 版本：变更 extended_tools / system_prompt 时递增
-CAPABILITIES_VERSION = "2026052701"
+CAPABILITIES_VERSION = "2026062301"
 CLAW_OPS_PLUGIN_MIN_VERSION = "1.0.0"
 CLAW_OPS_PLUGIN_RECOMMENDED_VERSION = "1.1.0"
 
@@ -21,6 +21,7 @@ _OPENCLAW_MODE_RULES = """
 ## 运行模式（OpenClaw / ClawOps — 无毛竹（Moso）Web UI）
 - 当前通道为 OpenClaw Gateway：无浏览器 SSH 控制台、无 SSE、无按钮 UI。
 - 非交互短命令优先 `edgeops_ssh_execute`（长任务 detach + poll_log）；交互式用 `edgeops_ssh_channel_*`。
+- ssh_channel 内嵌套 SSH/sudo 出现 password 提示：`edgeops_list_service_credentials` → `edgeops_send_service_password`（勿 ssh_channel_send 发明文；需 credentials_vault_enabled）。
 - 复杂多步仍可用 `edgeops_ops_chat`（可能阻塞 ≤330s）；**编排式后台子任务仅 MCP**，ClawOps 不提供 orchestrate。
 - 禁止依赖 connect_terminal / ask_user_choice；需要用户确认时用纯文本 [A]/[B] 选项。
 - 大输出 spill 后用 `edgeops_read_chat_data` 分段读取。
@@ -151,6 +152,54 @@ def get_extended_tools_manifest() -> list[dict[str, Any]]:
             ),
         },
         {
+            "name": "edgeops_list_service_credentials",
+            "label": "毛竹（Moso） · 搜索服务凭证",
+            "description": (
+                "搜索/列出服务凭证元数据（不含密码）。跨机 SSH/SCP/sudo 前先调用。"
+                "支持 command_hint、service+address、keyword 等；返回 resolution 与 suggested_credential_id。"
+                "需 credentials_vault_enabled。"
+            ),
+            "timeout_ms": 60_000,
+            "parameters_schema": _tool_schema(
+                {
+                    "command_hint": {**str_opt, "description": "待执行命令，推断 service+address"},
+                    "service": {**str_opt, "description": "ssh、mysql、sudo 等"},
+                    "address": {**str_opt, "description": "目标 IP/域名"},
+                    "port": int_opt,
+                    "service_username": str_opt,
+                    "keyword": {**str_opt, "description": "模糊搜索 id/address/label/notes 等"},
+                    "sort_by": str_opt,
+                    "sort_order": str_opt,
+                    "limit": int_opt,
+                }
+            ),
+        },
+        {
+            "name": "edgeops_send_service_password",
+            "label": "毛竹（Moso） · 注入服务密码",
+            "description": (
+                "按 credential_id 向 ssh_channel/terminal 注入密码（结果不含明文）。"
+                "MCP/OpenClaw 直连 ssh_channel 嵌套 SSH 时用 target=ssh_channel + channel_id。"
+                "需 credentials_vault_enabled。"
+            ),
+            "timeout_ms": 60_000,
+            "parameters_schema": _tool_schema(
+                {
+                    "credential_id": {**int_opt, "description": "来自 list_service_credentials"},
+                    "target": {
+                        **str_opt,
+                        "enum": ["terminal", "ssh_channel", "local_terminal"],
+                        "description": "注入目标",
+                    },
+                    "channel_id": {**int_opt, "description": "target=ssh_channel 时必填"},
+                    "host_id": {**int_opt, "description": "target=terminal 时必填"},
+                    "slot": int_opt,
+                    "require_password_prompt": bool_t,
+                },
+                ["credential_id", "target"],
+            ),
+        },
+        {
             "name": "edgeops_remote_fs_list",
             "label": "毛竹（Moso） · 远程目录",
             "description": "SFTP 列出远程目录",
@@ -251,7 +300,7 @@ def build_system_prompt_sections(base_url: str = "https://ops.pinglan.cc") -> li
         "- **关键词**：运维/主机/排障/SSH → 优先 `edgeops_*`；**禁止**本机 exec/curl 打毛竹（Moso）。",
         "- **资产解析**：`edgeops_search_hosts` / `edgeops_search_hosts_by_prompt` / `edgeops_get_host_prompt`。",
         "- **短命令**：`edgeops_ssh_execute`（安装/编译等长任务用 detach + poll_log）。",
-        "- **交互 SSH**：sudo/vi/向导 → `edgeops_ssh_channel_*`（create → send → read → close）。",
+        "- **交互 SSH**：sudo/vi/向导 → `edgeops_ssh_channel_*`（create → send → read → close）；password 提示 → `edgeops_list_service_credentials` + `edgeops_send_service_password`。",
         "- **复杂编排**：`edgeops_ops_chat`（可能较慢）；后台编排子任务请用 **毛竹（Moso）MCP**（OpenClaw 不提供 orchestrate）。",
         "- **Bearer** 仅插件 config；禁止在回复中泄露 `eop_`。",
         _OPENCLAW_MODE_RULES,
@@ -304,7 +353,7 @@ def get_claw_ops_manifest(*, base_url: str = "") -> dict[str, Any]:
         "routing_hints": [
             "名词→host_id: search_hosts / search_hosts_by_prompt",
             "短命令: edgeops_ssh_execute",
-            "TTY: ssh_channel_*",
+            "TTY: ssh_channel_*; password: list_service_credentials + send_service_password",
             "复杂: edgeops_ops_chat",
             "未知新工具: edgeops_invoke(tool, arguments)",
         ],
@@ -440,6 +489,26 @@ async def invoke_claw_ops_tool(
             host_id=args.get("host_id"),
             user=user,
         )
+
+    if name == "edgeops_list_service_credentials":
+        raw = await execute_tool(
+            "list_service_credentials",
+            {k: v for k, v in args.items() if v is not None},
+            user,
+            scope="default",
+            ui_capable=False,
+        )
+        return json.loads(raw)
+
+    if name == "edgeops_send_service_password":
+        raw = await execute_tool(
+            "send_service_password",
+            {k: v for k, v in args.items() if v is not None},
+            user,
+            scope="default",
+            ui_capable=False,
+        )
+        return json.loads(raw)
 
     if name == "edgeops_remote_fs_list":
         from api.remote_fs import remote_list
