@@ -2280,11 +2280,11 @@ function edgeopsCollapseReplyProsePanel(panel) {
 
 function edgeopsResetProcessProseLiveMount(textEl) {
     if (!textEl) return;
-    var liveItem = textEl.querySelector('.ai-reply-prose-item-live');
-    if (liveItem) liveItem.remove();
-    textEl.querySelectorAll('.edgeops-stream-segment').forEach(function(el) {
-        var item = el.closest('.ai-reply-prose-item');
-        if (!item || !item.classList.contains('ai-reply-prose-item-frozen')) el.remove();
+    textEl.querySelectorAll('.ai-reply-prose-item-live, .ai-reply-prose-item:not(.ai-reply-prose-item-frozen)').forEach(function(el) {
+        el.remove();
+    });
+    textEl.querySelectorAll(':scope > .edgeops-stream-segment').forEach(function(el) {
+        el.remove();
     });
     var orphanTail = textEl.querySelector(':scope > .edgeops-stream-tail, :scope > [data-edgeops-stream-tail]');
     if (orphanTail) orphanTail.remove();

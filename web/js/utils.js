@@ -1539,7 +1539,8 @@ function edgeopsRenderStreamIncremental(mountEl, fullText, hydrateRoot) {
                 : formatMarkdown(segText);
         }
         if (inProcessPanel) {
-            var insertEl = edgeopsWrapProseStreamItem(segEl, segText, s);
+            // 过程面板：流式段落仅作临时 DOM，工具执行时再合并为一条「过程 N」；勿提前包 prose 标题，避免空壳「过程 1」与提交后「过程 10」重复。
+            var insertEl = segEl;
             var liveItem = edgeopsEnsureStreamTailLiveItem(mountEl);
             if (liveItem) mountEl.insertBefore(insertEl, liveItem);
             else if (tailWrap) mountEl.insertBefore(insertEl, tailWrap);
