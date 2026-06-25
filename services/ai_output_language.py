@@ -80,9 +80,32 @@ def parse_explicit_output_language(user_message: str) -> str | None:
     return None
 
 
+def _strip_non_conversational_for_lang_infer(s: str) -> str:
+    """去掉代码块、典型英文日志行后再判语言，避免「中文指令 + 英文报错粘贴」被误判为英文。"""
+    t = (s or "").strip()
+    if not t:
+        return ""
+    t = re.sub(r"```[\s\S]*?```", " ", t)
+    kept: list[str] = []
+    for line in t.splitlines():
+        ln = line.strip()
+        if not ln:
+            continue
+        if re.match(
+            r"(?i)^(error|warning|info|debug|traceback|permission denied|failed|note:|checking for|found\s|not found|configure:|meson|ninja|\$ )",
+            ln,
+        ):
+            continue
+        if re.match(r"^[\x00-\x7F\s\W]+$", ln) and len(ln) > 40 and ln.count(" ") >= 4:
+            continue
+        kept.append(ln)
+    out = "\n".join(kept).strip()
+    return out or (s or "").strip()
+
+
 def infer_input_language_for_output(user_message: str) -> str:
     """从本轮用户消息推测自然语言；返回 zh-CN / en / undetermined。"""
-    s = (user_message or "").strip()
+    s = _strip_non_conversational_for_lang_infer(user_message)
     if len(s) < 2:
         return "undetermined"
     cjk = 0
@@ -125,9 +148,6 @@ def resolve_output_language(
     exp = parse_explicit_output_language(user_message)
     if exp and exp in ALLOWED_LOCALE_CODES:
         return exp, "explicit", "用户显式指定"
-    det = infer_input_language_for_output(user_message)
-    if det in ALLOWED_LOCALE_CODES and det != "undetermined":
-        return det, "from_input", "与用户本条输入语言一致"
     u = _clean_locale_for_chain(user_output_locale)
     if u:
         return u, "user_setting", "用户个人默认（设置）"
@@ -137,6 +157,9 @@ def resolve_output_language(
     b = _clean_locale_for_chain(browser_ui_locale) if browser_ui_locale else ""
     if b:
         return b, "browser", "界面语言/浏览器"
+    det = infer_input_language_for_output(user_message)
+    if det in ALLOWED_LOCALE_CODES and det != "undetermined":
+        return det, "from_input", "与用户本条输入语言一致"
     return "zh-CN", "hard_default", "未配置时兜底"
 
 
@@ -169,23 +192,37 @@ def build_output_language_system_section(
         "browser": "UI / browser language (request header or client-reported locale).",
         "hard_default": "fallback when nothing else is set.",
     }.get(reason_code, reason_code)
-    return f"""
-## Response language policy (HIGHEST PRIORITY — follow over any generic "reply in Chinese" elsewhere)
-
-**English**
-1) If the user **explicitly** asks for a specific language (e.g. "in English", "用中文回答", "answer in French"), you MUST use **that** language for the entire natural-language answer (code/commands/logs stay as-is).
-2) Otherwise, if the user's **current** message is clearly in one language, **match** that language.
-3) If the input is **too short, ambiguous, or language cannot be told**, use the **effective default** below.
-4) **Effective default for this turn**: **{final}** (reason: {_reason_en})
-5) **Planning / reasoning / step narration** that the user can see—including streamed "thinking", pre-tool explanations, interim plans, and tool-step summaries—MUST use the **same natural language** as your final reply under this policy. Do not switch languages mid-stream unless the user explicitly asked for mixed languages. Tool names, file paths, shell commands, identifiers, and raw log lines stay unchanged.
-
-**Inferred from this user message (for step 2)**: {det_en} (`{det}`)
-
-**中文（与上一段等价）**
+    zh_first = final == "zh-CN"
+    ctx_note_zh = (
+        "终端输出、工具结果、编译日志、主机提示词等上下文常为英文；**你的叙述、推理、步骤说明仍须用简体中文**，"
+        "仅命令/路径/日志原文保持英文，不要整段用英文分析。"
+        if zh_first
+        else ""
+    )
+    ctx_note_en = (
+        "Terminal output, tool results, and logs may be in another language; "
+        "your narration and reasoning must still follow the effective default below."
+        if not zh_first
+        else ""
+    )
+    zh_block = f"""**中文（本回合必须遵守）**
 - 若用户**显式**要求某种输出语言，必须**全程**按该语言写自然语言（代码/命令/原始日志/标识符不强行翻译）。
 - 否则在可判断时，**与用户本条消息的主要语言**保持一致。
 - 若无法从本条判断，则本回合采用 **{final}**（依据：{reason_zh}，内部代码 `{reason_code}`）。
 - **对用户可见的规划与推理**（含流式思考、工具调用前的说明、中间步骤小结）须与**本条策略确定的自然语言**一致，不要无故中英混切；工具名、路径、命令与日志原文保持原样。
+{f"- {ctx_note_zh}" if ctx_note_zh else ""}
+**本回合必须使用的自然语言输出：{"简体中文为主" if final == "zh-CN" else "English" if final == "en" else final}。**"""
+    en_block = f"""**English (same rules)**
+1) If the user **explicitly** asks for a specific language, use **that** language for all natural-language narration.
+2) Otherwise, if the user's **current** message is clearly in one language, **match** that language.
+3) If ambiguous, use **effective default**: **{final}** (reason: {_reason_en}).
+4) Planning / reasoning / step narration visible to the user MUST use the same language as your final reply.
+5) Tool names, paths, shell commands, identifiers, and raw log lines stay unchanged.
+{f"6) {ctx_note_en}" if ctx_note_en else ""}
 
-**本回合必须使用的自然语言输出：{"简体中文为主" if final == "zh-CN" else "English" if final == "en" else final}。**
+**Inferred from this user message (for step 2)**: {det_en} (`{det}`)"""
+    body = (zh_block + "\n\n" + en_block) if zh_first else (en_block + "\n\n" + zh_block)
+    return f"""## Response language policy (HIGHEST PRIORITY — follow over any generic "reply in Chinese" elsewhere)
+
+{body}
 """.strip()
