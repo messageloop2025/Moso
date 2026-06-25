@@ -2146,6 +2146,118 @@ async def _prepare_tool_calls_for_execution(
     return full_tool_calls, prepared
 
 
+def _format_skipped_tool_result_message(tool_name: str, reason: str, output_locale: str) -> str:
+    name = (tool_name or "tool").strip() or "tool"
+    r = (reason or "interrupted").strip()
+    loc = (output_locale or "").strip().lower()
+    if loc == "en" or loc.startswith("en-"):
+        return (
+            f"Tool `{name}` was not executed ({r}). "
+            "Continue from completed tool results and the user's latest message."
+        )
+    detail = {
+        "runtime_control": "用户暂停/补充中断了工具批次",
+        "batch_aborted": "工具批次未跑完",
+    }.get(r, r)
+    return f"工具 `{name}` 未执行（{detail}）。请结合已完成的工具结果与用户最新说明继续。"
+
+
+async def _reconcile_open_tool_call_messages(
+    messages: list,
+    *,
+    user: dict,
+    session_id: int,
+    tool_result_limit: int,
+    reason: str = "runtime_control",
+    output_locale: str = "zh-CN",
+) -> int:
+    """补全 assistant tool_calls 后缺失的 tool 消息；若 user 已插入则插到 user 之前。"""
+    if not messages:
+        return 0
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        tcs = m.get("tool_calls") or []
+        if not tcs:
+            continue
+        id_name: list[tuple[str, str]] = []
+        for tc in tcs:
+            if not isinstance(tc, dict):
+                continue
+            tid = (tc.get("id") or "").strip()
+            if not tid:
+                continue
+            fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+            id_name.append((tid, (fn.get("name") or "").strip()))
+        if not id_name:
+            continue
+        responded: set[str] = set()
+        insert_at = i + 1
+        user_idx: int | None = None
+        j = i + 1
+        while j < len(messages):
+            m2 = messages[j]
+            if not isinstance(m2, dict):
+                j += 1
+                continue
+            role = m2.get("role")
+            if role == "tool":
+                tid = (m2.get("tool_call_id") or "").strip()
+                if tid:
+                    responded.add(tid)
+                insert_at = j + 1
+                j += 1
+                continue
+            if role == "user":
+                user_idx = j
+                break
+            if role == "assistant":
+                break
+            j += 1
+        pending = [(tid, name) for tid, name in id_name if tid not in responded]
+        if not pending:
+            break
+        placeholders: list[dict] = []
+        for fn_id, fn_name in pending:
+            payload = {
+                "success": False,
+                "skipped": True,
+                "interrupted": True,
+                "reason": reason,
+                "message": _format_skipped_tool_result_message(fn_name, reason, output_locale),
+            }
+            tool_result = json.dumps(payload, ensure_ascii=False)
+            tool_content = await _tool_content_for_llm_with_spill(
+                user,
+                session_id,
+                fn_name or "unknown",
+                fn_id,
+                tool_result,
+                tool_result_limit,
+                "standard",
+            )
+            placeholders.append({
+                "role": "tool",
+                "tool_call_id": fn_id,
+                "content": tool_content,
+            })
+        if user_idx is not None:
+            for k, ph in enumerate(placeholders):
+                messages.insert(user_idx + k, ph)
+        else:
+            for k, ph in enumerate(placeholders):
+                messages.insert(insert_at + k, ph)
+        logger.info(
+            "reconcile tool_calls: filled %d placeholder tool message(s) reason=%s session_id=%s",
+            len(placeholders),
+            reason,
+            session_id,
+        )
+        return len(placeholders)
+    return 0
+
+
 def _extract_session_id_from_log_params(params_text: str) -> int | None:
     try:
         data = json.loads(params_text or "{}")
@@ -5945,6 +6057,14 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                         cot_streaming_started = False
                         stream_partial_yielded = False  # 已经向前端推送过模型 token，重试会"接续"，先停止重试
                         llm_runtime_pause_injected: str | None = None
+                        await _reconcile_open_tool_call_messages(
+                            messages,
+                            user=user,
+                            session_id=session_id,
+                            tool_result_limit=tool_result_limit,
+                            reason="runtime_control",
+                            output_locale=_output_locale,
+                        )
                         for _llm_try in range(_max_llm_tries):
                             # 单次重试前重置流式累积器；只有「上一轮重试连一个 token 都没收到」时
                             # 才会真正复用此分支，复用后继续重试
@@ -7569,6 +7689,14 @@ async def run_ops_integration_chat_complete(
                     )
                     # 视觉降级：同 agent_stream，上游报 input_too_long / 图过大 / 不支持图像
                     # 时自动压缩或剥离 image_url 后重试，避免直接把错误冒泡给用户。
+                    await _reconcile_open_tool_call_messages(
+                        messages,
+                        user=user,
+                        session_id=sid,
+                        tool_result_limit=tool_result_limit,
+                        reason="runtime_control",
+                        output_locale=_output_locale,
+                    )
                     resp = await _post_chat_with_vision_fallback(
                         client,
                         api_url=api_url,

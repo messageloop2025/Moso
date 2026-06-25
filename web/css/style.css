@@ -2912,7 +2912,8 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
 .chat-md-table tr:nth-child(even) td { background: rgba(15,23,42,0.25); }
 
 .chat-input-area {
-    padding: 10px 14px;
+    --chat-compose-height: 34px;
+    padding: 8px 12px;
     border-top: 1px solid var(--border);
     display: flex;
     gap: 8px;
@@ -2921,27 +2922,59 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
 }
 
 .chat-input-area .form-control { flex: 1; min-width: 0; }
-.chat-input-area .chat-input-multiline {
-    /* 默认单行高度：font-size 14 × line-height 1.5 ≈ 21px，加 8×2 padding ≈ 37px。
-       textarea rows=1 时浏览器可能给出更小的 client 高度，这里兜底 36px 防止比按钮矮。 */
-    min-height: 36px;
-    max-height: 200px;
+.chat-input-area textarea.form-control.chat-input-multiline {
+    min-height: var(--chat-compose-height);
+    max-height: 160px;
     resize: none;
     overflow-y: hidden;
-    line-height: 1.5;
+    padding: 6px 10px;
+    font-size: 13px;
+    line-height: 1.4;
+    box-sizing: border-box;
+}
+.chat-input-area .chat-input-multiline {
+    min-height: var(--chat-compose-height);
+    max-height: 160px;
+    resize: none;
+    overflow-y: hidden;
+    padding: 6px 10px;
+    font-size: 13px;
+    line-height: 1.4;
+    box-sizing: border-box;
+}
+.chat-input-area .btn,
+.chat-input-area .chat-attach-upload-btn {
+    flex-shrink: 0;
+    height: var(--chat-compose-height);
+    min-height: var(--chat-compose-height);
+    padding: 0 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    line-height: 1.2;
+    font-size: 13px;
+}
+.chat-input-area .btn-sm {
+    padding: 0 10px;
+    font-size: 12px;
 }
 .chat-low-interaction-toggle {
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    height: var(--chat-compose-height);
+    min-height: var(--chat-compose-height);
+    box-sizing: border-box;
     font-size: 12px;
     color: var(--text-muted);
-    padding: 6px 8px;
+    padding: 0 8px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius);
     background: rgba(15, 23, 42, 0.25);
     white-space: nowrap;
     user-select: none;
+    flex-shrink: 0;
 }
 .chat-low-interaction-toggle input {
     margin: 0;
@@ -3017,9 +3050,11 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
 .chat-attachment-chip.chip-uploading { opacity: 0.7; }
 
 .chat-attach-upload-btn {
-    flex: 0 0 auto;
-    padding: 6px 10px;
-    font-size: 13px;
+    flex: 0 0 var(--chat-compose-height, 34px);
+    width: var(--chat-compose-height, 34px);
+    min-width: var(--chat-compose-height, 34px);
+    padding: 0;
+    font-size: 14px;
 }
 
 /* AI 成果物（artifacts）下载卡片：由 [标题](artifact:UUID) 经 edgeopsEnhanceArtifactLinks 替换得到 */
@@ -4711,7 +4746,7 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
     margin-right: 4px;
 }
 .chat-input-area.runtime-control-active {
-    align-items: center;
+    align-items: flex-end;
 }
 .chat-input-area.runtime-control-active:not(.runtime-awaiting-confirm) .chat-low-interaction-toggle {
     display: none;
@@ -4721,6 +4756,7 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
 }
 .chat-input-area.runtime-control-active .ai-runtime-control-input {
     min-width: 140px;
+    min-height: var(--chat-compose-height, 34px);
 }
 .chat-input-area.runtime-awaiting-confirm .chat-input-multiline:not(.ai-runtime-control-input) {
     opacity: 1;
@@ -4909,12 +4945,13 @@ body.edgeops-mobile-ai .ai-mobile-page .chat-messages {
     padding: 12px;
 }
 body.edgeops-mobile-ai .ai-mobile-page .chat-input-area {
+    --chat-compose-height: 40px;
     padding: 10px;
     gap: 6px;
     padding-bottom: max(10px, env(safe-area-inset-bottom));
 }
 body.edgeops-mobile-ai .ai-mobile-page .chat-input-area .chat-input-multiline {
-    min-height: 44px;
+    min-height: var(--chat-compose-height);
 }
 body.edgeops-mobile-ai.edgeops-mobile-chat-focus #page-content > .topbar.mobile-ai-topbar,
 body.edgeops-mobile-ai.edgeops-mobile-chat-focus .ai-mobile-page .host-ai-chat-bar {
@@ -5318,11 +5355,6 @@ body {
 @keyframes edgeops-modal-pop {
     from { opacity: 0; transform: translateY(8px) scale(0.985); }
     to { opacity: 1; transform: translateY(0) scale(1); }
-}
-
-/* 聊天输入区更紧凑 */
-.chat-input-area {
-    padding: 8px 12px;
 }
 
 /* 主机详情：tab 面板与上方 tabs 衔接处更干净（去掉重复 padding） */

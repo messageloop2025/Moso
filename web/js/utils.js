@@ -1373,34 +1373,57 @@ function edgeopsUpdateHybridMarkdownTail(tailEl, fullText, hydrateRoot) {
     fullText = fullText == null ? '' : String(fullText);
     if (!fullText) {
         tailEl.innerHTML = '';
-        tailEl._edgeopsHybridKey = '';
+        tailEl._edgeopsHybridCommittedEnd = 0;
+        tailEl._edgeopsHybridRestLen = 0;
+        tailEl._edgeopsHybridRestCached = '';
         tailEl._edgeopsPlainLen = 0;
         tailEl._edgeopsPlainCached = '';
         tailEl._edgeopsMdPrefixKey = '';
         return;
     }
     var committedEnd = edgeopsComputeStreamCommittedEnd(fullText);
-    var cacheKey = committedEnd + '|' + fullText.length;
-    if (tailEl._edgeopsHybridKey === cacheKey) return;
-    tailEl._edgeopsHybridKey = cacheKey;
-    tailEl._edgeopsMdPrefixKey = '';
-    var safe = fullText.slice(0, committedEnd);
     var rest = fullText.slice(committedEnd);
-    var html = safe.trim() ? formatMarkdown(safe) : '';
-    if (rest) {
-        html += '<span class="edgeops-stream-incomplete-chunk ai-reply-stream-plain"></span>';
+    var prevCommitted = tailEl._edgeopsHybridCommittedEnd || 0;
+    if (committedEnd !== prevCommitted) {
+        tailEl._edgeopsHybridCommittedEnd = committedEnd;
+        tailEl._edgeopsMdPrefixKey = '';
+        var safe = fullText.slice(0, committedEnd);
+        var html = safe.trim() ? formatMarkdown(safe) : '';
+        if (rest) {
+            html += '<span class="edgeops-stream-incomplete-chunk ai-reply-stream-plain"></span>';
+        }
+        tailEl.innerHTML = html;
+        tailEl.classList.toggle('ai-reply-stream-plain', !safe.trim() && !!rest);
+        tailEl._edgeopsHybridRestLen = 0;
+        tailEl._edgeopsHybridRestCached = '';
+        if (hydrateRoot && safe.trim() && typeof edgeopsHydrateChatDiagrams === 'function') {
+            edgeopsHydrateChatDiagrams(tailEl);
+        }
     }
-    tailEl.innerHTML = html;
-    tailEl.classList.toggle('ai-reply-stream-plain', !safe.trim() && !!rest);
     if (rest) {
         var span = tailEl.querySelector('.edgeops-stream-incomplete-chunk');
-        if (span) span.textContent = rest;
+        if (!span) {
+            span = document.createElement('span');
+            span.className = 'edgeops-stream-incomplete-chunk ai-reply-stream-plain';
+            tailEl.appendChild(span);
+        }
+        var prevRest = tailEl._edgeopsHybridRestCached || '';
+        var prevRestLen = tailEl._edgeopsHybridRestLen || 0;
+        if (rest.length >= prevRestLen && rest.slice(0, prevRestLen) === prevRest) {
+            if (rest.length > prevRestLen) span.append(document.createTextNode(rest.slice(prevRestLen)));
+        } else {
+            span.textContent = rest;
+        }
+        tailEl._edgeopsHybridRestLen = rest.length;
+        tailEl._edgeopsHybridRestCached = rest;
+    } else {
+        var staleSpan = tailEl.querySelector('.edgeops-stream-incomplete-chunk');
+        if (staleSpan) staleSpan.remove();
+        tailEl._edgeopsHybridRestLen = 0;
+        tailEl._edgeopsHybridRestCached = '';
     }
     tailEl._edgeopsPlainLen = fullText.length;
     tailEl._edgeopsPlainCached = fullText;
-    if (hydrateRoot && safe.trim() && typeof edgeopsHydrateChatDiagrams === 'function') {
-        edgeopsHydrateChatDiagrams(tailEl);
-    }
 }
 
 /** tail 表格前的已闭合 Markdown（含完整表格）渲染为 HTML，避免仅显示管道符原文。 */
@@ -1556,27 +1579,69 @@ function edgeopsRenderStreamIncremental(mountEl, fullText, hydrateRoot) {
     }
 }
 
+function edgeopsEnsureStreamPlainLiveMount(mountEl) {
+    if (!mountEl) return null;
+    var live = mountEl.querySelector('[data-edgeops-plain-live]');
+    if (live) return live;
+    live = document.createElement('div');
+    live.className = 'edgeops-stream-plain-live ai-reply-stream-plain';
+    live.setAttribute('data-edgeops-plain-live', '1');
+    if (mountEl.closest && mountEl.closest('.ai-reply-prose-panel')) {
+        var item = document.createElement('div');
+        item.className = 'ai-reply-prose-item ai-reply-prose-item-live';
+        var head = document.createElement('div');
+        head.className = 'ai-reply-prose-item-head';
+        head.textContent = (typeof t === 'function') ? t('hostAi.proseItemLive') : '\u2026';
+        var body = document.createElement('div');
+        body.className = 'ai-reply-prose-item-body';
+        body.appendChild(live);
+        item.appendChild(head);
+        item.appendChild(body);
+        mountEl.appendChild(item);
+    } else {
+        mountEl.appendChild(live);
+    }
+    return live;
+}
+
+function edgeopsResolveStreamPlainMount(mountEl) {
+    if (!mountEl) return null;
+    if (mountEl.querySelector('.ai-reply-prose-item-frozen, .edgeops-stream-segment')) {
+        return edgeopsEnsureStreamPlainLiveMount(mountEl);
+    }
+    if (mountEl._edgeopsPlainUsesChild) {
+        return mountEl.querySelector('[data-edgeops-plain-live]') || mountEl;
+    }
+    return mountEl;
+}
+
 /**
  * 流式输出期间仅追加纯文本（不解析 Markdown）。无分块需求时仍可用。
  */
 function edgeopsRenderStreamPlainText(mountEl, fullText) {
     if (!mountEl) return;
     fullText = fullText == null ? '' : String(fullText);
-    if (!mountEl._edgeopsPlainStream) {
-        mountEl._edgeopsPlainStream = true;
-        mountEl._edgeopsPlainLen = 0;
-        mountEl.classList.add('ai-reply-stream-plain');
-        mountEl.textContent = '';
+    var target = edgeopsResolveStreamPlainMount(mountEl);
+    if (!target) return;
+    if (target !== mountEl) mountEl._edgeopsPlainUsesChild = true;
+    if (!target._edgeopsPlainStream) {
+        if (target === mountEl && typeof edgeopsClearStreamIncrementalState === 'function') {
+            edgeopsClearStreamIncrementalState(mountEl);
+        }
+        target._edgeopsPlainStream = true;
+        target._edgeopsPlainLen = 0;
+        target.classList.add('ai-reply-stream-plain');
+        target.textContent = '';
     }
-    var prev = mountEl._edgeopsPlainLen || 0;
+    var prev = target._edgeopsPlainLen || 0;
     if (fullText.length < prev) {
-        mountEl.textContent = fullText;
-        mountEl._edgeopsPlainLen = fullText.length;
+        target.textContent = fullText;
+        target._edgeopsPlainLen = fullText.length;
         return;
     }
     if (fullText.length > prev) {
-        mountEl.append(document.createTextNode(fullText.slice(prev)));
-        mountEl._edgeopsPlainLen = fullText.length;
+        target.append(document.createTextNode(fullText.slice(prev)));
+        target._edgeopsPlainLen = fullText.length;
     }
 }
 
@@ -1584,7 +1649,15 @@ function edgeopsClearStreamPlainTextState(mountEl) {
     if (!mountEl) return;
     mountEl._edgeopsPlainStream = false;
     mountEl._edgeopsPlainLen = 0;
+    mountEl._edgeopsPlainUsesChild = false;
     mountEl.classList.remove('ai-reply-stream-plain');
+    var plainLive = mountEl.querySelector('[data-edgeops-plain-live]');
+    if (plainLive) {
+        plainLive._edgeopsPlainStream = false;
+        plainLive._edgeopsPlainLen = 0;
+    }
+    var liveWrap = mountEl.querySelector('.ai-reply-prose-item-live');
+    if (liveWrap && liveWrap.querySelector('[data-edgeops-plain-live]')) liveWrap.remove();
 }
 
 function edgeopsClearStreamIncrementalState(mountEl) {
