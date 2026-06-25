@@ -23,6 +23,7 @@ mcp = FastMCP(
         "HTTP 调用会自动带 X-EdgeOps-Client: mcp。"
         "多会话：session_id 参数，或 HTTP 头 X-EdgeOps-Session-Id，或 edgeops_context_bind。"
         "无 Web UI：勿依赖 connect_terminal / ask_user_choice；长任务用 ops_orchestrate_chat + ops_task_*。"
+        "SSH 通道内嵌套登录：先 edgeops_list_service_credentials，再 edgeops_send_service_password（勿 ssh_channel_send 发明文）。"
     ),
     # 挂载到主 Web 的 /mcp 时，子应用内路由为 `/`；独立 --http 进程由 mount 层再包一层 /mcp。
     streamable_http_path="/",
@@ -336,6 +337,73 @@ async def edgeops_ssh_channel_close_batch(
     sid = _session(session_id, ctx)
     return await _run(
         lambda c: c.ssh_channel_close_batch(session_id=sid),
+        ctx=ctx,
+    )
+
+
+@mcp.tool()
+async def edgeops_list_service_credentials(
+    command_hint: str | None = None,
+    service: str | None = None,
+    address: str | None = None,
+    port: int | None = None,
+    service_username: str | None = None,
+    keyword: str | None = None,
+    sort_by: str = "last_accessed_at",
+    sort_order: str = "desc",
+    limit: int = 50,
+    ctx: Context | None = None,
+) -> str:
+    """搜索/列出服务凭证元数据（不含密码）。需系统开启 credentials_vault_enabled。
+
+    搜索方式（可组合）：
+    - command_hint：从待执行命令推断 service+address（如 `ssh 172.31.0.1`、`scp user@10.0.0.2:/path`；scp/sftp/rsync 按 ssh 凭证）
+    - service + address：精确按服务类型与目标 IP/域名（跨机 SSH 填 service=ssh）
+    - keyword：模糊匹配 id、address、service_username、label、notes、service
+    - port / service_username：进一步过滤
+
+    返回 credentials 列表及 resolution（use_credential / user_choice / ask_user_identity）与 suggested_credential_id。
+    跨机 SSH 前先调用本工具选 credential_id，再用 edgeops_send_service_password 注入。"""
+    return await _run(
+        lambda c: c.list_service_credentials(
+            command_hint=command_hint,
+            service=service,
+            address=address,
+            port=port,
+            service_username=service_username,
+            keyword=keyword,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            limit=limit,
+        ),
+        ctx=ctx,
+    )
+
+
+@mcp.tool()
+async def edgeops_send_service_password(
+    credential_id: int,
+    target: str,
+    channel_id: int | None = None,
+    host_id: int | None = None,
+    slot: int | None = None,
+    require_password_prompt: bool = False,
+    ctx: Context | None = None,
+) -> str:
+    """按 credential_id 向 PTY 注入密码（结果不含明文）。需系统开启 credentials_vault_enabled。
+
+    target：terminal（Web 控制台，需 host_id）| ssh_channel（需 channel_id）| local_terminal。
+    MCP 直连 ssh_channel 嵌套 SSH 时：先 read_lines 确认 password 提示，再 target=ssh_channel + channel_id。
+    禁止用 edgeops_ssh_channel_send 发送明文密码。"""
+    return await _run(
+        lambda c: c.send_service_password(
+            credential_id=credential_id,
+            target=target,
+            host_id=host_id,
+            channel_id=channel_id,
+            slot=slot,
+            require_password_prompt=require_password_prompt,
+        ),
         ctx=ctx,
     )
 

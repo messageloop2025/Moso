@@ -619,6 +619,80 @@ class EdgeOpsRestClient:
             timeout=SHORT_TIMEOUT,
         )
 
+    async def service_credentials_enabled(self) -> Any:
+        return await self._request(
+            "GET",
+            "/api/service-credentials/enabled",
+            timeout=httpx.Timeout(15.0, connect=10.0),
+        )
+
+    async def list_service_credentials(
+        self,
+        *,
+        command_hint: str | None = None,
+        service: str | None = None,
+        address: str | None = None,
+        port: int | None = None,
+        service_username: str | None = None,
+        keyword: str | None = None,
+        sort_by: str | None = "last_accessed_at",
+        sort_order: str | None = "desc",
+        limit: int | None = 50,
+    ) -> Any:
+        params: dict[str, Any] = {}
+        if command_hint and command_hint.strip():
+            params["command_hint"] = command_hint.strip()
+        if service and service.strip():
+            params["service"] = service.strip()
+        if address is not None:
+            params["address"] = address.strip() if isinstance(address, str) else address
+        if port is not None:
+            params["port"] = port
+        if service_username and service_username.strip():
+            params["service_username"] = service_username.strip()
+        if keyword and keyword.strip():
+            params["keyword"] = keyword.strip()
+        if sort_by:
+            params["sort_by"] = sort_by
+        if sort_order:
+            params["sort_order"] = sort_order
+        if limit is not None:
+            params["limit"] = max(1, min(200, int(limit)))
+        return await self._request(
+            "GET",
+            "/api/service-credentials",
+            params=params or None,
+            timeout=SHORT_TIMEOUT,
+        )
+
+    async def send_service_password(
+        self,
+        *,
+        credential_id: int,
+        target: str,
+        host_id: int | None = None,
+        channel_id: int | None = None,
+        slot: int | None = None,
+        require_password_prompt: bool = False,
+    ) -> Any:
+        body: dict[str, Any] = {
+            "credential_id": int(credential_id),
+            "target": (target or "terminal").strip().lower(),
+            "require_password_prompt": bool(require_password_prompt),
+        }
+        if host_id is not None:
+            body["host_id"] = host_id
+        if channel_id is not None:
+            body["channel_id"] = channel_id
+        if slot is not None:
+            body["slot"] = slot
+        return await self._request(
+            "POST",
+            "/api/service-credentials/inject",
+            json_body=body,
+            timeout=SHORT_TIMEOUT,
+        )
+
 
 def create_client(*, ctx: Any | None = None) -> EdgeOpsRestClient:
     token = resolve_access_token(ctx)

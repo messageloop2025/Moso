@@ -46,13 +46,20 @@ python -m services.edgeops_mcp          # stdio（Cursor 本地子进程模式�
 
 **HTTPS 反代**：推荐客户端 URL 带尾斜杠 `https://host/mcp/`；nginx 示例见 [docker/nginx-edgeops.example.conf](../../docker/nginx-edgeops.example.conf)。
 
-## 工具一览（47 个）
+## 工具一览（49 个）
 
 ### 基础（22 个）
 
 `edgeops_gateway_ping`、`edgeops_list_hosts`、`edgeops_search_hosts`、`edgeops_search_hosts_by_prompt`、`edgeops_get_host`、`edgeops_get_host_prompt`、`edgeops_list_host_tags`、`edgeops_host_alive`、`edgeops_host_stats`、`edgeops_search_best_practices`、`edgeops_ops_chat`、`edgeops_ssh_channel_*`（10 个）、`edgeops_read_chat_data`、`edgeops_context_bind`
 
 > 其中前 21 个与 claw-ops 核心工具同名同义；MCP 的 `edgeops_context_bind` 在 claw-ops 侧对应统一调用入口 `edgeops_invoke`（语义不同，名称不互通）。
+
+### 服务凭证（2 个，需 `credentials_vault_enabled`）
+
+| 工具 | 说明 |
+|------|------|
+| `edgeops_list_service_credentials` | 搜索服务凭证元数据（command_hint / service+address / keyword；返回 resolution） |
+| `edgeops_send_service_password` | 向 ssh_channel / terminal 注入密码（不含明文回显） |
 
 ### P1 扩展（MCP 独有或增强）
 
@@ -87,6 +94,7 @@ python -m services.edgeops_mcp          # stdio（Cursor 本地子进程模式�
 
 - 勿依赖 `connect_terminal`、`send_to_terminal`、`ask_user_choice`
 - 非交互命令 → `edgeops_ssh_execute`；TTY → `edgeops_ssh_channel_*`
+- 通道内嵌套 SSH/sudo 密码 → `edgeops_list_service_credentials` + `edgeops_send_service_password`（勿 `ssh_channel_send` 发明文）
 - 大输出 → spill + `edgeops_read_chat_data`
 - 编排会话 `session_scope=mcp_orchestrate`，不出现在网页 AI 列表
 

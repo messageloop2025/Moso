@@ -1,6 +1,6 @@
 ---
 name: edgeops-mcp
-description: Moso 内置 Python MCP — 47 个 edgeops_* 工具（含编排 ops、直连 SSH）；Token 在 MCP headers/env
+description: Moso 内置 Python MCP — 49 个 edgeops_* 工具（含编排 ops、直连 SSH、服务凭证注入）；Token 在 MCP headers/env
 version: 1.0.0
 author: Moso
 license: MIT-0
@@ -44,7 +44,7 @@ required_environment_variables:
 1. **探活** → `edgeops_gateway_ping`
 2. **名词 → host_id** → `edgeops_search_hosts` / `edgeops_search_hosts_by_prompt`
 3. **短命令** → `edgeops_ssh_execute`（长任务 `detach=true`，再 `poll_log=true`）
-4. **sudo/vi/多步 TTY** → `edgeops_ssh_channel_*`
+4. **sudo/vi/多步 TTY** → `edgeops_ssh_channel_*`；出现 password 提示 → `edgeops_list_service_credentials` + `edgeops_send_service_password`
 5. **复杂 / 耗时编排** → `edgeops_ops_orchestrate_chat` + `edgeops_ops_task_*`（**仅 MCP**）
 6. **简单一句话**（可接受阻塞 ≤330s）→ `edgeops_ops_chat`
 7. **远程文件** → `edgeops_remote_fs_*`（无 web/fs 依赖）
@@ -66,9 +66,11 @@ edgeops_ops_task_control(task_id, action=stop|supplement, message?)
 - **不会**主动推送到客户端；需轮询 `task_output` 或下轮 `orchestrate_chat` 看 `task_completions`
 - 会话 scope = `mcp_orchestrate`，不出现在网页 AI 列表
 
-## 工具分组（47）
+## 工具分组（49）
 
 **与 claw-ops 同名（22）**：ping、hosts、prompt、tags、alive、stats、best-practices、ops_chat、ssh_channel×10、read_chat_data、context_bind
+
+**MCP 服务凭证（2）**：list_service_credentials、send_service_password（需 `credentials_vault_enabled`）
 
 **P1**：ssh_execute、host_groups×3、probe/get_capabilities、update/append_host_prompt、maintenance_history、operation_logs
 
