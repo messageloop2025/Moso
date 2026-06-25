@@ -73,6 +73,7 @@ from services.llm_adapter import (
     parse_chat_response,
     extract_message_content,
     require_api_key,
+    should_use_system_shared_api_key,
     parse_stream_line,
     extract_stream_delta,
     merge_tool_call_deltas,
@@ -3025,6 +3026,51 @@ def _allow_system_shared_api_key(
     return bool(rb or sb)
 
 
+async def _user_profile_context(db, user_id: int) -> tuple[dict | None, str]:
+    """返回 (active_profile_row, user_ai_config.base_url)。"""
+    from services.ai_model_profiles import get_active_profile_row
+
+    prof = await get_active_profile_row(db, user_id)
+    own_base = ""
+    if not prof:
+        rows = await db.execute_fetchall(
+            "SELECT base_url FROM user_ai_config WHERE user_id = ?", (user_id,)
+        )
+        if rows:
+            own_base = (rows[0]["base_url"] or "").strip()
+    return prof, own_base
+
+
+async def _maybe_apply_system_shared_key(
+    db,
+    user_id: int,
+    *,
+    settings: dict,
+    base_url: str,
+    provider: str,
+    api_key: str,
+) -> tuple[str, str, dict | None]:
+    """若应走系统共享 Key，则扣配额并注入 Key；否则原样返回。返回 (api_key, base_url, trial_info)。"""
+    prof, user_own_base = await _user_profile_context(db, user_id)
+    if not should_use_system_shared_api_key(
+        provider=provider,
+        api_key=api_key,
+        profile_row=prof,
+        user_own_base_url=user_own_base,
+    ):
+        return api_key, base_url, None
+    system_key, system_base = await _get_system_key_and_base(db)
+    if not _allow_system_shared_api_key(system_key, system_base, resolved_base_url=base_url):
+        return api_key, base_url, None
+    trial_info = await _consume_system_ai_usage(db, user_id)
+    if trial_info.get("exhausted"):
+        return api_key, base_url, trial_info
+    api_key = system_key
+    if not (settings.get("ai_base_url") or "").strip() and (system_base or "").strip():
+        base_url = (system_base or "").strip().rstrip("/")
+    return api_key, base_url, trial_info
+
+
 async def _peek_system_ai_usage(db, user_id: int) -> int:
     """仅查询当前用户已消耗的系统 KEY 次数，不做任何修改。"""
     rows = await db.execute_fetchall(
@@ -3508,21 +3554,28 @@ async def get_trial_status(user_id: int | None = None, user=Depends(get_current_
     used = await _peek_system_ai_usage(db, target_id)
     limit = SYSTEM_AI_USAGE_LIMIT
     remaining = max(0, limit - used)
-    # 系统是否配置了默认 AI（决定未填自有 Key 时是否真能走共享 Key）
     system_key, system_base = await _get_system_key_and_base(db)
     merged = await _get_user_ai_settings(db, target_id)
     resolved_base = (merged.get("ai_base_url") or "").strip().rstrip("/") or (
         getattr(_config, "AI_BASE_URL", "") or ""
     ).strip().rstrip("/")
+    provider = _effective_provider(merged, resolved_base)
+    uses_shared = should_use_system_shared_api_key(
+        provider=provider,
+        api_key=(merged.get("ai_api_key") or "").strip(),
+        profile_row=prof,
+        user_own_base_url=own_base if not prof else None,
+    ) and _allow_system_shared_api_key(system_key, system_base, resolved_base_url=resolved_base)
     return {
         "success": True,
         "user_id": target_id,
         "has_own_key": own_key,
         "has_own_base": own_base,
+        "uses_shared_key": uses_shared,
         "used": used,
         "limit": limit,
         "remaining": remaining,
-        "exhausted": (not own_key) and used >= limit,
+        "exhausted": uses_shared and used >= limit,
         "system_key_available": _allow_system_shared_api_key(
             system_key, system_base, resolved_base_url=resolved_base
         ),
@@ -4005,20 +4058,16 @@ async def summarize_session_prompt(
         raise HTTPException(status_code=400, detail="AI 未配置服务地址，请在「AI 配置」中填写")
     api_key = (settings.get("ai_api_key") or "").strip()
     provider = _effective_provider(settings, base_url)
+    api_key, base_url, trial = await _maybe_apply_system_shared_key(
+        db, user["id"], settings=settings, base_url=base_url, provider=provider, api_key=api_key,
+    )
+    if trial and trial.get("exhausted"):
+        raise HTTPException(
+            status_code=403,
+            detail=f"系统共享 Key 调用配额已用尽（上限 {trial.get('limit', SYSTEM_AI_USAGE_LIMIT)} 次）。请在「系统设置 → 我的 AI 配置」填写自有 Base URL / API Key / Model 以解除次数限制，或联系管理员重置配额计数。",
+        )
     if require_api_key(provider, api_key) and not api_key:
-        system_key, system_base = await _get_system_key_and_base(db)
-        if _allow_system_shared_api_key(system_key, system_base, resolved_base_url=base_url):
-            trial = await _consume_system_ai_usage(db, user["id"])
-            if trial.get("exhausted"):
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"系统共享 Key 调用配额已用尽（上限 {trial.get('limit', SYSTEM_AI_USAGE_LIMIT)} 次）。请在「系统设置 → 我的 AI 配置」填写自有 Base URL / API Key / Model 以解除次数限制，或联系管理员重置配额计数。",
-                )
-            api_key = system_key
-            if not (settings.get("ai_base_url") or "").strip() and (system_base or "").strip():
-                base_url = (system_base or "").strip().rstrip("/")
-        else:
-            raise HTTPException(status_code=400, detail="AI 未配置 API Key，请在「AI 配置」中填写")
+        raise HTTPException(status_code=400, detail="AI 未配置 API Key，请在「AI 配置」中填写")
 
     # 只把「用户要求」和「助手的指令/决策」传给 AI，不传程序输出的日志
     lines = []
@@ -4185,20 +4234,16 @@ async def summarize_host_prompt(
         raise HTTPException(status_code=400, detail="AI 未配置服务地址，请在「AI 配置」中填写")
     api_key = (settings.get("ai_api_key") or "").strip()
     provider = _effective_provider(settings, base_url)
+    api_key, base_url, trial = await _maybe_apply_system_shared_key(
+        db, user["id"], settings=settings, base_url=base_url, provider=provider, api_key=api_key,
+    )
+    if trial and trial.get("exhausted"):
+        raise HTTPException(
+            status_code=403,
+            detail=f"系统共享 Key 调用配额已用尽（上限 {trial.get('limit', SYSTEM_AI_USAGE_LIMIT)} 次）。请在「系统设置 → 我的 AI 配置」填写自有 Base URL / API Key / Model 以解除次数限制，或联系管理员重置配额计数。",
+        )
     if require_api_key(provider, api_key) and not api_key:
-        system_key, system_base = await _get_system_key_and_base(db)
-        if _allow_system_shared_api_key(system_key, system_base, resolved_base_url=base_url):
-            trial = await _consume_system_ai_usage(db, user["id"])
-            if trial.get("exhausted"):
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"系统共享 Key 调用配额已用尽（上限 {trial.get('limit', SYSTEM_AI_USAGE_LIMIT)} 次）。请在「系统设置 → 我的 AI 配置」填写自有 Base URL / API Key / Model 以解除次数限制，或联系管理员重置配额计数。",
-                )
-            api_key = system_key
-            if not (settings.get("ai_base_url") or "").strip() and (system_base or "").strip():
-                base_url = (system_base or "").strip().rstrip("/")
-        else:
-            raise HTTPException(status_code=400, detail="AI 未配置 API Key，请在「AI 配置」中填写")
+        raise HTTPException(status_code=400, detail="AI 未配置 API Key，请在「AI 配置」中填写")
 
     lines = []
     for r in msg_rows:
@@ -4323,20 +4368,16 @@ async def summarize_session_title(session_id: int, user=Depends(get_current_user
         raise HTTPException(status_code=400, detail="请先在 AI 配置中填写服务地址")
     api_key = (settings.get("ai_api_key") or "").strip()
     provider = _effective_provider(settings, base_url)
+    api_key, base_url, trial = await _maybe_apply_system_shared_key(
+        db, user["id"], settings=settings, base_url=base_url, provider=provider, api_key=api_key,
+    )
+    if trial and trial.get("exhausted"):
+        raise HTTPException(
+            status_code=403,
+            detail=f"系统共享 Key 调用配额已用尽（上限 {trial.get('limit', SYSTEM_AI_USAGE_LIMIT)} 次）。请在「系统设置 → 我的 AI 配置」填写自有 Base URL / API Key / Model 以解除次数限制，或联系管理员重置配额计数。",
+        )
     if require_api_key(provider, api_key) and not api_key:
-        system_key, system_base = await _get_system_key_and_base(db)
-        if _allow_system_shared_api_key(system_key, system_base, resolved_base_url=base_url):
-            trial = await _consume_system_ai_usage(db, user["id"])
-            if trial.get("exhausted"):
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"系统共享 Key 调用配额已用尽（上限 {trial.get('limit', SYSTEM_AI_USAGE_LIMIT)} 次）。请在「系统设置 → 我的 AI 配置」填写自有 Base URL / API Key / Model 以解除次数限制，或联系管理员重置配额计数。",
-                )
-            api_key = system_key
-            if not (settings.get("ai_base_url") or "").strip() and (system_base or "").strip():
-                base_url = (system_base or "").strip().rstrip("/")
-        else:
-            raise HTTPException(status_code=400, detail="请先在 AI 配置中填写 API Key")
+        raise HTTPException(status_code=400, detail="请先在 AI 配置中填写 API Key")
     model = normalize_model(provider, settings.get("ai_model") or "")
     # 先检查是否有消息，避免用户等待后才发现无消息
     msg_count = await db.execute_fetchall(
@@ -5217,19 +5258,11 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         )
     provider = _effective_provider(settings, base_url)
     api_key = (settings.get("ai_api_key") or "").strip()
-    # 共享 Key 配额状态：None = 用户有自己的 KEY，完全不受限；dict = 正在走系统共享 Key（含 exhausted/used/remaining/limit）
-    trial_info: dict | None = None
-    # 仅当用户未配置 API Key 而使用系统 KEY 时计入并限制；用户配置了自己的 KEY 则不受计数限制。系统 KEY 优先从 settings 表（管理员在系统设置中配置）读取。
-    if require_api_key(provider, api_key) and not api_key:
-        system_key, system_base = await _get_system_key_and_base(db)
-        if _allow_system_shared_api_key(system_key, system_base, resolved_base_url=base_url):
-            trial_info = await _consume_system_ai_usage(db, user["id"])
-            if not trial_info.get("exhausted"):
-                api_key = system_key
-                if not (settings.get("ai_base_url") or "").strip() and (system_base or "").strip():
-                    base_url = (system_base or "").strip().rstrip("/")
-        else:
-            raise HTTPException(status_code=400, detail="AI 未配置 API Key，请在「系统设置」中配置（Ollama 可留空）")
+    api_key, base_url, trial_info = await _maybe_apply_system_shared_key(
+        db, user["id"], settings=settings, base_url=base_url, provider=provider, api_key=api_key,
+    )
+    if require_api_key(provider, api_key) and not api_key and not (trial_info and trial_info.get("exhausted")):
+        raise HTTPException(status_code=400, detail="AI 未配置 API Key，请在「系统设置」中配置（Ollama 可留空）")
 
     provider = _effective_provider(settings, base_url)
 
@@ -7025,27 +7058,22 @@ async def run_ops_integration_chat_complete(
 
     provider = _effective_provider(settings, base_url)
     api_key = (settings.get("ai_api_key") or "").strip()
-    trial_info: dict | None = None
+    api_key, base_url, trial_info = await _maybe_apply_system_shared_key(
+        db, user["id"], settings=settings, base_url=base_url, provider=provider, api_key=api_key,
+    )
+    if trial_info and trial_info.get("exhausted"):
+        return {
+            "success": False,
+            "error": f"系统共享 Key 调用配额已用尽（上限 {trial_info.get('limit', SYSTEM_AI_USAGE_LIMIT)} 次），请配置自有 API Key 以解除次数限制，或联系管理员重置配额计数",
+            "trial": trial_info,
+            "session_id": session_id,
+        }
     if require_api_key(provider, api_key) and not api_key:
-        system_key, system_base = await _get_system_key_and_base(db)
-        if _allow_system_shared_api_key(system_key, system_base, resolved_base_url=base_url):
-            trial_info = await _consume_system_ai_usage(db, user["id"])
-            if trial_info.get("exhausted"):
-                return {
-                    "success": False,
-                    "error": f"系统共享 Key 调用配额已用尽（上限 {trial_info.get('limit', SYSTEM_AI_USAGE_LIMIT)} 次），请配置自有 API Key 以解除次数限制，或联系管理员重置配额计数",
-                    "trial": trial_info,
-                    "session_id": session_id,
-                }
-            api_key = system_key
-            if not (settings.get("ai_base_url") or "").strip() and (system_base or "").strip():
-                base_url = (system_base or "").strip().rstrip("/")
-        else:
-            return {
-                "success": False,
-                "error": "AI 未配置 API Key",
-                "session_id": session_id,
-            }
+        return {
+            "success": False,
+            "error": "AI 未配置 API Key",
+            "session_id": session_id,
+        }
 
     provider = _effective_provider(settings, base_url)
     sid = session_id

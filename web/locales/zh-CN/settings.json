@@ -142,7 +142,7 @@
       }
     },
     "trial": {
-      "ownKey": "✅ <b>已使用自有 Key：</b>你已配置自己的 AI Key，毛竹 不再对你的调用次数计数或限制。",
+      "ownKey": "✅ <b>已使用自有模型配置：</b>你已配置自己的 API Key 或本地/自有 Base URL（如 Ollama），毛竹 不再对你的调用计入共享 Key 配额。",
       "sharedExhausted": "❌ <b>系统共享 Key 配额已用尽</b>（{{used}} / {{limit}}）：请在下方填写自有 Base URL / API Key / Model 以<b>解除次数限制</b>，或联系管理员重置配额 / 写入系统默认配置。",
       "sharedOk": "💡 <b>系统共享 Key 配额</b>：已用 <b>{{used}}</b> / 共 <b>{{limit}}</b> 次，剩余 <b>{{remaining}}</b> 次。填写自有 Key 可<b>解除次数限制</b>（毛竹 不再计数）。"
     },

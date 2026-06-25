@@ -74,10 +74,8 @@ async def _get_user_ai_settings(db, user_id: int) -> dict[str, str]:
 
 async def _resolve_ai_credentials(db, user: dict, settings: dict[str, str]) -> tuple[str, str, str, dict | None]:
     from api.ai_agent import (
-        _allow_system_shared_api_key,
-        _consume_system_ai_usage,
         _effective_provider,
-        _get_system_key_and_base,
+        _maybe_apply_system_shared_key,
     )
 
     base_url = (settings.get("ai_base_url") or "").strip().rstrip("/")
@@ -88,21 +86,21 @@ async def _resolve_ai_credentials(db, user: dict, settings: dict[str, str]) -> t
 
     provider = _effective_provider(settings, base_url)
     api_key = (settings.get("ai_api_key") or "").strip()
-    trial = None
+    api_key, base_url, trial = await _maybe_apply_system_shared_key(
+        db,
+        user["id"],
+        settings=settings,
+        base_url=base_url,
+        provider=provider,
+        api_key=api_key,
+    )
+    if trial and trial.get("exhausted"):
+        return "", "", "", {
+            "success": False,
+            "error": f"系统共享 Key 配额已用尽（上限 {trial.get('limit', SYSTEM_AI_USAGE_LIMIT)}）",
+        }
     if require_api_key(provider, api_key) and not api_key:
-        system_key, system_base = await _get_system_key_and_base(db)
-        if _allow_system_shared_api_key(system_key, system_base, resolved_base_url=base_url):
-            trial = await _consume_system_ai_usage(db, user["id"])
-            if trial.get("exhausted"):
-                return "", "", "", {
-                    "success": False,
-                    "error": f"系统共享 Key 配额已用尽（上限 {trial.get('limit', SYSTEM_AI_USAGE_LIMIT)}）",
-                }
-            api_key = system_key
-            if not (settings.get("ai_base_url") or "").strip() and (system_base or "").strip():
-                base_url = (system_base or "").strip().rstrip("/")
-        else:
-            return "", "", "", {"success": False, "error": "AI 未配置 API Key"}
+        return "", "", "", {"success": False, "error": "AI 未配置 API Key"}
     return base_url, api_key, provider, None
 
 

@@ -142,7 +142,7 @@
       }
     },
     "trial": {
-      "ownKey": "✅ <b>Using your own key:</b> you configured your own API key. Moso does not count or limit your usage.",
+      "ownKey": "✅ <b>Using your own model config:</b> you configured your own API key or a local/dedicated Base URL (e.g. Ollama). Moso does not count your usage against the shared key quota.",
       "sharedExhausted": "❌ <b>Shared key quota used up</b> ({{used}} / {{limit}}). Enter your own Base URL, API key, and model below to <b>remove the limit</b>, or ask an admin to reset the quota or set system defaults.",
       "sharedOk": "💡 <b>Shared key quota</b>: <b>{{used}}</b> / <b>{{limit}}</b> used, <b>{{remaining}}</b> left. Add your own key to <b>remove the limit</b> (Moso stops counting your usage)."
     },

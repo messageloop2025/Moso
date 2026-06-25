@@ -22,9 +22,13 @@ def detect_provider(base_url: str) -> str:
     url = (base_url or "").strip().lower()
     if "dashscope.aliyuncs.com" in url or "dashscope-us.aliyuncs.com" in url or "dashscope-intl.aliyuncs.com" in url:
         return PROVIDER_ALIYUN
-    if re.search(r"localhost:\s*11434|127\.0\.0\.1:\s*11434", url.replace(" ", "")):
+    compact = url.replace(" ", "")
+    if re.search(r"localhost:\s*11434|127\.0\.0\.1:\s*11434", compact):
         return PROVIDER_OLLAMA
-    if "11434" in url and ("ollama" in url or "localhost" in url or "127.0.0.1" in url):
+    # 任意主机上的 Ollama 默认端口（含局域网 IP）
+    if re.search(r":11434(?:/|$|\?)", compact):
+        return PROVIDER_OLLAMA
+    if "11434" in compact and ("ollama" in compact or "localhost" in compact or "127.0.0.1" in compact):
         return PROVIDER_OLLAMA
     return PROVIDER_OPENAI
 
@@ -148,6 +152,36 @@ def is_ollama(provider: str) -> bool:
 def require_api_key(provider: str, api_key: str) -> bool:
     """当前配置下是否必须提供 API Key（Ollama 可免）。"""
     if provider == PROVIDER_OLLAMA:
+        return False
+    return True
+
+
+def should_use_system_shared_api_key(
+    *,
+    provider: str,
+    api_key: str,
+    profile_row: dict | None = None,
+    user_own_base_url: str | None = None,
+) -> bool:
+    """未配置用户 Key 时，是否应注入系统共享 Key 并计入配额。
+
+    用户已在 Profile / user_ai_config 中填写自有 Base URL（如 Ollama、LM Studio）时，
+    即使 Key 为空也不走系统共享 Key；仅在使用全局默认云 endpoint 且无自有 Key 时才共享。
+    """
+    if (api_key or "").strip():
+        return False
+    if not require_api_key(provider, api_key):
+        return False
+    own_base = ""
+    if profile_row:
+        if (profile_row.get("api_key") or "").strip():
+            return False
+        own_base = (profile_row.get("base_url") or "").strip()
+        if (profile_row.get("provider") or "").strip() == PROVIDER_OLLAMA:
+            return False
+    elif user_own_base_url:
+        own_base = (user_own_base_url or "").strip()
+    if own_base:
         return False
     return True
 

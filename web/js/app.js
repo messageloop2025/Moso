@@ -12506,7 +12506,7 @@ function loadMyTrialBanner() {
     if (!banner) return;
     API.getTrialStatus().then(function(s) {
         if (!s) return;
-        if (s.has_own_key) {
+        if (s.has_own_key || s.has_own_base || s.uses_shared_key === false) {
             banner.innerHTML = '<div style="padding:10px 14px;border-radius:10px;border:1px solid rgba(74,222,128,0.35);background:rgba(74,222,128,0.10);color:#9ef5b7;font-size:13px;line-height:1.7">' + t('settings.trial.ownKey') + '</div>';
             return;
         }
@@ -15209,7 +15209,7 @@ function openUserTrialDialog(userId, username, onChanged) {
         + '</div>';
     showModal(t('modals.aiKeyQuota', { user: (username && String(username).trim() !== '' ? String(username) : t('common.userPound', { id: userId })) }), html, edgeopsModalFooterClose());
     function render(status) {
-        var has_own = !!status.has_own_key;
+        var has_own = !!status.has_own_key || !!status.has_own_base || status.uses_shared_key === false;
         var used = status.used || 0;
         var limit = status.limit || 0;
         var remaining = status.remaining || 0;
