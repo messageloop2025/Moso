@@ -1058,6 +1058,16 @@ function edgeopsInstallRuntimeControlBar(opts) {
         inputArea.style.display = streaming ? 'none' : '';
         if (!streaming && !awaiting) inputArea.style.display = '';
         if (!streaming && !awaiting) {
+            var supplementDraft = input.value || '';
+            if (supplementDraft) {
+                if (inputArea.value) {
+                    var sep = inputArea.value.endsWith('\n') ? '' : '\n';
+                    inputArea.value = inputArea.value + sep + supplementDraft;
+                } else {
+                    inputArea.value = supplementDraft;
+                }
+                if (inputArea._edgeopsAutoResize) try { inputArea._edgeopsAutoResize(); } catch (_e) {}
+            }
             input.value = '';
             if (input._edgeopsAutoResize) try { input._edgeopsAutoResize(); } catch (_e) {}
             tip.textContent = t('hostAi.runtimeTipCompact');

@@ -56,13 +56,14 @@ def normalize_model(provider: str, model: str) -> str:
 
 
 def prepare_headers(provider: str, api_key: str, base_url: str | None = None) -> dict[str, str]:
-    """生成请求头。本地/自建 endpoint 或无 Key 要求时不带 Authorization。"""
+    """生成请求头。有 Key 时始终带 Authorization；无 Key 且本地/自建 endpoint 时可不带。"""
     headers = {"Content-Type": "application/json"}
     key = (api_key or "").strip()
-    if not require_api_key(provider, key, own_base_url=base_url, resolved_base_url=base_url):
-        return headers
     if key:
         headers["Authorization"] = f"Bearer {key}"
+        return headers
+    if not require_api_key(provider, "", own_base_url=base_url, resolved_base_url=base_url):
+        return headers
     return headers
 
 
