@@ -2657,52 +2657,56 @@ function edgeopsBindReplyProsePanelsIn(root) {
 function edgeopsReplayPersistedToolTrace(toolsEl, steps, opts) {
     if (!toolsEl || !steps || !steps.length) return;
     opts = opts || {};
-    toolsEl.innerHTML = '';
-    if (opts.droppedHead && opts.droppedHead > 0) {
-        var note = document.createElement('div');
-        note.className = 'form-hint';
-        note.style.cssText = 'margin:0 0 8px;font-size:12px;color:var(--text-muted)';
-        note.textContent = typeof t === 'function'
-            ? t('hostAi.toolTraceDroppedHead', { n: opts.droppedHead })
-            : ('Earlier ' + opts.droppedHead + ' trace step(s) were not persisted.');
-        toolsEl.appendChild(note);
+    _edgeopsReplayToolTraceDepth += 1;
+    try {
+        toolsEl.innerHTML = '';
+        if (opts.droppedHead && opts.droppedHead > 0) {
+            var note = document.createElement('div');
+            note.className = 'form-hint';
+            note.style.cssText = 'margin:0 0 8px;font-size:12px;color:var(--text-muted)';
+            note.textContent = typeof t === 'function'
+                ? t('hostAi.toolTraceDroppedHead', { n: opts.droppedHead })
+                : ('Earlier ' + opts.droppedHead + ' trace step(s) were not persisted.');
+            toolsEl.appendChild(note);
+        }
+        for (var i = 0; i < steps.length; i++) {
+            var s = steps[i];
+            if (!s || !s.type) continue;
+            if (s.type === 'cot') {
+                var text = s.text != null ? String(s.text) : '';
+                if (!text.trim()) continue;
+                var panel = edgeopsGetOrCreateCotPanel(toolsEl);
+                var st = edgeopsGetCotState(panel);
+                st.roundSeq += 1;
+                var r = st.roundSeq;
+                var stepEl = document.createElement('div');
+                stepEl.className = 'ai-cot-step ai-cot-step-reasoning';
+                var headText = typeof t === 'function' ? t('hostAi.cotRoundReasoning', { round: r }) : ('Round ' + r);
+                stepEl.innerHTML = '<div class="ai-cot-step-head">' + esc(headText) + '</div><div class="ai-cot-step-body ai-cot-reasoning-text"></div>';
+                var rb = stepEl.querySelector('.ai-cot-reasoning-text');
+                if (rb) rb.textContent = edgeopsReasoningBufferToPlain(text);
+                var stepsWrap = panel.querySelector('.ai-cot-steps');
+                if (stepsWrap) stepsWrap.appendChild(stepEl);
+                edgeopsCotRefreshHeader(panel);
+                continue;
+            }
+            if (s.type === 'tool' && s.event === 'executing') {
+                edgeopsCotOnToolExecuting(toolsEl, { tool: s.tool, args: s.args });
+                continue;
+            }
+            if (s.type === 'tool' && s.event === 'finished') {
+                edgeopsCotOnToolFinished(toolsEl, {
+                    tool: s.tool,
+                    action: s.action === 'failed' ? 'failed' : 'completed',
+                    result_preview: s.result_preview,
+                });
+            }
+        }
+        edgeopsCotMarkStreamDone(toolsEl);
+        edgeopsCotCollapsePanelAfterStream(toolsEl);
+    } finally {
+        _edgeopsReplayToolTraceDepth -= 1;
     }
-    for (var i = 0; i < steps.length; i++) {
-        var s = steps[i];
-        if (!s || !s.type) continue;
-        if (s.type === 'cot') {
-            var text = s.text != null ? String(s.text) : '';
-            if (!text.trim()) continue;
-            var panel = edgeopsGetOrCreateCotPanel(toolsEl);
-            var st = edgeopsGetCotState(panel);
-            st.roundSeq += 1;
-            var r = st.roundSeq;
-            var stepEl = document.createElement('div');
-            stepEl.className = 'ai-cot-step ai-cot-step-reasoning';
-            var headText = typeof t === 'function' ? t('hostAi.cotRoundReasoning', { round: r }) : ('Round ' + r);
-            stepEl.innerHTML = '<div class="ai-cot-step-head">' + esc(headText) + '</div><div class="ai-cot-step-body ai-cot-reasoning-text"></div>';
-            var rb = stepEl.querySelector('.ai-cot-reasoning-text');
-            if (rb) rb.textContent = edgeopsReasoningBufferToPlain(text);
-            var stepsWrap = panel.querySelector('.ai-cot-steps');
-            if (stepsWrap) stepsWrap.appendChild(stepEl);
-            edgeopsCotRefreshHeader(panel);
-            continue;
-        }
-        if (s.type === 'tool' && s.event === 'executing') {
-            edgeopsCotOnToolExecuting(toolsEl, { tool: s.tool, args: s.args });
-            continue;
-        }
-        if (s.type === 'tool' && s.event === 'finished') {
-            edgeopsCotOnToolFinished(toolsEl, {
-                tool: s.tool,
-                action: s.action === 'failed' ? 'failed' : 'completed',
-                result_preview: s.result_preview,
-            });
-        }
-    }
-    edgeopsScheduleSshChannelSync({ refreshOutput: false, delayMs: 0 });
-    edgeopsCotMarkStreamDone(toolsEl);
-    edgeopsCotCollapsePanelAfterStream(toolsEl);
 }
 
 /**
@@ -6946,6 +6950,23 @@ function edgeopsSetSshChannelMonitorCtl(ctl) {
     window._edgeopsSshChannelMonitorCtl = ctl || null;
 }
 
+/** 按路由登记 SSH 通道控件，供页面缓存恢复时切回正确实例。 */
+function edgeopsRegisterSshChannelMonitorCtl(path, ctl) {
+    if (!path) return;
+    window._edgeopsSshChannelCtlByPath = window._edgeopsSshChannelCtlByPath || {};
+    window._edgeopsSshChannelCtlByPath[path] = ctl || null;
+    edgeopsSetSshChannelMonitorCtl(ctl);
+}
+
+function edgeopsRestoreSshChannelMonitorCtlForPath(path) {
+    if (!path) return;
+    var map = window._edgeopsSshChannelCtlByPath;
+    if (map && map[path]) edgeopsSetSshChannelMonitorCtl(map[path]);
+}
+
+/** 重放持久化 tool trace 时 >0，禁止触发实时 SSH 通道同步（避免切换会话误改控制台 DOM）。 */
+var _edgeopsReplayToolTraceDepth = 0;
+
 function edgeopsParseSshChannelIdFromToolResult(ev) {
     if (!ev || ev.result_preview == null) return null;
     var text = String(ev.result_preview);
@@ -6960,6 +6981,7 @@ function edgeopsParseSshChannelIdFromToolResult(ev) {
 }
 
 function edgeopsMaybeSyncSshChannelFromTool(ev) {
+    if (_edgeopsReplayToolTraceDepth > 0) return;
     if (!ev || ev.action === 'executing' || !ev.tool) return;
     var tool = String(ev.tool);
     if (tool !== 'ssh_channel_create' && tool !== 'ssh_channel_close' && tool !== 'ssh_channel_close_batch') return;
@@ -6979,6 +7001,7 @@ function edgeopsMaybeSyncSshChannelFromTool(ev) {
 
 var _edgeopsSshChannelSyncTimer = null;
 function edgeopsScheduleSshChannelSync(opts) {
+    if (_edgeopsReplayToolTraceDepth > 0) return;
     opts = opts || {};
     if (_edgeopsSshChannelSyncTimer) clearTimeout(_edgeopsSshChannelSyncTimer);
     _edgeopsSshChannelSyncTimer = setTimeout(function() {
@@ -7591,7 +7614,9 @@ function edgeopsInitSshChannelTab(cfg) {
             existing.tabBtn.textContent = formatChannelTabLabel(ch);
             return existing;
         }
-        if (!tabsRow || !panelsEl) return null;
+        var tabsRowEl = document.getElementById(cfg.tabsRowId);
+        var panelsRowEl = document.getElementById(cfg.panelsId);
+        if (!tabsRowEl || !panelsRowEl || !tabsRowEl.isConnected || !panelsRowEl.isConnected) return null;
         var tabWrap = document.createElement('div');
         tabWrap.className = 'ai-console-tab-wrap' + (channelRecs.length === 0 ? ' active' : '');
         tabWrap.dataset.channelId = String(cid);
@@ -7612,9 +7637,12 @@ function edgeopsInitSshChannelTab(cfg) {
         container.appendChild(mountEl);
         panelEl.appendChild(container);
         var refreshListBtn = document.getElementById(cfg.refreshListBtnId);
-        if (refreshListBtn) tabsRow.insertBefore(tabWrap, refreshListBtn);
-        else tabsRow.appendChild(tabWrap);
-        panelsEl.appendChild(panelEl);
+        if (refreshListBtn && refreshListBtn.parentNode === tabsRowEl) {
+            tabsRowEl.insertBefore(tabWrap, refreshListBtn);
+        } else {
+            tabsRowEl.appendChild(tabWrap);
+        }
+        panelsRowEl.appendChild(panelEl);
         var rec = {
             id: cid,
             channel: ch,
@@ -7906,6 +7934,8 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
             });
             edgeopsHydrateChatDiagrams(box);
             edgeopsScrollChatMessagesToBottom(box);
+        }).catch(function(err) {
+            showToast((err && err.message) || t('toast.requestFailed'), 'error');
         });
     }
     (function() {
@@ -8898,7 +8928,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         liveWatchBtnId: 'hostAiSshChLiveWatch',
         hostIdFilter: hostId
     });
-    edgeopsSetSshChannelMonitorCtl(hostAiSshChannelCtl);
+    edgeopsRegisterSshChannelMonitorCtl('/hosts/' + hostId, hostAiSshChannelCtl);
     renderHostAiLog();
     // 页面缓存恢复时需对终端做 refit，否则尺寸为 0 导致错乱；按 path 注册以便恢复时调用
     (window._edgeopsRefitByPath = window._edgeopsRefitByPath || {})['/hosts/' + hostId] = function() {
@@ -10160,7 +10190,7 @@ function renderAIPage() {
         refreshOutputBtnId: 'aiSshChRefreshOutput',
         liveWatchBtnId: 'aiSshChLiveWatch'
     });
-    edgeopsSetSshChannelMonitorCtl(aiSshChannelCtl);
+    edgeopsRegisterSshChannelMonitorCtl('/ai', aiSshChannelCtl);
     document.getElementById('aiLogCopyAll').onclick = copyAiLogFull;
     renderAiLog();
     var sessionId = null;
@@ -10285,6 +10315,8 @@ function renderAIPage() {
             });
             edgeopsHydrateChatDiagrams(box);
             edgeopsScrollChatMessagesToBottom(box);
+        }).catch(function(err) {
+            showToast((err && err.message) || t('toast.requestFailed'), 'error');
         });
     }
     (function() {
@@ -16899,6 +16931,7 @@ Router.register('/scheduled-tasks', renderScheduledTasksPage);
 
 document.addEventListener('edgeops-page-restored', function(e) {
     var path = e.detail && e.detail.path;
+    if (typeof edgeopsRestoreSshChannelMonitorCtlForPath === 'function') edgeopsRestoreSshChannelMonitorCtlForPath(path);
     if (path === '/ai-mobile') activateAIMobileLayout();
     else setEdgeopsMobileMode(false);
     if (path === '/hosts' && typeof refreshActiveHostsListDOM === 'function') refreshActiveHostsListDOM();
