@@ -46,3 +46,46 @@ def test_can_send_command_when_idle():
         disconnect_reason=None,
     )
     assert merged["can_send_command"] is True
+
+
+def test_maybe_false_busy_hint_when_prompt_at_tail():
+    from services.terminal_state import maybe_false_busy_hint
+
+    st = analyze_terminal_buffer(
+        "data\nroot@EG628:~/code/rtu_client#",
+        connected=True,
+    )
+    st["buffer_idle"] = False
+    st["session_state"] = "busy"
+    hint = maybe_false_busy_hint(st)
+    assert hint is not None
+    assert "send_to_terminal" in hint or "参考" in hint
+
+
+def test_busy_does_not_block_send():
+    from services.ai_skills import _terminal_send_guard_message
+
+    busy = {
+        "connected": True,
+        "can_send_command": False,
+        "session_state": "busy",
+        "busy_reason": "progress_output",
+        "last_line": "root@host:#",
+    }
+    assert _terminal_send_guard_message(busy, "ls") is None
+    assert _terminal_send_guard_message(busy, "\n") is None
+
+
+def test_busy_advisory_on_send():
+    from services.ai_skills import _terminal_busy_advisory
+
+    busy = {
+        "connected": True,
+        "can_send_command": False,
+        "session_state": "busy",
+        "busy_reason": "no_prompt_at_tail",
+        "last_line": "root@host:#",
+    }
+    adv = _terminal_busy_advisory(busy)
+    assert adv is not None
+    assert "参考" in adv

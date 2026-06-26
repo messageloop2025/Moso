@@ -132,7 +132,6 @@ from services.cli_agent_delegate import (
     HostConnInfo as _HostConnInfoCls,
 )
 from services.text_abbrev import abbreviate_terminal_buffer
-from services.terminal_input import is_control_only
 from services.terminal_poll import resolve_terminal_poll_seconds
 from services.workflow_templates import (
     save_template as _save_workflow_template,
@@ -188,7 +187,7 @@ def _terminal_status_payload(state: dict | None) -> dict:
 
 
 def _terminal_send_guard_message(state: dict, text: str) -> str | None:
-    """若不应 send_to_terminal 则返回错误说明，否则 None。"""
+    """仅因未连接/连接中而拒绝 send_to_terminal；buffer_idle/busy 不拦截。"""
     if state.get("pending"):
         return (
             "控制台仍在连接中（session_state=pending）。"
@@ -202,20 +201,49 @@ def _terminal_send_guard_message(state: dict, text: str) -> str | None:
         if state.get("can_read_buffer"):
             msg += " 仍可用 get_terminal_buffer 读取会话缓冲区内最后输出。"
         return msg
-    if is_control_only(text):
-        return None
-    if state.get("can_send_command"):
-        return None
-    if state.get("waiting_password") or state.get("waiting_interactive"):
+    return None
+
+
+def _terminal_busy_advisory(state: dict) -> str | None:
+    """终端判 busy 时的参考说明（不阻止发送）。"""
+    if not state or state.get("can_send_command") or not state.get("connected"):
         return None
     ss = state.get("session_state") or "busy"
     reason = state.get("busy_reason") or "running"
     last = (state.get("last_line") or "")[:120]
-    tail = f" 末行: {last!r}" if last else ""
-    return (
-        f"终端正忙（session_state={ss}, busy_reason={reason}），勿发新 shell 命令；"
-        f"请 get_terminal_buffer(next_poll_in_seconds=…) 轮询直至 buffer_idle=是，或发送 <Ctrl+C>。{tail}"
-    )
+    tail = f" 末行: {last!r}。" if last else ""
+    parts = [
+        f"参考：buffer_idle=否（session_state={ss}, busy_reason={reason}）。"
+        f"已照常发送；{tail}"
+    ]
+    if state.get("waiting_password"):
+        parts.append("末尾可能有密码提示，发完后请 get_terminal_buffer 确认。")
+    elif state.get("waiting_interactive"):
+        parts.append("末尾可能有 yes/no 等交互，发完后请 read buffer。")
+    else:
+        try:
+            from services.terminal_state import maybe_false_busy_hint
+            fb = maybe_false_busy_hint(state)
+            if fb:
+                parts.append(fb)
+            else:
+                parts.append("长任务中可 get_terminal_buffer 轮询；需中断再用 <Ctrl+C>。")
+        except Exception:
+            parts.append("长任务中可 get_terminal_buffer 轮询。")
+    return " ".join(parts)
+
+
+def _attach_terminal_send_advisory(payload: dict, state: dict) -> None:
+    adv = _terminal_busy_advisory(state)
+    if adv:
+        payload["terminal_advisory"] = adv
+
+
+def _attach_false_busy_hint(out: dict, state: dict) -> None:
+    from services.terminal_state import maybe_false_busy_hint
+    hint = maybe_false_busy_hint(state)
+    if hint:
+        out["false_busy_hint"] = hint
 
 
 TOOLS = [
@@ -691,16 +719,16 @@ TOOLS = [
             "name": "send_to_terminal",
             "description": (
                 "向指定 **Web 界面 AI 控制台**注入输入（用户可在 tab 中实时看到）。"
-                "仅可操作 AI 创建的 SSH 控制台。操作前先 list_terminals 或 get_terminal_status；"
-                "connected=false 时禁止调用（终端已断）；session_state=busy 时勿发新命令（可 <Ctrl+C> 或轮询 buffer）。"
-                "同一 host 可有多个 slot，优先选 buffer_idle=是的空闲终端。"
-                "未指定 slot 时可按 host_id 自动匹配空闲 slot；若现有终端被长期任务占用，应 create_console 新开。"
+                "仅可操作 AI 创建的 SSH 控制台。**仅 connected=false / pending 时服务端会拒绝发送**；"
+                "buffer_idle、session_state、can_send_command **仅为参考**（见 terminal_advisory），不拦截命令。"
+                "busy 时仍可直接 send；发完后用 get_terminal_buffer 看结果，长任务可轮询，需中断用 <Ctrl+C>。"
+                "同一 host 可有多个 slot；并行任务可 create_console 新开。"
                 "**多条顺序/交互任务**且用户不必看界面时，优先 ssh_channel_*，不必强开 Web tab。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string", "description": "要发送到控制台的文本（命令、或经 get_terminal_buffer 确认出现 sudo 密码提示后的密码等）；勿与 sudo 命令同次发送密码；可含 <Ctrl+C> 等控制键占位符"},
+                    "text": {"type": "string", "description": "命令或输入；可含 <Ctrl+C>、<Enter>（空回车探测假 busy）；勿与 sudo 同次发密码"},
                     "slot": {"type": "integer", "description": "控制台槽位（0、1、2…）；不传则按 host_id 或默认 AI slot"},
                     "host_id": {"type": "integer", "description": "可选：按主机 ID 自动选择 AI 控制台 slot"},
                 },
@@ -1962,8 +1990,9 @@ TOOLS = [
             "name": "get_terminal_buffer",
             "description": (
                 "获取指定 AI 控制台的最近输出（滚动缓冲**末尾**即最新状态）。"
-                "返回含 connected/session_state/buffer_idle/can_send 等状态字段。"
-                "sudo/报错/进度看 buffer 最后几行。"
+                "返回含 connected/session_state/buffer_idle/can_send/last_line 等（**均为参考，不拦截 send**）。"
+                "**排障与 sudo 判断以 buffer 最后几行 + last_line 为准**。"
+                "若 buffer_idle=否但 last_line 像提示符，见 false_busy_hint。"
                 "connected=false 时仍可读缓冲但禁止 send_to_terminal。"
                 "默认 tail_only=true：超长时仅返回最后 max_lines 行（默认 40）；"
                 "需开头上下文时 tail_only=false 或 full_output=true。"
@@ -1989,10 +2018,9 @@ TOOLS = [
             "name": "get_terminal_status",
             "description": (
                 "查询 AI 控制台 **通/断**（connected）与 **闲/忙**（buffer_idle / session_state）。"
-                "send_to_terminal 前可先调用：connected=false 时禁止发送；"
-                "session_state=busy 时勿发新命令，应 get_terminal_buffer 轮询；"
-                "session_state=idle 且 can_send_command=true 时可发新 shell 命令。"
-                "比 get_terminal_buffer 更轻，默认不含完整输出。"
+                "**仅 connected=false 时禁止 send_to_terminal**；buffer_idle / can_send_command **仅供参考**，不拦截发送。"
+                "busy 时仍可 send，发完后 get_terminal_buffer 看是否生效；include_last_lines 可取末几行辅助判断。"
+                "比 get_terminal_buffer 更轻，默认不含完整输出；include_last_lines 可取末几行辅助判断。"
             ),
             "parameters": {
                 "type": "object",
@@ -7801,13 +7829,17 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     ok = await local_host.send_to_local_terminal(user["id"], slot, text, terminal_scope_id)
                 if not ok:
                     return json.dumps({"success": False, "error": "本机控制台未就绪或已关闭，请先在本机管理页打开控制台（已等待连接就绪）"}, ensure_ascii=False)
-                return json.dumps({
+                st_after = local_host.get_local_terminal_session_state(user["id"], slot, terminal_scope_id)
+                payload = {
                     "success": True,
                     "message": "已发送到本机控制台",
                     "slot": slot,
                     "terminal_scope_id": terminal_scope_id,
+                    "status": _terminal_status_payload(st_after),
                     "ui_action": {"action": "switch_console", "slot": slot, "scope": "local"},
-                }, ensure_ascii=False)
+                }
+                _attach_terminal_send_advisory(payload, st_after)
+                return json.dumps(payload, ensure_ascii=False)
             slot, slot_err = resolve_ai_slot(slot, arguments.get("host_id"))
             if slot_err:
                 return json.dumps(attach_terminals_snapshot({"success": False, "error": slot_err}), ensure_ascii=False)
@@ -7841,13 +7873,16 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     }),
                     ensure_ascii=False,
                 )
-            return json.dumps(attach_terminals_snapshot(attach_terminal_host_fields({
+            st_after = get_terminal_session_state(user["id"], slot, terminal_scope_id)
+            payload = attach_terminals_snapshot(attach_terminal_host_fields({
                 "success": True,
                 "message": "已发送到 AI 控制台",
                 "slot": slot,
-                "status": _terminal_status_payload(get_terminal_session_state(user["id"], slot, terminal_scope_id)),
+                "status": _terminal_status_payload(st_after),
                 "ui_action": {"action": "switch_console", "slot": slot, "scope": "ai"},
-            }, slot)), ensure_ascii=False)
+            }, slot))
+            _attach_terminal_send_advisory(payload, st_after)
+            return json.dumps(payload, ensure_ascii=False)
 
         if name == "get_terminal_status":
             slot = arguments.get("slot")
@@ -7880,6 +7915,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     "scope": "local",
                     **_terminal_status_payload(st),
                 }
+                _attach_false_busy_hint(out, st)
             else:
                 slot, slot_err = resolve_ai_slot(slot, arguments.get("host_id"))
                 if slot_err:
@@ -7893,6 +7929,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     "slot": slot,
                     **_terminal_status_payload(st),
                 }, slot))
+                _attach_false_busy_hint(out, st)
             if include_last > 0 and st.get("can_read_buffer"):
                 if (scope or "").strip().lower() == "local":
                     buf, _ = local_host.get_local_terminal_buffer(user["id"], slot, terminal_scope_id)
@@ -10569,22 +10606,25 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     max_lines=max_lines,
                 )
             if (scope or "").strip().lower() == "local":
+                st = local_host.get_local_terminal_session_state(user["id"], slot, terminal_scope_id)
                 out = {
                     "success": True,
                     "buffer": buf,
                     "connected": connected,
                     "slot": slot,
                     "terminal_scope_id": terminal_scope_id,
-                    **_terminal_status_payload(local_host.get_local_terminal_session_state(user["id"], slot, terminal_scope_id)),
+                    **_terminal_status_payload(st),
                 }
             else:
+                st = get_terminal_session_state(user["id"], slot, terminal_scope_id)
                 out = attach_terminals_snapshot(attach_terminal_host_fields({
                     "success": True,
                     "buffer": buf,
                     "connected": connected,
                     "slot": slot,
-                    **_terminal_status_payload(get_terminal_session_state(user["id"], slot, terminal_scope_id)),
+                    **_terminal_status_payload(st),
                 }, slot))
+            _attach_false_busy_hint(out, st)
             if abbreviated:
                 out["abbreviated"] = True
                 out["total_lines"] = total_lines

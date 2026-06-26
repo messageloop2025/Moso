@@ -184,8 +184,8 @@ def maybe_false_busy_hint(state: dict[str, Any] | None) -> str | None:
     if not _line_looks_like_shell_prompt(last):
         return None
     return (
-        "status 为 busy 但 last_line 像 shell 提示符，可能是假 busy。"
-        "请先 get_terminal_buffer(tail_only=true) 对照末尾，或 send_to_terminal(text=\"\\n\") / <Enter> 探测后再发命令。"
+        "status 为 busy 但 last_line 像 shell 提示符，可能是启发式误判（仅供参考）。"
+        "可直接 send_to_terminal；也可 get_terminal_buffer(tail_only=true) 对照末尾。"
     )
 
 
@@ -240,6 +240,7 @@ def merge_connection_flags(
     idle = bool(merged.get("buffer_idle"))
 
     merged["can_send"] = True
+    # can_send_command：仅供 AI 参考，send_to_terminal 不因 busy 拦截
     merged["can_send_command"] = idle and not waiting_pw and not waiting_ix
     if state == "busy":
         merged["can_send_command"] = False

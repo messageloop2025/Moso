@@ -24,6 +24,7 @@ def expand_control_keys(text: str) -> str:
         # 匹配 <Ctrl+C>、<Ctrl+c>、<Ctrl+[> 等
         pattern = r"<" + re.escape(key) + r">"
         result = re.sub(pattern, char, result, flags=re.IGNORECASE)
+    result = re.sub(r"<Enter>", "\n", result, flags=re.IGNORECASE)
     return result
 
 
@@ -39,3 +40,11 @@ def is_control_only(text: str) -> bool:
         if o in (9, 10, 13):  # \t \n \r 视为“可提交”字符，不当作纯控制键
             return False
     return True
+
+
+def is_probe_input(text: str) -> bool:
+    """空回车/换行或 <Enter>：用于 shell 已在提示符时探测（假 busy）。"""
+    expanded = expand_control_keys(text or "")
+    if not expanded:
+        return False
+    return all(c in "\r\n" for c in expanded)

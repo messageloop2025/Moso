@@ -549,7 +549,7 @@ def format_terminals_mapping_for_prompt(
                 if idle is True:
                     idle_note = f" session_state={ss} buffer_idle=是(可发新命令)"
                 elif idle is False:
-                    idle_note = f" session_state={ss} buffer_idle=否(勿发新命令，可 get_terminal_buffer 轮询或 <Ctrl+C>)"
+                    idle_note = f" session_state={ss} buffer_idle=否(参考：可能仍有任务，但不拦截 send)"
                 else:
                     idle_note = f" session_state={ss}"
             elif t.get("pending"):
@@ -571,7 +571,7 @@ def format_terminals_mapping_for_prompt(
     lines.append(
         "规则：① 操作前先 list_terminals 或 get_terminal_status（同一 host 可有多个 AI slot，看 connected/buffer_idle/session_state）；"
         "② connected=false 或 session_state=disconnected 时**禁止** send_to_terminal（终端已断，一般不可恢复），仅可 get_terminal_buffer 读缓冲；"
-        "③ session_state=busy 时勿发新 shell 命令，用 get_terminal_buffer(next_poll_in_seconds=…) 等待回到 idle；"
+        "③ buffer_idle/session_state 仅为参考，不拦截 send_to_terminal；长任务可 get_terminal_buffer 轮询；"
         "④ 有空闲 slot（buffer_idle=是/session_state=idle）时优先复用，勿无故再开；"
         "⑤ 现有终端被长期任务占用、或要在并行 session 里执行新任务时，调用 create_console(host_id) 新开终端（**同一 host 允许多个 AI 控制台**）；"
         "⑥ 用户明确要求「再开一个终端/新开控制台」时，必须 create_console(host_id)，不得拒绝；"
