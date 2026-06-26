@@ -18,6 +18,15 @@ _PROMPT_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_ANSI_ESCAPE_RE = re.compile(
+    r"\x1b(?:"
+    r"\[[0-9;?]*[ -/]*[@-~]|"
+    r"\][^\x07]*(?:\x07|\x1b\\)|"
+    r"[P^_][^\x07\x1b]*|"
+    r"."
+    r")"
+)
+
 _PASSWORD_PROMPT_RE = re.compile(
     r"(?:"
     r"\[(?:sudo|insmod)\]\s*password\s+for\b|"
@@ -43,11 +52,34 @@ _INTERACTIVE_PROMPT_RE = re.compile(
 _PAGER_MORE_RE = re.compile(r"--More--", re.IGNORECASE)
 
 
+def _strip_terminal_ansi(text: str) -> str:
+    if not text:
+        return ""
+    return _ANSI_ESCAPE_RE.sub("", text)
+
+
+def _normalize_last_line(line: str) -> str:
+    line = _strip_terminal_ansi(line or "")
+    line = line.rstrip("\r\n")
+    line = re.sub(r"[\x08\x07\s]+$", "", line)
+    return line.strip()
+
+
+def _line_looks_like_shell_prompt(line: str, *, host_type: str | None = None) -> bool:
+    line = _normalize_last_line(line)
+    if not line:
+        return False
+    if _PROMPT_LINE_RE.search(line):
+        return True
+    ht = (host_type or "").lower()
+    return "windows" in ht and line.endswith(">")
+
+
 def _tail_lines(buffer: str, *, max_chars: int = 4000) -> tuple[str, str]:
     buf = buffer or ""
     tail = buf[-max_chars:] if len(buf) > max_chars else buf
     lines = tail.splitlines()
-    last_line = lines[-1].strip() if lines else ""
+    last_line = _normalize_last_line(lines[-1] if lines else "")
     return tail, last_line
 
 
@@ -109,31 +141,21 @@ def analyze_terminal_buffer(
         )
         return out
 
+    # 末行已是 shell 提示符 → 空闲（优先于 progress 启发式，避免 xxd/历史输出里的 % 或 |### 误判）
+    if _line_looks_like_shell_prompt(last_line, host_type=host_type):
+        out.update(
+            buffer_idle=True,
+            ready_for_input=True,
+            session_state="idle",
+            prompt_detected=True,
+        )
+        return out
+
     if _PROGRESS_RE.search(tail_window):
         out.update(
             maybe_progress=True,
             session_state="busy",
             busy_reason="progress_output",
-        )
-        return out
-
-    if last_line and _PROMPT_LINE_RE.search(last_line):
-        out.update(
-            buffer_idle=True,
-            ready_for_input=True,
-            session_state="idle",
-            prompt_detected=True,
-        )
-        return out
-
-    # Windows SSH：提示符常为 C:\\...>
-    ht = (host_type or "").lower()
-    if "windows" in ht and last_line.endswith(">"):
-        out.update(
-            buffer_idle=True,
-            ready_for_input=True,
-            session_state="idle",
-            prompt_detected=True,
         )
         return out
 
@@ -149,6 +171,22 @@ def analyze_terminal_buffer(
 
     out.update(session_state="busy", busy_reason="no_prompt_at_tail")
     return out
+
+
+def maybe_false_busy_hint(state: dict[str, Any] | None) -> str | None:
+    """buffer_idle=否但末行像提示符时，提示 AI 用 read buffer / 回车探测。"""
+    state = state or {}
+    if state.get("buffer_idle") or state.get("session_state") == "idle":
+        return None
+    if state.get("waiting_password") or state.get("waiting_interactive"):
+        return None
+    last = state.get("last_line") or ""
+    if not _line_looks_like_shell_prompt(last):
+        return None
+    return (
+        "status 为 busy 但 last_line 像 shell 提示符，可能是假 busy。"
+        "请先 get_terminal_buffer(tail_only=true) 对照末尾，或 send_to_terminal(text=\"\\n\") / <Enter> 探测后再发命令。"
+    )
 
 
 def merge_connection_flags(

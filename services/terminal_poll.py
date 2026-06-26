@@ -105,7 +105,7 @@ def infer_poll_from_buffer(buffer: str | None) -> int:
     if not buf.strip():
         return 0
     tail = buf[-4000:] if len(buf) > 4000 else buf
-    if _COMPLETE_TAIL_RE.search(tail) and not _PROGRESS_RE.search(tail[-800:]):
+    if _COMPLETE_TAIL_RE.search(tail):
         return 0
     if _PROGRESS_RE.search(tail):
         return _clamp_poll(_POLL_PROGRESS)
