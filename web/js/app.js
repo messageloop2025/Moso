@@ -2544,6 +2544,8 @@ function edgeopsRunAssistantStreamTextFlush(textEl) {
         pending.streamedText,
         pending.toolsEl
     );
+    var chatBox = textEl.closest ? textEl.closest('.chat-messages') : null;
+    if (chatBox) edgeopsScrollChatToBottomStepIfPinned(chatBox);
 }
 
 /** 流式正文刷新：可见时每帧合并一次 DOM；后台/切页立即刷满，避免返回后「逐字回放」。 */
@@ -4236,8 +4238,29 @@ function edgeopsBindChatStickToBottom(box) {
     box._edgeopsStickBound = true;
     box._edgeopsStickToBottom = true;
     box.addEventListener('scroll', function() {
+        if (box._edgeopsProgrammaticScroll) return;
         box._edgeopsStickToBottom = edgeopsChatIsNearBottom(box);
     }, { passive: true });
+    if (typeof MutationObserver !== 'undefined' && !box._edgeopsStickMutationObs) {
+        box._edgeopsStickMutationObs = new MutationObserver(function() {
+            edgeopsScrollChatToBottomStepIfPinned(box);
+        });
+        box._edgeopsStickMutationObs.observe(box, { childList: true, subtree: true, characterData: true });
+    }
+}
+
+/** 程序化滚底（带标志位，避免 scroll 监听误判为用户上滑）。 */
+function edgeopsScrollChatToBottomNow(box) {
+    if (!box) return;
+    box._edgeopsProgrammaticScroll = true;
+    try { box.scrollTop = box.scrollHeight; } catch (_e) {}
+    if (typeof queueMicrotask === 'function') {
+        queueMicrotask(function() {
+            if (box) box._edgeopsProgrammaticScroll = false;
+        });
+    } else {
+        setTimeout(function() { if (box) box._edgeopsProgrammaticScroll = false; }, 0);
+    }
 }
 
 /** 流式/增量更新：仅当当前为贴底状态时才滚到底（避免打断用户阅读上方历史）。 */
@@ -4247,7 +4270,14 @@ function edgeopsScrollChatToBottomStepIfPinned(box) {
     box._edgeopsScrollStepRaf = requestAnimationFrame(function() {
         box._edgeopsScrollStepRaf = null;
         if (!box || box._edgeopsStickToBottom === false) return;
-        try { box.scrollTop = box.scrollHeight; } catch (_e) {}
+        requestAnimationFrame(function() {
+            if (!box || box._edgeopsStickToBottom === false) return;
+            edgeopsScrollChatToBottomNow(box);
+            requestAnimationFrame(function() {
+                if (!box || box._edgeopsStickToBottom === false) return;
+                if (!edgeopsChatIsNearBottom(box)) edgeopsScrollChatToBottomNow(box);
+            });
+        });
     });
 }
 
@@ -4257,9 +4287,17 @@ function edgeopsScrollChatMessagesToBottom(box) {
     box._edgeopsStickToBottom = true;
     function _edgeopsFullScrollStep() {
         try {
-            box.scrollTop = box.scrollHeight;
+            edgeopsScrollChatToBottomNow(box);
             var last = box.querySelector('.chat-message:last-child');
-            if (last) last.scrollIntoView({ behavior: 'auto', block: 'end' });
+            if (last) {
+                box._edgeopsProgrammaticScroll = true;
+                last.scrollIntoView({ behavior: 'auto', block: 'end' });
+                if (typeof queueMicrotask === 'function') {
+                    queueMicrotask(function() { if (box) box._edgeopsProgrammaticScroll = false; });
+                } else {
+                    setTimeout(function() { if (box) box._edgeopsProgrammaticScroll = false; }, 0);
+                }
+            }
         } catch (_e) {}
     }
     _edgeopsFullScrollStep();
@@ -6510,6 +6548,8 @@ function edgeopsCotOnReasoningChunk(toolsEl, cot) {
         if (st.reasoningBodyEl) {
             st.reasoningBodyEl.textContent = edgeopsReasoningBufferToPlain(st.reasoningBuffer);
         }
+        var chatBox = toolsEl && toolsEl.closest ? toolsEl.closest('.chat-messages') : null;
+        if (chatBox) edgeopsScrollChatToBottomStepIfPinned(chatBox);
     });
 }
 
