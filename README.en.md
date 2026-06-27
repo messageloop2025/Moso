@@ -77,6 +77,12 @@ Ask the assistant to draw node relationships from full-link test results; export
 
 ![Modbus secure communication topology](images/微信图片_20260628004305_190_74.png)
 
+### SCADA / RTU / PLC connection dashboard (example)
+
+The assistant synthesizes session context into an interactive HTML dashboard: network graph, host nodes, edge devices (ESP32-S3), and connection details.
+
+![SCADA RTU PLC device connection topology](images/微信图片_20260628011218_202_74.png)
+
 ## Features
 
 ### Hosts, credentials, and terminal
