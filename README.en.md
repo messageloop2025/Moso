@@ -39,6 +39,44 @@ Meanwhile, the shape of AI changes almost every month—chat, tool calls, agents
 
 The frontier talks about long-running agents, but I believe **AI assists people; it does not replace them**. When I decided to open-source it, I chose the name **Moso** (毛竹)—bamboo grows across climates: ordinary, yet resilient. Rhizomes spread underground; where the shoots run, a grove forms—like servers woven into networks.
 
+## Screenshots
+
+### AI assistant and Web terminal
+
+Host AI ops: xterm.js terminal on the left, AI chat on the right. Streaming Markdown, Mermaid diagrams, tool calls, and artifact downloads.
+
+![AI assistant and Web terminal](images/微信图片_20260628004559_191_74.png)
+
+### Server tree
+
+Nested groups, tags, and host sharing; in-tree search and drag-and-drop to find targets quickly.
+
+![Server tree](images/微信图片_20260628005353_197_74.png)
+
+### Model config
+
+Multiple AI profiles per user (DashScope, OpenAI-compatible, Ollama, etc.); switch active model; import/export JSON.
+
+![Model config](images/微信图片_20260628005554_201_74.png)
+
+### Filesystem
+
+Private workspace `web/fs/<username>`: directory tree, upload/pack/extract, remote SFTP.
+
+![Filesystem](images/微信图片_20260628005513_200_74.png)
+
+### Maintenance history
+
+Filter by host IP and type; AI session titles can auto-write maintenance records for audit and traceability.
+
+![Maintenance history](images/微信图片_20260628005443_198_74.png)
+
+### AI-generated topology (example)
+
+Ask the assistant to draw node relationships from full-link test results; export as HTML or image bundle.
+
+![Modbus secure communication topology](images/微信图片_20260628004305_190_74.png)
+
 ## Features
 
 ### Hosts, credentials, and terminal

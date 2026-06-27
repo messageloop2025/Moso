@@ -6204,9 +6204,9 @@ function renderHostDetail(hostId) {
             + '<button type="button" class="btn btn-primary" id="hostSaveAliasesRemark">' + esc(t('hostDetail.save')) + '</button></div></div>'
             + '<div class="card" style="margin-top:1rem"><div class="card-header"><h3>' + esc(t('hostDetail.hostPromptTitle')) + '</h3><span class="text-muted" style="font-size:12px;margin-left:10px">' + esc(t('hostDetail.hostPromptIntro')) + ' <b>' + esc(t('hostDetail.hostPromptNoSecrets')) + '</b>' + esc(t('hostDetail.hostPromptNoSecrets2')) + '</span></div>'
             + '<div class="host-detail-prompt-form">'
-            + '<div class="session-prompt-toolbar" style="margin-bottom:6px"><button type="button" class="btn btn-sm active" id="hostPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm" id="hostPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button><span class="text-muted" style="font-size:12px;margin-left:8px" id="hostPromptUpdatedAt"></span></div>'
-            + '<div id="hostPromptEditWrap"><textarea class="form-control" id="hostPromptText" rows="10" placeholder="' + esc(t('hostDetail.promptPlaceholder')) + '"></textarea></div>'
-            + '<div id="hostPromptPreview" class="session-prompt-preview" style="display:none"></div>'
+            + '<div class="session-prompt-toolbar" style="margin-bottom:6px"><button type="button" class="btn btn-sm" id="hostPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm active" id="hostPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button><span class="text-muted" style="font-size:12px;margin-left:8px" id="hostPromptUpdatedAt"></span></div>'
+            + '<div id="hostPromptEditWrap" style="display:none"><textarea class="form-control" id="hostPromptText" rows="10" placeholder="' + esc(t('hostDetail.promptPlaceholder')) + '"></textarea></div>'
+            + '<div id="hostPromptPreview" class="session-prompt-preview"></div>'
             + '<div class="modal-actions" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn btn-sm btn-primary" id="hostPromptSave">' + esc(t('hostDetail.promptSave')) + '</button><button type="button" class="btn btn-sm" id="hostPromptSummarize" title="' + esc(t('hostAi.hostSummarizeReplaceTitle')) + '">' + esc(t('hostDetail.promptSummarize')) + '</button><button type="button" class="btn btn-sm" id="hostPromptAppend" title="' + esc(t('hostAi.hostSummarizeAppendTitle')) + '">' + esc(t('hostDetail.promptAppend')) + '</button><button type="button" class="btn btn-sm" id="hostPromptReload">' + esc(t('hostDetail.promptReload')) + '</button></div>'
             + '</div></div>'
             + '</div></div></div></div>';
@@ -6337,25 +6337,21 @@ function renderHostDetail(hostId) {
                 API.getHostPrompt(hostId).then(function(r) {
                     if (textEl) textEl.value = r.prompt || '';
                     if (updatedAtEl) updatedAtEl.textContent = r.updated_at ? (t('hostDetail.promptUpdated') + formatTime(r.updated_at)) : t('hostDetail.promptNotSet');
+                    edgeopsShowPromptPreviewTab(textEl, previewDiv, editWrap, editTab, previewTab);
                 }).catch(function(err) {
                     if (textEl) textEl.value = '';
                     if (updatedAtEl) updatedAtEl.textContent = '';
                     showToast(err.message || t('toast.loadHostPromptFailed'), 'error');
                 });
             }
-            if (editTab) editTab.onclick = function() {
-                if (editWrap) editWrap.style.display = '';
-                if (previewDiv) previewDiv.style.display = 'none';
-                editTab.classList.add('active');
-                if (previewTab) previewTab.classList.remove('active');
-            };
-            if (previewTab) previewTab.onclick = function() {
-                if (textEl && previewDiv) previewDiv.innerHTML = (typeof formatMarkdown !== 'undefined' ? formatMarkdown(textEl.value) : esc(textEl.value));
-                if (previewDiv) previewDiv.style.display = 'block';
-                if (editWrap) editWrap.style.display = 'none';
-                previewTab.classList.add('active');
-                if (editTab) editTab.classList.remove('active');
-            };
+            edgeopsBindPromptEditPreview({
+                textEl: textEl,
+                editWrap: editWrap,
+                previewDiv: previewDiv,
+                editTab: editTab,
+                previewTab: previewTab,
+                applyInitial: false,
+            });
             if (saveBtn) saveBtn.onclick = function() {
                 saveBtn.disabled = true;
                 API.updateHostPrompt(hostId, textEl.value || '').then(function() {
@@ -6373,6 +6369,7 @@ function renderHostDetail(hostId) {
                     if (r.skipped) { showToast(t('toast.noValidSummary')); return; }
                     if (textEl) textEl.value = r.prompt || '';
                     if (updatedAtEl) updatedAtEl.textContent = t('hostDetail.promptUpdated') + new Date().toLocaleString();
+                    edgeopsRefreshPromptPreviewIfVisible(textEl, previewDiv);
                     showToast(action === 'append' ? t('toast.summaryAppended') : t('toast.summaryReplaced'));
                 }).catch(function(err) {
                     showToast(err.message || t('toast.summarizeFailed'), 'error');
@@ -7873,6 +7870,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
     var hostTerminalScopeId = edgeopsMakeTerminalScopeId('host-ai', hostId);
     var sshTitle = t('hostAi.sshTitle', { name: String(hostName) });
     var hostModalHint = esc(t('hostAi.hostPromptModalHint')) + '<br>' + esc(t('hostAi.hostPromptModalNoSecret'));
+    var promptModalResizeTitle = esc(t('ui.diagram.resizePreview'));
     panel.innerHTML = '<div class="ai-page-layout ai-terminal-hidden" id="hostAiPageLayout">'
         + '<div class="ai-left-sidebar" id="hostAiLeftSidebar">'
         + '<div class="ai-left-sidebar-tabs"><div class="ai-left-sidebar-tab" id="hostAiSidebarTabSessions" data-tab="sessions" title="' + esc(t('hostAi.sessionTabTitle')) + '">' + esc(t('hostAi.sessionList')) + '</div></div>'
@@ -7891,8 +7889,8 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         + '<div class="layout-splitter-vertical" data-layout="host" data-split="terminal" title="' + esc(t('hostAi.splitterTitle')) + '"></div>'
         + '<div class="chat-container ai-chat-container ai-layout-chat" id="hostAiLayoutChat" style="flex:1;min-width:0">'
         + '<div class="host-ai-chat-bar"><label class="ai-profile-quick-switch"><select class="form-control form-control-sm ai-profile-quick-select" title="' + esc(t('modelConfig.quickSwitchLabel')) + '" id="hostAiProfileQuickSwitch"></select></label><button type="button" class="btn btn-sm" id="hostAiSessionPromptBtn" title="' + esc(t('hostAi.barSessionPromptTitle')) + '">' + esc(t('hostAi.barSessionPrompt')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptBtn" title="' + esc(t('hostAi.barHostPromptTitle')) + '">' + esc(t('hostAi.barHostPrompt')) + '</button><button type="button" class="btn btn-sm" id="hostAiClearChat">' + esc(t('hostAi.clearChat')) + '</button><button type="button" class="btn btn-sm" id="hostAiExportMd" title="' + esc(t('hostAi.exportMdTitle')) + '">' + esc(t('hostAi.exportMd')) + '</button><button type="button" class="btn btn-sm" id="hostAiToggleTerminalBtn">' + esc(t('hostAi.hideTerminal')) + '</button><button type="button" class="btn btn-sm btn-primary" id="hostAiNewSession">' + esc(t('hostAi.newSession')) + '</button></div>'
-        + '<div id="hostAiSessionPromptModal" class="modal-overlay" style="display:none"><div class="modal modal-session-prompt"><div class="modal-header"><span>' + esc(t('hostAi.sessionPromptTitle')) + '</span><button type="button" class="modal-close" id="hostAiSessionPromptClose">&times;</button></div><div class="modal-body"><div class="session-prompt-toolbar"><button type="button" class="btn btn-sm active" id="hostAiSessionPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm" id="hostAiSessionPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button></div><div id="hostAiSessionPromptEditWrap"><textarea id="hostAiSessionPromptText" class="form-control" rows="6" placeholder="' + esc(t('hostAi.sessionPromptPlaceholder')) + '"></textarea></div><div id="hostAiSessionPromptPreview" class="session-prompt-preview" style="display:none"></div><div class="modal-actions" style="margin-top:8px"><button type="button" class="btn btn-sm btn-primary" id="hostAiSessionPromptSave">' + esc(t('hostAi.sessionPromptSave')) + '</button><button type="button" class="btn btn-sm" id="hostAiSessionPromptSummarize" title="' + esc(t('hostAi.sessionSummarizeReplaceTitle')) + '">' + esc(t('hostDetail.promptSummarize')) + '</button><button type="button" class="btn btn-sm" id="hostAiSessionPromptAppend" title="' + esc(t('hostAi.sessionSummarizeAppendTitle')) + '">' + esc(t('hostDetail.promptAppend')) + '</button><button type="button" class="btn btn-sm" id="hostAiSessionPromptCancel">' + esc(t('hostAi.sessionPromptClose')) + '</button></div></div></div></div>'
-        + '<div id="hostAiHostPromptModal" class="modal-overlay" style="display:none"><div class="modal modal-session-prompt"><div class="modal-header"><span>' + esc(t('hostAi.hostPromptModalTitle')) + '</span><button type="button" class="modal-close" id="hostAiHostPromptClose">&times;</button></div><div class="modal-body"><div class="text-muted" style="margin-bottom:6px;font-size:12px">' + hostModalHint + '</div><div class="session-prompt-toolbar"><button type="button" class="btn btn-sm active" id="hostAiHostPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button></div><div id="hostAiHostPromptEditWrap"><textarea id="hostAiHostPromptText" class="form-control" rows="10" placeholder="' + esc(t('hostAi.hostPromptModalTextareaPh')) + '"></textarea></div><div id="hostAiHostPromptPreview" class="session-prompt-preview" style="display:none"></div><div class="modal-actions" style="margin-top:8px"><button type="button" class="btn btn-sm btn-primary" id="hostAiHostPromptSave">' + esc(t('hostDetail.promptSave')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptSummarize" title="' + esc(t('hostAi.hostSummarizeReplaceTitle')) + '">' + esc(t('hostDetail.promptSummarize')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptAppend" title="' + esc(t('hostAi.hostSummarizeAppendTitle')) + '">' + esc(t('hostDetail.promptAppend')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptCancel">' + esc(t('hostAi.sessionPromptClose')) + '</button></div></div></div></div>'
+        + '<div id="hostAiSessionPromptModal" class="modal-overlay" style="display:none"><div class="modal modal-session-prompt" title="' + promptModalResizeTitle + '"><div class="modal-header"><span>' + esc(t('hostAi.sessionPromptTitle')) + '</span><button type="button" class="modal-close" id="hostAiSessionPromptClose">&times;</button></div><div class="modal-body"><div class="session-prompt-toolbar"><button type="button" class="btn btn-sm" id="hostAiSessionPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm active" id="hostAiSessionPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button></div><div id="hostAiSessionPromptEditWrap" style="display:none"><textarea id="hostAiSessionPromptText" class="form-control" rows="6" placeholder="' + esc(t('hostAi.sessionPromptPlaceholder')) + '"></textarea></div><div id="hostAiSessionPromptPreview" class="session-prompt-preview"></div><div class="modal-actions" style="margin-top:8px"><button type="button" class="btn btn-sm btn-primary" id="hostAiSessionPromptSave">' + esc(t('hostAi.sessionPromptSave')) + '</button><button type="button" class="btn btn-sm" id="hostAiSessionPromptSummarize" title="' + esc(t('hostAi.sessionSummarizeReplaceTitle')) + '">' + esc(t('hostDetail.promptSummarize')) + '</button><button type="button" class="btn btn-sm" id="hostAiSessionPromptAppend" title="' + esc(t('hostAi.sessionSummarizeAppendTitle')) + '">' + esc(t('hostDetail.promptAppend')) + '</button><button type="button" class="btn btn-sm" id="hostAiSessionPromptCancel">' + esc(t('hostAi.sessionPromptClose')) + '</button></div></div></div></div>'
+        + '<div id="hostAiHostPromptModal" class="modal-overlay" style="display:none"><div class="modal modal-session-prompt" title="' + promptModalResizeTitle + '"><div class="modal-header"><span>' + esc(t('hostAi.hostPromptModalTitle')) + '</span><button type="button" class="modal-close" id="hostAiHostPromptClose">&times;</button></div><div class="modal-body"><div class="text-muted" style="margin-bottom:6px;font-size:12px">' + hostModalHint + '</div><div class="session-prompt-toolbar"><button type="button" class="btn btn-sm" id="hostAiHostPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm active" id="hostAiHostPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button></div><div id="hostAiHostPromptEditWrap" style="display:none"><textarea id="hostAiHostPromptText" class="form-control" rows="10" placeholder="' + esc(t('hostAi.hostPromptModalTextareaPh')) + '"></textarea></div><div id="hostAiHostPromptPreview" class="session-prompt-preview"></div><div class="modal-actions" style="margin-top:8px"><button type="button" class="btn btn-sm btn-primary" id="hostAiHostPromptSave">' + esc(t('hostDetail.promptSave')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptSummarize" title="' + esc(t('hostAi.hostSummarizeReplaceTitle')) + '">' + esc(t('hostDetail.promptSummarize')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptAppend" title="' + esc(t('hostAi.hostSummarizeAppendTitle')) + '">' + esc(t('hostDetail.promptAppend')) + '</button><button type="button" class="btn btn-sm" id="hostAiHostPromptCancel">' + esc(t('hostAi.sessionPromptClose')) + '</button></div></div></div></div>'
         + '<div class="chat-messages" id="hostAiMessages"></div>'
         + '<div class="chat-input-area"><label class="chat-low-interaction-toggle" title="' + esc(t('hostAi.lowInteractionTitle')) + '"><input type="checkbox" id="hostAiLowInteractionToggle"> ' + esc(t('hostAi.lowInteractionLabel')) + '</label><textarea class="form-control chat-input-multiline" id="hostAiInput" rows="1" enterkeyhint="send" spellcheck="false"></textarea><button class="btn btn-sm btn-primary" id="hostAiSend">' + esc(t('hostAi.send')) + '</button><button type="button" class="btn btn-sm" id="hostAiNewSessionBtn">' + esc(t('hostAi.newSession')) + '</button></div></div></div>';
     initAiLayoutSplitters('host');
@@ -8067,13 +8065,13 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
             modalEl.style.display = 'flex';
             var editWrap = document.getElementById('hostAiSessionPromptEditWrap');
             var previewDiv = document.getElementById('hostAiSessionPromptPreview');
-            if (editWrap) editWrap.style.display = '';
-            if (previewDiv) previewDiv.style.display = 'none';
             var editTab = document.getElementById('hostAiSessionPromptEditTab');
             var previewTab = document.getElementById('hostAiSessionPromptPreviewTab');
-            if (editTab) editTab.classList.add('active'); if (previewTab) previewTab.classList.remove('active');
             var textInput = document.getElementById('hostAiSessionPromptText');
-            API.getSessionPrompt(sessionId).then(function(r) { if (textInput) textInput.value = (r.prompt || ''); }).catch(function(err) { showToast(err.message, 'error'); });
+            API.getSessionPrompt(sessionId).then(function(r) {
+                if (textInput) textInput.value = (r.prompt || '');
+                edgeopsShowPromptPreviewTab(textInput, previewDiv, editWrap, editTab, previewTab);
+            }).catch(function(err) { showToast(err.message, 'error'); });
         }
         openSessionPromptModal = openModal;
         function closeModal() {
@@ -8091,8 +8089,14 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
             var previewTab = document.getElementById('hostAiSessionPromptPreviewTab');
             var editWrap = document.getElementById('hostAiSessionPromptEditWrap');
             var previewDiv = document.getElementById('hostAiSessionPromptPreview');
-            if (editTab) editTab.onclick = function() { if (editWrap) editWrap.style.display = ''; if (previewDiv) previewDiv.style.display = 'none'; editTab.classList.add('active'); if (previewTab) previewTab.classList.remove('active'); };
-            if (previewTab) previewTab.onclick = function() { if (textEl && previewDiv) previewDiv.innerHTML = (typeof formatMarkdown !== 'undefined' ? formatMarkdown(textEl.value) : esc(textEl.value)); if (previewDiv) previewDiv.style.display = 'block'; if (editWrap) editWrap.style.display = 'none'; previewTab.classList.add('active'); if (editTab) editTab.classList.remove('active'); };
+            edgeopsBindPromptEditPreview({
+                textEl: textEl,
+                editWrap: editWrap,
+                previewDiv: previewDiv,
+                editTab: editTab,
+                previewTab: previewTab,
+                applyInitial: false,
+            });
         })();
         document.getElementById('hostAiSessionPromptSave').onclick = function() {
             API.updateSessionPrompt(sessionId, textEl.value).then(function() { showToast(t('toast.saved')); closeModal(); loadSessions(); }).catch(function(err) { showToast(err.message, 'error'); });
@@ -8104,6 +8108,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
             API.summarizeSessionPrompt(sessionId, 'replace').then(function(r) {
                 if (r.skipped) { showToast(t('toast.sessionPromptNoChange')); return; }
                 if (textEl) textEl.value = r.prompt || '';
+                edgeopsRefreshPromptPreviewIfVisible(textEl, document.getElementById('hostAiSessionPromptPreview'));
                 showToast(modal.style.display !== 'none' ? t('toast.sessionReplacedByAi') : t('toast.sessionUpdatedShort'));
             }).catch(function(err) { showToast(err.message || t('toast.summarizeFailed'), 'error'); }).finally(function() { btn.disabled = false; });
         };
@@ -8114,6 +8119,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
             API.summarizeSessionPrompt(sessionId, 'append').then(function(r) {
                 if (r.skipped) { showToast(t('toast.sessionPromptNoAppend')); return; }
                 if (textEl) textEl.value = r.prompt || '';
+                edgeopsRefreshPromptPreviewIfVisible(textEl, document.getElementById('hostAiSessionPromptPreview'));
                 showToast(modal.style.display !== 'none' ? t('toast.sessionAppendedByAi') : t('toast.sessionUpdatedShort'));
             }).catch(function(err) { showToast(err.message || t('toast.summarizeFailed'), 'error'); }).finally(function() { btn.disabled = false; });
         };
@@ -8129,15 +8135,14 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
             var previewDiv = document.getElementById('hostAiHostPromptPreview');
             var editTab = document.getElementById('hostAiHostPromptEditTab');
             var previewTab = document.getElementById('hostAiHostPromptPreviewTab');
-            if (editWrap) editWrap.style.display = '';
-            if (previewDiv) previewDiv.style.display = 'none';
-            if (editTab) editTab.classList.add('active');
-            if (previewTab) previewTab.classList.remove('active');
-            if (textEl) textEl.value = '加载中…';
+            if (textEl) textEl.value = t('hostDetail.promptLoading');
+            edgeopsShowPromptPreviewTab(textEl, previewDiv, editWrap, editTab, previewTab);
             API.getHostPrompt(hostId).then(function(r) {
                 if (textEl) textEl.value = (r.prompt || '');
+                edgeopsRefreshPromptPreviewIfVisible(textEl, previewDiv);
             }).catch(function(err) {
                 if (textEl) textEl.value = '';
+                edgeopsRefreshPromptPreviewIfVisible(textEl, previewDiv);
                 showToast(err.message || t('toast.loadHostPromptFailed'), 'error');
             });
         }
@@ -8152,19 +8157,14 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         var previewTab = document.getElementById('hostAiHostPromptPreviewTab');
         var editWrap = document.getElementById('hostAiHostPromptEditWrap');
         var previewDiv = document.getElementById('hostAiHostPromptPreview');
-        if (editTab) editTab.onclick = function() {
-            if (editWrap) editWrap.style.display = '';
-            if (previewDiv) previewDiv.style.display = 'none';
-            editTab.classList.add('active');
-            if (previewTab) previewTab.classList.remove('active');
-        };
-        if (previewTab) previewTab.onclick = function() {
-            if (textEl && previewDiv) previewDiv.innerHTML = (typeof formatMarkdown !== 'undefined' ? formatMarkdown(textEl.value) : esc(textEl.value));
-            if (previewDiv) previewDiv.style.display = 'block';
-            if (editWrap) editWrap.style.display = 'none';
-            previewTab.classList.add('active');
-            if (editTab) editTab.classList.remove('active');
-        };
+        edgeopsBindPromptEditPreview({
+            textEl: textEl,
+            editWrap: editWrap,
+            previewDiv: previewDiv,
+            editTab: editTab,
+            previewTab: previewTab,
+            applyInitial: false,
+        });
         var saveBtn = document.getElementById('hostAiHostPromptSave');
         if (saveBtn) saveBtn.onclick = function() {
             if (!hostId) { showToast(t('toast.hostIdUnknown')); return; }
@@ -8184,6 +8184,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
             API.summarizeHostPrompt(hostId, action).then(function(r) {
                 if (r.skipped) { showToast(t('toast.hostPromptNoSummary')); return; }
                 if (textEl) textEl.value = r.prompt || '';
+                edgeopsRefreshPromptPreviewIfVisible(textEl, previewDiv);
                 showToast(action === 'append' ? t('toast.sessionAppendedByAi') : t('toast.sessionReplacedByAi'));
             }).catch(function(err) {
                 showToast(err.message || t('toast.summarizeFailed'), 'error');
@@ -9485,7 +9486,7 @@ function renderAIPage() {
         + '<div class="layout-splitter-vertical" data-layout="ai" data-split="terminal" title="' + esc(t('hostAi.splitterTitle')) + '"></div>'
         + '<div class="chat-container ai-chat-container ai-layout-chat" id="aiLayoutChat">'
         + '<div class="host-ai-chat-bar"><label class="ai-profile-quick-switch"><select class="form-control form-control-sm ai-profile-quick-select" title="' + esc(t('modelConfig.quickSwitchLabel')) + '" id="aiProfileQuickSwitch"></select></label><button type="button" class="btn btn-sm" id="aiSessionPromptBtn" title="' + esc(t('hostAi.barSessionPromptTitle')) + '">' + esc(t('ai.promptButtonShort')) + '</button><button type="button" class="btn btn-sm" id="aiClearChat">' + esc(t('hostAi.clearChat')) + '</button><button type="button" class="btn btn-sm" id="aiExportMd" title="' + esc(t('hostAi.exportMdTitle')) + '">' + esc(t('hostAi.exportMd')) + '</button><button type="button" class="btn btn-sm" id="aiToggleTerminalBtn">' + esc(t('hostAi.hideTerminal')) + '</button><button type="button" class="btn btn-sm mobile-ai-inline-only" id="aiMobileInlineTerminalBtn">' + esc(t('ai.collapseInlineTerminal')) + '</button><button type="button" class="btn btn-sm btn-primary" id="aiNewSessionTop">' + esc(t('hostAi.newSession')) + '</button></div>'
-        + '<div id="aiSessionPromptModal" class="modal-overlay" style="display:none"><div class="modal modal-session-prompt"><div class="modal-header"><span>' + esc(t('hostAi.sessionPromptTitle')) + '</span><button type="button" class="modal-close" id="aiSessionPromptClose">&times;</button></div><div class="modal-body"><div class="session-prompt-toolbar"><button type="button" class="btn btn-sm active" id="aiSessionPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm" id="aiSessionPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button></div><div id="aiSessionPromptEditWrap"><textarea id="aiSessionPromptText" class="form-control" rows="6" placeholder="' + esc(t('hostAi.sessionPromptPlaceholder')) + '"></textarea></div><div id="aiSessionPromptPreview" class="session-prompt-preview" style="display:none"></div><div class="modal-actions" style="margin-top:8px"><button type="button" class="btn btn-sm btn-primary" id="aiSessionPromptSave">' + esc(t('hostAi.sessionPromptSave')) + '</button><button type="button" class="btn btn-sm" id="aiSessionPromptSummarize" title="' + esc(t('hostAi.sessionSummarizeReplaceTitle')) + '">' + esc(t('hostDetail.promptSummarize')) + '</button><button type="button" class="btn btn-sm" id="aiSessionPromptAppend" title="' + esc(t('hostAi.sessionSummarizeAppendTitle')) + '">' + esc(t('hostDetail.promptAppend')) + '</button><button type="button" class="btn btn-sm" id="aiSessionPromptCancel">' + esc(t('hostAi.sessionPromptClose')) + '</button></div></div></div></div>'
+        + '<div id="aiSessionPromptModal" class="modal-overlay" style="display:none"><div class="modal modal-session-prompt" title="' + esc(t('ui.diagram.resizePreview')) + '"><div class="modal-header"><span>' + esc(t('hostAi.sessionPromptTitle')) + '</span><button type="button" class="modal-close" id="aiSessionPromptClose">&times;</button></div><div class="modal-body"><div class="session-prompt-toolbar"><button type="button" class="btn btn-sm" id="aiSessionPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm active" id="aiSessionPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button></div><div id="aiSessionPromptEditWrap" style="display:none"><textarea id="aiSessionPromptText" class="form-control" rows="6" placeholder="' + esc(t('hostAi.sessionPromptPlaceholder')) + '"></textarea></div><div id="aiSessionPromptPreview" class="session-prompt-preview"></div><div class="modal-actions" style="margin-top:8px"><button type="button" class="btn btn-sm btn-primary" id="aiSessionPromptSave">' + esc(t('hostAi.sessionPromptSave')) + '</button><button type="button" class="btn btn-sm" id="aiSessionPromptSummarize" title="' + esc(t('hostAi.sessionSummarizeReplaceTitle')) + '">' + esc(t('hostDetail.promptSummarize')) + '</button><button type="button" class="btn btn-sm" id="aiSessionPromptAppend" title="' + esc(t('hostAi.sessionSummarizeAppendTitle')) + '">' + esc(t('hostDetail.promptAppend')) + '</button><button type="button" class="btn btn-sm" id="aiSessionPromptCancel">' + esc(t('hostAi.sessionPromptClose')) + '</button></div></div></div></div>'
         + '<div class="chat-messages" id="aiMessages"></div>'
         + '<div class="chat-input-area"><label class="chat-low-interaction-toggle" title="' + esc(t('hostAi.lowInteractionTitle')) + '"><input type="checkbox" id="aiLowInteractionToggle"> ' + esc(t('hostAi.lowInteractionLabel')) + '</label><textarea class="form-control chat-input-multiline" id="aiInput" rows="1" enterkeyhint="send" spellcheck="false"></textarea><button class="btn btn-sm btn-primary" id="aiSend">' + esc(t('hostAi.send')) + '</button><button type="button" class="btn btn-sm" id="aiNewSessionBtn">' + esc(t('hostAi.newSession')) + '</button></div></div>'
         + '</div>';
@@ -10652,12 +10653,12 @@ function renderAIPage() {
             modal.style.display = 'flex';
             var editWrap = document.getElementById('aiSessionPromptEditWrap');
             var previewDiv = document.getElementById('aiSessionPromptPreview');
-            if (editWrap) editWrap.style.display = '';
-            if (previewDiv) previewDiv.style.display = 'none';
             var editTab = document.getElementById('aiSessionPromptEditTab');
             var previewTab = document.getElementById('aiSessionPromptPreviewTab');
-            if (editTab) editTab.classList.add('active'); if (previewTab) previewTab.classList.remove('active');
-            API.getSessionPrompt(sessionId).then(function(r) { if (textEl) textEl.value = (r.prompt || ''); }).catch(function(err) { showToast(err.message, 'error'); });
+            API.getSessionPrompt(sessionId).then(function(r) {
+                if (textEl) textEl.value = (r.prompt || '');
+                edgeopsShowPromptPreviewTab(textEl, previewDiv, editWrap, editTab, previewTab);
+            }).catch(function(err) { showToast(err.message, 'error'); });
         }
         function closeModal() { if (modal) modal.style.display = 'none'; }
         document.getElementById('aiSessionPromptBtn').onclick = openModal;
@@ -10668,8 +10669,14 @@ function renderAIPage() {
             var previewTab = document.getElementById('aiSessionPromptPreviewTab');
             var editWrap = document.getElementById('aiSessionPromptEditWrap');
             var previewDiv = document.getElementById('aiSessionPromptPreview');
-            if (editTab) editTab.onclick = function() { if (editWrap) editWrap.style.display = ''; if (previewDiv) previewDiv.style.display = 'none'; editTab.classList.add('active'); if (previewTab) previewTab.classList.remove('active'); };
-            if (previewTab) previewTab.onclick = function() { if (textEl && previewDiv) previewDiv.innerHTML = (typeof formatMarkdown !== 'undefined' ? formatMarkdown(textEl.value) : esc(textEl.value)); if (previewDiv) previewDiv.style.display = 'block'; if (editWrap) editWrap.style.display = 'none'; previewTab.classList.add('active'); if (editTab) editTab.classList.remove('active'); };
+            edgeopsBindPromptEditPreview({
+                textEl: textEl,
+                editWrap: editWrap,
+                previewDiv: previewDiv,
+                editTab: editTab,
+                previewTab: previewTab,
+                applyInitial: false,
+            });
         })();
         document.getElementById('aiSessionPromptSave').onclick = function() {
             API.updateSessionPrompt(sessionId, textEl.value).then(function() { showToast(t('toast.saved')); closeModal(); loadSessions(); }).catch(function(err) { showToast(err.message, 'error'); });
@@ -10681,6 +10688,7 @@ function renderAIPage() {
             API.summarizeSessionPrompt(sessionId, 'replace').then(function(r) {
                 if (r.skipped) { showToast(t('toast.sessionPromptNoChange')); return; }
                 if (textEl) textEl.value = r.prompt || '';
+                edgeopsRefreshPromptPreviewIfVisible(textEl, document.getElementById('aiSessionPromptPreview'));
                 showToast(modal.style.display !== 'none' ? t('toast.sessionReplacedByAi') : t('toast.sessionUpdatedShort'));
             }).catch(function(err) { showToast(err.message || t('toast.summarizeFailed'), 'error'); }).finally(function() { btn.disabled = false; });
         };
@@ -10691,6 +10699,7 @@ function renderAIPage() {
             API.summarizeSessionPrompt(sessionId, 'append').then(function(r) {
                 if (r.skipped) { showToast(t('toast.sessionPromptNoAppend')); return; }
                 if (textEl) textEl.value = r.prompt || '';
+                edgeopsRefreshPromptPreviewIfVisible(textEl, document.getElementById('aiSessionPromptPreview'));
                 showToast(modal.style.display !== 'none' ? t('toast.sessionAppendedByAi') : t('toast.sessionUpdatedShort'));
             }).catch(function(err) { showToast(err.message || t('toast.summarizeFailed'), 'error');         }).finally(function() { btn.disabled = false; });
         };
@@ -14356,7 +14365,7 @@ function renderLocalPage() {
         + '<div class="layout-splitter-vertical" data-layout="local" data-split="terminal" title="' + esc(t('ai.local.splitterTitle')) + '"></div>'
         + '<div class="chat-container ai-chat-container ai-layout-chat" id="localLayoutChat">'
         + '<div class="host-ai-chat-bar"><label class="ai-profile-quick-switch"><select class="form-control form-control-sm ai-profile-quick-select" title="' + esc(t('modelConfig.quickSwitchLabel')) + '" id="localAiProfileQuickSwitch"></select></label><button type="button" class="btn btn-sm" id="localAiSessionPromptBtn" title="' + esc(t('hostAi.barSessionPromptTitle')) + '">' + esc(t('ai.promptButtonShort')) + '</button><button type="button" class="btn btn-sm" id="localAiClearChat">' + esc(t('hostAi.clearChat')) + '</button><button type="button" class="btn btn-sm" id="localAiExportMd">' + esc(t('hostAi.exportMd')) + '</button><button type="button" class="btn btn-sm" id="localAiToggleTerminalBtn">' + esc(t('hostAi.hideTerminal')) + '</button><button type="button" class="btn btn-sm btn-primary" id="localAiNewSession">' + esc(t('hostAi.newSession')) + '</button></div>'
-        + '<div id="localAiSessionPromptModal" class="modal-overlay" style="display:none"><div class="modal modal-session-prompt"><div class="modal-header"><span>' + esc(t('hostAi.sessionPromptTitle')) + '</span><button type="button" class="modal-close" id="localAiSessionPromptClose">&times;</button></div><div class="modal-body"><div class="session-prompt-toolbar"><button type="button" class="btn btn-sm active" id="localAiSessionPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm" id="localAiSessionPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button></div><div id="localAiSessionPromptEditWrap"><textarea id="localAiSessionPromptText" class="form-control" rows="6" placeholder="' + esc(t('hostAi.sessionPromptPlaceholder')) + '"></textarea></div><div id="localAiSessionPromptPreview" class="session-prompt-preview" style="display:none"></div><div class="modal-actions" style="margin-top:8px"><button type="button" class="btn btn-sm btn-primary" id="localAiSessionPromptSave">' + esc(t('hostAi.sessionPromptSave')) + '</button><button type="button" class="btn btn-sm" id="localAiSessionPromptCancel">' + esc(t('hostAi.sessionPromptClose')) + '</button></div></div></div></div>'
+        + '<div id="localAiSessionPromptModal" class="modal-overlay" style="display:none"><div class="modal modal-session-prompt" title="' + esc(t('ui.diagram.resizePreview')) + '"><div class="modal-header"><span>' + esc(t('hostAi.sessionPromptTitle')) + '</span><button type="button" class="modal-close" id="localAiSessionPromptClose">&times;</button></div><div class="modal-body"><div class="session-prompt-toolbar"><button type="button" class="btn btn-sm" id="localAiSessionPromptEditTab">' + esc(t('hostDetail.edit')) + '</button><button type="button" class="btn btn-sm active" id="localAiSessionPromptPreviewTab">' + esc(t('hostDetail.preview')) + '</button></div><div id="localAiSessionPromptEditWrap" style="display:none"><textarea id="localAiSessionPromptText" class="form-control" rows="6" placeholder="' + esc(t('hostAi.sessionPromptPlaceholder')) + '"></textarea></div><div id="localAiSessionPromptPreview" class="session-prompt-preview"></div><div class="modal-actions" style="margin-top:8px"><button type="button" class="btn btn-sm btn-primary" id="localAiSessionPromptSave">' + esc(t('hostAi.sessionPromptSave')) + '</button><button type="button" class="btn btn-sm" id="localAiSessionPromptCancel">' + esc(t('hostAi.sessionPromptClose')) + '</button></div></div></div></div>'
         + '<div class="chat-messages" id="localMessages"></div>'
         + '<div class="chat-input-area"><label class="chat-low-interaction-toggle" title="' + esc(t('hostAi.lowInteractionTitle')) + '"><input type="checkbox" id="localLowInteractionToggle"> ' + esc(t('hostAi.lowInteractionLabel')) + '</label><textarea class="form-control chat-input-multiline" id="localInput" rows="1" enterkeyhint="send" spellcheck="false"></textarea><button class="btn btn-sm btn-primary" id="localSend">' + esc(t('hostAi.send')) + '</button><button type="button" class="btn btn-sm" id="localNewSessionBtn">' + esc(t('hostAi.newSession')) + '</button></div>'
         + '</div></div>';
@@ -14642,12 +14651,14 @@ function renderLocalPage() {
             if (modal) modal.style.display = 'flex';
             var editWrap = document.getElementById('localAiSessionPromptEditWrap');
             var previewDiv = document.getElementById('localAiSessionPromptPreview');
-            if (editWrap) editWrap.style.display = '';
-            if (previewDiv) previewDiv.style.display = 'none';
             var editTab = document.getElementById('localAiSessionPromptEditTab');
             var previewTab = document.getElementById('localAiSessionPromptPreviewTab');
-            if (editTab) editTab.classList.add('active'); if (previewTab) previewTab.classList.remove('active');
-            if (textEl) API.getSessionPrompt(currentSessionId).then(function(r) { textEl.value = r.prompt || ''; }).catch(function(err) { showToast(err.message, 'error'); });
+            if (textEl) {
+                API.getSessionPrompt(currentSessionId).then(function(r) {
+                    textEl.value = r.prompt || '';
+                    edgeopsShowPromptPreviewTab(textEl, previewDiv, editWrap, editTab, previewTab);
+                }).catch(function(err) { showToast(err.message, 'error'); });
+            }
         }
         function closeModal() { if (modal) modal.style.display = 'none'; }
         document.getElementById('localAiSessionPromptBtn').onclick = openModal;
@@ -14658,8 +14669,14 @@ function renderLocalPage() {
             var previewTab = document.getElementById('localAiSessionPromptPreviewTab');
             var editWrap = document.getElementById('localAiSessionPromptEditWrap');
             var previewDiv = document.getElementById('localAiSessionPromptPreview');
-            if (editTab) editTab.onclick = function() { if (editWrap) editWrap.style.display = ''; if (previewDiv) previewDiv.style.display = 'none'; editTab.classList.add('active'); if (previewTab) previewTab.classList.remove('active'); };
-            if (previewTab) previewTab.onclick = function() { if (textEl && previewDiv) previewDiv.innerHTML = (typeof formatMarkdown !== 'undefined' ? formatMarkdown(textEl.value) : esc(textEl.value)); if (previewDiv) previewDiv.style.display = 'block'; if (editWrap) editWrap.style.display = 'none'; previewTab.classList.add('active'); if (editTab) editTab.classList.remove('active'); };
+            edgeopsBindPromptEditPreview({
+                textEl: textEl,
+                editWrap: editWrap,
+                previewDiv: previewDiv,
+                editTab: editTab,
+                previewTab: previewTab,
+                applyInitial: false,
+            });
         })();
         document.getElementById('localAiSessionPromptSave').onclick = function() {
             if (!currentSessionId) return;

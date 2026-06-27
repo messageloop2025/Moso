@@ -1830,6 +1830,51 @@ function edgeopsFormatMarkdownStreaming(text, mountEl) {
     tableHost._edgeopsStreamKey = tableKey;
 }
 
+/** 提示词 Markdown 预览 HTML */
+function edgeopsPromptMarkdownPreview(text) {
+    var s = text == null ? '' : String(text);
+    return (typeof formatMarkdown !== 'undefined' ? formatMarkdown(s) : (typeof esc !== 'undefined' ? esc(s) : s));
+}
+
+function edgeopsShowPromptEditTab(editWrap, previewDiv, editTab, previewTab) {
+    if (editWrap) editWrap.style.display = 'flex';
+    if (previewDiv) previewDiv.style.display = 'none';
+    if (editTab) editTab.classList.add('active');
+    if (previewTab) previewTab.classList.remove('active');
+}
+
+function edgeopsShowPromptPreviewTab(textEl, previewDiv, editWrap, editTab, previewTab) {
+    if (previewDiv) {
+        previewDiv.innerHTML = edgeopsPromptMarkdownPreview(textEl ? textEl.value : '');
+        previewDiv.style.display = 'block';
+    }
+    if (editWrap) editWrap.style.display = 'none';
+    if (previewTab) previewTab.classList.add('active');
+    if (editTab) editTab.classList.remove('active');
+}
+
+function edgeopsRefreshPromptPreviewIfVisible(textEl, previewDiv) {
+    if (!previewDiv || previewDiv.style.display === 'none') return;
+    previewDiv.innerHTML = edgeopsPromptMarkdownPreview(textEl ? textEl.value : '');
+}
+
+/** 绑定提示词弹窗/卡片上的「编辑 / 预览」Tab；默认 preview */
+function edgeopsBindPromptEditPreview(opts) {
+    if (!opts || !opts.editTab || !opts.previewTab) return;
+    opts.editTab.onclick = function() {
+        edgeopsShowPromptEditTab(opts.editWrap, opts.previewDiv, opts.editTab, opts.previewTab);
+    };
+    opts.previewTab.onclick = function() {
+        edgeopsShowPromptPreviewTab(opts.textEl, opts.previewDiv, opts.editWrap, opts.editTab, opts.previewTab);
+    };
+    if (opts.applyInitial === false) return;
+    if ((opts.defaultMode || 'preview') === 'edit') {
+        edgeopsShowPromptEditTab(opts.editWrap, opts.previewDiv, opts.editTab, opts.previewTab);
+    } else {
+        edgeopsShowPromptPreviewTab(opts.textEl, opts.previewDiv, opts.editWrap, opts.editTab, opts.previewTab);
+    }
+}
+
 if (typeof window !== 'undefined') {
     window.formatMarkdown = formatMarkdown;
     window.edgeopsSanitizeLeakedToolMarkup = edgeopsSanitizeLeakedToolMarkup;
@@ -1843,4 +1888,9 @@ if (typeof window !== 'undefined') {
     window.formatMarkdownInline = formatMarkdownInline;
     window.edgeopsSanitizeSafeInlineHtml = edgeopsSanitizeSafeInlineHtml;
     window.edgeopsSanitizeInlineStyle = edgeopsSanitizeInlineStyle;
+    window.edgeopsPromptMarkdownPreview = edgeopsPromptMarkdownPreview;
+    window.edgeopsShowPromptEditTab = edgeopsShowPromptEditTab;
+    window.edgeopsShowPromptPreviewTab = edgeopsShowPromptPreviewTab;
+    window.edgeopsRefreshPromptPreviewIfVisible = edgeopsRefreshPromptPreviewIfVisible;
+    window.edgeopsBindPromptEditPreview = edgeopsBindPromptEditPreview;
 }
