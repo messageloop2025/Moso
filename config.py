@@ -9,7 +9,7 @@ PRODUCT_NAME_ZH = "毛竹"
 PRODUCT_NAME_EN = "Moso"
 PRODUCT_DISPLAY = f"{PRODUCT_NAME_ZH}（{PRODUCT_NAME_EN}）"  # AI 提示词中的产品指称
 
-VERSION = os.getenv("EDGEOPS_VERSION", "1.6.1")
+VERSION = os.getenv("EDGEOPS_VERSION", "1.6.3")
 
 # 数据库 / Database
 DATABASE_PATH = os.getenv("EDGEOPS_DB", str(BASE_DIR / "edgeops.db"))
@@ -179,6 +179,14 @@ MARKITDOWN_MAX_OUTPUT_CHARS = int(os.getenv("EDGEOPS_MARKITDOWN_MAX_OUTPUT_CHARS
 # AI 工具大结果溢出：超过字符阈值则写入 chats/<date>/spill/<uuid>.data，上下文仅保留哨兵与压缩预览。
 CHAT_TOOL_SPILL_MIN_CHARS = int(os.getenv("EDGEOPS_CHAT_TOOL_SPILL_MIN_CHARS", "2500"))
 CHAT_TOOL_SPILL_READ_MAX_CHARS = int(os.getenv("EDGEOPS_CHAT_TOOL_SPILL_READ_MAX_CHARS", str(500_000)))
+# read_chat_data 单次默认读取量（mode=head/tail/range）；硬上限仍为 CHAT_TOOL_SPILL_READ_MAX_CHARS
+CHAT_TOOL_SPILL_READ_DEFAULT_HEAD_CHARS = int(os.getenv("EDGEOPS_CHAT_TOOL_SPILL_READ_DEFAULT_HEAD_CHARS", "32000"))
+CHAT_TOOL_SPILL_READ_DEFAULT_TAIL_CHARS = int(os.getenv("EDGEOPS_CHAT_TOOL_SPILL_READ_DEFAULT_TAIL_CHARS", "32000"))
+CHAT_TOOL_SPILL_READ_DEFAULT_RANGE_CHARS = int(os.getenv("EDGEOPS_CHAT_TOOL_SPILL_READ_DEFAULT_RANGE_CHARS", "64000"))
+# read_chat_data 写入 Agent 上下文时的最大字符数（豁免 JSON 字段压缩，避免 content 被压到 ~1400）
+CHAT_TOOL_SPILL_READ_MESSAGE_MAX_CHARS = int(
+    os.getenv("EDGEOPS_CHAT_TOOL_SPILL_READ_MESSAGE_MAX_CHARS", "128000")
+)
 # 历史消息按字符预算裁剪时，单条配额低于此值则 tool 消息中的溢出块可收缩为仅哨兵行（引导 read_chat_data）。
 CHAT_HISTORY_TOOL_SPILL_SHRINK_THRESHOLD = int(os.getenv("EDGEOPS_CHAT_HISTORY_TOOL_SPILL_SHRINK_THRESHOLD", "900"))
 # 为 true 时在 spill 消息中附带压缩预览（易误导模型自行补全）；默认 false，仅保留哨兵与 read_chat_data 指引。

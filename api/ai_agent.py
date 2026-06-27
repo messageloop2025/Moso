@@ -2727,6 +2727,14 @@ def _compact_tool_result_for_messages(
     # 保证 AI 加载图片时"所见即所得"。
     if (tool_name or "").strip() == "read_chat_attachment":
         return text
+    # read_chat_data 已是分段读取；勿对 JSON.content 做 ~1400 字段级压缩，否则读 3k+ spill 仍只见开头
+    if (tool_name or "").strip() == "read_chat_data":
+        from services.chat_tool_spill import CHAT_TOOL_SPILL_READ_MESSAGE_MAX_CHARS
+
+        cap = CHAT_TOOL_SPILL_READ_MESSAGE_MAX_CHARS
+        if len(text) <= cap:
+            return text
+        return abbreviate_text_head_focus(text, cap)
     is_integration = (preserve_profile or "").strip().lower() == "integration"
     max_depth = 7 if is_integration else 5
     list_limit = 320 if is_integration else 180

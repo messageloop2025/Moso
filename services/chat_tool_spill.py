@@ -27,6 +27,10 @@ _SPILL_SENTINEL_RE = re.compile(
 
 CHAT_TOOL_SPILL_MIN_CHARS = int(getattr(config, "CHAT_TOOL_SPILL_MIN_CHARS", 2500))
 CHAT_TOOL_SPILL_READ_MAX_CHARS = int(getattr(config, "CHAT_TOOL_SPILL_READ_MAX_CHARS", 500_000))
+CHAT_TOOL_SPILL_READ_DEFAULT_HEAD_CHARS = int(getattr(config, "CHAT_TOOL_SPILL_READ_DEFAULT_HEAD_CHARS", 32_000))
+CHAT_TOOL_SPILL_READ_DEFAULT_TAIL_CHARS = int(getattr(config, "CHAT_TOOL_SPILL_READ_DEFAULT_TAIL_CHARS", 32_000))
+CHAT_TOOL_SPILL_READ_DEFAULT_RANGE_CHARS = int(getattr(config, "CHAT_TOOL_SPILL_READ_DEFAULT_RANGE_CHARS", 64_000))
+CHAT_TOOL_SPILL_READ_MESSAGE_MAX_CHARS = int(getattr(config, "CHAT_TOOL_SPILL_READ_MESSAGE_MAX_CHARS", 128_000))
 CHAT_HISTORY_TOOL_SPILL_SHRINK_THRESHOLD = int(getattr(config, "CHAT_HISTORY_TOOL_SPILL_SHRINK_THRESHOLD", 900))
 CHAT_TOOL_SPILL_INCLUDE_PREVIEW = bool(
     getattr(config, "CHAT_TOOL_SPILL_INCLUDE_PREVIEW", False)
@@ -119,7 +123,7 @@ def format_tool_message_with_spill(spill: dict[str, Any], compact_inner: str) ->
             "在输出枚举/清单/统计类答复前，**必须先**调用 read_chat_data 分段读取；"
             "JSON/设备/资产类优先 mode=head 或 range（必要时多次 range 直至覆盖全部字符）。\n"
             f"示例：read_chat_data(spill_id=\"{spill_id}\", date_subdir=\"{subdir}\", "
-            f"mode=\"head\", head_chars=16000) — 文件共 {chars} 字符。"
+            f"mode=\"head\", head_chars={CHAT_TOOL_SPILL_READ_DEFAULT_HEAD_CHARS}) — 文件共 {chars} 字符。"
         )
     return (
         f"{line}\n"
@@ -130,6 +134,10 @@ def format_tool_message_with_spill(spill: dict[str, Any], compact_inner: str) ->
     )
 
 
+# 这些工具本身用于读取已落盘/附件内容，其返回不应再次 spill（否则递归嵌套、文件越读越大）
+_NO_RESPILL_TOOL_NAMES = frozenset({"read_chat_attachment", "read_chat_data"})
+
+
 async def spill_and_wrap_tool_message(
     user: dict,
     session_id: int | None,
@@ -138,8 +146,8 @@ async def spill_and_wrap_tool_message(
     full_result: str,
     compact_for_llm: str,
 ) -> str:
-    """必要时落盘并包装 tool 消息正文；read_chat_attachment 豁免落盘（调用方保证不传或在外层跳过）。"""
-    if (tool_name or "").strip() == "read_chat_attachment":
+    """必要时落盘并包装 tool 消息正文；read_chat_attachment / read_chat_data 豁免落盘。"""
+    if (tool_name or "").strip() in _NO_RESPILL_TOOL_NAMES:
         return compact_for_llm
     spill = await asyncio.to_thread(
         write_chat_tool_spill_sync, user, session_id, tool_name, tool_call_id, full_result
@@ -189,10 +197,10 @@ def read_chat_data_slice_sync(
     date_subdir: str,
     mode: str,
     *,
-    head_chars: int = 8000,
-    tail_chars: int = 8000,
+    head_chars: int | None = None,
+    tail_chars: int | None = None,
     range_start: int = 0,
-    max_chars: int = 16_000,
+    max_chars: int | None = None,
 ) -> dict[str, Any]:
     """从落盘文件读取片段（字符偏移，UTF-8 解码后）。"""
     data_path, meta_path = _resolve_spill_paths(user, date_subdir, spill_id)
@@ -205,10 +213,19 @@ def read_chat_data_slice_sync(
         return {"success": False, "error": f"读取失败: {e}"}
     n = len(raw)
     mode = (mode or "head_tail").strip().lower()
-    head_chars = max(0, min(int(head_chars or 0), CHAT_TOOL_SPILL_READ_MAX_CHARS))
-    tail_chars = max(0, min(int(tail_chars or 0), CHAT_TOOL_SPILL_READ_MAX_CHARS))
+    head_chars = max(
+        0,
+        min(int(head_chars if head_chars is not None else CHAT_TOOL_SPILL_READ_DEFAULT_HEAD_CHARS), CHAT_TOOL_SPILL_READ_MAX_CHARS),
+    )
+    tail_chars = max(
+        0,
+        min(int(tail_chars if tail_chars is not None else CHAT_TOOL_SPILL_READ_DEFAULT_TAIL_CHARS), CHAT_TOOL_SPILL_READ_MAX_CHARS),
+    )
     range_start = max(0, int(range_start or 0))
-    max_chars = max(256, min(int(max_chars or 0), CHAT_TOOL_SPILL_READ_MAX_CHARS))
+    max_chars = max(
+        256,
+        min(int(max_chars if max_chars is not None else CHAT_TOOL_SPILL_READ_DEFAULT_RANGE_CHARS), CHAT_TOOL_SPILL_READ_MAX_CHARS),
+    )
 
     if mode == "head":
         chunk = raw[:head_chars]

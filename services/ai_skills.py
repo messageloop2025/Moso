@@ -2422,10 +2422,10 @@ TOOLS = [
                         "type": "string",
                         "description": "head_tail | head | tail | range，默认 head_tail",
                     },
-                    "head_chars": {"type": "integer", "description": "head / head_tail 时头部最大字符数，默认 8000"},
-                    "tail_chars": {"type": "integer", "description": "tail / head_tail 时尾部最大字符数，默认 8000"},
+                    "head_chars": {"type": "integer", "description": "head / head_tail 时头部最大字符数，默认 32000（可 env 配置）"},
+                    "tail_chars": {"type": "integer", "description": "tail / head_tail 时尾部最大字符数，默认 32000"},
                     "range_start": {"type": "integer", "description": "range 模式起始字符偏移，默认 0"},
-                    "max_chars": {"type": "integer", "description": "range 模式最大返回字符数，默认 16000"},
+                    "max_chars": {"type": "integer", "description": "range 模式最大返回字符数，默认 64000"},
                 },
                 "required": ["spill_id", "date_subdir"],
             },
@@ -13753,22 +13753,28 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     {"success": False, "error": "缺少 spill_id 或 date_subdir（与工具消息哨兵行一致）"},
                     ensure_ascii=False,
                 )
+            from services.chat_tool_spill import (
+                CHAT_TOOL_SPILL_READ_DEFAULT_HEAD_CHARS,
+                CHAT_TOOL_SPILL_READ_DEFAULT_RANGE_CHARS,
+                CHAT_TOOL_SPILL_READ_DEFAULT_TAIL_CHARS,
+            )
+
             try:
-                head_chars = int(arguments.get("head_chars") or 8000)
+                head_chars = int(arguments.get("head_chars") or CHAT_TOOL_SPILL_READ_DEFAULT_HEAD_CHARS)
             except (TypeError, ValueError):
-                head_chars = 8000
+                head_chars = CHAT_TOOL_SPILL_READ_DEFAULT_HEAD_CHARS
             try:
-                tail_chars = int(arguments.get("tail_chars") or 8000)
+                tail_chars = int(arguments.get("tail_chars") or CHAT_TOOL_SPILL_READ_DEFAULT_TAIL_CHARS)
             except (TypeError, ValueError):
-                tail_chars = 8000
+                tail_chars = CHAT_TOOL_SPILL_READ_DEFAULT_TAIL_CHARS
             try:
                 range_start = int(arguments.get("range_start") or 0)
             except (TypeError, ValueError):
                 range_start = 0
             try:
-                max_chars = int(arguments.get("max_chars") or 16000)
+                max_chars = int(arguments.get("max_chars") or CHAT_TOOL_SPILL_READ_DEFAULT_RANGE_CHARS)
             except (TypeError, ValueError):
-                max_chars = 16000
+                max_chars = CHAT_TOOL_SPILL_READ_DEFAULT_RANGE_CHARS
             try:
                 out = await read_chat_data_slice_async(
                     user,

@@ -7353,6 +7353,12 @@ function copyAiLogFull() {
     } catch (err) { showToast(t('toast.copyFailed'), 'error'); }
 }
 
+function edgeopsCleanAssistantContentForDisplay(content) {
+    var extracted = edgeopsExtractUIActions(String(content == null ? '' : content));
+    var extractedT = edgeopsExtractToolTrace(extracted.cleanContent);
+    return stripThinkTags(extractedT.cleanContent);
+}
+
 function exportChatToMarkdown(sessionId) {
     if (!sessionId) { showToast(t('toast.selectOrCreateSession')); return; }
     API.getAISession(sessionId).then(function(r) {
@@ -7366,7 +7372,10 @@ function exportChatToMarkdown(sessionId) {
             var role = m.role === 'user' ? t('common.exportRoleUser') : t('common.exportRoleAssistant');
             lines.push('## ' + role);
             lines.push('');
-            lines.push((m.content || '').trim());
+            var body = m.role === 'assistant'
+                ? edgeopsCleanAssistantContentForDisplay(m.content)
+                : edgeopsStripAttachmentSuffixForDisplay(String(m.content || '')).trim();
+            lines.push(body);
             lines.push('');
         });
         var md = lines.join('\n');

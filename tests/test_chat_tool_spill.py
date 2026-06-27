@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from services.chat_tool_spill import (
@@ -5,6 +6,7 @@ from services.chat_tool_spill import (
     format_tool_message_with_spill,
     list_unresolved_spill_refs,
     parse_spill_sentinel_fields,
+    spill_and_wrap_tool_message,
 )
 
 
@@ -80,3 +82,27 @@ def test_build_force_read_spill_user_message_mentions_read():
     }])
     assert "read_chat_data" in msg
     assert "禁止" in msg
+
+
+def test_read_chat_data_result_is_not_respilled(monkeypatch):
+    spill_writes = []
+
+    def fake_write(*args, **kwargs):
+        spill_writes.append(args)
+        return {"spill_id": "should-not-happen"}
+
+    monkeypatch.setattr("services.chat_tool_spill.write_chat_tool_spill_sync", fake_write)
+    compact = json.dumps({"success": True, "content": "x" * 4000}, ensure_ascii=False)
+    out = asyncio.run(
+        spill_and_wrap_tool_message(
+            {"id": 1},
+            1,
+            "read_chat_data",
+            "call-1",
+            compact,
+            compact,
+        )
+    )
+    assert spill_writes == []
+    assert out == compact
+    assert "[[EDGEOPS_CHAT_DATA" not in out
