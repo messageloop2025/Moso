@@ -43,6 +43,8 @@ from services.ai_skills import (
 from services.chat_utils import assistant_content_for_summary
 from services.text_abbrev import abbreviate_text_head_focus, abbreviate_text_tail_focus
 from services.chat_tool_spill import (
+    build_force_read_spill_user_message,
+    list_unresolved_spill_refs,
     shrink_tool_message_for_history_budget,
     spill_and_wrap_tool_message,
 )
@@ -2768,7 +2770,11 @@ def _compact_tool_result_for_messages(
     if isinstance(obj, (dict, list)):
         text = json.dumps(_compact_json_value(obj), ensure_ascii=False)
     if ("已省略" in text or "已截断" in text) and "【系统提示】上方工具结果为裁剪版" not in text:
-        text += "\n【系统提示】上方工具结果为裁剪版：不得据此直接下“已覆盖全部项”的结论。若任务要求全量（如漏洞清单/资产清单），请继续分页或分批调用工具直到无省略/截断，再汇总。"
+        text += (
+            "\n【系统提示】上方工具结果为裁剪版：不得据此直接下“已覆盖全部项”的结论，"
+            "禁止自行补全缺失项。若任务要求全量（如漏洞清单/资产清单/设备列表），"
+            "请继续 read_chat_data 分页 / 重跑命令 / scp_pull 落盘后再汇总。"
+        )
     if len(text) <= max_chars:
         return text
     # 终端/日志/命令输出：以末尾为主
@@ -5061,8 +5067,9 @@ Markdown / Skills 渐进阅读（与 aihelp 相同章节模型）：
 - 使用建议：本轮有新图 → 看完立刻 save_image_description；后续轮次 → 直接看清单里的"AI 已识别内容"回答；用户说"重新识别/看原图" → 再内联一次并覆盖描述；`list_chat_attachments` 可查看当前会话已积累的附件。
 
 **工具大结果溢出（`[[EDGEOPS_CHAT_DATA ...]]`）**：
-- 当某工具返回体很大时，系统会把**完整 UTF-8 文本**写入你的 `chats/<日期>/spill/<uuid>.data`，在 `role=tool` 消息里仅保留一行哨兵（含 `ref`、`subdir`、`chars`）+ **压缩预览**。
-- **不要**仅凭预览断言已覆盖全量；需要清点/聚合/核对全部行或全部键时，必须调用 **`read_chat_data`**：`spill_id=ref`，`date_subdir=subdir`（与哨兵一致）。`mode` 选择：**终端/日志/命令输出溢出**优先 `tail` 或 `head_tail`（尾要大）；**文件/表格/配置类**优先 `head` 或 `head_tail`（头要大）；精确定位用 `range`（`range_start`+`max_chars`）。
+- 当某工具返回体很大时，系统会把**完整 UTF-8 文本**写入 `chats/<日期>/spill/<uuid>.data`；`role=tool` 消息里仅保留哨兵（`ref`、`subdir`、`chars`）与**读取指引**（默认**不含**可误导你的压缩预览）。
+- **硬性规则**：只要出现 `[[EDGEOPS_CHAT_DATA ...]]`，在调用 **`read_chat_data`** 从落盘文件取得并核对所需片段之前，**禁止**向用户输出完整清单/表格/统计结论；**绝对禁止**凭预览、推理、历史摘要或「补全感」编造行、列、设备名、数量、状态。
+- 需要清点/聚合/制表时：`spill_id=ref`，`date_subdir=subdir`。`mode`：**终端/日志**→ `tail`/`head_tail`；**JSON/设备/资产清单**→ `head` 或 `range`（多次 `range` 直至覆盖 `total_chars`）。
 - 后台定时/触发任务无会话 id 时，仍可读取本人 spill（按 user 校验）；哨兵里 `session=none` 属正常。
 - 与 `list_session_tool_result_caches`（按轮次 id 取缓存）互补：溢出文件适合**超长发散**且需多次分段读取的场景。
 
@@ -6038,6 +6045,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                     round_had_ui_action = False
                     short_final_retry_used = False
                     image_blind_tool_retry_used = False
+                    spill_read_retry_used = False
                     for round_idx in range(agent_max_steps):
                         round_tools = await resolve_chat_tools(
                             get_tools_for_scope(session_scope, user),
@@ -6892,6 +6900,29 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                             continue
 
                         content = extract_message_content(msg) or ""
+                        unresolved_spills = (
+                            list_unresolved_spill_refs(messages)
+                            if round_had_tool_call and not spill_read_retry_used
+                            else []
+                        )
+                        if unresolved_spills and (content or "").strip():
+                            spill_read_retry_used = True
+                            logger.info(
+                                "Agent spill unread: forcing read_chat_data session_id=%s refs=%s",
+                                session_id,
+                                [u.get("ref") for u in unresolved_spills],
+                            )
+                            messages.append({"role": "assistant", "content": content or ""})
+                            messages.append({
+                                "role": "user",
+                                "content": build_force_read_spill_user_message(unresolved_spills),
+                            })
+                            yield _sse({
+                                "content": (
+                                    "\n\n*（工具结果已落盘但未完整读取，正在要求从 spill 文件读取后再作答…）*\n\n"
+                                )
+                            })
+                            continue
                         if (
                             not round_had_tool_call
                             and not image_blind_tool_retry_used

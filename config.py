@@ -181,6 +181,12 @@ CHAT_TOOL_SPILL_MIN_CHARS = int(os.getenv("EDGEOPS_CHAT_TOOL_SPILL_MIN_CHARS", "
 CHAT_TOOL_SPILL_READ_MAX_CHARS = int(os.getenv("EDGEOPS_CHAT_TOOL_SPILL_READ_MAX_CHARS", str(500_000)))
 # 历史消息按字符预算裁剪时，单条配额低于此值则 tool 消息中的溢出块可收缩为仅哨兵行（引导 read_chat_data）。
 CHAT_HISTORY_TOOL_SPILL_SHRINK_THRESHOLD = int(os.getenv("EDGEOPS_CHAT_HISTORY_TOOL_SPILL_SHRINK_THRESHOLD", "900"))
+# 为 true 时在 spill 消息中附带压缩预览（易误导模型自行补全）；默认 false，仅保留哨兵与 read_chat_data 指引。
+CHAT_TOOL_SPILL_INCLUDE_PREVIEW = os.getenv("EDGEOPS_CHAT_TOOL_SPILL_INCLUDE_PREVIEW", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 # AI 识图内联：单张图 data URL 字符上限（为 system/对话/工具定义留白；阿里云等常见总 input ~983616）
 VISION_INLINE_MAX_B64_CHARS = int(os.getenv("EDGEOPS_VISION_INLINE_MAX_B64_CHARS", "640000"))

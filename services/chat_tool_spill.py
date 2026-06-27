@@ -1,6 +1,6 @@
-"""工具结果溢出落盘：大号 tool 返回体写入 chats/.../spill/<uuid>.data，上下文中只保留哨兵行 + 压缩预览。
+"""工具结果溢出落盘：大号 tool 返回体写入 chats/.../spill/<uuid>.data，上下文中仅保留哨兵行与读取指引。
 
-AI 通过 read_chat_data 按片段读取全量，避免对话上下文被单条工具输出撑爆。
+AI 必须通过 read_chat_data 按片段读取全量，禁止依据压缩预览或推理自行补全工具结果。
 """
 from __future__ import annotations
 
@@ -28,6 +28,11 @@ _SPILL_SENTINEL_RE = re.compile(
 CHAT_TOOL_SPILL_MIN_CHARS = int(getattr(config, "CHAT_TOOL_SPILL_MIN_CHARS", 2500))
 CHAT_TOOL_SPILL_READ_MAX_CHARS = int(getattr(config, "CHAT_TOOL_SPILL_READ_MAX_CHARS", 500_000))
 CHAT_HISTORY_TOOL_SPILL_SHRINK_THRESHOLD = int(getattr(config, "CHAT_HISTORY_TOOL_SPILL_SHRINK_THRESHOLD", 900))
+CHAT_TOOL_SPILL_INCLUDE_PREVIEW = bool(
+    getattr(config, "CHAT_TOOL_SPILL_INCLUDE_PREVIEW", False)
+)
+
+_SPILL_READ_TOOL_NAMES = frozenset({"read_chat_data", "fs_read_file"})
 
 
 def _today_subdir_utc() -> str:
@@ -94,17 +99,34 @@ def write_chat_tool_spill_sync(
 def format_tool_message_with_spill(spill: dict[str, Any], compact_inner: str) -> str:
     sess = str(spill["session_id"]) if spill.get("session_id") is not None else "none"
     tool_s = (spill.get("tool_name") or "").replace(" ", "_")[:80] or "tool"
+    spill_id = spill["spill_id"]
+    subdir = spill["storage_subdir"]
+    chars = spill.get("char_length") or 0
     line = (
-        f"[[EDGEOPS_CHAT_DATA ref={spill['spill_id']} subdir={spill['storage_subdir']} "
-        f"chars={spill['char_length']} tool={tool_s} session={sess}]]"
+        f"[[EDGEOPS_CHAT_DATA ref={spill_id} subdir={subdir} "
+        f"chars={chars} tool={tool_s} session={sess}]]"
     )
     rel = spill.get("relative_path") or ""
+    if CHAT_TOOL_SPILL_INCLUDE_PREVIEW:
+        body = (
+            f"以下为供当前轮参考的压缩预览（不可替代全量，禁止据此枚举/制表）：\n\n"
+            f"{compact_inner}"
+        )
+    else:
+        body = (
+            "【强制】预览已省略。完整 UTF-8 文本仅存在于落盘文件，"
+            "你**不得**根据记忆、推理、历史摘要或压缩片段自行补全任何列表、表格、字段或数量。\n"
+            "在输出枚举/清单/统计类答复前，**必须先**调用 read_chat_data 分段读取；"
+            "JSON/设备/资产类优先 mode=head 或 range（必要时多次 range 直至覆盖全部字符）。\n"
+            f"示例：read_chat_data(spill_id=\"{spill_id}\", date_subdir=\"{subdir}\", "
+            f"mode=\"head\", head_chars=16000) — 文件共 {chars} 字符。"
+        )
     return (
         f"{line}\n"
-        f"【说明】完整输出已落盘（UTF-8）：用户文件根下 `{rel}`。\n"
-        f"需要全量或片段时请调用 **read_chat_data**（spill_id、date_subdir=subdir、mode=head_tail|head|tail|range）。\n"
-        f"以下为供当前轮参考的压缩预览（不可替代全量）：\n\n"
-        f"{compact_inner}"
+        f"【说明】完整输出已落盘：用户文件根下 `{rel}`。\n"
+        f"需要全量或片段时调用 **read_chat_data**（spill_id=ref、date_subdir=subdir、"
+        f"mode=head_tail|head|tail|range）。\n"
+        f"{body}"
     )
 
 
@@ -254,6 +276,96 @@ def extract_spill_sentinel_line(content: str) -> str | None:
     if not m:
         return None
     return m.group(0).strip()
+
+
+def parse_spill_sentinel_fields(content: str) -> dict[str, str] | None:
+    m = _SPILL_SENTINEL_RE.search(content or "")
+    if not m:
+        return None
+    return {
+        "ref": m.group("ref"),
+        "subdir": m.group("subdir"),
+        "chars": m.group("chars"),
+        "tool": m.group("tool"),
+        "session": m.group("session"),
+    }
+
+
+def _parse_tool_call_args(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    try:
+        obj = json.loads(raw)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+
+def _extract_read_spill_refs_from_assistant_message(message: dict[str, Any]) -> set[str]:
+    refs: set[str] = set()
+    for tc in message.get("tool_calls") or []:
+        fn = (tc.get("function") or {})
+        name = (fn.get("name") or "").strip()
+        if name not in _SPILL_READ_TOOL_NAMES:
+            continue
+        args = _parse_tool_call_args(fn.get("arguments"))
+        if name == "read_chat_data":
+            sid = (args.get("spill_id") or "").strip()
+            if sid:
+                refs.add(sid)
+            continue
+        path = (args.get("path") or "").replace("\\", "/")
+        m = re.search(r"/spill/([0-9a-fA-F-]{36})\.data", path)
+        if m:
+            refs.add(m.group(1))
+    return refs
+
+
+def list_unresolved_spill_refs(messages: list[dict[str, Any]], *, since_last_user: bool = True) -> list[dict[str, str]]:
+    """返回当前轮次中已落盘但尚未通过 read_chat_data/fs_read_file 读取过的 spill ref。"""
+    if not messages:
+        return []
+    scan = messages
+    if since_last_user:
+        last_user_idx = -1
+        for i in range(len(messages) - 1, -1, -1):
+            if (messages[i] or {}).get("role") == "user":
+                last_user_idx = i
+                break
+        if last_user_idx >= 0:
+            scan = messages[last_user_idx:]
+    pending: dict[str, dict[str, str]] = {}
+    read_refs: set[str] = set()
+    for m in scan:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        if role == "tool":
+            fields = parse_spill_sentinel_fields(m.get("content") or "")
+            if fields:
+                pending[fields["ref"]] = fields
+        elif role == "assistant":
+            read_refs |= _extract_read_spill_refs_from_assistant_message(m)
+    return [pending[r] for r in pending if r not in read_refs]
+
+
+def build_force_read_spill_user_message(unresolved: list[dict[str, str]]) -> str:
+    lines = [
+        "【系统强制约束】上一条或多条工具结果已溢出落盘（[[EDGEOPS_CHAT_DATA ...]]），"
+        "你尚未调用 read_chat_data 读取完整内容就试图直接作答。",
+        "禁止根据预览、推理、对话记忆或历史轮次摘要自行补全列表、表格、字段、设备名或数量。",
+        "凡涉及枚举、清单、统计、对比，必须先 read_chat_data 分段读取落盘文件（JSON/设备/资产类优先 mode=head 或 range），"
+        "必要时多次 range 直至覆盖 total_chars，再整理答复。",
+    ]
+    for item in unresolved[:6]:
+        lines.append(
+            f'- spill_id="{item.get("ref", "")}" date_subdir="{item.get("subdir", "")}" '
+            f'total_chars={item.get("chars", "?")} tool={item.get("tool", "?")}'
+        )
+    lines.append("请立即调用 read_chat_data，勿向用户输出未从落盘文件验证的完整表格或清单。")
+    return "\n".join(lines)
 
 
 def shrink_tool_message_for_history_budget(

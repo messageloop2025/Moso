@@ -2404,9 +2404,11 @@ TOOLS = [
             "description": (
                 "读取**工具大结果溢出文件**。当某条 `role=tool` 消息以 `[[EDGEOPS_CHAT_DATA ref=<uuid> subdir=<YYYY/MM/DD> ...]]` 开头时，"
                 "完整 UTF-8 文本已落在用户文件根下 `chats/<subdir>/spill/<ref>.data`（与聊天附件不同）。\n"
+                "**硬性要求**：出现该哨兵后，在输出设备/资产/漏洞等**清单或表格**前必须先调用本工具读取落盘内容；"
+                "禁止凭预览、推理或历史摘要自行补全工具结果。\n"
                 "**参数**：`spill_id`=ref；`date_subdir`=subdir；`mode`：head_tail（默认）、head、tail、range。"
-                " **选型**：终端/日志/命令输出溢出用 tail 或 head_tail（tail_chars 宜大）；文件/配置/清单用 head 或 head_tail（head_chars 宜大）；精确定位用 range。\n"
-                "需要全量核对、聚合、按行处理时，应分段调用本工具直至覆盖全部内容，勿仅凭上下文里的压缩预览下结论。"
+                " **选型**：终端/日志溢出用 tail 或 head_tail（tail_chars 宜大）；JSON/清单/配置用 head 或 range（宜多次 range 覆盖 total_chars）。\n"
+                "需要全量核对、聚合、按行制表时，应分段调用本工具直至覆盖全部内容，勿仅凭上下文压缩片段下结论。"
             ),
             "parameters": {
                 "type": "object",
