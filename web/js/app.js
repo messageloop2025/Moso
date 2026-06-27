@@ -4226,7 +4226,7 @@ function edgeopsHydrateChatDiagrams(root) {
 }
 
 /** 判断聊天消息区是否贴近底部（用于「仅贴底时自动跟随滚动」）。 */
-var EDGEOPS_CHAT_STICK_THRESHOLD_PX = 32;
+var EDGEOPS_CHAT_STICK_THRESHOLD_PX = 48;
 function edgeopsChatIsNearBottom(box) {
     if (!box) return true;
     try {
@@ -4236,13 +4236,21 @@ function edgeopsChatIsNearBottom(box) {
     }
 }
 
+/** 程序化滚底期间忽略 scroll 监听，避免误判为用户上滑而取消贴底。 */
+function edgeopsChatScrollIsProgrammatic(box) {
+    if (!box) return false;
+    if (box._edgeopsProgrammaticScroll) return true;
+    var until = box._edgeopsProgrammaticScrollUntil || 0;
+    return Date.now() < until;
+}
+
 /** 绑定滚动监听：用户上滑则取消贴底跟随，滑回底部则恢复。 */
 function edgeopsBindChatStickToBottom(box) {
     if (!box || box._edgeopsStickBound) return;
     box._edgeopsStickBound = true;
     box._edgeopsStickToBottom = true;
     box.addEventListener('scroll', function() {
-        if (box._edgeopsProgrammaticScroll) return;
+        if (edgeopsChatScrollIsProgrammatic(box)) return;
         box._edgeopsStickToBottom = edgeopsChatIsNearBottom(box);
     }, { passive: true });
     if (typeof MutationObserver !== 'undefined' && !box._edgeopsStickMutationObs) {
@@ -4251,38 +4259,82 @@ function edgeopsBindChatStickToBottom(box) {
         });
         box._edgeopsStickMutationObs.observe(box, { childList: true, subtree: true, characterData: true });
     }
+    if (typeof ResizeObserver !== 'undefined' && !box._edgeopsStickResizeObs) {
+        box._edgeopsStickResizeObs = new ResizeObserver(function() {
+            edgeopsScrollChatToBottomStepIfPinned(box);
+        });
+        box._edgeopsStickResizeObs.observe(box);
+    }
 }
 
 /** 程序化滚底（带标志位，避免 scroll 监听误判为用户上滑）。 */
 function edgeopsScrollChatToBottomNow(box) {
     if (!box) return;
+    box._edgeopsProgrammaticScrollUntil = Date.now() + 200;
     box._edgeopsProgrammaticScroll = true;
     try { box.scrollTop = box.scrollHeight; } catch (_e) {}
-    if (typeof queueMicrotask === 'function') {
-        queueMicrotask(function() {
-            if (box) box._edgeopsProgrammaticScroll = false;
+    requestAnimationFrame(function() {
+        if (!box) return;
+        try { box.scrollTop = box.scrollHeight; } catch (_e) {}
+        requestAnimationFrame(function() {
+            if (!box) return;
+            try { box.scrollTop = box.scrollHeight; } catch (_e) {}
+            box._edgeopsProgrammaticScroll = false;
         });
-    } else {
-        setTimeout(function() { if (box) box._edgeopsProgrammaticScroll = false; }, 0);
+    });
+}
+
+/** AI 流式输出期间：贴底时每帧对齐（CoT/工具状态/异步排版增高时更可靠）。 */
+function edgeopsStartChatStreamStickFollow(box) {
+    if (!box || box._edgeopsStreamStickFollowActive) return;
+    box._edgeopsStreamStickFollowActive = true;
+    box._edgeopsLastScrollHeight = box.scrollHeight || 0;
+    function tick() {
+        if (!box || !box._edgeopsStreamStickFollowActive) return;
+        if (box._edgeopsStickToBottom !== false) {
+            var sh = box.scrollHeight;
+            if (sh !== box._edgeopsLastScrollHeight || !edgeopsChatIsNearBottom(box)) {
+                box._edgeopsLastScrollHeight = sh;
+                edgeopsScrollChatToBottomNow(box);
+            }
+        }
+        box._edgeopsStreamStickFollowRaf = requestAnimationFrame(tick);
+    }
+    box._edgeopsStreamStickFollowRaf = requestAnimationFrame(tick);
+}
+
+function edgeopsStopChatStreamStickFollow(box) {
+    if (!box) return;
+    box._edgeopsStreamStickFollowActive = false;
+    if (box._edgeopsStreamStickFollowRaf != null) {
+        try { cancelAnimationFrame(box._edgeopsStreamStickFollowRaf); } catch (_e) {}
+        box._edgeopsStreamStickFollowRaf = null;
     }
 }
 
 /** 流式/增量更新：仅当当前为贴底状态时才滚到底（避免打断用户阅读上方历史）。 */
 function edgeopsScrollChatToBottomStepIfPinned(box) {
     if (!box || box._edgeopsStickToBottom === false) return;
+    box._edgeopsScrollStepDirty = true;
     if (box._edgeopsScrollStepRaf != null) return;
-    box._edgeopsScrollStepRaf = requestAnimationFrame(function() {
+    function runStep() {
         box._edgeopsScrollStepRaf = null;
-        if (!box || box._edgeopsStickToBottom === false) return;
+        if (!box || box._edgeopsStickToBottom === false) {
+            box._edgeopsScrollStepDirty = false;
+            return;
+        }
+        box._edgeopsScrollStepDirty = false;
         requestAnimationFrame(function() {
             if (!box || box._edgeopsStickToBottom === false) return;
             edgeopsScrollChatToBottomNow(box);
             requestAnimationFrame(function() {
                 if (!box || box._edgeopsStickToBottom === false) return;
                 if (!edgeopsChatIsNearBottom(box)) edgeopsScrollChatToBottomNow(box);
+                if (box._edgeopsScrollStepDirty) edgeopsScrollChatToBottomStepIfPinned(box);
             });
         });
-    });
+    }
+    box._edgeopsScrollStepRaf = requestAnimationFrame(runStep);
 }
 
 /** 将聊天消息区滚到底部（含图表异步增高后的多次对齐）。 */
@@ -4294,13 +4346,12 @@ function edgeopsScrollChatMessagesToBottom(box) {
             edgeopsScrollChatToBottomNow(box);
             var last = box.querySelector('.chat-message:last-child');
             if (last) {
+                box._edgeopsProgrammaticScrollUntil = Date.now() + 200;
                 box._edgeopsProgrammaticScroll = true;
                 last.scrollIntoView({ behavior: 'auto', block: 'end' });
-                if (typeof queueMicrotask === 'function') {
-                    queueMicrotask(function() { if (box) box._edgeopsProgrammaticScroll = false; });
-                } else {
-                    setTimeout(function() { if (box) box._edgeopsProgrammaticScroll = false; }, 0);
-                }
+                requestAnimationFrame(function() {
+                    if (box) box._edgeopsProgrammaticScroll = false;
+                });
             }
         } catch (_e) {}
     }
@@ -6568,6 +6619,8 @@ function edgeopsCotOnReasoningEnd(toolsEl) {
     if (st.reasoningBodyEl && st.reasoningBuffer) {
         st.reasoningBodyEl.textContent = edgeopsReasoningBufferToPlain(st.reasoningBuffer);
     }
+    var chatBoxEnd = toolsEl && toolsEl.closest ? toolsEl.closest('.chat-messages') : null;
+    if (chatBoxEnd) edgeopsScrollChatToBottomStepIfPinned(chatBoxEnd);
     st.reasoningBodyEl = null;
     st.reasoningBuffer = '';
 }
@@ -6809,6 +6862,13 @@ function edgeopsMakeChatStreamingUISetter(opts) {
                     try { input.focus(); } catch (_e2) {}
                 }
             }, 0);
+        }
+        var msgBox = null;
+        if (opts.messagesBoxId) msgBox = document.getElementById(opts.messagesBoxId);
+        else if (typeof opts.getMessagesBox === 'function') msgBox = opts.getMessagesBox();
+        if (msgBox) {
+            if (active || awaiting) edgeopsStartChatStreamStickFollow(msgBox);
+            else if (idle) edgeopsStopChatStreamStickFollow(msgBox);
         }
         prevMode = idle ? 'idle' : (awaiting ? 'awaiting' : 'active');
     };
@@ -7963,7 +8023,8 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         }
     });
     var setStreamingUI = edgeopsMakeChatStreamingUISetter({
-        inputId: 'hostAiInput', sendId: 'hostAiSend', newSessionId: 'hostAiNewSessionBtn', runtimeCtl: hostAiRuntimeCtl
+        inputId: 'hostAiInput', sendId: 'hostAiSend', newSessionId: 'hostAiNewSessionBtn', runtimeCtl: hostAiRuntimeCtl,
+        messagesBoxId: 'hostAiMessages'
     });
     document.getElementById('hostAiClearChat').onclick = function() {
         if (!sessionId) { showToast(t('toast.selectOrCreateSession')); return; }
@@ -8174,7 +8235,8 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         if (input._edgeopsAutoResize) input._edgeopsAutoResize();
         var box = document.getElementById('hostAiMessages'); if (!box) return;
         edgeopsBindChatStickToBottom(box);
-        box._edgeopsStickToBottom = edgeopsChatIsNearBottom(box);
+        var wasNearBottom = edgeopsChatIsNearBottom(box);
+        box._edgeopsStickToBottom = wasNearBottom;
         setStreamingUI(true);
         var now = new Date();
         var nowTs = edgeopsFormatChatTimestamp(now);
@@ -8183,7 +8245,8 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         if (hostAiAttachCtl) hostAiAttachCtl.clear();
         box.insertAdjacentHTML('beforeend', '<div class="chat-message assistant"><div class="avatar">A</div><div class="message-content"><div class="ai-reply-stream"><div class="ai-reply-tools"></div><div class="ai-reply-text"></div></div><div class="message-time">' + esc(nowTs) + '</div></div></div>');
         edgeopsHydrateChatDiagrams(box);
-        edgeopsScrollChatToBottomStepIfPinned(box);
+        if (wasNearBottom) edgeopsScrollChatMessagesToBottom(box);
+        else edgeopsScrollChatToBottomStepIfPinned(box);
         var replyWrap = edgeopsPeekLastAiReplyStreamWrap(box);
         if (!replyWrap) return;
         var toolsEl = replyWrap.querySelector('.ai-reply-tools');
@@ -8192,7 +8255,8 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         edgeopsInitStreamReplyState(replyWrap, msg);
         edgeopsSetMessagePersistenceMeta(replyMsgEl, sessionId, null, '');
         edgeopsCotEnsureThinkingPlaceholder(toolsEl);
-        edgeopsScrollChatToBottomStepIfPinned(box);
+        if (wasNearBottom) edgeopsScrollChatMessagesToBottom(box);
+        else edgeopsScrollChatToBottomStepIfPinned(box);
         var streamedText = '';
         var hostAiStreamInputMode = 'idle';
         function flushStreamReplyText() {
@@ -10344,7 +10408,8 @@ function renderAIPage() {
         }
     });
     var setStreamingUI = edgeopsMakeChatStreamingUISetter({
-        inputId: 'aiInput', sendId: 'aiSend', newSessionId: 'aiNewSessionBtn', runtimeCtl: aiRuntimeCtl
+        inputId: 'aiInput', sendId: 'aiSend', newSessionId: 'aiNewSessionBtn', runtimeCtl: aiRuntimeCtl,
+        messagesBoxId: 'aiMessages'
     });
     var aiAttachCtl = edgeopsInstallChatAttachments({ input: 'aiInput', getSessionId: function() { return sessionId; } });
     function doSend() {
@@ -10360,7 +10425,8 @@ function renderAIPage() {
         var box = document.getElementById('aiMessages');
         if (!box) return;
         edgeopsBindChatStickToBottom(box);
-        box._edgeopsStickToBottom = edgeopsChatIsNearBottom(box);
+        var wasNearBottom = edgeopsChatIsNearBottom(box);
+        box._edgeopsStickToBottom = wasNearBottom;
         setStreamingUI(true);
         var now = new Date();
         var nowTs = edgeopsFormatChatTimestamp(now);
@@ -10369,7 +10435,8 @@ function renderAIPage() {
         if (aiAttachCtl) aiAttachCtl.clear();
         box.insertAdjacentHTML('beforeend', '<div class="chat-message assistant"><div class="avatar">A</div><div class="message-content"><div class="ai-reply-stream"><div class="ai-reply-tools"></div><div class="ai-reply-text"></div></div><div class="message-time">' + esc(nowTs) + '</div></div></div>');
         edgeopsHydrateChatDiagrams(box);
-        edgeopsScrollChatToBottomStepIfPinned(box);
+        if (wasNearBottom) edgeopsScrollChatMessagesToBottom(box);
+        else edgeopsScrollChatToBottomStepIfPinned(box);
         var replyWrap = edgeopsPeekLastAiReplyStreamWrap(box);
         if (!replyWrap) return;
         var toolsEl = replyWrap.querySelector('.ai-reply-tools');
@@ -10378,7 +10445,8 @@ function renderAIPage() {
         edgeopsInitStreamReplyState(replyWrap, msg);
         edgeopsSetMessagePersistenceMeta(replyMsgEl, sessionId, null, '');
         edgeopsCotEnsureThinkingPlaceholder(toolsEl);
-        edgeopsScrollChatToBottomStepIfPinned(box);
+        if (wasNearBottom) edgeopsScrollChatMessagesToBottom(box);
+        else edgeopsScrollChatToBottomStepIfPinned(box);
         var streamedText = '';
         var aiStreamInputMode = 'idle';
         function flushStreamReplyText() {
@@ -13136,15 +13204,14 @@ function _renderUserSkillRow(s) {
     var fs = s.file_exists === false
         ? ('<span class="text-danger">' + esc(t('skills.fileMissing')) + '</span>')
         : ('<span class="text-success">' + esc(t('skills.fileOk')) + '</span>');
-    var en = s.enabled ? esc(t('skills.enabled')) : '—';
     return ''
         + '<tr>'
-        + '<td><code>' + esc(s.name) + '</code></td>'
-        + '<td>' + esc(s.display_name || s.name) + '</td>'
-        + '<td>' + esc((s.description || '').slice(0, 80)) + '</td>'
-        + '<td>' + fs + '</td>'
-        + '<td>' + _renderSkillScopeBadges(s) + '</td>'
-        + '<td>'
+        + edgeopsTableTdNowrap('<code>' + esc(s.name) + '</code>', { html: true })
+        + edgeopsTableTdEllipsis(s.display_name || s.name, {})
+        + edgeopsTableTdEllipsis(s.description || '', { fill: true })
+        + edgeopsTableTdNowrap(fs, { html: true })
+        + edgeopsTableTdNowrap(_renderSkillScopeBadges(s), { html: true })
+        + '<td class="td-nowrap td-actions">'
         + '<button type="button" class="btn btn-sm" data-skill-edit="' + s.id + '">' + esc(t('skills.edit')) + '</button> '
         + '<button type="button" class="btn btn-sm btn-danger" data-skill-del="' + s.id + '" data-skill-name="' + esc(s.name) + '">' + esc(t('skills.delete')) + '</button>'
         + '</td></tr>';
@@ -13239,9 +13306,11 @@ function loadUserSkillsPage() {
             return;
         }
         wrap.innerHTML = ''
-            + '<table class="data-table"><thead><tr>'
-            + '<th>' + esc(t('skills.colName')) + '</th><th>' + esc(t('skills.colDisplay')) + '</th><th>' + esc(t('skills.colDesc')) + '</th>'
-            + '<th>' + esc(t('skills.colFile')) + '</th><th>' + esc(t('skills.colScopes')) + '</th><th>' + esc(t('skills.colActions')) + '</th>'
+            + '<table class="data-table table-compact-ellipsis"><colgroup>'
+            + '<col class="col-td-nowrap"><col class="col-td-md"><col><col class="col-td-xs"><col class="col-td-sm"><col class="col-td-actions">'
+            + '</colgroup><thead><tr>'
+            + '<th class="td-nowrap">' + esc(t('skills.colName')) + '</th><th>' + esc(t('skills.colDisplay')) + '</th><th class="td-fill">' + esc(t('skills.colDesc')) + '</th>'
+            + '<th class="td-nowrap">' + esc(t('skills.colFile')) + '</th><th class="td-nowrap">' + esc(t('skills.colScopes')) + '</th><th class="td-nowrap td-actions">' + esc(t('skills.colActions')) + '</th>'
             + '</tr></thead><tbody>'
             + _userSkillsCache.map(_renderUserSkillRow).join('')
             + '</tbody></table>';
@@ -14534,7 +14603,8 @@ function renderLocalPage() {
         }
     });
     var setLocalStreamingUI = edgeopsMakeChatStreamingUISetter({
-        inputId: 'localInput', sendId: 'localSend', newSessionId: 'localNewSessionBtn', runtimeCtl: localRuntimeCtl
+        inputId: 'localInput', sendId: 'localSend', newSessionId: 'localNewSessionBtn', runtimeCtl: localRuntimeCtl,
+        messagesBoxId: 'localMessages'
     });
     document.getElementById('localAiClearChat').onclick = function() {
         if (!currentSessionId) { showToast(t('toast.selectOrCreateSession')); return; }
@@ -14599,7 +14669,8 @@ function renderLocalPage() {
         if (input._edgeopsAutoResize) input._edgeopsAutoResize();
         var box = document.getElementById('localMessages'); if (!box) return;
         edgeopsBindChatStickToBottom(box);
-        box._edgeopsStickToBottom = edgeopsChatIsNearBottom(box);
+        var wasNearBottom = edgeopsChatIsNearBottom(box);
+        box._edgeopsStickToBottom = wasNearBottom;
         setLocalStreamingUI(true);
         var now = new Date();
         var nowTs = edgeopsFormatChatTimestamp(now);
@@ -14608,7 +14679,8 @@ function renderLocalPage() {
         if (localAiAttachCtl) localAiAttachCtl.clear();
         box.insertAdjacentHTML('beforeend', '<div class="chat-message assistant"><div class="avatar">A</div><div class="message-content"><div class="ai-reply-stream"><div class="ai-reply-tools"></div><div class="ai-reply-text"></div></div><div class="message-time">' + esc(nowTs) + '</div></div></div>');
         edgeopsHydrateChatDiagrams(box);
-        edgeopsScrollChatToBottomStepIfPinned(box);
+        if (wasNearBottom) edgeopsScrollChatMessagesToBottom(box);
+        else edgeopsScrollChatToBottomStepIfPinned(box);
         var replyWrap = edgeopsPeekLastAiReplyStreamWrap(box);
         if (!replyWrap) return;
         var toolsEl = replyWrap.querySelector('.ai-reply-tools');
@@ -14617,7 +14689,8 @@ function renderLocalPage() {
         edgeopsInitStreamReplyState(replyWrap, msg);
         edgeopsSetMessagePersistenceMeta(replyMsgEl, currentSessionId, null, '');
         edgeopsCotEnsureThinkingPlaceholder(toolsEl);
-        edgeopsScrollChatToBottomStepIfPinned(box);
+        if (wasNearBottom) edgeopsScrollChatMessagesToBottom(box);
+        else edgeopsScrollChatToBottomStepIfPinned(box);
         var streamedText = '';
         var localStreamInputMode = 'idle';
         function flushStreamReplyText() {
@@ -15734,9 +15807,13 @@ function renderLogs() {
         API.listLogs({ page: pagination.getPage(), page_size: pagination.getPageSize() }).then(function(data) {
             var logs = data.logs || [];
             pagination.update({ total: data.total, page: data.page, page_size: data.page_size });
-            var logsTableHtml = '<table class="data-table list-table"><thead><tr><th>' + esc(t('pages.logs.thTime')) + '</th><th>' + esc(t('pages.logs.thUser')) + '</th><th>' + esc(t('pages.logs.thOp')) + '</th><th>' + esc(t('pages.logs.thParams')) + '</th></tr></thead><tbody>';
+            var logsTableHtml = '<table class="data-table list-table table-compact-ellipsis"><colgroup>'
+                + '<col class="col-td-log-time"><col class="col-td-log-user"><col class="col-td-log-op"><col>'
+                + '</colgroup><thead><tr><th class="td-nowrap">' + esc(t('pages.logs.thTime')) + '</th><th class="td-nowrap">' + esc(t('pages.logs.thUser')) + '</th><th class="td-nowrap">' + esc(t('pages.logs.thOp')) + '</th><th class="td-fill">' + esc(t('pages.logs.thParams')) + '</th></tr></thead><tbody>';
             logs.forEach(function(l) {
-                logsTableHtml += '<tr><td>' + formatTime(l.created_at) + '</td><td>' + esc(l.username) + '</td><td>' + esc(l.operation) + '</td><td>' + esc((l.params || '') + ' ' + (l.result || '')) + '</td></tr>';
+                var detail = ((l.params || '') + (l.result ? (' ' + l.result) : '')).trim();
+                logsTableHtml += '<tr><td class="td-nowrap">' + formatTime(l.created_at) + '</td><td class="td-nowrap">' + esc(l.username) + '</td><td class="td-nowrap">' + esc(l.operation) + '</td>'
+                    + edgeopsTableTdEllipsis(detail, { fill: true, mono: true }) + '</tr>';
             });
             logsTableHtml += '</tbody></table>';
             tableWrap.innerHTML = logsTableHtml;
@@ -15787,21 +15864,27 @@ function renderTriggeredTasksPage() {
                 listEl.innerHTML = '<div class="empty-state"><p>' + esc(t('pages.triggered.emptyList')) + '</p></div>';
                 return;
             }
-            listEl.innerHTML = '<table class="data-table list-table"><thead><tr>'
-                + '<th>' + esc(t('pages.triggered.thId')) + '</th>'
-                + '<th>' + esc(t('pages.triggered.thName')) + '</th>'
-                + '<th>' + esc(t('pages.triggered.thContentSummary')) + '</th>'
-                + '<th>' + esc(t('pages.triggered.thIntro')) + '</th>'
-                + '<th>' + esc(t('pages.triggered.thTriggerConditions')) + '</th>'
-                + '<th>' + esc(t('pages.triggered.thCreatedAt')) + '</th>'
-                + '<th>' + esc(t('pages.triggered.thLastRun')) + '</th>'
-                + '<th>' + esc(t('pages.triggered.thStatus')) + '</th>'
-                + '<th>' + esc(t('pages.triggered.thRunning')) + '</th>'
-                + '<th>' + esc(t('pages.triggered.thActions')) + '</th>'
+            listEl.innerHTML = '<table class="data-table list-table table-compact-ellipsis"><colgroup>'
+                + '<col class="col-td-xs"><col class="col-td-sm"><col><col><col><col class="col-td-log-time"><col class="col-td-log-time"><col class="col-td-xs"><col class="col-td-xs"><col class="col-td-actions">'
+                + '</colgroup><thead><tr>'
+                + '<th class="td-nowrap">' + esc(t('pages.triggered.thId')) + '</th>'
+                + '<th class="td-nowrap">' + esc(t('pages.triggered.thName')) + '</th>'
+                + '<th class="td-fill">' + esc(t('pages.triggered.thContentSummary')) + '</th>'
+                + '<th class="td-fill">' + esc(t('pages.triggered.thIntro')) + '</th>'
+                + '<th class="td-fill">' + esc(t('pages.triggered.thTriggerConditions')) + '</th>'
+                + '<th class="td-nowrap">' + esc(t('pages.triggered.thCreatedAt')) + '</th>'
+                + '<th class="td-nowrap">' + esc(t('pages.triggered.thLastRun')) + '</th>'
+                + '<th class="td-nowrap">' + esc(t('pages.triggered.thStatus')) + '</th>'
+                + '<th class="td-nowrap">' + esc(t('pages.triggered.thRunning')) + '</th>'
+                + '<th class="td-nowrap">' + esc(t('pages.triggered.thActions')) + '</th>'
                 + '</tr></thead><tbody>'
                 + tasks.map(function(task) {
-                    return '<tr><td>' + task.id + '</td><td>' + esc(task.name) + '</td><td title="' + esc((task.content || '').substring(0, 200)) + '">' + esc((task.content || '').substring(0, 80)) + ((task.content || '').length > 80 ? '…' : '') + '</td><td title="' + esc((task.intro || '').substring(0, 200)) + '">' + esc((task.intro || '').substring(0, 60)) + ((task.intro || '').length > 60 ? '…' : '') + '</td><td title="' + esc((task.trigger_conditions || '').substring(0, 150)) + '">' + esc((task.trigger_conditions || '-').substring(0, 50)) + ((task.trigger_conditions || '').length > 50 ? '…' : '') + '</td><td>' + formatTime(task.created_at) + '</td><td>' + formatTime(task.last_run_at) + '</td><td>' + esc(task.last_run_status || '-') + '</td><td>' + (task.is_running ? esc(t('pages.triggered.yes')) : esc(t('pages.triggered.no'))) + '</td>'
-                        + '<td><button class="btn btn-sm" onclick="window._triggeredTaskEdit(' + task.id + ')">' + esc(t('pages.triggered.btnEdit')) + '</button> <button class="btn btn-sm" onclick="window._triggeredTaskExpose(' + task.id + ')">' + esc(t('pages.triggered.btnExpose')) + '</button> <button class="btn btn-sm" onclick="window._triggeredTaskViewRuns(' + task.id + ')">' + esc(t('pages.triggered.btnHistory')) + '</button></td></tr>';
+                    return '<tr><td class="td-nowrap">' + task.id + '</td><td class="td-nowrap">' + esc(task.name) + '</td>'
+                        + edgeopsTableTdEllipsis(task.content || '', { fill: true, mono: true })
+                        + edgeopsTableTdEllipsis(task.intro || '', { fill: true })
+                        + edgeopsTableTdEllipsis(task.trigger_conditions || '-', { fill: true })
+                        + '<td class="td-nowrap">' + formatTime(task.created_at) + '</td><td class="td-nowrap">' + formatTime(task.last_run_at) + '</td><td class="td-nowrap">' + esc(task.last_run_status || '-') + '</td><td class="td-nowrap">' + (task.is_running ? esc(t('pages.triggered.yes')) : esc(t('pages.triggered.no'))) + '</td>'
+                        + '<td class="td-nowrap"><button class="btn btn-sm" onclick="window._triggeredTaskEdit(' + task.id + ')">' + esc(t('pages.triggered.btnEdit')) + '</button> <button class="btn btn-sm" onclick="window._triggeredTaskExpose(' + task.id + ')">' + esc(t('pages.triggered.btnExpose')) + '</button> <button class="btn btn-sm" onclick="window._triggeredTaskViewRuns(' + task.id + ')">' + esc(t('pages.triggered.btnHistory')) + '</button></td></tr>';
                 }).join('') + '</tbody></table>';
         }).catch(function(err) {
             listEl.innerHTML = '<div class="empty-state"><h3>' + esc(t('ui.loadFailedH3')) + '</h3><p>' + esc(err.message) + '</p></div>';

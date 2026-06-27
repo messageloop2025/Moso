@@ -99,6 +99,107 @@ function esc(str) {
     return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+/** 表格长文本预览：注册全文，返回 data-preview-id。 */
+var _edgeopsCellPreviewStore = new Map();
+var _edgeopsCellPreviewSeq = 0;
+function edgeopsTablePreviewRegister(text) {
+    var full = text == null ? '' : String(text);
+    if (!full) return '';
+    var id = 'pv' + (++_edgeopsCellPreviewSeq);
+    _edgeopsCellPreviewStore.set(id, full);
+    return id;
+}
+
+/** 表格单元格：长字段单行省略，悬停显示完整预览。opts: fill, mono, cls, placeholder */
+function edgeopsTableTdEllipsis(text, opts) {
+    opts = opts || {};
+    var full = text == null ? '' : String(text);
+    var classes = ['td-ellipsis'];
+    if (opts.fill) classes.push('td-fill');
+    if (opts.cls) classes.push(opts.cls);
+    if (!full) {
+        return '<td class="' + classes.join(' ') + '">' + esc(opts.placeholder || '—') + '</td>';
+    }
+    var pid = edgeopsTablePreviewRegister(full);
+    var innerCls = 'cell-ellipsis cell-ellipsis-preview' + (opts.mono ? ' cell-ellipsis-mono' : '');
+    return '<td class="' + classes.join(' ') + '"><span class="' + innerCls + '" data-preview-id="' + pid + '">' + esc(full) + '</span></td>';
+}
+
+/** 表格单元格：短字段不换行。opts.html=true 时 content 为已转义 HTML。 */
+function edgeopsTableTdNowrap(content, opts) {
+    opts = opts || {};
+    var cls = 'td-nowrap' + (opts.cls ? ' ' + opts.cls : '');
+    var body = opts.html ? (content || '') : esc(content == null ? '' : String(content));
+    return '<td class="' + cls + '">' + body + '</td>';
+}
+
+(function edgeopsInstallTableCellPreview() {
+    if (typeof document === 'undefined' || window._edgeopsTablePreviewInstalled) return;
+    window._edgeopsTablePreviewInstalled = true;
+    var pop = null;
+    var hideTimer = null;
+    function ensurePop() {
+        if (pop) return pop;
+        pop = document.createElement('div');
+        pop.id = 'edgeops-table-cell-preview';
+        pop.className = 'edgeops-table-cell-preview';
+        pop.setAttribute('role', 'tooltip');
+        document.body.appendChild(pop);
+        pop.addEventListener('mouseenter', function() { if (hideTimer) clearTimeout(hideTimer); });
+        pop.addEventListener('mouseleave', function() { scheduleHide(); });
+        return pop;
+    }
+    function hidePop() {
+        if (pop) pop.style.display = 'none';
+    }
+    function scheduleHide() {
+        if (hideTimer) clearTimeout(hideTimer);
+        hideTimer = setTimeout(hidePop, 100);
+    }
+    function cancelHide() {
+        if (hideTimer) clearTimeout(hideTimer);
+    }
+    function showPreview(anchor) {
+        var id = anchor.getAttribute('data-preview-id');
+        var text = (id && _edgeopsCellPreviewStore.has(id)) ? _edgeopsCellPreviewStore.get(id) : anchor.textContent;
+        if (!text) return;
+        var p = ensurePop();
+        p.textContent = text;
+        p.classList.toggle('cell-ellipsis-mono', anchor.classList.contains('cell-ellipsis-mono'));
+        p.style.display = 'block';
+        p.style.visibility = 'hidden';
+        p.style.left = '-9999px';
+        p.style.top = '0';
+        var pw = p.offsetWidth;
+        var ph = p.offsetHeight;
+        var rect = anchor.getBoundingClientRect();
+        var pad = 8;
+        var left = Math.max(pad, Math.min(rect.left, window.innerWidth - pw - pad));
+        var top = rect.bottom + pad;
+        if (top + ph > window.innerHeight - pad) {
+            top = Math.max(pad, rect.top - ph - pad);
+        }
+        p.style.left = left + 'px';
+        p.style.top = top + 'px';
+        p.style.visibility = '';
+    }
+    document.addEventListener('mouseover', function(ev) {
+        if (ev.target.closest && ev.target.closest('.edgeops-table-cell-preview')) {
+            cancelHide();
+            return;
+        }
+        var cell = ev.target.closest ? ev.target.closest('.cell-ellipsis-preview') : null;
+        cancelHide();
+        if (!cell) {
+            scheduleHide();
+            return;
+        }
+        showPreview(cell);
+    });
+    document.addEventListener('scroll', scheduleHide, true);
+    window.addEventListener('resize', scheduleHide);
+})();
+
 /** 页面顶部说明段落；空字符串时不渲染。plain=true 时对文本转义（无 HTML）。 */
 function edgeopsPageIntroHtml(text, plain) {
     var s = String(text == null ? '' : text).trim();

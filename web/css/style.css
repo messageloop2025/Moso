@@ -545,6 +545,93 @@ table.task-run-history-table .task-run-log-summary {
 .list-table th:nth-child(2), .list-table td:nth-child(2) { white-space: nowrap; min-width: 80px; }
 .list-table th:nth-child(3), .list-table td:nth-child(3) { white-space: nowrap; min-width: 100px; }
 .list-table th:last-child, .list-table td:last-child { white-space: normal; word-break: break-word; min-width: 120px; max-width: 400px; }
+
+/* 紧凑列表：小列不换行，长列 CSS 省略 + 悬停预览（见 utils.js edgeopsTableTdEllipsis） */
+table.table-compact-ellipsis {
+    table-layout: fixed;
+    width: 100%;
+    border-collapse: collapse;
+}
+table.table-compact-ellipsis th,
+table.table-compact-ellipsis td {
+    vertical-align: middle;
+    overflow: hidden;
+    padding: 8px 10px;
+    box-sizing: border-box;
+}
+table.table-compact-ellipsis .td-nowrap {
+    white-space: nowrap;
+}
+table.table-compact-ellipsis .td-actions {
+    white-space: nowrap;
+    min-width: 9rem;
+}
+table.table-compact-ellipsis td.td-ellipsis {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+table.table-compact-ellipsis .cell-ellipsis {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    max-width: 100%;
+}
+/* 覆盖 list-table 的 nth-child min/max-width，避免与省略布局冲突 */
+table.table-compact-ellipsis.list-table th,
+table.table-compact-ellipsis.list-table td {
+    min-width: 0;
+}
+table.table-compact-ellipsis.list-table th:nth-child(1),
+table.table-compact-ellipsis.list-table td:nth-child(1),
+table.table-compact-ellipsis.list-table th:nth-child(2),
+table.table-compact-ellipsis.list-table td:nth-child(2),
+table.table-compact-ellipsis.list-table th:nth-child(3),
+table.table-compact-ellipsis.list-table td:nth-child(3),
+table.table-compact-ellipsis.list-table th:last-child,
+table.table-compact-ellipsis.list-table td:last-child {
+    min-width: 0;
+    max-width: none;
+    word-break: normal;
+}
+table.table-compact-ellipsis.list-table td:last-child.td-ellipsis,
+table.table-compact-ellipsis.list-table th.td-fill {
+    white-space: nowrap;
+}
+/* colgroup 列宽（与 HTML col 类名对应） */
+table.table-compact-ellipsis col.col-td-xs { width: 72px; }
+table.table-compact-ellipsis col.col-td-sm { width: 108px; }
+table.table-compact-ellipsis col.col-td-md { width: 148px; }
+table.table-compact-ellipsis col.col-td-nowrap { width: 120px; }
+table.table-compact-ellipsis col.col-td-actions { width: 152px; }
+table.table-compact-ellipsis col.col-td-log-time { width: 158px; }
+table.table-compact-ellipsis col.col-td-log-user { width: 88px; }
+table.table-compact-ellipsis col.col-td-log-op { width: 168px; }
+
+.edgeops-table-cell-preview {
+    display: none;
+    position: fixed;
+    z-index: 10050;
+    max-width: min(640px, calc(100vw - 24px));
+    max-height: min(420px, calc(100vh - 24px));
+    overflow: auto;
+    padding: 10px 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    word-break: break-word;
+    pointer-events: auto;
+}
+.edgeops-table-cell-preview.cell-ellipsis-mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+}
 .table-filter-row td { padding: 2px 8px; vertical-align: middle; }
 .table-filter-row .table-filter-input { width: 100%; max-width: 140px; padding: 4px 8px; font-size: 12px; }
 table.sortable-table th[data-sort] { cursor: pointer; user-select: none; }
