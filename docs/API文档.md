@@ -413,7 +413,7 @@ token 来自解锁邮件链接。
 | POST | /ai/sessions | 新建会话（query: title?；body 可选 **host_id**，用于主机详情页 AI 运维） |
 | GET | /ai/sessions/{session_id} | 会话详情（含 `low_interaction_mode`） |
 | PATCH | /ai/sessions/{session_id} | 更新会话（如标题、`low_interaction_mode`；低交互默认 false，前端显示为「低交互」/`Auto`） |
-| POST | /ai/sessions/{session_id}/runtime-control | 运行中注入控制（`supplement`/`pause`/`resume`/`stop`），用于 AI 流式执行或工具调用期间补充上下文、暂停/恢复或停止 |
+| POST | /ai/sessions/{session_id}/runtime-control | 运行中注入控制（`supplement`/`pause`/`resume`/`stop`/`wake`/`choice`），用于 AI 流式执行或工具调用期间补充上下文、暂停/恢复、停止，或在终端轮询等待时唤醒 |
 | PATCH | /ai/sessions/{session_id}/messages/{message_id} | 更新单条会话消息内容（当前用于将 Mermaid 自动修复后的助手消息写回持久化） |
 | DELETE | /ai/sessions/{session_id} | 删除会话 |
 | POST | /ai/sessions/clear | 清空当前用户会话（body 可选 **host_id**：仅清空该主机会话；无则清空全局会话） |
@@ -439,8 +439,9 @@ token 来自解锁邮件链接。
 |------|------|
 | session_id | 会话 ID |
 | content | 助手回复文本片段（流式拼接） |
-| action | executing / completed / failed（工具执行状态） |
+| action | executing / completed / failed（工具执行状态）；或 **waiting** / **waiting_woken** / **waiting_aborted**（终端轮询倒计时；含 `wait_remaining`、`wait_tool` 等） |
 | tool, args, result_preview | 工具名、参数、结果摘要 |
+| wait_remaining, wait_tool, seconds | 仅 `action=waiting`：`next_poll_in_seconds` 倒计时剩余秒数及触发等待的工具名（如 `get_terminal_buffer`） |
 | ui_action | 前端动作：`connect_terminal`（host_id）、`switch_console`（slot, scope）、`ensure_local_console` / `create_local_console`（scope: local, created_by: ai）、`close_local_console`（scope: local, slot）、`ask_user_choice`（question, options[id,label,value,style,description], allow_multiple, allow_text, default_id — 由 AI 工具 `ask_user_choice` 触发，前端在对应 assistant 气泡下渲染可点击的选择卡片；OpenClaw/API 集成通道不会收到此 ui_action，改由工具返回 `ui_capable=false` 的纯文本回退） |
 | assistant_continue | 辅助 AI 的继续执行引导语 |
 | requires_user_confirm | 与 `assistant_continue` 配套；`true` 表示需用户确认是否继续旧任务 |
@@ -457,10 +458,12 @@ token 来自解锁邮件链接。
 { "action": "supplement", "message": "补充信息或控制说明" }
 ```
 
-- `action` 支持 `supplement`、`pause`、`resume`、`stop`；未知值返回 400。
+- `action` 支持 `supplement`、`pause`、`resume`、`stop`、`wake`、`choice`；未知值返回 400。
 - `supplement`：把新上下文插入当前会话的 runtime control 队列，AI 在当前轮可用时优先整合。
 - `pause` / `resume`：用于让用户临时提问、补充条件后再继续。
-- `stop`：请求停止当前 agent 循环；若正在等待工具，后端会尽量在等待间隙中断并返回工具被运行时控制打断的结果。
+- `stop`：请求停止当前 agent 循环；若正在等待工具或终端轮询倒计时，后端会尽量在等待间隙中断并返回相应 aborted 结果。
+- `wake`：在 **终端轮询等待**（`get_terminal_buffer` / `send_to_terminal` / `ssh_execute` detach 触发的 batch 末 sleep）期间，**跳过剩余倒计时**并进入下一轮 Agent 推理；**不中断**整轮任务。无 Web UI 的 integration 会话同样有效（需已知 `session_id`）。**ssh_channel_* 无此 batch 末等待**。
+- `choice`：用户在 `ask_user_choice` 等待期间通过按钮或文字回复选择（`message` 为选项文本）。
 - 后端在新一轮 `/ai/chat` 开始时会清空该会话残留的 runtime control 队列，避免上一轮控制指令影响下一条普通消息。
 
 **SSE 稳定性约定**：  

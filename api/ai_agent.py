@@ -188,7 +188,7 @@ TOOL_TRACE_PERSIST_PREVIEW_CHARS = 1200
 # 运行中会话控制：支持在 tool_call 执行期间插入 stop/pause/supplement/choice 指令。
 _SESSION_RUNTIME_CONTROL_QUEUES: dict[int, asyncio.Queue] = {}
 _SESSION_RUNTIME_CONTROL_LOCK = asyncio.Lock()
-_RUNTIME_ACTIONS = {"supplement", "pause", "resume", "stop", "choice"}
+_RUNTIME_ACTIONS = {"supplement", "pause", "resume", "stop", "choice", "wake"}
 
 
 def _strip_ui_action_sentinels(content: str) -> str:
@@ -3997,7 +3997,7 @@ async def push_session_runtime_control(
     req: SessionRuntimeControlRequest,
     user=Depends(get_current_user),
 ):
-    """向运行中的会话注入控制指令（stop/pause/resume/supplement/choice）。"""
+    """向运行中的会话注入控制指令（stop/pause/resume/supplement/choice/wake）。"""
     db = await get_db()
     rows = await db.execute_fetchall(
         "SELECT id FROM ai_chat_sessions WHERE id = ? AND user_id = ?",
@@ -4007,7 +4007,7 @@ async def push_session_runtime_control(
         raise HTTPException(status_code=404, detail="会话不存在")
     action = (req.action or "supplement").strip().lower()
     if action not in _RUNTIME_ACTIONS:
-        raise HTTPException(status_code=400, detail="action 仅支持 supplement/pause/resume/stop/choice")
+        raise HTTPException(status_code=400, detail="action 仅支持 supplement/pause/resume/stop/choice/wake")
     message = (req.message or "").strip()
     await _push_runtime_control(session_id, action, message)
     return {"success": True, "session_id": session_id, "action": action}
@@ -4671,20 +4671,24 @@ async def _poll_wait_sse(
     http_request: Request | None,
     consume_runtime_control,
     out_status: list[str],
+    wait_tool: str | None = None,
 ):
-    """分段 sleep 并推送 waiting 事件；可被断开连接或运行时 stop/pause 打断。"""
+    """分段 sleep 并推送 waiting 事件；可被断开连接或运行时 stop/pause/wake 打断。"""
     out_status[:] = ["continue"]
     total = max(1, min(3600, int(total_seconds or 0)))
     chunk = max(1, min(5, int(AGENT_POLL_WAIT_CHUNK_SEC or 1)))
     elapsed = 0
 
     def _tick(rem: int) -> str:
-        return _sse({
+        payload = {
             "action": "waiting",
             "seconds": total,
             "wait_elapsed": elapsed,
             "wait_remaining": rem,
-        })
+        }
+        if wait_tool:
+            payload["wait_tool"] = wait_tool
+        return _sse(payload)
 
     yield _tick(total)
     while elapsed < total:
@@ -4733,6 +4737,24 @@ async def _poll_wait_sse(
                         "runtime_control": {"action": "supplement", "accepted": True, "during_wait": True},
                     })
                     return
+                if act == "wake":
+                    out_status[:] = ["continue"]
+                    yield _sse({
+                        "runtime_control": {
+                            "action": "wake",
+                            "accepted": True,
+                            "during_wait": True,
+                            "wait_tool": wait_tool,
+                        },
+                    })
+                    _woken = {
+                        "action": "waiting_woken",
+                        "wait_elapsed": elapsed,
+                    }
+                    if wait_tool:
+                        _woken["wait_tool"] = wait_tool
+                    yield _sse(_woken)
+                    return
         step = min(chunk, total - elapsed)
         await asyncio.sleep(step)
         elapsed += step
@@ -4763,6 +4785,8 @@ async def _poll_wait_blocking(
                     return "user_pause"
                 if act == "supplement":
                     return "supplement:" + ((ctrl.get("message") or "").strip())
+                if act == "wake":
+                    return "continue"
         step = min(chunk, total - elapsed)
         await asyncio.sleep(step)
         elapsed += step
@@ -4918,6 +4942,12 @@ def _build_system_prompt() -> str:
    - 多 slot 并存时 send_to_terminal 须指定 **slot**（或 host_id 自动匹配 slot）。服务端在 send_to_terminal / get_terminal_buffer 时若会话尚未就绪会自动等待最多约 **12** 秒再读写。**buffer_idle / session_state / can_send_command 仅为 AI 参考，不拦截 send**（仅 connected=false 或 pending 时拒绝）。向终端发送控制键：send_to_terminal(slot, \"<Ctrl+C>\") 等。**sudo 命令发送后必须先 get_terminal_buffer 确认是否出现密码提示**（详见下方「sudo 与密码」）。
 4.1 当用户要求“两机传文件/目录”时，先检测 A->B 与 B->A 的 22 端口可达性（确定主动方），再优先用基于 SSH 的直连方法（scp/rsync/sshfs）传输；若直连不可达或失败，再回退 relay_file_between_hosts：由毛竹服务端 SFTP 先拉到用户**文件系统工作区**再推到目标机（调用卡显示进度）。
 5. 等待命令执行结果时，用 get_terminal_buffer(slot, next_poll_in_seconds=N) 可显式控制下次读取前的等待秒数（N 仅限 1～3600）。**服务端也会自动推断等待**：send_to_terminal 发出 apt/make/curl 等长命令后，或 buffer 末尾仍见安装/下载/编译进度时，即使用户未传 N 也会安排倒计时再进入下一轮，避免空转轮询。你仍可传 N 拉长等待；输出已回到 shell 提示符且无明显进度时自动不再等待。**终端/命令行/日志以 buffer 末尾为准**（最新结果、报错、sudo 提示、进度条在尾部）。**默认 tail_only=true**：超长时仅返回最后 max_lines 行（默认 40），不保留最早输出；需要开头上下文时 tail_only=false（前 2+后 33 行）或 full_output=true。
+5.0b **Web 终端轮询等待与用户控制（必读）**：
+    - **何时触发**：一轮 tool_calls 全部执行完后，若本批需要等待再读终端，服务端会 sleep N 秒再进入下一轮 Agent。常见来源：`get_terminal_buffer` 的 `next_poll_in_seconds` 或自动推断；本批只有 `send_to_terminal` 且未再读 buffer；`ssh_execute` 的 detach / poll_log 仍在跑。
+    - **ssh_channel_* 不走此倒计时**：后台通道靠 `ssh_channel_send` + `read_lines/has_new` 连续 tool_call，**没有** batch 末服务端 sleep。长任务用 channel 时勿期待「唤醒 get_terminal_buffer」——应对 read 轮询或让用户在 Web 控制台场景用 buffer。
+    - **浏览器 UI**：CoT 里对应工具步骤（多为 `get_terminal_buffer`）会显示**剩余秒数**；用户可点 **唤醒**（`runtime-control: wake`，跳过等待、**继续**下一轮，不中断任务）或 **停止**（中断整轮 Agent）。
+    - **集成/API 无界面**：等待仍会发生；调用方可用 `POST /ai/sessions/{session_id}/runtime-control` 且 `{"action":"wake"}` 提前结束（`stop` 则中断整轮）。integration / MCP 会话同样有 session_id。
+    - **AI 行为**：不要假设用户一定等到倒计时结束；被 wake 后应正常继续轮询或推理，勿重复已完成步骤。
 5.0 **输出省略策略（读工具结果时）**：**终端 buffer、ssh_execute 的 stdout/stderr、ssh_channel_read_*、list_logs** → 只看**末尾**；get_terminal_buffer 日常轮询保持 tail_only=true（默认）。**fs_read_file / read_chat_data 读文件、配置、清单** → 优先看**开头**（read_chat_data 用 mode=head；看文件尾部用 mode=tail）。不要对终端输出只根据开头几行下结论。
 5.0a **终端闲/忙仅为参考**：`list_terminals` / `get_terminal_status` / `get_terminal_buffer` 返回的 **buffer_idle、session_state、can_send_command 不得作为拒绝 send_to_terminal 的理由**（服务端亦不会因此拦截）。**仅 connected=false 或 pending 时不可 send**。判 busy 时可读 **last_line** 与 buffer 末尾辅助决策；发完后 **get_terminal_buffer** 看是否生效；长任务轮询；需中断用 `<Ctrl+C>`。`false_busy_hint` / `terminal_advisory` 为提示字段。
 5.1 **长耗时任务（下载 / 上传 / 解压 / 编译 / rsync 等）自适应轮询策略——目标：总轮询次数 ≤ 50 次等到任务完成**：
@@ -6408,6 +6438,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                 "tool_calls": full_tool_calls,
                             })
                             max_next_poll_seconds = 0
+                            poll_wait_tool = None
                             terminal_poll_batch = TerminalPollBatchState()
                             runtime_injected_user_message = None
                             # 工具执行前的"模型随附说明"现在已经在流式阶段一字一字推过了
@@ -6676,7 +6707,9 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                         success=is_success,
                                     )
                                     if _poll_s > 0:
-                                        max_next_poll_seconds = max(max_next_poll_seconds, _poll_s)
+                                        if _poll_s >= max_next_poll_seconds:
+                                            max_next_poll_seconds = _poll_s
+                                            poll_wait_tool = fn_name
                                     if result_obj is not None:
                                         tool_result = json.dumps(result_obj, ensure_ascii=False)
                                 except Exception:
@@ -6855,7 +6888,9 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                     break
                             _trail_poll = terminal_poll_batch.trailing_send_poll()
                             if _trail_poll > 0:
-                                max_next_poll_seconds = max(max_next_poll_seconds, _trail_poll)
+                                if _trail_poll >= max_next_poll_seconds:
+                                    max_next_poll_seconds = _trail_poll
+                                    poll_wait_tool = "send_to_terminal"
                             if runtime_injected_user_message is not None:
                                 last_user_message = runtime_injected_user_message
                                 pending_user_msg = {"text": runtime_injected_user_message, "saved": False}
@@ -6869,6 +6904,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                     http_request=http_request,
                                     consume_runtime_control=_consume_runtime_control,
                                     out_status=_wait_out,
+                                    wait_tool=poll_wait_tool,
                                 ):
                                     yield _wait_line
                                 if _wait_out[0] == "supplement":
@@ -7205,6 +7241,7 @@ _OPS_INTEGRATION_MODE_RULES = """
 - **多条顺序命令 / 安装编译 / sudo 密码 / 菜单 / vi / Ctrl+C**：**ssh_channel_***（create → send → read/has_new → close）。**ssh_channel 在 AI 助手/主机详情同样可用**；集成模式因无 Web tab 更应优先 channel 而非假装能用界面终端。
 - **ssh_channel 自管理**：ssh_channel_list(all_open=true) 列全部 open 通道；info 含 IP/别名/用途/主机提示词摘要；close 手工关；集成会话默认 **3600s** 无读写自动关（Web 浏览器会话创建仍为 1800s）。
 - **大输出**：read_lines/read_length/dump_output 过大时 spill 到用户文件区，用 read_chat_data 分段读。
+- **Web 终端轮询等待**：若仍使用 `get_terminal_buffer` / `send_to_terminal` / `ssh_execute` detach，本批结束后服务端可能 sleep `next_poll_in_seconds`；无 UI 时调用方可用 `POST /ai/sessions/{session_id}/runtime-control` 且 `action=wake` 跳过等待、`stop` 中断整轮（**ssh_channel_* 无此 batch 末等待**）。
 - 若工具返回 ui_action（connect_terminal 等），在集成模式下说明「无实时 Web 界面」，改用 ssh_channel_* 或 ssh_execute。
 - 仍须遵守：凡真实执行必须通过 tool_call，禁止仅在文字中声称已执行。
 - **不要使用** `ask_user_choice`：本环境无法渲染按钮（即使调用，工具也会返回 `ui_capable=false` 的纯文本回退）；如需用户确认或选择，请直接在回复中以「[A] 选项一 / [B] 选项二 / 请回复 A 或 B」的纯文本形式呈现，并等待用户文字回复。
@@ -7781,6 +7818,7 @@ async def run_ops_integration_chat_complete(
                             "tool_calls": full_tool_calls,
                         })
                         max_next_poll_seconds = 0
+                        poll_wait_tool = None
                         terminal_poll_batch = TerminalPollBatchState()
                         for tc, fn_args, fn_args_preview in prepared_tool_calls:
                             fn_name = tc["function"]["name"]
@@ -7814,7 +7852,9 @@ async def run_ops_integration_chat_complete(
                                     success=is_success,
                                 )
                                 if _poll_s > 0:
-                                    max_next_poll_seconds = max(max_next_poll_seconds, _poll_s)
+                                    if _poll_s >= max_next_poll_seconds:
+                                        max_next_poll_seconds = _poll_s
+                                        poll_wait_tool = fn_name
                                 tool_result = json.dumps(result_obj, ensure_ascii=False)
                             except Exception:
                                 result_obj = {}
@@ -7869,7 +7909,9 @@ async def run_ops_integration_chat_complete(
                                 return {"success": True, "reply": wait_text, "session_id": sid}
                         _trail_poll = terminal_poll_batch.trailing_send_poll()
                         if _trail_poll > 0:
-                            max_next_poll_seconds = max(max_next_poll_seconds, _trail_poll)
+                            if _trail_poll >= max_next_poll_seconds:
+                                max_next_poll_seconds = _trail_poll
+                                poll_wait_tool = "send_to_terminal"
                         try:
                             await db.commit()
                         except Exception:

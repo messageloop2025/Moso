@@ -6901,43 +6901,87 @@ function edgeopsEnsureChatWaitHost(toolsEl) {
     return host;
 }
 
+function edgeopsFindCotToolStep(toolsEl, toolName) {
+    if (!toolsEl || !toolName) return null;
+    var panel = toolsEl.querySelector('.ai-cot-panel');
+    if (!panel) return null;
+    var steps = panel.querySelectorAll('.ai-cot-step-tool[data-tool-name="' + String(toolName).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]');
+    return steps.length ? steps[steps.length - 1] : null;
+}
+
 function edgeopsClearChatPollWait(toolsEl) {
     if (!toolsEl) return;
     var panel = toolsEl.querySelector('.ai-cot-panel');
-    var host = panel && panel.querySelector('.ai-cot-wait-host');
+    if (!panel) return;
+    var host = panel.querySelector('.ai-cot-wait-host');
     if (host) {
         host.innerHTML = '';
         host.style.display = 'none';
     }
+    panel.querySelectorAll('.ai-cot-tool-wait').forEach(function(el) { el.remove(); });
+    panel.querySelectorAll('.ai-cot-step-tool.ai-tool-waiting').forEach(function(step) {
+        step.classList.remove('ai-tool-waiting');
+    });
+}
+
+function edgeopsRenderChatPollWaitBar(container, tip, opts) {
+    opts = opts || {};
+    var wakeLbl = typeof t === 'function' ? t('hostAi.pollWaitWake') : 'Wake';
+    var stopLbl = typeof t === 'function' ? t('hostAi.runtimeStop') : 'Stop';
+    container.innerHTML = '<span class="ai-cot-wait-text">' + esc(tip) + '</span>'
+        + '<button type="button" class="btn btn-sm ai-cot-wait-wake">' + esc(wakeLbl) + '</button>'
+        + '<button type="button" class="btn btn-sm btn-outline ai-cot-wait-cancel">' + esc(stopLbl) + '</button>';
+    var wakeBtn = container.querySelector('.ai-cot-wait-wake');
+    if (wakeBtn && typeof opts.onWake === 'function') wakeBtn.onclick = opts.onWake;
+    var cancelBtn = container.querySelector('.ai-cot-wait-cancel');
+    if (cancelBtn && typeof opts.onAbort === 'function') cancelBtn.onclick = opts.onAbort;
 }
 
 function edgeopsUpdateChatPollWait(toolsEl, ev, opts) {
     opts = opts || {};
-    if (!ev || (ev.action !== 'waiting' && ev.action !== 'waiting_aborted')) return;
-    if (ev.action === 'waiting_aborted') {
+    if (!ev || (ev.action !== 'waiting' && ev.action !== 'waiting_aborted' && ev.action !== 'waiting_woken')) return;
+    if (ev.action === 'waiting_aborted' || ev.action === 'waiting_woken') {
         edgeopsClearChatPollWait(toolsEl);
         if (opts.runtimeCtl && opts.runtimeCtl.note) {
             opts.runtimeCtl.note(typeof t === 'function' ? t('hostAi.runtimeTipCompact') : '');
         }
         return;
     }
-    var host = edgeopsEnsureChatWaitHost(toolsEl);
-    if (!host) return;
+    var toolName = ev.wait_tool || 'get_terminal_buffer';
     var rem = ev.wait_remaining != null ? ev.wait_remaining : (ev.seconds || 0);
-    host.style.display = 'block';
     var tip = typeof t === 'function'
-        ? t('hostAi.pollWaitRuntimeTip', { remaining: rem })
-        : (rem + 's');
-    host.innerHTML = '<div class="ai-cot-wait-bar">'
-        + '<span class="ai-cot-wait-text">' + esc(tip) + '</span>'
-        + '<button type="button" class="btn btn-sm ai-cot-wait-cancel">'
-        + esc(typeof t === 'function' ? t('hostAi.runtimeStop') : 'Stop')
-        + '</button></div>';
-    var cancelBtn = host.querySelector('.ai-cot-wait-cancel');
-    if (cancelBtn) {
-        cancelBtn.onclick = function() {
-            if (typeof opts.onAbort === 'function') opts.onAbort();
-        };
+        ? t('hostAi.pollWaitOnTool', { remaining: rem, tool: toolName })
+        : (toolName + ' · ' + rem + 's');
+    var step = edgeopsFindCotToolStep(toolsEl, toolName);
+    if (step) {
+        step.classList.add('ai-tool-waiting');
+        var extras = step.querySelector('.ai-cot-tool-extras');
+        var waitEl = step.querySelector('.ai-cot-tool-wait');
+        if (!waitEl) {
+            waitEl = document.createElement('div');
+            waitEl.className = 'ai-cot-tool-wait ai-cot-wait-bar';
+            if (extras) extras.appendChild(waitEl);
+            else step.appendChild(waitEl);
+        }
+        edgeopsRenderChatPollWaitBar(waitEl, tip, opts);
+        var panel = toolsEl.querySelector('.ai-cot-panel');
+        var host = panel && panel.querySelector('.ai-cot-wait-host');
+        if (host) {
+            host.innerHTML = '';
+            host.style.display = 'none';
+        }
+    } else {
+        var host = edgeopsEnsureChatWaitHost(toolsEl);
+        if (!host) return;
+        host.style.display = 'block';
+        host.innerHTML = '';
+        var bar = document.createElement('div');
+        bar.className = 'ai-cot-wait-bar';
+        host.appendChild(bar);
+        var fallbackTip = typeof t === 'function'
+            ? t('hostAi.pollWaitRuntimeTip', { remaining: rem })
+            : (rem + 's');
+        edgeopsRenderChatPollWaitBar(bar, fallbackTip, opts);
     }
     if (opts.runtimeCtl && opts.runtimeCtl.note) {
         opts.runtimeCtl.note(typeof t === 'function'
@@ -8378,9 +8422,15 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
                 flushStreamReplyText();
                 edgeopsScrollChatToBottomStepIfPinned(box);
             }
-            else if (ev.action === 'waiting' || ev.action === 'waiting_aborted') {
+            else if (ev.action === 'waiting' || ev.action === 'waiting_aborted' || ev.action === 'waiting_woken') {
                 edgeopsUpdateChatPollWait(toolsEl, ev, {
                     runtimeCtl: hostAiRuntimeCtl,
+                    onWake: function() {
+                        if (sessionId) {
+                            API.pushAIRuntimeControl(sessionId, { action: 'wake', message: '' })
+                                .catch(function(err) { showToast((err && err.message) || t('toast.requestFailed'), 'error'); });
+                        }
+                    },
                     onAbort: function() {
                         if (hostAiAbortController) hostAiAbortController.abort();
                         if (sessionId) {
@@ -10558,9 +10608,15 @@ function renderAIPage() {
                 streamedText += '\n\n`' + t('hostAi.runtimeEventPrefix') + (rc2.action || 'supplement') + '`\n\n';
                 flushStreamReplyText();
                 edgeopsScrollChatToBottomStepIfPinned(box);
-            } else if (ev.action === 'waiting' || ev.action === 'waiting_aborted') {
+            } else if (ev.action === 'waiting' || ev.action === 'waiting_aborted' || ev.action === 'waiting_woken') {
                 edgeopsUpdateChatPollWait(toolsEl, ev, {
                     runtimeCtl: aiRuntimeCtl,
+                    onWake: function() {
+                        if (sessionId) {
+                            API.pushAIRuntimeControl(sessionId, { action: 'wake', message: '' })
+                                .catch(function(err) { showToast((err && err.message) || t('toast.requestFailed'), 'error'); });
+                        }
+                    },
                     onAbort: function() {
                         if (aiAbortController) aiAbortController.abort();
                         if (sessionId) {
@@ -14873,9 +14929,15 @@ function renderLocalPage() {
                 streamedText += '\n\n`' + t('hostAi.runtimeEventPrefix') + (rc3.action || 'supplement') + '`\n\n';
                 flushStreamReplyText();
                 edgeopsScrollChatToBottomStepIfPinned(box);
-            } else if (ev.action === 'waiting' || ev.action === 'waiting_aborted') {
+            }             else if (ev.action === 'waiting' || ev.action === 'waiting_aborted' || ev.action === 'waiting_woken') {
                 edgeopsUpdateChatPollWait(toolsEl, ev, {
                     runtimeCtl: localRuntimeCtl,
+                    onWake: function() {
+                        if (currentSessionId) {
+                            API.pushAIRuntimeControl(currentSessionId, { action: 'wake', message: '' })
+                                .catch(function(err) { showToast((err && err.message) || t('toast.requestFailed'), 'error'); });
+                        }
+                    },
                     onAbort: function() {
                         if (localAbortController) localAbortController.abort();
                         if (currentSessionId) {

@@ -67,7 +67,7 @@
 | 想新增主机并连接 SSH | [credentials.md](credentials.md)、[hosts.md](hosts.md) |
 | 想整理服务器树或做分组批量 | [host-groups.md](host-groups.md)、[batch.md](batch.md) |
 | 想配置或切换 AI 模型（多组 Profile） | [model-config.md](model-config.md)、[ai-assistant.md](ai-assistant.md) |
-| 想让 AI 帮你运维，或在 AI 执行中补充/暂停/停止 | [ai-assistant.md](ai-assistant.md)、[terminal.md](terminal.md) |
+| 想让 AI 帮你运维，或在 AI 执行中补充/暂停/停止/唤醒终端等待 | [ai-assistant.md](ai-assistant.md)、[terminal.md](terminal.md) |
 | 想查看 AI 创建的 SSH 通道输出（只读） | [ssh-channel.md](ssh-channel.md)、[terminal.md](terminal.md) |
 | 想用 OpenClaw / Cursor / 外部 Agent 调 毛竹 | [external-integration.md](external-integration.md) |
 | 想给 毛竹 的 AI 接入自己的 MCP 服务器（filesystem/Notion 等） | [external-integration.md](external-integration.md)（反向集成 · MCP）、导航「MCP 配置」 |

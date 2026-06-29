@@ -22,6 +22,11 @@
 - **send_to_terminal**：向某个 **AI 创建** 的控制台槽位发送文本（命令、控制键等）。支持 `<Ctrl+C>`、`<Ctrl+Z>`、`<Ctrl+D>`、`<Ctrl+L>` 等占位符。
 - **get_terminal_status**：轻量查询控制台 **通/断**（`connected`）与 **闲/忙**（`buffer_idle` / `session_state`）。`connected=false` 时**禁止** `send_to_terminal`；`session_state=busy` 时勿发新 shell 命令，应 `get_terminal_buffer` 轮询。
 - **get_terminal_buffer**：获取 **AI 创建** 控制台的最近输出（**末尾**即最新状态），并附带与 `get_terminal_status` 相同的状态字段。默认 `tail_only=true`：超长时仅返回最后 40 行；`tail_only=false` 为前 2+后 33 行；`full_output=true` 为全量。**仅供 AI 内部使用**。
+- **长任务轮询等待（next_poll_in_seconds）**：AI 调用 `get_terminal_buffer` 时若传入 `next_poll_in_seconds`（1～3600），或刚 `send_to_terminal` 发了 apt/make/编译等长命令、buffer 末尾仍有进度，服务端会在**该轮工具全部执行完后**倒计时 N 秒，再进入下一轮 AI 推理（避免每秒空读终端）。**仅 Web 控制台路径**（`get_terminal_buffer` / `send_to_terminal` / `ssh_execute` detach）；**ssh_channel 不走此倒计时**（见 [ssh-channel.md](ssh-channel.md)）。
+- **CoT 上的唤醒与停止**：倒计时期间，聊天右侧「思考与计划」里**对应工具步骤**（多为 `get_terminal_buffer`）会显示剩余秒数，并提供：
+  - **唤醒**：跳过剩余等待，AI 立刻进入下一轮（例如马上再读 buffer）；**不中断**整个任务。
+  - **停止**：终止当前 AI 执行轮次（与输入区「停止」相同）。
+  底部运行中控制条的「暂停 / 补充 / 停止」仍可用于整轮任务；唤醒仅针对该次终端轮询等待。
 - **sudo 与密码**：不少环境为免密 sudo（NOPASSWD）。AI 应先 `send_to_terminal` 执行 sudo 命令，再 **必须** `get_terminal_buffer` 查看输出；**仅当**末尾出现 `[sudo] password for`、`Password:` 等提示时才注入密码。**凭证库已启用**（`credentials_vault_enabled=true`）时调用 **`send_service_password`**（target=terminal）；未启用时可从主机知识取密码，但仍须 **另一次** 发送且 **禁止** 在 sudo 同次调用里带密码。**禁止**在 sudo 命令后立即跟发密码，**禁止**未看到提示就默认需要密码。详见 [service-credentials.md](service-credentials.md)。
 
 ### 终端状态（通/断 · 闲/忙）

@@ -209,6 +209,19 @@ A：正常。复杂任务可能数分钟。若用 **MCP**，耗时任务请改�
 **Q：编排任务完成后会自动通知吗？**  
 A：不会主动推送。需轮询 `edgeops_ops_task_output` 或再次调用 `edgeops_ops_orchestrate_chat` 查看 `task_completions`。
 
+**Q：集成会话里 AI 在等终端编译，能提前继续吗？**  
+A：若 Agent 使用了 `get_terminal_buffer` / `send_to_terminal` 触发了服务端 `next_poll_in_seconds` 等待，可在阻塞期间调用：
+
+```http
+POST /api/ai/sessions/{session_id}/runtime-control
+Authorization: Bearer eop_…
+Content-Type: application/json
+
+{"action": "wake"}
+```
+
+`wake` 仅**跳过当前倒计时**并进入下一轮推理，不中断整任务；`stop` 则中断整轮 Agent。**纯 ssh_channel_* 流程无此 batch 末等待**。MCP 暂未封装 wake 工具，需直接调 REST。
+
 **Q：401 怎么办？**  
 A：检查 Token 是否完整、`Authorization: Bearer` 拼写、Base URL 是否指向正确实例。
 

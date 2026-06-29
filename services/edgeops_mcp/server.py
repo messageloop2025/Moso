@@ -23,6 +23,7 @@ mcp = FastMCP(
         "HTTP 调用会自动带 X-EdgeOps-Client: mcp。"
         "多会话：session_id 参数，或 HTTP 头 X-EdgeOps-Session-Id，或 edgeops_context_bind。"
         "无 Web UI：勿依赖 connect_terminal / ask_user_choice；长任务用 ops_orchestrate_chat + ops_task_*。"
+        "若 ops-chat 触发 Web 终端 batch 末等待，可用 POST /api/ai/sessions/{session_id}/runtime-control action=wake 跳过（ssh_channel 无此等待）。"
         "SSH 通道内嵌套登录：先 edgeops_list_service_credentials，再 edgeops_send_service_password（勿 ssh_channel_send 发明文）。"
     ),
     # 挂载到主 Web 的 /mcp 时，子应用内路由为 `/`；独立 --http 进程由 mount 层再包一层 /mcp。

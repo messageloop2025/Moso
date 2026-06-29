@@ -96,6 +96,7 @@ python -m services.edgeops_mcp          # stdio（Cursor 本地子进程模式�
 - 非交互命令 → `edgeops_ssh_execute`；TTY → `edgeops_ssh_channel_*`
 - 通道内嵌套 SSH/sudo 密码 → `edgeops_list_service_credentials` + `edgeops_send_service_password`（勿 `ssh_channel_send` 发明文）
 - 大输出 → spill + `edgeops_read_chat_data`
+- **终端轮询等待**：若 `ops-chat` 仍触发 `get_terminal_buffer` 的 batch 末 sleep，可用 `POST /api/ai/sessions/{session_id}/runtime-control` 且 `{"action":"wake"}` 跳过（需 session_id；MCP 未封装 wake 工具）。**ssh_channel 无此等待**
 - 编排会话 `session_scope=mcp_orchestrate`，不出现在网页 AI 列表
 
 REST 映射见 [docs/API文档.md](../../docs/API文档.md) §16–§19（§19 为 ClawOps manifest / invoke / check-update）。

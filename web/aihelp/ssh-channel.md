@@ -35,6 +35,11 @@
 
 集成模式无 Web Tab 时更应优先 channel，而非假装能用界面终端。
 
+### 与 Web 控制台「轮询等待 / 唤醒」的区别
+
+- **Web 控制台**在长任务时，`get_terminal_buffer(next_poll_in_seconds=N)` 可能在工具批次结束后由服务端 **sleep N 秒**；浏览器 CoT 对应步骤可 **唤醒 / 停止**（见 [terminal.md](terminal.md)）。
+- **ssh_channel** 是 AI 连续 `send` + `read_lines/has_new`，**没有**上述 batch 末倒计时，CoT 上**不会出现**针对 channel 的唤醒条。觉得 AI 读 channel 太慢时，应 **停止整轮任务** 或 **补充**说明，而不是找「唤醒 get_terminal_buffer」。
+
 ---
 
 ## 「SSH通道管理」Tab（Web 界面）

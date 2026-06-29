@@ -166,7 +166,7 @@
 
 | 名称 | 说明 | 主要参数 |
 |------|------|----------|
-| get_terminal_buffer | 获取指定控制台最近输出；默认 **tail_only=true** 仅返回末尾 **max_lines**（默认 40）行；`full_output=true` 返回全文；可选 `next_poll_in_seconds` 轮询长任务 | slot?, full_output?, tail_only?, max_lines?, next_poll_in_seconds? |
+| get_terminal_buffer | 获取指定控制台最近输出；默认 **tail_only=true** 仅返回末尾 **max_lines**（默认 40）行；`full_output=true` 返回全文；可选 `next_poll_in_seconds` 轮询长任务（batch 末服务端 sleep；Web CoT 可唤醒/停止；集成 API 可用 `runtime-control: wake`） | slot?, full_output?, tail_only?, max_lines?, next_poll_in_seconds? |
 | scp_push | 通过 SFTP 推送到主机：**content**（文本）或 **local_path**（web/fs 相对路径，支持二进制 .tgz/.zip 等）二选一 | host_id, remote_path, content? 或 local_path? |
 | build_scp_transfer_script | 生成在源主机 A 上执行的 `scp -C` 推送脚本（A→B），仅生成不执行；用于跨主机直连方案 | source_host_id, source_path, target_host_id, target_path, compress? |
 | transfer_file_between_hosts | 自动跨主机传输：先探测 A↔B 22 端口可达性，按 [scp, rsync, sshfs] 顺序尝试直连；全部失败时自动回退到 毛竹 `web/fs` 中转 | source_host_id, source_path, target_host_id, target_path, methods?, edgeops_base_url?, ttl_seconds?, keep_staging_for_multi_target?, auto_unpack_on_target?, transfer_timeout_seconds? |

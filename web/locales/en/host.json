@@ -161,6 +161,8 @@
     "streamIncompleteBanner": "The reply described work to do, but no tool was invoked. Reply \"continue\" or clarify your request.",
     "pollWaitBanner": "{{remaining}}s left",
     "pollWaitAbort": "Stop",
+    "pollWaitWake": "Wake",
+    "pollWaitOnTool": "Waiting {{remaining}}s · {{tool}}",
     "pollWaitRuntimeTip": "{{remaining}}s left",
     "cotThinking": "AI is thinking and planning; tool calls coming up…",
     "cotRoundReasoning": "Round {{round}} \u00b7 Reasoning",

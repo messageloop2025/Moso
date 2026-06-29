@@ -1996,7 +1996,9 @@ TOOLS = [
                 "connected=false 时仍可读缓冲但禁止 send_to_terminal。"
                 "默认 tail_only=true：超长时仅返回最后 max_lines 行（默认 40）；"
                 "需开头上下文时 tail_only=false 或 full_output=true。"
-                "可用 next_poll_in_seconds 轮询长任务；轻量查状态用 get_terminal_status。"
+                "可用 next_poll_in_seconds 轮询长任务；工具批次结束后服务端可能 sleep 该秒数再进入下一轮。"
+                "浏览器 CoT 对应步骤可显示倒计时，用户可唤醒（跳过等待）或停止；集成/API 可用 runtime-control wake。"
+                "轻量查状态用 get_terminal_status。**ssh_channel_* 不走此 batch 末等待。**"
             ),
             "parameters": {
                 "type": "object",
@@ -2006,7 +2008,7 @@ TOOLS = [
                     "full_output": {"type": "boolean", "description": "为 true 时返回完整输出，忽略 tail_only/max_lines。"},
                     "tail_only": {"type": "boolean", "description": "默认 true：超过 max_lines 时仅返回最后 max_lines 行（推荐日常轮询）。false 则保留前 2 行 + 后 33 行。"},
                     "max_lines": {"type": "integer", "description": "tail_only 或省略模式下的最大行数，默认 40，范围 10～200。"},
-                    "next_poll_in_seconds": {"type": "integer", "description": "建议下次再读取终端前等待的秒数，仅限 1～3600。不传时服务端仍可能根据刚发送的命令或 buffer 进度自动安排等待（apt/make/下载等）。"},
+                    "next_poll_in_seconds": {"type": "integer", "description": "建议下次再读取终端前等待的秒数，仅限 1～3600。不传时服务端仍可能根据刚发送的命令或 buffer 进度自动安排 batch 末等待（apt/make/下载等）。用户可在 Web UI 对该步骤「唤醒」跳过，或通过 runtime-control wake。"},
                 },
                 "required": [],
             },

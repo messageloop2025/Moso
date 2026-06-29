@@ -161,6 +161,8 @@
     "streamIncompleteBanner": "本轮回复描述了待执行操作，但未检测到工具调用。请回复「继续执行」或补充说明。",
     "pollWaitBanner": "剩余 {{remaining}}s",
     "pollWaitAbort": "停止",
+    "pollWaitWake": "唤醒",
+    "pollWaitOnTool": "等待 {{remaining}}s · {{tool}}",
     "pollWaitRuntimeTip": "剩余 {{remaining}}s",
     "cotThinking": "AI 正在思考与规划，工具调用马上就来…",
     "cotRoundReasoning": "第 {{round}} 轮 · 推理",
