@@ -345,10 +345,15 @@
 
 | 名称 | 说明 | 主要参数 |
 |------|------|----------|
-| list_user_skills | 列出 Skill 元数据 | — |
+| list_user_skills | 列出 Skill 元数据（含 group_id/group_name） | — |
+| list_user_skill_groups | 列出 Skills 分组摘要 | — |
+| create_user_skill_group | 新建分组 | name |
+| update_user_skill_group | 重命名分组 | group_id 或 group_name, name |
+| delete_user_skill_group | 删除分组（组内 Skill 移入未分组） | group_id 或 group_name |
+| assign_user_skills_to_group | 批量移入分组 | group_id/group_name, skill_names?/skill_ids?, all_ungrouped? |
 | get_user_skill | 按需加载 SKILL.md 正文（含 resources 列表） | name 或 skill_id |
 | read_user_skill_file | 读取 reference.md 等附属文件 | name, path |
-| save_user_skill | 按 name upsert（Cursor 格式） | name, content?, body?, description?, chat_scope_*? |
+| save_user_skill | 按 name upsert（Cursor 格式）；可设 group_name/group_id | name, content?, body?, description?, chat_scope_*?, group_name? |
 | delete_user_skill | 删除 | name 或 skill_id, remove_files? |
 | scan_user_skills | 扫描磁盘与库**双向同步**：导入/更新 SKILL.md 元数据；磁盘已删除或改名的 Skill 从库移除（改名=删旧行+新增行，分组/启停不继承） | — |
 | export_user_skills_config | 导出 JSON 包 | include_disabled? |

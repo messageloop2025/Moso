@@ -686,6 +686,29 @@ async def resolve_skill_group_id(
     return gid
 
 
+async def resolve_skill_group_ref(
+    db,
+    user_id: int,
+    *,
+    group_id: int | None | str = None,
+    group_name: str | None = None,
+) -> int | None:
+    """按 id 或名称解析 Skill 分组（仅当前用户）。"""
+    if group_id is not None and group_id != "":
+        return await resolve_skill_group_id(db, user_id, group_id)
+    gname = (group_name or "").strip()
+    if not gname:
+        return None
+    gname = normalize_skill_group_name(gname)
+    rows = await db.execute_fetchall(
+        "SELECT id FROM user_skill_groups WHERE user_id=? AND name=?",
+        (user_id, gname),
+    )
+    if not rows:
+        raise ValueError(f"分组「{gname}」不存在")
+    return int(dict(rows[0])["id"])
+
+
 async def list_user_skills(
     db,
     user_id: int,

@@ -602,6 +602,7 @@ table.table-compact-ellipsis.list-table th.td-fill {
 /* colgroup 列宽（与 HTML col 类名对应） */
 table.table-compact-ellipsis col.col-td-xs { width: 72px; }
 table.table-compact-ellipsis col.col-td-sm { width: 108px; }
+table.table-compact-ellipsis col.col-td-skill-group { width: 176px; }
 table.table-compact-ellipsis col.col-td-md { width: 148px; }
 table.table-compact-ellipsis col.col-td-nowrap { width: 120px; }
 table.table-compact-ellipsis col.col-td-actions { width: 152px; }
@@ -1067,6 +1068,10 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
 .skills-filter-item select.form-control-sm {
     min-width: 140px;
 }
+.skills-filter-item select.skills-filter-group-select {
+    min-width: 168px;
+    max-width: 220px;
+}
 .skills-toolbar-actions {
     display: flex;
     flex-wrap: wrap;
@@ -1094,8 +1099,18 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
     font-size: 13px;
 }
 .skills-group-select {
-    min-width: 120px;
-    max-width: 180px;
+    display: block;
+    width: 100%;
+    min-width: 9rem;
+    max-width: 100%;
+    box-sizing: border-box;
+}
+table.table-compact-ellipsis td.td-skill-group {
+    overflow: visible;
+    min-width: 9rem;
+}
+table.table-compact-ellipsis th.th-skill-group {
+    min-width: 9rem;
 }
 
 .badge-success { background: rgba(16,185,129,0.2); color: var(--success); }

@@ -13383,8 +13383,9 @@ function _showMoveSkillsToGroupModal(opts) {
 
 function _renderSkillGroupCell(s) {
     var gid = s.group_id != null ? String(s.group_id) : '';
+    var label = _skillRowGroupLabel(s);
     return '<select class="form-control form-control-sm skills-group-select" data-skill-group="' + s.id + '" title="'
-        + esc(t('skills.changeGroup')) + '">' + _skillGroupOptionsHtml(gid, true) + '</select>';
+        + esc(t('skills.changeGroup')) + ': ' + esc(label) + '">' + _skillGroupOptionsHtml(gid, true) + '</select>';
 }
 
 function _skillGroupDisplayName(g) {
@@ -13422,7 +13423,7 @@ function _renderUserSkillRow(s) {
         + edgeopsTableTdNowrap('<code>' + esc(s.name) + '</code>', { html: true })
         + edgeopsTableTdEllipsis(s.display_name || s.name, {})
         + edgeopsTableTdEllipsis(s.description || '', { fill: true })
-        + edgeopsTableTdNowrap(_renderSkillGroupCell(s), { html: true })
+        + edgeopsTableTdNowrap(_renderSkillGroupCell(s), { html: true, cls: 'td-skill-group' })
         + edgeopsTableTdNowrap(_renderSkillEnabledCell(s), { html: true })
         + edgeopsTableTdNowrap(fs, { html: true })
         + edgeopsTableTdNowrap(_renderSkillScopeBadges(s), { html: true })
@@ -13456,7 +13457,7 @@ function _renderUserSkillsFilterBar() {
         + '<option value="0"' + (en === '0' ? ' selected' : '') + '>' + esc(t('skills.filterStatusDisabled')) + '</option>'
         + '</select></label>'
         + '<label class="skills-filter-item"><span>' + esc(t('skills.filterGroup')) + '</span>'
-        + '<select id="userSkillsFilterGroup" class="form-control form-control-sm">' + groupOpts + '</select></label>'
+        + '<select id="userSkillsFilterGroup" class="form-control form-control-sm skills-filter-group-select">' + groupOpts + '</select></label>'
         + '</div>'
         + '<div class="skills-toolbar-actions">'
         + '<button type="button" class="btn btn-sm" id="userSkillsManageGroupsBtn">' + esc(t('skills.manageGroups')) + '</button>'
@@ -13793,11 +13794,11 @@ function loadUserSkillsPage(opts) {
         }
         wrap.innerHTML = ''
             + '<table class="data-table table-compact-ellipsis"><colgroup>'
-            + '<col class="col-td-xs"><col class="col-td-nowrap"><col class="col-td-md"><col><col class="col-td-sm"><col class="col-td-sm"><col class="col-td-xs"><col class="col-td-sm"><col class="col-td-actions">'
+            + '<col class="col-td-xs"><col class="col-td-nowrap"><col class="col-td-md"><col><col class="col-td-skill-group"><col class="col-td-sm"><col class="col-td-xs"><col class="col-td-sm"><col class="col-td-actions">'
             + '</colgroup><thead><tr>'
             + '<th class="td-nowrap"><input type="checkbox" id="userSkillsSelectAll" title="' + esc(t('skills.selectAll')) + '"></th>'
             + '<th class="td-nowrap">' + esc(t('skills.colName')) + '</th><th>' + esc(t('skills.colDisplay')) + '</th><th class="td-fill">' + esc(t('skills.colDesc')) + '</th>'
-            + '<th class="td-nowrap">' + esc(t('skills.colGroup')) + '</th>'
+            + '<th class="td-nowrap th-skill-group">' + esc(t('skills.colGroup')) + '</th>'
             + '<th class="td-nowrap">' + esc(t('skills.colStatus')) + '</th>'
             + '<th class="td-nowrap">' + esc(t('skills.colFile')) + '</th><th class="td-nowrap">' + esc(t('skills.colScopes')) + '</th><th class="td-nowrap td-actions">' + esc(t('skills.colActions')) + '</th>'
             + '</tr></thead><tbody>'

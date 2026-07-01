@@ -4505,11 +4505,104 @@ TOOLS = [
         "function": {
             "name": "list_user_skills",
             "description": (
-                "列出当前用户的 Agent Skills（含 always_apply、resources、场景开关）。"
+                "列出当前用户的 Agent Skills（含 group_id/group_name 分组、启停、场景开关）。"
                 "需管理员已在用户管理中开启 Skills 功能。"
+                "管理分组用 list/create/update/delete_user_skill_group、assign_user_skills_to_group。"
                 "创建新 Skill 请用 save_user_skill，勿只列出后口头描述。"
             ),
             "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_user_skill_groups",
+            "description": (
+                "列出当前用户的 Skills 分组（含虚拟「未分组」摘要：skill_count、enabled_count）。"
+                "分组仅存数据库，用于整理 Skills；与主机分组无关。"
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_user_skill_group",
+            "description": (
+                "新建 Skills 分组（仅当前用户）。用户要求「建 Skill 组/把 Skill 放进某组」时须调用，"
+                "勿声称系统不支持分组。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "分组名称（如 test、工作流）"},
+                    "sort_order": {"type": "integer", "description": "排序，越小越靠前，默认 0"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_user_skill_group",
+            "description": "重命名 Skills 分组（group_id 与 group_name 二选一指定目标）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "group_id": {"type": "integer"},
+                    "group_name": {"type": "string", "description": "当前分组名（与 group_id 二选一）"},
+                    "name": {"type": "string", "description": "新的分组名称"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_user_skill_group",
+            "description": "删除 Skills 分组；组内 Skill 移入「未分组」，不删 Skill 本身。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "group_id": {"type": "integer"},
+                    "group_name": {"type": "string"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "assign_user_skills_to_group",
+            "description": (
+                "将 Skill 批量移入指定分组（或 group_id=null/group_name 省略时移入「未分组」）。"
+                "可传 skill_names 或 skill_ids；all_ungrouped=true 时移动全部未分组 Skill。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "group_id": {"type": "integer", "description": "目标分组 id；省略或 null 表示未分组"},
+                    "group_name": {"type": "string", "description": "目标分组名（与 group_id 二选一）"},
+                    "skill_names": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Skill 标识名列表",
+                    },
+                    "skill_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Skill 数字 id 列表",
+                    },
+                    "all_ungrouped": {
+                        "type": "boolean",
+                        "description": "true 时将所有未分组 Skill 移入目标分组",
+                    },
+                },
+                "required": [],
+            },
         },
     },
     {
@@ -4558,6 +4651,8 @@ TOOLS = [
                     "chat_scope_web": {"type": "boolean"},
                     "chat_scope_host": {"type": "boolean"},
                     "chat_scope_integration": {"type": "boolean"},
+                    "group_id": {"type": "integer", "description": "所属分组 id；null 表示未分组"},
+                    "group_name": {"type": "string", "description": "所属分组名（与 group_id 二选一）"},
                 },
                 "required": ["name"],
             },
@@ -4895,6 +4990,11 @@ ADMIN_ONLY_AI_TOOLS = frozenset({
 
 USER_SKILLS_AI_TOOLS = frozenset({
     "list_user_skills",
+    "list_user_skill_groups",
+    "create_user_skill_group",
+    "update_user_skill_group",
+    "delete_user_skill_group",
+    "assign_user_skills_to_group",
     "get_user_skill",
     "save_user_skill",
     "delete_user_skill",
@@ -15085,20 +15185,26 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
 
         if name in USER_SKILLS_AI_TOOLS:
             from services.user_skills_registry import (
+                bulk_assign_skills_to_group,
                 create_user_skill,
+                create_user_skill_group,
                 delete_user_skill,
+                delete_user_skill_group,
                 collect_description_warnings,
                 delete_skill_resource_file,
                 get_user_skill,
                 get_user_skill_raw_by_name,
                 list_skill_files_detail,
+                list_user_skill_groups_summary,
                 list_user_skills,
                 read_skill_content,
                 read_skill_resource_file,
                 require_user_skills_access,
+                resolve_skill_group_ref,
                 resolve_skill_content_for_save,
                 scan_user_skills_from_disk,
                 update_user_skill,
+                update_user_skill_group,
                 write_skill_resource_file,
             )
 
@@ -15111,6 +15217,107 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             if name == "list_user_skills":
                 items = await list_user_skills(db, user["id"], user)
                 return json.dumps({"success": True, "skills": items}, ensure_ascii=False)
+
+            if name == "list_user_skill_groups":
+                groups = await list_user_skill_groups_summary(db, user["id"])
+                return json.dumps({"success": True, "groups": groups}, ensure_ascii=False)
+
+            if name == "create_user_skill_group":
+                gname = (arguments.get("name") or "").strip()
+                if not gname:
+                    return json.dumps({"success": False, "error": "需要 name"}, ensure_ascii=False)
+                try:
+                    group = await create_user_skill_group(
+                        db,
+                        user["id"],
+                        name=gname,
+                        sort_order=int(arguments.get("sort_order") or 0),
+                    )
+                except ValueError as e:
+                    return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+                return json.dumps({"success": True, "group": group}, ensure_ascii=False)
+
+            if name == "update_user_skill_group":
+                new_name = (arguments.get("name") or "").strip()
+                if not new_name:
+                    return json.dumps({"success": False, "error": "需要 name（新分组名）"}, ensure_ascii=False)
+                try:
+                    gid = await resolve_skill_group_ref(
+                        db,
+                        user["id"],
+                        group_id=arguments.get("group_id"),
+                        group_name=(arguments.get("group_name") or "").strip() or None,
+                    )
+                except ValueError as e:
+                    return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+                if gid is None:
+                    return json.dumps({"success": False, "error": "需要 group_id 或 group_name"}, ensure_ascii=False)
+                try:
+                    group = await update_user_skill_group(db, user["id"], gid, name=new_name)
+                except (ValueError, LookupError) as e:
+                    return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+                return json.dumps({"success": True, "group": group}, ensure_ascii=False)
+
+            if name == "delete_user_skill_group":
+                try:
+                    gid = await resolve_skill_group_ref(
+                        db,
+                        user["id"],
+                        group_id=arguments.get("group_id"),
+                        group_name=(arguments.get("group_name") or "").strip() or None,
+                    )
+                except ValueError as e:
+                    return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+                if gid is None:
+                    return json.dumps({"success": False, "error": "需要 group_id 或 group_name"}, ensure_ascii=False)
+                ok = await delete_user_skill_group(db, user["id"], gid)
+                if not ok:
+                    return json.dumps({"success": False, "error": "分组不存在"}, ensure_ascii=False)
+                return json.dumps({"success": True}, ensure_ascii=False)
+
+            if name == "assign_user_skills_to_group":
+                all_ungrouped = bool(arguments.get("all_ungrouped"))
+                skill_ids: list[int] = []
+                if not all_ungrouped:
+                    raw_ids = arguments.get("skill_ids") or []
+                    skill_ids = [int(x) for x in raw_ids if x is not None]
+                    for sname in arguments.get("skill_names") or []:
+                        slug = (sname or "").strip()
+                        if not slug:
+                            continue
+                        raw = await get_user_skill_raw_by_name(db, user["id"], slug)
+                        if not raw:
+                            return json.dumps(
+                                {"success": False, "error": f"Skill「{slug}」不存在"},
+                                ensure_ascii=False,
+                            )
+                        skill_ids.append(int(raw["id"]))
+                    skill_ids = list(dict.fromkeys(skill_ids))
+                try:
+                    gid = await resolve_skill_group_ref(
+                        db,
+                        user["id"],
+                        group_id=arguments.get("group_id"),
+                        group_name=(arguments.get("group_name") or "").strip() or None,
+                    )
+                except ValueError as e:
+                    return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+                if all_ungrouped and gid is None:
+                    return json.dumps(
+                        {"success": False, "error": "all_ungrouped 需指定目标分组"},
+                        ensure_ascii=False,
+                    )
+                try:
+                    result = await bulk_assign_skills_to_group(
+                        db,
+                        user["id"],
+                        group_id=gid,
+                        skill_ids=skill_ids or None,
+                        all_ungrouped=all_ungrouped,
+                    )
+                except (ValueError, LookupError) as e:
+                    return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+                return json.dumps({"success": True, **result}, ensure_ascii=False)
 
             if name == "get_user_skill":
                 sid = arguments.get("skill_id")
@@ -15146,6 +15353,15 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     existing_content=existing_md,
                 )
                 try:
+                    group_kw: dict = {}
+                    if "group_id" in arguments or "group_name" in arguments:
+                        gid_val = await resolve_skill_group_ref(
+                            db,
+                            user["id"],
+                            group_id=arguments.get("group_id"),
+                            group_name=(arguments.get("group_name") or "").strip() or None,
+                        )
+                        group_kw["group_id"] = gid_val
                     if existing:
                         row = await update_user_skill(
                             db,
@@ -15160,6 +15376,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                             chat_scope_web=arguments.get("chat_scope_web"),
                             chat_scope_host=arguments.get("chat_scope_host"),
                             chat_scope_integration=arguments.get("chat_scope_integration"),
+                            **({"group_id": group_kw["group_id"]} if "group_id" in group_kw else {}),
                         )
                     else:
                         row = await create_user_skill(
@@ -15175,6 +15392,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                             chat_scope_web=bool(arguments.get("chat_scope_web", True)),
                             chat_scope_host=bool(arguments.get("chat_scope_host", True)),
                             chat_scope_integration=bool(arguments.get("chat_scope_integration", False)),
+                            group_id=group_kw.get("group_id"),
                         )
                 except (ValueError, LookupError) as e:
                     return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
