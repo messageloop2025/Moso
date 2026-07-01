@@ -31,7 +31,21 @@
 - **PTY**：外层 channel 已分配真实 TTY；channel 内再 SSH 其它主机时，交互登录建议 **`ssh -tt user@host`**。
 - **无换行输出**：`password:`、`Password:` 等提示**常无 `\n`**，会出现在 **`tail_text` / `pending_partial`**，不要因 `lines` 为空就认为无输出。
 - **禁止**用空回车探测密码；检测到密码提示后用 **`send_service_password`**（`target=ssh_channel`，`channel_id=…`），勿 `ssh_channel_send` 发明文。详见 [service-credentials.md](service-credentials.md)。
-- **列表与关闭**：`ssh_channel_list(all_open=true)`；`ssh_channel_close` / `ssh_channel_close_batch`。
+- **列表与关闭**：`ssh_channel_list(all_open=true)`；`ssh_channel_get_status` 轻量查 **通/断/闲/忙**；`ssh_channel_close` / `ssh_channel_close_batch`。
+
+### 通/断与闲/忙（与 Web 控制台一致）
+
+| 字段 | 含义 |
+|------|------|
+| `connected` | **通/断**：DB 为 open 且内存中仍有 TTY 时为 true；false 时**禁止** `ssh_channel_send` |
+| `memory_connected` | 本 worker 进程内存中是否仍持有连接 |
+| `db_status` | 库中状态：open / closed / failed |
+| `buffer_idle` | **闲/忙**：true 表示输出末尾像 shell 提示符，可发**新**命令 |
+| `session_state` | idle / busy / waiting_password / waiting_input / disconnected 等 |
+| `can_send_command` | connected 且 idle 且无密码/交互等待时为 true（**仅供参考**，busy 不拦截 send） |
+| `last_line` | 缓冲末尾一行（判 busy 时优先看 tail_text / pending_partial） |
+
+发命令前可先 `ssh_channel_list` 或 `ssh_channel_get_status`；`read_lines` 也会附带上述字段。
 
 集成模式无 Web Tab 时更应优先 channel，而非假装能用界面终端。
 

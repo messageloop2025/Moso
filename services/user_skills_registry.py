@@ -406,7 +406,8 @@ def resolve_skill_content_for_save(
     return None
 
 
-def public_skill_row(row: dict, *, fs_exists: bool | None = None) -> dict:
+def public_skill_row(row: dict, *, fs_exists: bool | None = None, group_name: str = "") -> dict:
+    gid = row.get("group_id")
     return {
         "id": row["id"],
         "name": row.get("name") or "",
@@ -418,6 +419,8 @@ def public_skill_row(row: dict, *, fs_exists: bool | None = None) -> dict:
         "chat_scope_web": bool(row.get("chat_scope_web", 1)),
         "chat_scope_host": bool(row.get("chat_scope_host", 1)),
         "chat_scope_integration": bool(row.get("chat_scope_integration", 0)),
+        "group_id": int(gid) if gid is not None else None,
+        "group_name": (group_name or "").strip(),
         "file_exists": fs_exists if fs_exists is not None else True,
         "updated_at": row.get("updated_at"),
         "created_at": row.get("created_at"),
@@ -455,25 +458,274 @@ async def write_skill_content(user: dict, name: str, content: str) -> Path:
     return path
 
 
-async def list_user_skills(db, user_id: int, user: dict | None = None) -> list[dict]:
+async def _group_name_map(db, user_id: int) -> dict[int, str]:
     rows = await db.execute_fetchall(
-        "SELECT * FROM user_skills WHERE user_id=? ORDER BY name ASC",
+        "SELECT id, name FROM user_skill_groups WHERE user_id=?",
+        (user_id,),
+    )
+    return {int(dict(r)["id"]): str(dict(r).get("name") or "") for r in rows}
+
+
+def normalize_skill_group_name(name: str) -> str:
+    raw = (name or "").strip()
+    if not raw:
+        raise ValueError("分组名称不能为空")
+    if len(raw) > 64:
+        raise ValueError("分组名称最长 64 字符")
+    return raw
+
+
+async def list_user_skill_groups_summary(db, user_id: int) -> list[dict]:
+    """返回分组摘要；首项为虚拟「未分组」。"""
+    rows = await db.execute_fetchall(
+        """SELECT id, name, sort_order, created_at, updated_at
+           FROM user_skill_groups WHERE user_id=?
+           ORDER BY sort_order ASC, name ASC""",
         (user_id,),
     )
     out: list[dict] = []
+    ung = await db.execute_fetchall(
+        """SELECT COUNT(*) AS skill_count,
+                  SUM(CASE WHEN enabled=1 THEN 1 ELSE 0 END) AS enabled_count
+           FROM user_skills WHERE user_id=? AND group_id IS NULL""",
+        (user_id,),
+    )
+    u = dict(ung[0]) if ung else {}
+    out.append(
+        {
+            "id": None,
+            "name": "",
+            "is_default": True,
+            "sort_order": -1,
+            "skill_count": int(u.get("skill_count") or 0),
+            "enabled_count": int(u.get("enabled_count") or 0),
+        }
+    )
     for r in rows:
         row = dict(r)
-        if user:
-            out.append(await enrich_skill_list_item(db, user_id, user, row))
-        else:
-            out.append(public_skill_row(row))
+        gid = int(row["id"])
+        cnt = await db.execute_fetchall(
+            """SELECT COUNT(*) AS skill_count,
+                      SUM(CASE WHEN enabled=1 THEN 1 ELSE 0 END) AS enabled_count
+               FROM user_skills WHERE user_id=? AND group_id=?""",
+            (user_id, gid),
+        )
+        c = dict(cnt[0]) if cnt else {}
+        out.append(
+            {
+                "id": gid,
+                "name": row.get("name") or "",
+                "is_default": False,
+                "sort_order": int(row.get("sort_order") or 0),
+                "skill_count": int(c.get("skill_count") or 0),
+                "enabled_count": int(c.get("enabled_count") or 0),
+                "created_at": row.get("created_at"),
+                "updated_at": row.get("updated_at"),
+            }
+        )
     return out
 
 
-async def enrich_skill_list_item(_db, user_id: int, user: dict, row: dict) -> dict:
+async def create_user_skill_group(db, user_id: int, *, name: str, sort_order: int = 0) -> dict:
+    gname = normalize_skill_group_name(name)
+    existing = await db.execute_fetchall(
+        "SELECT id FROM user_skill_groups WHERE user_id=? AND name=?",
+        (user_id, gname),
+    )
+    if existing:
+        raise ValueError(f"分组「{gname}」已存在")
+    cur = await db.execute(
+        """INSERT INTO user_skill_groups (user_id, name, sort_order)
+           VALUES (?, ?, ?)""",
+        (user_id, gname, int(sort_order or 0)),
+    )
+    await db.commit()
+    gid = int(cur.lastrowid)
+    rows = await db.execute_fetchall(
+        "SELECT * FROM user_skill_groups WHERE id=? AND user_id=?",
+        (gid, user_id),
+    )
+    row = dict(rows[0]) if rows else {}
+    return {
+        "id": gid,
+        "name": row.get("name") or gname,
+        "is_default": False,
+        "sort_order": int(row.get("sort_order") or 0),
+        "skill_count": 0,
+        "enabled_count": 0,
+    }
+
+
+async def update_user_skill_group(db, user_id: int, group_id: int, *, name: str) -> dict:
+    gname = normalize_skill_group_name(name)
+    rows = await db.execute_fetchall(
+        "SELECT id FROM user_skill_groups WHERE id=? AND user_id=?",
+        (group_id, user_id),
+    )
+    if not rows:
+        raise LookupError("分组不存在")
+    dup = await db.execute_fetchall(
+        "SELECT id FROM user_skill_groups WHERE user_id=? AND name=? AND id<>?",
+        (user_id, gname, group_id),
+    )
+    if dup:
+        raise ValueError(f"分组「{gname}」已存在")
+    await db.execute(
+        """UPDATE user_skill_groups SET name=?, updated_at=CURRENT_TIMESTAMP
+           WHERE id=? AND user_id=?""",
+        (gname, group_id, user_id),
+    )
+    await db.commit()
+    summary = await list_user_skill_groups_summary(db, user_id)
+    for g in summary:
+        if g.get("id") == group_id:
+            return g
+    return {"id": group_id, "name": gname, "is_default": False}
+
+
+async def delete_user_skill_group(db, user_id: int, group_id: int) -> bool:
+    rows = await db.execute_fetchall(
+        "SELECT id FROM user_skill_groups WHERE id=? AND user_id=?",
+        (group_id, user_id),
+    )
+    if not rows:
+        return False
+    await db.execute(
+        "UPDATE user_skills SET group_id=NULL, updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND group_id=?",
+        (user_id, group_id),
+    )
+    cur = await db.execute(
+        "DELETE FROM user_skill_groups WHERE id=? AND user_id=?",
+        (group_id, user_id),
+    )
+    await db.commit()
+    return cur.rowcount > 0
+
+
+async def bulk_set_group_skills_enabled(
+    db,
+    user_id: int,
+    *,
+    group_id: int | None,
+    enabled: bool,
+) -> dict:
+    val = 1 if enabled else 0
+    if group_id is None:
+        cur = await db.execute(
+            """UPDATE user_skills SET enabled=?, updated_at=CURRENT_TIMESTAMP
+               WHERE user_id=? AND group_id IS NULL""",
+            (val, user_id),
+        )
+    else:
+        rows = await db.execute_fetchall(
+            "SELECT id FROM user_skill_groups WHERE id=? AND user_id=?",
+            (group_id, user_id),
+        )
+        if not rows:
+            raise LookupError("分组不存在")
+        cur = await db.execute(
+            """UPDATE user_skills SET enabled=?, updated_at=CURRENT_TIMESTAMP
+               WHERE user_id=? AND group_id=?""",
+            (val, user_id, group_id),
+        )
+    await db.commit()
+    return {"updated": int(cur.rowcount or 0), "enabled": bool(enabled)}
+
+
+async def bulk_assign_skills_to_group(
+    db,
+    user_id: int,
+    *,
+    group_id: int | None,
+    skill_ids: list[int] | None = None,
+    all_ungrouped: bool = False,
+) -> dict:
+    """批量调整 Skill 所属分组（仅当前用户自己的 Skill）。"""
+    if group_id is not None:
+        await resolve_skill_group_id(db, user_id, group_id)
+    if not all_ungrouped and not skill_ids:
+        raise ValueError("请指定 skill_ids 或 all_ungrouped")
+    if all_ungrouped and group_id is None:
+        raise ValueError("all_ungrouped 需指定目标分组")
+    if all_ungrouped:
+        cur = await db.execute(
+            """UPDATE user_skills SET group_id=?, updated_at=CURRENT_TIMESTAMP
+               WHERE user_id=? AND group_id IS NULL""",
+            (group_id, user_id),
+        )
+    else:
+        ids = [int(x) for x in (skill_ids or [])]
+        if not ids:
+            raise ValueError("skill_ids 不能为空")
+        placeholders = ",".join("?" * len(ids))
+        params: list[Any] = [group_id, user_id, *ids]
+        cur = await db.execute(
+            f"""UPDATE user_skills SET group_id=?, updated_at=CURRENT_TIMESTAMP
+                WHERE user_id=? AND id IN ({placeholders})""",
+            tuple(params),
+        )
+    await db.commit()
+    return {"updated": int(cur.rowcount or 0), "group_id": group_id}
+
+
+async def resolve_skill_group_id(
+    db, user_id: int, group_id: int | None | str
+) -> int | None:
+    if group_id is None or group_id == "" or group_id == "none":
+        return None
+    try:
+        gid = int(group_id)
+    except (TypeError, ValueError) as e:
+        raise ValueError("无效的分组 id") from e
+    rows = await db.execute_fetchall(
+        "SELECT id FROM user_skill_groups WHERE id=? AND user_id=?",
+        (gid, user_id),
+    )
+    if not rows:
+        raise ValueError("分组不存在")
+    return gid
+
+
+async def list_user_skills(
+    db,
+    user_id: int,
+    user: dict | None = None,
+    *,
+    enabled: bool | None = None,
+    group_id: str | int | None = "all",
+) -> list[dict]:
+    sql = "SELECT * FROM user_skills WHERE user_id=?"
+    params: list[Any] = [user_id]
+    if enabled is not None:
+        sql += " AND enabled=?"
+        params.append(1 if enabled else 0)
+    if group_id != "all":
+        if group_id is None or group_id == "" or group_id == "none":
+            sql += " AND group_id IS NULL"
+        else:
+            gid = int(group_id)
+            sql += " AND group_id=?"
+            params.append(gid)
+    sql += " ORDER BY name ASC"
+    rows = await db.execute_fetchall(sql, tuple(params))
+    gmap = await _group_name_map(db, user_id)
+    out: list[dict] = []
+    for r in rows:
+        row = dict(r)
+        gname = ""
+        if row.get("group_id") is not None:
+            gname = gmap.get(int(row["group_id"]), "")
+        if user:
+            out.append(await enrich_skill_list_item(db, user_id, user, row, group_name=gname))
+        else:
+            out.append(public_skill_row(row, group_name=gname))
+    return out
+
+
+async def enrich_skill_list_item(_db, user_id: int, user: dict, row: dict, *, group_name: str = "") -> dict:
     slug = row.get("name") or ""
     fs_ok = skill_md_path(user, slug).is_file() if slug else False
-    pub = public_skill_row(row, fs_exists=fs_ok)
+    pub = public_skill_row(row, fs_exists=fs_ok, group_name=group_name)
     resources = list_skill_resource_files(user, slug) if slug else []
     pub["resources"] = [r for r in resources if r != "SKILL.md"]
     pub["resources_count"] = len(pub["resources"])
@@ -528,7 +780,11 @@ async def get_user_skill(db, user_id: int, skill_id: int, user: dict | None = No
         )
         if rows:
             row = dict(rows[0])
-        pub = await enrich_skill_list_item(db, user_id, user, row)
+        gname = ""
+        if row.get("group_id") is not None:
+            gmap = await _group_name_map(db, user_id)
+            gname = gmap.get(int(row["group_id"]), "")
+        pub = await enrich_skill_list_item(db, user_id, user, row, group_name=gname)
         pub["content"] = await read_skill_content(user, row["name"])
         return pub
     return public_skill_row(row, fs_exists=None)
@@ -595,9 +851,42 @@ async def _upsert_row_from_file(
     return "imported", warnings
 
 
+async def prune_user_skills_missing_on_disk(
+    db,
+    user_id: int,
+    user: dict,
+    *,
+    found_slugs: set[str] | None = None,
+) -> dict:
+    """删除磁盘上已无 SKILL.md 的数据库行（改名视为删旧增新，由 scan 分别处理）。"""
+    rows = await db.execute_fetchall(
+        "SELECT id, name FROM user_skills WHERE user_id=?",
+        (user_id,),
+    )
+    removed: list[str] = []
+    for r in rows:
+        slug = str(r["name"] or "").strip()
+        if not slug:
+            continue
+        if found_slugs is not None and slug in found_slugs:
+            continue
+        if skill_md_path(user, slug).is_file():
+            continue
+        await db.execute(
+            "DELETE FROM user_skills WHERE id=? AND user_id=?",
+            (int(r["id"]), user_id),
+        )
+        removed.append(slug)
+    if removed:
+        await db.commit()
+    return {"removed": len(removed), "removed_names": removed}
+
+
 async def scan_user_skills_from_disk(db, user_id: int, user: dict) -> dict:
+    """以磁盘 skills/<name>/SKILL.md 为准双向同步：导入/更新 + 清理库中孤儿行。"""
     root = get_user_skills_root(user)
     found: list[str] = []
+    found_set: set[str] = set()
     imported = updated = skipped = invalid = 0
     warnings: list[str] = []
     for child in sorted(root.iterdir()):
@@ -622,6 +911,13 @@ async def scan_user_skills_from_disk(db, user_id: int, user: dict) -> dict:
         else:
             skipped += 1
         found.append(slug)
+        found_set.add(slug)
+    prune = await prune_user_skills_missing_on_disk(
+        db, user_id, user, found_slugs=found_set
+    )
+    if prune["removed_names"]:
+        for slug in prune["removed_names"]:
+            warnings.append(f"磁盘已不存在 Skill「{slug}」，已从库中移除")
     return {
         "success": True,
         "scanned": found,
@@ -630,6 +926,8 @@ async def scan_user_skills_from_disk(db, user_id: int, user: dict) -> dict:
         "updated": updated,
         "skipped": skipped,
         "invalid": invalid,
+        "removed": prune["removed"],
+        "removed_names": prune["removed_names"],
         "warnings": warnings,
     }
 
@@ -648,6 +946,7 @@ async def create_user_skill(
     chat_scope_web: bool = True,
     chat_scope_host: bool = True,
     chat_scope_integration: bool = False,
+    group_id: int | None = None,
 ) -> dict:
     slug = normalize_skill_name(name)
     existing = await get_user_skill_raw_by_name(db, user_id, slug)
@@ -670,11 +969,18 @@ async def create_user_skill(
     disp = (display_name or extract_display_title(meta, body, slug))[:120]
     rel = skill_dir_relative(slug)
     mtime = path.stat().st_mtime
+    if group_id is not None:
+        rows_g = await db.execute_fetchall(
+            "SELECT id FROM user_skill_groups WHERE id=? AND user_id=?",
+            (group_id, user_id),
+        )
+        if not rows_g:
+            raise ValueError("分组不存在")
     cur = await db.execute(
         """INSERT INTO user_skills
            (user_id, name, display_name, description, skill_path, enabled, chat_enabled,
-            chat_scope_web, chat_scope_host, chat_scope_integration, file_mtime)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            chat_scope_web, chat_scope_host, chat_scope_integration, file_mtime, group_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             user_id,
             slug,
@@ -687,6 +993,7 @@ async def create_user_skill(
             1 if chat_scope_host else 0,
             1 if chat_scope_integration else 0,
             mtime,
+            group_id,
         ),
     )
     await db.commit()
@@ -708,6 +1015,7 @@ async def update_user_skill(
     chat_scope_web: bool | None = None,
     chat_scope_host: bool | None = None,
     chat_scope_integration: bool | None = None,
+    group_id: int | None | str = ...,
 ) -> dict:
     raw = await get_user_skill_raw(db, user_id, skill_id)
     if not raw:
@@ -723,6 +1031,12 @@ async def update_user_skill(
         mtime = path.stat().st_mtime
     else:
         mtime = None
+    gid_sql = None
+    if group_id is not ...:
+        if group_id is None or group_id == "":
+            gid_sql = None
+        else:
+            gid_sql = await resolve_skill_group_id(db, user_id, group_id)
     await db.execute(
         """UPDATE user_skills SET
            display_name=COALESCE(?, display_name),
@@ -732,6 +1046,7 @@ async def update_user_skill(
            chat_scope_web=COALESCE(?, chat_scope_web),
            chat_scope_host=COALESCE(?, chat_scope_host),
            chat_scope_integration=COALESCE(?, chat_scope_integration),
+           group_id=CASE WHEN ? THEN group_id ELSE ? END,
            file_mtime=COALESCE(?, file_mtime),
            updated_at=CURRENT_TIMESTAMP
            WHERE id=? AND user_id=?""",
@@ -743,6 +1058,8 @@ async def update_user_skill(
             None if chat_scope_web is None else (1 if chat_scope_web else 0),
             None if chat_scope_host is None else (1 if chat_scope_host else 0),
             None if chat_scope_integration is None else (1 if chat_scope_integration else 0),
+            group_id is ...,
+            gid_sql,
             mtime,
             skill_id,
             user_id,

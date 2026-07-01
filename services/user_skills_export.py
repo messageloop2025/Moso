@@ -57,6 +57,8 @@ async def export_user_skills_bundle(
             "chat_scope_web": bool(row.get("chat_scope_web", 1)),
             "chat_scope_host": bool(row.get("chat_scope_host", 1)),
             "chat_scope_integration": bool(row.get("chat_scope_integration", 0)),
+            "group_id": row.get("group_id"),
+            "group_name": row.get("group_name") or "",
             "content": content,
             "files": files,
         }

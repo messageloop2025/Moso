@@ -105,12 +105,14 @@ from services.markdown_sections import (
 )
 from services.ssh_channel_manager import SSHChannelManager
 from services.ssh_channel_service import (
+    channel_session_status_payload,
     close_channel_full,
     close_channels_by_owner,
     create_channel_and_open,
     dump_channel_buffer_to_file,
     format_lines_as_text,
     get_channel_detail,
+    get_channel_session_state,
     list_channels_for_user,
     maybe_spill_channel_text,
     reconcile_channel_if_stale,
@@ -244,6 +246,77 @@ def _attach_false_busy_hint(out: dict, state: dict) -> None:
     hint = maybe_false_busy_hint(state)
     if hint:
         out["false_busy_hint"] = hint
+
+
+def _attach_channel_false_busy_hint(out: dict, state: dict) -> None:
+    from services.terminal_state import maybe_false_busy_hint
+    hint = maybe_false_busy_hint(state)
+    if hint:
+        out["channel_advisory"] = (
+            hint.replace("get_terminal_buffer", "ssh_channel_read_lines")
+            .replace("send_to_terminal", "ssh_channel_send")
+        )
+
+
+def _channel_busy_advisory(state: dict) -> str | None:
+    if not state or state.get("can_send_command") or not state.get("connected"):
+        return None
+    ss = state.get("session_state") or "busy"
+    reason = state.get("busy_reason") or "running"
+    last = (state.get("last_line") or "")[:120]
+    tail = f" 末行: {last!r}。" if last else ""
+    parts = [
+        f"参考：buffer_idle=否（session_state={ss}, busy_reason={reason}）。"
+        f"已照常发送；{tail}"
+    ]
+    if state.get("waiting_password"):
+        parts.append("末尾可能有密码提示，发完后请 ssh_channel_read_lines 确认。")
+    elif state.get("waiting_interactive"):
+        parts.append("末尾可能有 yes/no 等交互，发完后请 read_lines。")
+    else:
+        try:
+            from services.terminal_state import maybe_false_busy_hint
+            fb = maybe_false_busy_hint(state)
+        except Exception:
+            fb = None
+        if fb:
+            parts.append(fb.replace("get_terminal_buffer", "ssh_channel_read_lines"))
+        else:
+            parts.append("长任务中可 ssh_channel_read_lines / has_new 轮询；需中断再用 <Ctrl+C>。")
+    return " ".join(parts)
+
+
+def _attach_channel_send_advisory(payload: dict, state: dict) -> None:
+    adv = _channel_busy_advisory(state)
+    if adv:
+        payload["channel_advisory"] = adv
+
+
+async def _ssh_channel_status_for_id(db, user: dict, channel_id: int) -> tuple[dict | None, dict | None, str | None]:
+    """返回 (channel_row, session_state, error)。"""
+    rows = await db.execute_fetchall(
+        """SELECT c.id, c.status, h.host_type
+           FROM ssh_channels c
+           JOIN hosts h ON h.id = c.host_id
+           WHERE c.id = ? AND c.user_id = ?""",
+        (channel_id, user["id"]),
+    )
+    if not rows:
+        return None, None, "通道不存在"
+    row = dict(rows[0])
+    await reconcile_channel_if_stale(db, user, channel_id)
+    refreshed = await db.execute_fetchall(
+        "SELECT status FROM ssh_channels WHERE id = ? AND user_id = ?",
+        (channel_id, user["id"]),
+    )
+    if refreshed:
+        row["status"] = refreshed[0][0] or "closed"
+    st = get_channel_session_state(
+        channel_id,
+        db_status=str(row.get("status") or "closed"),
+        host_type=(row.get("host_type") or "").strip() or None,
+    )
+    return row, st, None
 
 
 TOOLS = [
@@ -1607,7 +1680,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "ssh_channel_list",
-            "description": "列出 **ssh_channel 后台通道**（open 状态）。用户说「列出通道/SSH 通道」时用本工具（all_open=true）；用户说「列出终端/控制台」时用 list_terminals，二者不同。",
+            "description": (
+                "列出 **ssh_channel 后台通道**（open 状态）。用户说「列出通道/SSH 通道」时用本工具（all_open=true）；"
+                "用户说「列出终端/控制台」时用 list_terminals，二者不同。"
+                "每条含 connected（通/断）、buffer_idle / session_state（闲/忙）、can_send_command 等状态。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1623,10 +1700,32 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "ssh_channel_info",
-            "description": "获取指定 SSH 通道的详情（主机信息、别名、用途、提示词摘要、行号范围等）。",
+            "description": "获取指定 SSH 通道的详情（主机信息、别名、用途、提示词摘要、行号范围、通/断与闲/忙状态等）。",
             "parameters": {
                 "type": "object",
                 "properties": {"channel_id": {"type": "integer", "description": "通道 ID"}},
+                "required": ["channel_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ssh_channel_get_status",
+            "description": (
+                "轻量查询 SSH 通道 **通/断**（connected）与 **闲/忙**（buffer_idle / session_state）。"
+                "**仅 connected=false 时禁止 ssh_channel_send**；buffer_idle / can_send_command 仅供参考，不拦截发送。"
+                "发命令前可先 list 或本工具；判 busy 时配合 ssh_channel_read_lines 看 tail_text / pending_partial。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel_id": {"type": "integer", "description": "通道 ID"},
+                    "include_tail_lines": {
+                        "type": "integer",
+                        "description": "可选 0～20：附带末尾若干行文本预览",
+                    },
+                },
                 "required": ["channel_id"],
             },
         },
@@ -1650,7 +1749,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "ssh_channel_read_lines",
-            "description": "按行读取通道输出；返回 **tail_text**（含无换行的 password: 提示）与 **pending_partial**。password 提示常无 \\n，勿只看 lines 为空就认为无输出。输出过大时自动落盘 spill。",
+            "description": (
+                "按行读取通道输出；返回 **tail_text**（含无换行的 password: 提示）与 **pending_partial**，"
+                "并附带 connected / buffer_idle / session_state 等状态。"
+                "password 提示常无 \\n，勿只看 lines 为空就认为无输出。输出过大时自动落盘 spill。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -4480,7 +4583,10 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "scan_user_skills",
-            "description": "扫描用户 skills/ 目录，将磁盘上的 SKILL.md 同步到数据库。",
+            "description": (
+                "扫描用户 skills/ 目录，与数据库双向同步：导入/更新磁盘上的 SKILL.md；"
+                "删除或改名后磁盘不存在的 Skill 会从库中移除（改名=删旧+新增）。"
+            ),
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -9994,6 +10100,33 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 return json.dumps({"success": False, "error": "通道不存在"}, ensure_ascii=False)
             return json.dumps({"success": True, "channel": detail}, ensure_ascii=False)
 
+        if name == "ssh_channel_get_status":
+            cid = arguments.get("channel_id")
+            if cid is None:
+                return json.dumps({"success": False, "error": "缺少 channel_id"}, ensure_ascii=False)
+            include_tail = 0
+            if arguments.get("include_tail_lines") is not None:
+                try:
+                    include_tail = max(0, min(20, int(arguments.get("include_tail_lines"))))
+                except (TypeError, ValueError):
+                    include_tail = 0
+            db = await get_db()
+            row, st, err = await _ssh_channel_status_for_id(db, user, int(cid))
+            if err:
+                return json.dumps({"success": False, "error": err}, ensure_ascii=False)
+            out = {
+                "success": True,
+                "channel_id": int(cid),
+                "db_status": row.get("status"),
+                **channel_session_status_payload(st),
+            }
+            _attach_channel_false_busy_hint(out, st or {})
+            if include_tail > 0 and st and st.get("can_read_buffer"):
+                tail_text = SSHChannelManager.get_instance().get_tail_text(int(cid), last_n=include_tail) or ""
+                lines = tail_text.splitlines()
+                out["buffer_tail_lines"] = lines[-include_tail:] if lines else []
+            return json.dumps(out, ensure_ascii=False)
+
         if name == "ssh_channel_send":
             cid = arguments.get("channel_id")
             content = arguments.get("content") or ""
@@ -10004,10 +10137,24 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             rows = await db.execute_fetchall("SELECT id FROM ssh_channels WHERE id = ? AND user_id = ? AND status = 'open'", (cid, user["id"]))
             if not rows:
                 return json.dumps({"success": False, "error": "通道不存在或已关闭"}, ensure_ascii=False)
+            _, st_before, _ = await _ssh_channel_status_for_id(db, user, int(cid))
+            if st_before and not st_before.get("connected"):
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        f"SSH 通道已断开（connected=false，db_status={st_before.get('db_status')}，"
+                        f"disconnect_reason={st_before.get('disconnect_reason') or 'unknown'}），"
+                        "无法 ssh_channel_send；请 ssh_channel_create 新建通道。"
+                    ),
+                    **channel_session_status_payload(st_before),
+                }, ensure_ascii=False)
             err = SSHChannelManager.get_instance().send(cid, content)
             if err:
                 return json.dumps({"success": False, "error": err}, ensure_ascii=False)
-            return json.dumps({"success": True, "message": "已发送"}, ensure_ascii=False)
+            _, st_after, _ = await _ssh_channel_status_for_id(db, user, int(cid))
+            payload = {"success": True, "message": "已发送", **channel_session_status_payload(st_after)}
+            _attach_channel_send_advisory(payload, st_after or {})
+            return json.dumps(payload, ensure_ascii=False)
 
         if name == "ssh_channel_read_lines":
             cid = arguments.get("channel_id")
@@ -10042,6 +10189,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             last_n = arguments.get("last_n") or 30
             tail_text = mgr.get_tail_text(int(cid), last_n=last_n) or ""
             pending = mgr.get_pending_partial(int(cid)) or ""
+            _, st, _ = await _ssh_channel_status_for_id(db, user, int(cid))
             payload = {
                 "success": True,
                 "lines": lines,
@@ -10049,7 +10197,10 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 "latest_line_no": latest,
                 "pending_partial": pending,
                 "tail_text": tail_text,
+                **channel_session_status_payload(st),
             }
+            if st:
+                _attach_channel_false_busy_hint(payload, st)
             if arguments.get("spill", True):
                 text = tail_text or format_lines_as_text(lines)
                 spill_info = maybe_spill_channel_text(user, session_id, int(cid), text, tool_suffix="read_lines")

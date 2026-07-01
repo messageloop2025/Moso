@@ -35,6 +35,7 @@
     "create": "创建",
     "execute": "执行",
     "filter": "筛选",
+    "clear": "清空",
     "sendVerification": "发送验证码",
     "completeBinding": "完成绑定",
     "userPound": "用户 #{{id}}",

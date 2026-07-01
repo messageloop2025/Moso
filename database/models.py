@@ -1396,6 +1396,59 @@ async def _migrate_service_credentials_last_accessed(db: aiosqlite.Connection) -
     await mod.upgrade(db)
 
 
+async def _migrate_user_skill_groups(db: aiosqlite.Connection) -> None:
+    """幂等版「035」：user_skill_groups + user_skills.group_id。"""
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_skill_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, name)
+        )
+        """
+    )
+
+    async def has_col(table: str, column: str) -> bool:
+        try:
+            cur = await db.execute(f"PRAGMA table_info({table})")
+            rows = await cur.fetchall()
+            await cur.close()
+            return any(r[1] == column for r in rows)
+        except Exception:
+            return False
+
+    async def tbl_exists(table: str) -> bool:
+        try:
+            cur = await db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+                (table,),
+            )
+            row = await cur.fetchone()
+            await cur.close()
+            return row is not None
+        except Exception:
+            return False
+
+    if await tbl_exists("user_skills") and not await has_col("user_skills", "group_id"):
+        await db.execute(
+            "ALTER TABLE user_skills ADD COLUMN group_id INTEGER "
+            "REFERENCES user_skill_groups(id) ON DELETE SET NULL"
+        )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_user_skill_groups_user "
+        "ON user_skill_groups(user_id, sort_order)"
+    )
+    if await tbl_exists("user_skills") and await has_col("user_skills", "group_id"):
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_user_skills_group ON user_skills(user_id, group_id)"
+        )
+    await db.commit()
+
+
 async def _migrate_user_search_config(db: aiosqlite.Connection) -> None:
     """幂等版「014」：用户搜索服务配置表（每用户每 provider 一行）。"""
     await db.execute(
@@ -1439,6 +1492,7 @@ async def _migrate_legacy_added_columns(db: aiosqlite.Connection) -> None:
         ("hosts", "aliases", "ALTER TABLE hosts ADD COLUMN aliases TEXT DEFAULT '[]'"),
         ("hosts", "remark", "ALTER TABLE hosts ADD COLUMN remark TEXT DEFAULT ''"),
         ("users", "skills_enabled", "ALTER TABLE users ADD COLUMN skills_enabled INTEGER NOT NULL DEFAULT 0"),
+        ("user_skills", "group_id", "ALTER TABLE user_skills ADD COLUMN group_id INTEGER REFERENCES user_skill_groups(id) ON DELETE SET NULL"),
     ]
     for table, col, ddl in legacy_columns:
         # 父表都不在的话直接跳过；它们会被前面的 _migrate_ssh_channels_and_tasks 等先建出来
@@ -1541,6 +1595,7 @@ async def _ensure_full_schema_safety_net(db: aiosqlite.Connection) -> None:
         ("user_mcp_servers", _migrate_user_mcp_servers),
         ("user_mcp_servers chat_scope_*", _migrate_user_mcp_chat_scopes),
         ("user_skills", _migrate_user_skills),
+        ("user_skill_groups", _migrate_user_skill_groups),
         ("host_service_credentials", _migrate_host_service_credentials),
         ("host_service_credentials port + nullable host_id", _migrate_service_credentials_port),
         ("host_service_credentials last_accessed_at", _migrate_service_credentials_last_accessed),
@@ -1624,6 +1679,7 @@ _REQUIRED_TABLES: tuple[str, ...] = (
     "mcp_agent_task_controls",
     "user_mcp_servers",
     "user_skills",
+    "user_skill_groups",
     "host_service_credentials",
 )
 

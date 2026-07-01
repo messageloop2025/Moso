@@ -4879,7 +4879,13 @@ def _build_ssh_remote_execution_rules() -> str:
 
 **PTY 与嵌套 SSH**：`ssh_channel_create` 已分配外层 PTY（真实 TTY）。`read_lines` 按 **\\n/\\r** 切行；`password:` 等提示**常无换行**，会出现在 **tail_text / pending_partial**，勿因 `lines` 为空或 `has_new=false` 就认为无输出。**禁止**用空回车探测密码（会被当空密码）。在 channel 内再 SSH 登录其它主机时，交互登录建议 **`ssh -tt user@host`**（强制内层 TTY）；检测到 password 提示后用 **send_service_password** 注入。
 
-**ssh_channel 工具链**：create / list / info / send / read_lines / read_length / has_new / close / close_batch / dump_output。输出过大时用 dump_output 或 read 的 spill，再 read_chat_data 分段读。Web 会话 channel 默认空闲 **1800s** 自动关；集成会话 **3600s**。
+**ssh_channel 工具链**：create / list / info / **get_status** / send / read_lines / read_length / has_new / close / close_batch / dump_output。输出过大时用 dump_output 或 read 的 spill，再 read_chat_data 分段读。Web 会话 channel 默认空闲 **1800s** 自动关；集成会话 **3600s**。
+
+**ssh_channel 通/断与闲/忙（与 Web 控制台同源启发式）**：
+- **通/断**：`connected=true` 表示 DB 为 open 且本进程内存中仍有 TTY 连接；`connected=false` 时**禁止** `ssh_channel_send`，应 `ssh_channel_create` 新建。
+- **闲/忙**：`ssh_channel_list` / `ssh_channel_info` / `ssh_channel_get_status` / `ssh_channel_read_lines` 均返回 `buffer_idle`、`session_state`、`can_send_command`、`last_line` 等；**busy 不拦截 send**（与 Web 终端一致），仅供决策参考。
+- **轻量查状态**：发命令前可 `ssh_channel_get_status(channel_id)`；长任务轮询用 `ssh_channel_read_lines` + `ssh_channel_has_new`，看 **tail_text / pending_partial**（password 提示常无换行）。
+- **进程重启**：服务重启后内存通道清空，旧 open 记录在 reconcile 后会标 closed；勿对已断 channel 反复 send。
 
 **Web 控制台 vs ssh_channel**：控制台 tab 面向**用户可见**；ssh_channel 面向**后台 PTY 会话**（用户不打开终端也能跑交互流程）。可并存：例如 channel 跑编译，控制台给用户看另一条 tail 日志。
 
@@ -4905,6 +4911,10 @@ def _build_system_prompt() -> str:
 **工作区目录约定（须遵守）**：与当前聊天相关的工作产物——**本地脚本、中间数据、拉取结果、分析报告**——**必须**落在 **`chats/<UTC年>/<月>/<日>/`** 下（与附件、工具 spill、artifact 同级 UTC 分卷习惯一致），**禁止**默认写到工作区**根目录**或根下裸的 `scripts/`、`2026/`、`data/` 等（除非用户明确要求在根目录）。文件名形态 **`{标准UUID}-{简短英文或拼音描述}.{后缀}`**，描述用 ASCII/kebab-case 或下划线，避免空格。可先 **`get_chats_workspace_dir`** 取得当日准确前缀。**fs_write_file** / **fs_write_binary** 会为你的 path **自动归位**到 `chats/<UTC日期>/` 并加 UUID 前缀；**scp_pull** 未写 `chats/` 时也会自动补上当日目录并规范文件名。主机上的 **edgeops_save_script** 写的是远端 `~/.edgeops`，与本地工作区本条无关。**例外 — Agent Skills**：`skills/<name>/` 下的 SKILL.md 与附属文件**不走 chats 归位**；须用 **save_user_skill**、**write_user_skill_file**、**read_user_skill_file**、**list_user_skill_files**、**delete_user_skill_file** 等 Skill 专用工具，**禁止**用 fs_write_file/fs_mkdir/fs_delete 操作 `skills/` 或 `chats/.../skills/` 路径。
 
 **大数据与「下载 → 结构化 → 分析」**：对服务器上**大量**或**复杂**数据，优先在远端 **粗加工 / 聚合**（awk、grep、sort、python -c 等）重定向到文件，**scp_pull**（支持大文件/目录，有传输进度）到 `chats/今日/`，再在本地把它转成 **csv / jsonl / 规整列** 后再用 **data_query**、**fs_read_file(offset/size)**、小段 **regex_process** 分析；**非结构化 / 半结构化**日志与杂文本**先抽取字段**（时间、主机、级别、消息主体等）变结构化再统计，少吃 LLM 上下文。答复用户时用摘要 + **相对工作区路径**引用，避免把整文件粘进 assistant 正文。
+
+**【文件/内容原样迁移 · 必读】** 当文件或内容需要**依原样复制、传输、落盘、再下发**（如 **scp_push** / **scp_pull**、**fs_copy**、**relay_file_between_hosts**、工具结果写入 **fs_write_file** / **fs_write_binary**、在主机间搬运配置/日志/代码/附件等）时，**禁止**先把整份内容读进 LLM 上下文，再在 assistant 回复里「复述 / 重打 / 粘贴」一遍——AI 对大块文本的复述**不稳定**，易丢字、改义、截断或无意改写。**正确做法**：全程用文件系统与传输类工具完成字节级迁移；对话里仅给出相对路径、大小、行数、hash/校验摘要或必要的小片段，以及操作说明。
+
+**【文件修改 · 必读】** 当用户要求**修改**某文件、配置或文档时，同样**禁止**把全文读入上下文后在回复里整篇重写，再 **fs_write_file** 全量覆盖——极易造成无关段落被改动、格式丢失或语义漂移。**正确流程**：① **定位**——用 **fs_read_file(offset/size)**、**markdown_search_sections** / **markdown_read_section**、**regex_process**、**data_query**、远端 `grep`/`sed -n`/脚本等**只读**手段找到需改的章节、行或字段；② **小范围确认**——必要时只读修改点前后少量上下文，向用户说明将改什么；③ **定点执行**——优先用工具/脚本处理需改之处（**fs_write_file** 的 append/定位写、**markdown_replace_section**、经 **regex_process** 预览后由脚本落盘、**ssh_execute** 跑 sed/python/patch、先 **fs_copy** 备份再改）；④ **校验**——改后再读修改点附近或跑校验命令，确认未波及其他部分。仅在文件极小（如单行配置、少量键值）且改动点明确时，才可考虑小范围 read+write；仍应避免在 assistant 正文里粘贴大段原文。
 
 **本机管理类工具（local_*、local_chat_*、process_*）**：仅在「本机管理」专属会话且当前账号为**管理员**时，才会出现在你的可调工具列表并由系统注入详细用法。**若当前为 AI 助手 / 主机运维 / 集成等普通会话**：不要尝试调用上述名称；写天气页、HTML、脚本产物等请用 **fs_***（当前用户文件系统工作区）或 **create_chat_artifact**。不要臆造工具名。
 
@@ -4950,6 +4960,7 @@ def _build_system_prompt() -> str:
     - **AI 行为**：不要假设用户一定等到倒计时结束；被 wake 后应正常继续轮询或推理，勿重复已完成步骤。
 5.0 **输出省略策略（读工具结果时）**：**终端 buffer、ssh_execute 的 stdout/stderr、ssh_channel_read_*、list_logs** → 只看**末尾**；get_terminal_buffer 日常轮询保持 tail_only=true（默认）。**fs_read_file / read_chat_data 读文件、配置、清单** → 优先看**开头**（read_chat_data 用 mode=head；看文件尾部用 mode=tail）。不要对终端输出只根据开头几行下结论。
 5.0a **终端闲/忙仅为参考**：`list_terminals` / `get_terminal_status` / `get_terminal_buffer` 返回的 **buffer_idle、session_state、can_send_command 不得作为拒绝 send_to_terminal 的理由**（服务端亦不会因此拦截）。**仅 connected=false 或 pending 时不可 send**。判 busy 时可读 **last_line** 与 buffer 末尾辅助决策；发完后 **get_terminal_buffer** 看是否生效；长任务轮询；需中断用 `<Ctrl+C>`。`false_busy_hint` / `terminal_advisory` 为提示字段。
+5.0a-ch **ssh_channel 状态（与上条对称）**：`ssh_channel_list` / `ssh_channel_get_status` / `ssh_channel_read_lines` 同样返回 **connected、buffer_idle、session_state、can_send_command、last_line**。**仅 connected=false 时禁止 ssh_channel_send**；busy/password/interactive 不拦截 send，发完后 read_lines 确认。长任务用 read_lines/has_new 轮询，**无** Web 终端 batch 末 `next_poll_in_seconds` 等待。
 5.1 **长耗时任务（下载 / 上传 / 解压 / 编译 / rsync 等）自适应轮询策略——目标：总轮询次数 ≤ 50 次等到任务完成**：
     - **先估总量、再看进度、最后定 sleep**。每次调用 get_terminal_buffer 前都要先"做一道应用题"：
       1) **总量 T**：从目标 URL 的 `Content-Length`、已知文件大小（`ls -l`、`du -sh`、用户描述、HuggingFace / modelscope 页面元数据等）或进度条中的 total 列（如 curl 的 `Total` 列、`aria2c` 的 `FILE: size=...`）拿到总字节数或总百分比。
@@ -7239,7 +7250,7 @@ _OPS_INTEGRATION_MODE_RULES = """
 - 当前请求**不是**浏览器里的 AI 助手页：没有与用户屏幕同步的 SSH 控制台 WebSocket 缓冲，也**不要依赖**必须由前端先连上的 `send_to_terminal`。
 - **非交互单条命令**：`ssh_execute`（长且无交互的任务可用 detach + poll_log）。
 - **多条顺序命令 / 安装编译 / sudo 密码 / 菜单 / vi / Ctrl+C**：**ssh_channel_***（create → send → read/has_new → close）。**ssh_channel 在 AI 助手/主机详情同样可用**；集成模式因无 Web tab 更应优先 channel 而非假装能用界面终端。
-- **ssh_channel 自管理**：ssh_channel_list(all_open=true) 列全部 open 通道；info 含 IP/别名/用途/主机提示词摘要；close 手工关；集成会话默认 **3600s** 无读写自动关（Web 浏览器会话创建仍为 1800s）。
+- **ssh_channel 自管理**：ssh_channel_list(all_open=true) 列全部 open 通道（含 connected/buffer_idle）；**ssh_channel_get_status** 轻量查通/断与闲/忙；info 含 IP/别名/用途/主机提示词摘要；close 手工关；集成会话默认 **3600s** 无读写自动关（Web 浏览器会话创建仍为 1800s）。
 - **大输出**：read_lines/read_length/dump_output 过大时 spill 到用户文件区，用 read_chat_data 分段读。
 - **Web 终端轮询等待**：若仍使用 `get_terminal_buffer` / `send_to_terminal` / `ssh_execute` detach，本批结束后服务端可能 sleep `next_poll_in_seconds`；无 UI 时调用方可用 `POST /ai/sessions/{session_id}/runtime-control` 且 `action=wake` 跳过等待、`stop` 中断整轮（**ssh_channel_* 无此 batch 末等待**）。
 - 若工具返回 ui_action（connect_terminal 等），在集成模式下说明「无实时 Web 界面」，改用 ssh_channel_* 或 ssh_execute。

@@ -15,17 +15,23 @@ from services.user_skills_export import (
 )
 from services.markdown_sections import read_markdown_document, search_markdown_sections
 from services.user_skills_registry import (
+    bulk_assign_skills_to_group,
+    bulk_set_group_skills_enabled,
     collect_description_warnings,
     create_user_skill,
+    create_user_skill_group,
     default_skill_template_content,
     delete_user_skill,
+    delete_user_skill_group,
     get_user_skill,
+    list_user_skill_groups_summary,
     list_user_skills,
     normalize_skill_name,
     read_skill_resource_file,
     require_user_skills_access,
     scan_user_skills_from_disk,
     update_user_skill,
+    update_user_skill_group,
     user_skills_feature_enabled,
 )
 
@@ -42,6 +48,7 @@ class SkillCreateBody(BaseModel):
     chat_scope_web: bool = True
     chat_scope_host: bool = True
     chat_scope_integration: bool = False
+    group_id: int | None = None
 
 
 class SkillUpdateBody(BaseModel):
@@ -53,6 +60,30 @@ class SkillUpdateBody(BaseModel):
     chat_scope_web: bool | None = None
     chat_scope_host: bool | None = None
     chat_scope_integration: bool | None = None
+    group_id: int | None = None
+
+
+class SkillGroupCreateBody(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
+    sort_order: int = 0
+
+
+class SkillGroupUpdateBody(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
+
+
+class SkillGroupBulkEnabledBody(BaseModel):
+    enabled: bool = True
+    group_id: int | None = None
+
+
+class SkillGroupBulkAssignBody(BaseModel):
+    group_id: int | None = Field(..., description="目标分组 id；null 表示移入「未分组」")
+    skill_ids: list[int] | None = Field(default=None, description="要移动的 Skill id 列表")
+    all_ungrouped: bool = Field(
+        default=False,
+        description="为 true 时将当前用户全部未分组 Skill 移入 group_id（忽略 skill_ids）",
+    )
 
 
 class SkillImportBody(BaseModel):
@@ -133,11 +164,128 @@ async def import_my_skills(body: SkillImportBody, user=Depends(get_current_user)
 
 
 @router.get("")
-async def list_my_skills(user=Depends(get_current_user)):
+async def list_my_skills(
+    user=Depends(get_current_user),
+    enabled: str | None = None,
+    group_id: str | None = None,
+):
     await _guard_skills(user)
     db = await get_db()
-    items = await list_user_skills(db, int(user["id"]), user)
-    return {"success": True, "skills": items}
+    en_filter: bool | None = None
+    if enabled is not None and str(enabled).strip() != "":
+        en_filter = str(enabled).strip().lower() in ("1", "true", "yes", "on")
+    gid = "all"
+    if group_id is not None and str(group_id).strip() != "":
+        raw = str(group_id).strip().lower()
+        if raw in ("none", "null", "ungrouped", "0"):
+            gid = None
+        elif raw == "all":
+            gid = "all"
+        else:
+            gid = int(raw)
+    items = await list_user_skills(
+        db,
+        int(user["id"]),
+        user,
+        enabled=en_filter,
+        group_id=gid,
+    )
+    groups = await list_user_skill_groups_summary(db, int(user["id"]))
+    return {"success": True, "skills": items, "groups": groups}
+
+
+@router.get("/groups")
+async def list_my_skill_groups(user=Depends(get_current_user)):
+    await _guard_skills(user)
+    db = await get_db()
+    groups = await list_user_skill_groups_summary(db, int(user["id"]))
+    return {"success": True, "groups": groups}
+
+
+@router.post("/groups")
+async def create_my_skill_group(body: SkillGroupCreateBody, user=Depends(get_current_user)):
+    await _guard_skills(user)
+    db = await get_db()
+    try:
+        row = await create_user_skill_group(
+            db,
+            int(user["id"]),
+            name=body.name,
+            sort_order=body.sort_order,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"success": True, "group": row}
+
+
+@router.put("/groups/{group_id}")
+async def update_my_skill_group(
+    group_id: int,
+    body: SkillGroupUpdateBody,
+    user=Depends(get_current_user),
+):
+    await _guard_skills(user)
+    db = await get_db()
+    try:
+        row = await update_user_skill_group(
+            db, int(user["id"]), group_id, name=body.name
+        )
+    except LookupError:
+        raise HTTPException(status_code=404, detail="分组不存在") from None
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"success": True, "group": row}
+
+
+@router.delete("/groups/{group_id}")
+async def delete_my_skill_group(group_id: int, user=Depends(get_current_user)):
+    await _guard_skills(user)
+    db = await get_db()
+    ok = await delete_user_skill_group(db, int(user["id"]), group_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="分组不存在")
+    return {"success": True}
+
+
+@router.post("/groups/bulk-enabled")
+async def bulk_set_my_skill_group_enabled(
+    body: SkillGroupBulkEnabledBody,
+    user=Depends(get_current_user),
+):
+    await _guard_skills(user)
+    db = await get_db()
+    try:
+        result = await bulk_set_group_skills_enabled(
+            db,
+            int(user["id"]),
+            group_id=body.group_id,
+            enabled=body.enabled,
+        )
+    except LookupError:
+        raise HTTPException(status_code=404, detail="分组不存在") from None
+    return {"success": True, **result}
+
+
+@router.post("/groups/bulk-assign")
+async def bulk_assign_my_skill_group(
+    body: SkillGroupBulkAssignBody,
+    user=Depends(get_current_user),
+):
+    await _guard_skills(user)
+    db = await get_db()
+    try:
+        result = await bulk_assign_skills_to_group(
+            db,
+            int(user["id"]),
+            group_id=body.group_id,
+            skill_ids=body.skill_ids,
+            all_ungrouped=body.all_ungrouped,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except LookupError:
+        raise HTTPException(status_code=404, detail="分组不存在") from None
+    return {"success": True, **result}
 
 
 @router.post("/scan")
@@ -174,6 +322,7 @@ async def create_my_skill(body: SkillCreateBody, user=Depends(get_current_user))
             chat_scope_web=body.chat_scope_web,
             chat_scope_host=body.chat_scope_host,
             chat_scope_integration=body.chat_scope_integration,
+            group_id=body.group_id,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -254,20 +403,22 @@ async def get_my_skill(skill_id: int, user=Depends(get_current_user)):
 async def update_my_skill(skill_id: int, body: SkillUpdateBody, user=Depends(get_current_user)):
     await _guard_skills(user)
     db = await get_db()
+    fields = body.model_dump(exclude_unset=True)
     try:
         row = await update_user_skill(
             db,
             int(user["id"]),
             user,
             skill_id,
-            display_name=body.display_name,
-            description=body.description,
-            content=body.content,
-            enabled=body.enabled,
-            chat_enabled=body.chat_enabled,
-            chat_scope_web=body.chat_scope_web,
-            chat_scope_host=body.chat_scope_host,
-            chat_scope_integration=body.chat_scope_integration,
+            display_name=fields.get("display_name"),
+            description=fields.get("description"),
+            content=fields.get("content"),
+            enabled=fields.get("enabled"),
+            chat_enabled=fields.get("chat_enabled"),
+            chat_scope_web=fields.get("chat_scope_web"),
+            chat_scope_host=fields.get("chat_scope_host"),
+            chat_scope_integration=fields.get("chat_scope_integration"),
+            group_id=fields["group_id"] if "group_id" in fields else ...,
         )
     except LookupError:
         raise HTTPException(status_code=404, detail="Skill 不存在") from None

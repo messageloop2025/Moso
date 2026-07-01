@@ -12977,6 +12977,18 @@ function _linesFromArgs(args) {
     return (args || []).join('\n');
 }
 
+function _renderRowEnabledToggleCell(id, enabled, toggleAttr, i18nNs) {
+    var ns = i18nNs || 'skills';
+    var on = enabled !== false;
+    var lbl = typeof t === 'function' ? (on ? t(ns + '.statusEnabled') : t(ns + '.statusDisabled')) : (on ? 'On' : 'Off');
+    var btnLbl = typeof t === 'function' ? (on ? t(ns + '.disable') : t(ns + '.enable')) : (on ? 'Disable' : 'Enable');
+    var cls = on ? 'badge badge-success' : 'badge badge-muted';
+    var btnCls = on ? 'btn btn-sm btn-outline' : 'btn btn-sm btn-success';
+    return '<span class="' + cls + ' skills-status-badge">' + esc(lbl) + '</span> '
+        + '<button type="button" class="' + btnCls + ' skills-toggle-btn" ' + toggleAttr + '="' + id + '" data-enabled="' + (on ? '0' : '1') + '">'
+        + esc(btnLbl) + '</button>';
+}
+
 function _renderMcpScopeBadges(s) {
     if (!s.chat_enabled) return '—';
     var parts = [];
@@ -12996,9 +13008,10 @@ function _renderMcpServerRow(s) {
         + '<td>' + esc(s.display_name || s.name) + '</td>'
         + '<td>' + esc(s.transport) + '</td>'
         + '<td>' + esc(String(s.tool_count || 0)) + '</td>'
+        + '<td class="td-nowrap">' + _renderRowEnabledToggleCell(s.id, s.enabled, 'data-mcp-toggle', 'mcp') + '</td>'
         + '<td>' + st + err + '</td>'
         + '<td>' + _renderMcpScopeBadges(s) + '</td>'
-        + '<td>'
+        + '<td class="td-nowrap td-actions">'
         + '<button type="button" class="btn btn-sm btn-secondary" data-mcp-test="' + s.id + '">' + esc(t('mcp.test')) + '</button> '
         + '<button type="button" class="btn btn-sm btn-secondary" data-mcp-refresh="' + s.id + '">' + esc(t('mcp.refreshTools')) + '</button> '
         + '<button type="button" class="btn btn-sm" data-mcp-edit="' + s.id + '">' + esc(t('mcp.edit')) + '</button> '
@@ -13026,7 +13039,7 @@ function _showMcpForm(server) {
         + '<div class="modal-body" style="flex:1;min-height:0;overflow-y:auto">'
         + '<div class="form-group"><label>' + esc(t('mcp.fieldName')) + '</label><input id="mcpFormName" class="form-control" ' + (isEdit ? 'readonly' : '') + '></div>'
         + '<div class="form-group"><label>' + esc(t('mcp.fieldDisplay')) + '</label><input id="mcpFormDisplay" class="form-control"></div>'
-        + '<div class="form-group"><label>Transport</label><select id="mcpFormTransport" class="form-control">'
+        + '<div class="form-group"><label>Transport</label><select id="mcpFormTransport" class="form-control form-control-sm">'
         + '<option value="stdio">' + esc(t('mcp.transportStdio')) + '</option>'
         + '<option value="sse">' + esc(t('mcp.transportSse')) + '</option>'
         + '<option value="streamable_http">' + esc(t('mcp.transportHttp')) + '</option>'
@@ -13123,10 +13136,20 @@ function loadMcpServersPage() {
         wrap.innerHTML = ''
             + '<table class="data-table"><thead><tr>'
             + '<th>' + esc(t('mcp.colName')) + '</th><th>' + esc(t('mcp.colDisplay')) + '</th><th>' + esc(t('mcp.colTransport')) + '</th>'
-            + '<th>' + esc(t('mcp.colTools')) + '</th><th>' + esc(t('mcp.colStatus')) + '</th><th>' + esc(t('mcp.colScopes')) + '</th><th>' + esc(t('mcp.colActions')) + '</th>'
+            + '<th>' + esc(t('mcp.colTools')) + '</th><th class="td-nowrap">' + esc(t('mcp.colEnabled')) + '</th><th>' + esc(t('mcp.colStatus')) + '</th><th>' + esc(t('mcp.colScopes')) + '</th><th class="td-nowrap td-actions">' + esc(t('mcp.colActions')) + '</th>'
             + '</tr></thead><tbody>'
             + _mcpServersCache.map(_renderMcpServerRow).join('')
             + '</tbody></table>';
+        wrap.querySelectorAll('[data-mcp-toggle]').forEach(function(btn) {
+            btn.onclick = function() {
+                var id = parseInt(btn.getAttribute('data-mcp-toggle'), 10);
+                var en = btn.getAttribute('data-enabled') === '1';
+                API.updateUserMcpServer(id, { enabled: en }).then(function() {
+                    showToast(t('toast.saved'));
+                    loadMcpServersPage();
+                }).catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); });
+            };
+        });
         wrap.querySelectorAll('[data-mcp-test]').forEach(function(btn) {
             btn.onclick = function() {
                 var id = parseInt(btn.getAttribute('data-mcp-test'), 10);
@@ -13264,6 +13287,120 @@ function renderMcpConfigPage() {
 }
 
 var _userSkillsCache = [];
+var _userSkillGroupsCache = [];
+var _userSkillsFilter = { enabled: 'all', groupId: 'all' };
+var _userSkillsSelected = {};
+
+function _skillGroupOptionsHtml(selectedId, includeEmpty) {
+    var sel = selectedId != null ? String(selectedId) : '';
+    var html = includeEmpty !== false
+        ? ('<option value="">' + esc(t('skills.groupUngrouped')) + '</option>')
+        : '';
+    (_userSkillGroupsCache || []).forEach(function(g) {
+        if (g.is_default) return;
+        var val = String(g.id);
+        html += '<option value="' + esc(val) + '"' + (sel === val ? ' selected' : '') + '>'
+            + esc(g.name || val) + '</option>';
+    });
+    return html;
+}
+
+function _userSkillsSelectedIds() {
+    return Object.keys(_userSkillsSelected).filter(function(k) { return _userSkillsSelected[k]; }).map(function(k) {
+        return parseInt(k, 10);
+    });
+}
+
+function _userSkillsGroupLabelById(groupId) {
+    if (groupId == null || groupId === '') return t('skills.groupUngrouped');
+    var g = (_userSkillGroupsCache || []).find(function(x) { return String(x.id) === String(groupId); });
+    return g ? (g.name || String(groupId)) : String(groupId);
+}
+
+function _showMoveSkillsToGroupModal(opts) {
+    opts = opts || {};
+    var skillIds = opts.skillIds || [];
+    var allUngrouped = !!opts.allUngrouped;
+    if (!allUngrouped && !skillIds.length) {
+        showToast(t('skills.selectSkillsFirst'), 'warning');
+        return;
+    }
+    var customGroups = (_userSkillGroupsCache || []).filter(function(g) { return !g.is_default; });
+    if (!customGroups.length) {
+        showToast(t('skills.groupsEmpty'), 'warning');
+        return;
+    }
+    var modal = document.getElementById('skillMoveGroupModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'skillMoveGroupModal';
+        modal.className = 'modal-overlay';
+        modal.style.display = 'none';
+        document.body.appendChild(modal);
+    }
+    var countHint = allUngrouped
+        ? t('skills.moveAllUngrouped')
+        : t('skills.selectedCount', { n: skillIds.length });
+    modal.innerHTML = ''
+        + '<div class="modal" style="max-width:420px;width:95%">'
+        + '<div class="modal-header"><h3>' + esc(t('skills.moveToGroupTitle')) + '</h3></div>'
+        + '<div class="modal-body">'
+        + '<p class="text-muted">' + esc(t('skills.moveToGroupHint')) + '</p>'
+        + '<p class="text-muted">' + esc(countHint) + '</p>'
+        + '<div class="form-group"><label>' + esc(t('skills.moveToGroupTarget')) + '</label>'
+        + '<select id="skillMoveGroupTarget" class="form-control form-control-sm"></select></div>'
+        + '</div>'
+        + '<div class="modal-footer">'
+        + '<button type="button" class="btn btn-secondary" id="skillMoveGroupCancel">' + esc(t('skills.cancel')) + '</button>'
+        + '<button type="button" class="btn btn-primary" id="skillMoveGroupOk">' + esc(t('skills.moveToGroup')) + '</button>'
+        + '</div></div>';
+    var sel = modal.querySelector('#skillMoveGroupTarget');
+    if (sel) {
+        sel.innerHTML = customGroups.map(function(g) {
+            return '<option value="' + esc(String(g.id)) + '">' + esc(g.name || '') + '</option>';
+        }).join('');
+    }
+    modal.querySelector('#skillMoveGroupCancel').onclick = function() { modal.style.display = 'none'; };
+    modal.querySelector('#skillMoveGroupOk').onclick = function() {
+        var tgt = sel ? parseInt(sel.value, 10) : NaN;
+        if (!tgt) return;
+        var payload = allUngrouped
+            ? { group_id: tgt, all_ungrouped: true }
+            : { group_id: tgt, skill_ids: skillIds };
+        API.bulkAssignUserSkillsGroup(payload).then(function(res) {
+            modal.style.display = 'none';
+            _userSkillsSelected = {};
+            showToast(t('skills.groupAssignDone', {
+                n: (res && res.updated) || 0,
+                group: _userSkillsGroupLabelById(tgt)
+            }));
+            loadUserSkillsPage();
+        }).catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); });
+    };
+    modal.style.display = 'flex';
+    modal.onclick = function(e) { if (e.target === modal) modal.style.display = 'none'; };
+}
+
+function _renderSkillGroupCell(s) {
+    var gid = s.group_id != null ? String(s.group_id) : '';
+    return '<select class="form-control form-control-sm skills-group-select" data-skill-group="' + s.id + '" title="'
+        + esc(t('skills.changeGroup')) + '">' + _skillGroupOptionsHtml(gid, true) + '</select>';
+}
+
+function _skillGroupDisplayName(g) {
+    if (!g || g.is_default) return typeof t === 'function' ? t('skills.groupUngrouped') : 'Ungrouped';
+    return g.name || '';
+}
+
+function _skillRowGroupLabel(s) {
+    if (s.group_name) return s.group_name;
+    if (s.group_id != null) return String(s.group_id);
+    return typeof t === 'function' ? t('skills.groupUngrouped') : 'Ungrouped';
+}
+
+function _renderSkillEnabledCell(s) {
+    return _renderRowEnabledToggleCell(s.id, s.enabled, 'data-skill-toggle', 'skills');
+}
 
 function _renderSkillScopeBadges(s) {
     if (!s.chat_enabled) return '—';
@@ -13278,17 +13415,266 @@ function _renderUserSkillRow(s) {
     var fs = s.file_exists === false
         ? ('<span class="text-danger">' + esc(t('skills.fileMissing')) + '</span>')
         : ('<span class="text-success">' + esc(t('skills.fileOk')) + '</span>');
+    var checked = _userSkillsSelected[s.id] ? ' checked' : '';
     return ''
         + '<tr>'
+        + '<td class="td-nowrap"><input type="checkbox" class="skill-row-check" data-skill-check="' + s.id + '"' + checked + '></td>'
         + edgeopsTableTdNowrap('<code>' + esc(s.name) + '</code>', { html: true })
         + edgeopsTableTdEllipsis(s.display_name || s.name, {})
         + edgeopsTableTdEllipsis(s.description || '', { fill: true })
+        + edgeopsTableTdNowrap(_renderSkillGroupCell(s), { html: true })
+        + edgeopsTableTdNowrap(_renderSkillEnabledCell(s), { html: true })
         + edgeopsTableTdNowrap(fs, { html: true })
         + edgeopsTableTdNowrap(_renderSkillScopeBadges(s), { html: true })
         + '<td class="td-nowrap td-actions">'
         + '<button type="button" class="btn btn-sm" data-skill-edit="' + s.id + '">' + esc(t('skills.edit')) + '</button> '
         + '<button type="button" class="btn btn-sm btn-danger" data-skill-del="' + s.id + '" data-skill-name="' + esc(s.name) + '">' + esc(t('skills.delete')) + '</button>'
         + '</td></tr>';
+}
+
+function _renderUserSkillsFilterBar() {
+    var en = _userSkillsFilter.enabled || 'all';
+    var gid = _userSkillsFilter.groupId != null ? String(_userSkillsFilter.groupId) : 'all';
+    var groupOpts = '<option value="all"' + (gid === 'all' ? ' selected' : '') + '>' + esc(t('skills.filterGroupAll')) + '</option>'
+        + '<option value="none"' + (gid === 'none' ? ' selected' : '') + '>' + esc(t('skills.groupUngrouped')) + '</option>';
+    (_userSkillGroupsCache || []).forEach(function(g) {
+        if (g.is_default) return;
+        var val = String(g.id);
+        groupOpts += '<option value="' + esc(val) + '"' + (gid === val ? ' selected' : '') + '>'
+            + esc(g.name || val) + ' (' + (g.skill_count || 0) + ')</option>';
+    });
+    var showBulk = gid !== 'all';
+    var selCount = _userSkillsSelectedIds().length;
+    var showUngroupedMove = gid === 'none' && (_userSkillsCache || []).length > 0;
+    return ''
+        + '<div class="skills-toolbar">'
+        + '<div class="skills-toolbar-filters">'
+        + '<label class="skills-filter-item"><span>' + esc(t('skills.filterStatus')) + '</span>'
+        + '<select id="userSkillsFilterEnabled" class="form-control form-control-sm">'
+        + '<option value="all"' + (en === 'all' ? ' selected' : '') + '>' + esc(t('skills.filterStatusAll')) + '</option>'
+        + '<option value="1"' + (en === '1' ? ' selected' : '') + '>' + esc(t('skills.filterStatusEnabled')) + '</option>'
+        + '<option value="0"' + (en === '0' ? ' selected' : '') + '>' + esc(t('skills.filterStatusDisabled')) + '</option>'
+        + '</select></label>'
+        + '<label class="skills-filter-item"><span>' + esc(t('skills.filterGroup')) + '</span>'
+        + '<select id="userSkillsFilterGroup" class="form-control form-control-sm">' + groupOpts + '</select></label>'
+        + '</div>'
+        + '<div class="skills-toolbar-actions">'
+        + '<button type="button" class="btn btn-sm" id="userSkillsManageGroupsBtn">' + esc(t('skills.manageGroups')) + '</button>'
+        + (showUngroupedMove
+            ? ('<button type="button" class="btn btn-sm btn-primary" id="userSkillsMoveAllUngroupedBtn">' + esc(t('skills.moveAllUngrouped')) + '</button> ')
+            : '')
+        + (selCount > 0
+            ? ('<button type="button" class="btn btn-sm" id="userSkillsMoveSelectedBtn">' + esc(t('skills.moveSelectedToGroup')) + '</button> ')
+            : '')
+        + (showBulk
+            ? ('<button type="button" class="btn btn-sm btn-success" id="userSkillsGroupEnableBtn">' + esc(t('skills.groupEnableAll')) + '</button> '
+                + '<button type="button" class="btn btn-sm btn-outline" id="userSkillsGroupDisableBtn">' + esc(t('skills.groupDisableAll')) + '</button>')
+            : '')
+        + '</div></div>'
+        + (selCount > 0
+            ? ('<div class="skills-bulk-bar"><span>' + esc(t('skills.selectedCount', { n: selCount })) + '</span>'
+                + '<button type="button" class="btn btn-sm" id="userSkillsMoveSelectedBtn2">' + esc(t('skills.moveSelectedToGroup')) + '</button>'
+                + '<button type="button" class="btn btn-sm btn-outline" id="userSkillsClearSelectionBtn">' + esc(t('common.clear') || 'Clear') + '</button></div>')
+            : '');
+}
+
+function _bindUserSkillsTableEvents(wrap) {
+    if (!wrap) return;
+    wrap.querySelectorAll('[data-skill-edit]').forEach(function(btn) {
+        btn.onclick = function() {
+            var id = parseInt(btn.getAttribute('data-skill-edit'), 10);
+            API.getUserSkill(id).then(function(res) {
+                if (res && res.skill) _showUserSkillForm(res.skill);
+            }).catch(function(err) { showToast(err.message || t('toast.loadFailed'), 'error'); });
+        };
+    });
+    wrap.querySelectorAll('[data-skill-del]').forEach(function(btn) {
+        btn.onclick = function() {
+            var id = parseInt(btn.getAttribute('data-skill-del'), 10);
+            var name = btn.getAttribute('data-skill-name') || '';
+            var rm = confirm(t('skills.confirmDelete', { name: name }) + '\n' + t('skills.confirmDeleteFiles', { name: name }));
+            API.deleteUserSkill(id, rm).then(function() {
+                showToast(t('toast.deleted'));
+                loadUserSkillsPage();
+            }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
+        };
+    });
+    wrap.querySelectorAll('[data-skill-toggle]').forEach(function(btn) {
+        btn.onclick = function() {
+            var id = parseInt(btn.getAttribute('data-skill-toggle'), 10);
+            var en = btn.getAttribute('data-enabled') === '1';
+            API.updateUserSkill(id, { enabled: en }).then(function() {
+                showToast(t('toast.saved'));
+                loadUserSkillsPage();
+            }).catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); });
+        };
+    });
+    wrap.querySelectorAll('[data-skill-group]').forEach(function(sel) {
+        sel.onchange = function() {
+            var id = parseInt(sel.getAttribute('data-skill-group'), 10);
+            var val = sel.value || '';
+            var prev = sel.getAttribute('data-prev-group') || '';
+            var groupId = val ? parseInt(val, 10) : null;
+            API.updateUserSkill(id, { group_id: groupId }).then(function() {
+                sel.setAttribute('data-prev-group', val);
+                showToast(t('toast.saved'));
+                loadUserSkillsPage();
+            }).catch(function(err) {
+                sel.value = prev;
+                showToast(err.message || t('toast.saveFailed'), 'error');
+            });
+        };
+        sel.setAttribute('data-prev-group', sel.value || '');
+    });
+    wrap.querySelectorAll('[data-skill-check]').forEach(function(cb) {
+        cb.onchange = function() {
+            var id = parseInt(cb.getAttribute('data-skill-check'), 10);
+            if (cb.checked) _userSkillsSelected[id] = true;
+            else delete _userSkillsSelected[id];
+            var filterHost = document.getElementById('userSkillsFilterHost');
+            if (filterHost) {
+                filterHost.innerHTML = _renderUserSkillsFilterBar();
+                _bindUserSkillsFilterEvents(filterHost);
+            }
+        };
+    });
+    var selectAll = wrap.querySelector('#userSkillsSelectAll');
+    if (selectAll) {
+        selectAll.onchange = function() {
+            var on = selectAll.checked;
+            (_userSkillsCache || []).forEach(function(s) {
+                if (on) _userSkillsSelected[s.id] = true;
+                else delete _userSkillsSelected[s.id];
+            });
+            loadUserSkillsPage();
+        };
+    }
+}
+
+function _bindUserSkillsFilterEvents(container) {
+    if (!container) return;
+    var enSel = container.querySelector('#userSkillsFilterEnabled');
+    var gSel = container.querySelector('#userSkillsFilterGroup');
+    if (enSel) enSel.onchange = function() {
+        _userSkillsFilter.enabled = enSel.value || 'all';
+        loadUserSkillsPage();
+    };
+    if (gSel) gSel.onchange = function() {
+        _userSkillsFilter.groupId = gSel.value || 'all';
+        loadUserSkillsPage();
+    };
+    var mg = container.querySelector('#userSkillsManageGroupsBtn');
+    if (mg) mg.onclick = function() { _showSkillGroupsModal(); };
+    var ge = container.querySelector('#userSkillsGroupEnableBtn');
+    if (ge) ge.onclick = function() { _bulkToggleSkillGroup(true); };
+    var gd = container.querySelector('#userSkillsGroupDisableBtn');
+    if (gd) gd.onclick = function() { _bulkToggleSkillGroup(false); };
+    var mu = container.querySelector('#userSkillsMoveAllUngroupedBtn');
+    if (mu) mu.onclick = function() { _showMoveSkillsToGroupModal({ allUngrouped: true }); };
+    function bindMoveSelected(btn) {
+        if (!btn) return;
+        btn.onclick = function() {
+            _showMoveSkillsToGroupModal({ skillIds: _userSkillsSelectedIds() });
+        };
+    }
+    bindMoveSelected(container.querySelector('#userSkillsMoveSelectedBtn'));
+    bindMoveSelected(container.querySelector('#userSkillsMoveSelectedBtn2'));
+    var clr = container.querySelector('#userSkillsClearSelectionBtn');
+    if (clr) clr.onclick = function() {
+        _userSkillsSelected = {};
+        loadUserSkillsPage();
+    };
+}
+
+function _bulkToggleSkillGroup(enabled) {
+    var gid = _userSkillsFilter.groupId;
+    if (gid === 'all') return;
+    var groupId = gid === 'none' ? null : parseInt(gid, 10);
+    API.bulkUserSkillGroupEnabled(groupId, enabled).then(function(res) {
+        showToast(typeof t === 'function'
+            ? t('skills.groupBulkDone', { n: (res && res.updated) || 0, action: enabled ? t('skills.enable') : t('skills.disable') })
+            : String((res && res.updated) || 0));
+        loadUserSkillsPage();
+    }).catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); });
+}
+
+function _showSkillGroupsModal() {
+    var modal = document.getElementById('skillGroupsModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'skillGroupsModal';
+        modal.className = 'modal-overlay';
+        modal.style.display = 'none';
+        document.body.appendChild(modal);
+    }
+    function renderBody() {
+        var rows = (_userSkillGroupsCache || []).filter(function(g) { return !g.is_default; });
+        var list = rows.length
+            ? rows.map(function(g) {
+                return '<tr>'
+                    + '<td>' + esc(g.name || '') + '</td>'
+                    + '<td class="td-nowrap">' + esc(String(g.skill_count || 0)) + '</td>'
+                    + '<td class="td-nowrap td-actions">'
+                    + '<button type="button" class="btn btn-sm" data-grp-edit="' + g.id + '">' + esc(t('skills.edit')) + '</button> '
+                    + '<button type="button" class="btn btn-sm btn-danger" data-grp-del="' + g.id + '">' + esc(t('skills.delete')) + '</button>'
+                    + '</td></tr>';
+            }).join('')
+            : '<tr><td colspan="3" class="text-muted">' + esc(t('skills.groupsEmpty')) + '</td></tr>';
+        modal.innerHTML = ''
+            + '<div class="modal" style="max-width:560px;width:95%;display:flex;flex-direction:column;overflow:hidden">'
+            + '<div class="modal-header"><h3>' + esc(t('skills.manageGroups')) + '</h3></div>'
+            + '<div class="modal-body" style="flex:1;min-height:0;overflow-y:auto">'
+            + '<p class="text-muted">' + esc(t('skills.groupsHint')) + '</p>'
+            + '<div class="form-inline skills-group-add" style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap">'
+            + '<input id="skillGroupNewName" class="form-control" placeholder="' + esc(t('skills.groupNamePh')) + '" style="flex:1;min-width:160px">'
+            + '<button type="button" class="btn btn-primary" id="skillGroupAddBtn">' + esc(t('skills.addGroup')) + '</button>'
+            + '</div>'
+            + '<table class="data-table table-compact"><thead><tr>'
+            + '<th>' + esc(t('skills.colGroup')) + '</th><th>' + esc(t('skills.colGroupCount')) + '</th><th>' + esc(t('skills.colActions')) + '</th>'
+            + '</tr></thead><tbody>' + list + '</tbody></table>'
+            + '</div>'
+            + '<div class="modal-footer">'
+            + '<button type="button" class="btn btn-secondary" id="skillGroupsCloseBtn">' + esc(t('skills.cancel')) + '</button>'
+            + '</div></div>';
+        modal.querySelector('#skillGroupsCloseBtn').onclick = function() { modal.style.display = 'none'; };
+        modal.querySelector('#skillGroupAddBtn').onclick = function() {
+            var name = (modal.querySelector('#skillGroupNewName').value || '').trim();
+            if (!name) return;
+            API.createUserSkillGroup({ name: name }).then(function() {
+                showToast(t('toast.saved'));
+                loadUserSkillsPage().then(function() { renderBody(); });
+            }).catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); });
+        };
+        modal.querySelectorAll('[data-grp-edit]').forEach(function(btn) {
+            btn.onclick = function() {
+                var id = parseInt(btn.getAttribute('data-grp-edit'), 10);
+                var g = rows.find(function(x) { return x.id === id; });
+                var nn = window.prompt(t('skills.groupRenamePh'), g ? g.name : '');
+                if (nn == null) return;
+                nn = String(nn).trim();
+                if (!nn) return;
+                API.updateUserSkillGroup(id, { name: nn }).then(function() {
+                    showToast(t('toast.saved'));
+                    loadUserSkillsPage().then(function() { renderBody(); });
+                }).catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); });
+            };
+        });
+        modal.querySelectorAll('[data-grp-del]').forEach(function(btn) {
+            btn.onclick = function() {
+                var id = parseInt(btn.getAttribute('data-grp-del'), 10);
+                var g = rows.find(function(x) { return x.id === id; });
+                if (!confirm(t('skills.confirmDeleteGroup', { name: (g && g.name) || id }))) return;
+                API.deleteUserSkillGroup(id).then(function() {
+                    showToast(t('toast.deleted'));
+                    if (String(_userSkillsFilter.groupId) === String(id)) _userSkillsFilter.groupId = 'all';
+                    loadUserSkillsPage().then(function() { renderBody(); });
+                }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
+            };
+        });
+    }
+    renderBody();
+    modal.style.display = 'flex';
+    modal.onclick = function(e) { if (e.target === modal) modal.style.display = 'none'; };
 }
 
 function _showUserSkillForm(skill) {
@@ -13318,6 +13704,8 @@ function _showUserSkillForm(skill) {
         + '<div><label><input type="checkbox" id="skillFormScopeHost"> ' + esc(t('skills.scopeHost')) + '</label></div>'
         + '<div><label><input type="checkbox" id="skillFormScopeIntegration"> ' + esc(t('skills.scopeIntegration')) + '</label></div>'
         + '<div class="field-hint">' + esc(t('skills.scopeHint')) + '</div></div>'
+        + '<div class="form-group"><label>' + esc(t('skills.fieldGroup')) + '</label>'
+        + '<select id="skillFormGroup" class="form-control form-control-sm"></select></div>'
         + '</div>'
         + '<div class="modal-footer">'
         + '<button type="button" class="btn btn-secondary" id="skillFormCancel">' + esc(t('skills.cancel')) + '</button>'
@@ -13333,8 +13721,19 @@ function _showUserSkillForm(skill) {
     document.getElementById('skillFormScopeWeb').checked = s.chat_scope_web !== false;
     document.getElementById('skillFormScopeHost').checked = s.chat_scope_host !== false;
     document.getElementById('skillFormScopeIntegration').checked = !!s.chat_scope_integration;
+    var grpSel = document.getElementById('skillFormGroup');
+    if (grpSel) {
+        var gopts = '<option value="">' + esc(t('skills.groupUngrouped')) + '</option>';
+        (_userSkillGroupsCache || []).forEach(function(g) {
+            if (g.is_default) return;
+            gopts += '<option value="' + esc(String(g.id)) + '">' + esc(g.name || '') + '</option>';
+        });
+        grpSel.innerHTML = gopts;
+        grpSel.value = s.group_id != null ? String(s.group_id) : '';
+    }
     document.getElementById('skillFormCancel').onclick = function() { modal.style.display = 'none'; };
     document.getElementById('skillFormSave').onclick = function() {
+        var grpVal = document.getElementById('skillFormGroup') ? document.getElementById('skillFormGroup').value : '';
         var payload = {
             name: (document.getElementById('skillFormName').value || '').trim(),
             display_name: (document.getElementById('skillFormDisplay').value || '').trim(),
@@ -13344,7 +13743,8 @@ function _showUserSkillForm(skill) {
             chat_enabled: document.getElementById('skillFormChat').checked,
             chat_scope_web: document.getElementById('skillFormScopeWeb').checked,
             chat_scope_host: document.getElementById('skillFormScopeHost').checked,
-            chat_scope_integration: document.getElementById('skillFormScopeIntegration').checked
+            chat_scope_integration: document.getElementById('skillFormScopeIntegration').checked,
+            group_id: grpVal ? parseInt(grpVal, 10) : null
         };
         var p = isEdit ? API.updateUserSkill(s.id, payload) : API.createUserSkill(payload);
         p.then(function(res) {
@@ -13369,47 +13769,57 @@ function _showUserSkillForm(skill) {
     }
 }
 
-function loadUserSkillsPage() {
+function loadUserSkillsPage(opts) {
+    opts = opts || {};
     var wrap = document.getElementById('userSkillsTableWrap');
+    var filterHost = document.getElementById('userSkillsFilterHost');
     if (!wrap) return;
     wrap.textContent = t('common.loading');
-    API.listUserSkills().then(function(r) {
+    var listOpts = {};
+    if (_userSkillsFilter.enabled && _userSkillsFilter.enabled !== 'all') listOpts.enabled = _userSkillsFilter.enabled;
+    if (_userSkillsFilter.groupId && _userSkillsFilter.groupId !== 'all') listOpts.groupId = _userSkillsFilter.groupId;
+    function renderList(r) {
         _userSkillsCache = r.skills || [];
+        _userSkillGroupsCache = r.groups || [];
+        if (filterHost) {
+            filterHost.innerHTML = _renderUserSkillsFilterBar();
+            _bindUserSkillsFilterEvents(filterHost);
+        }
         if (!_userSkillsCache.length) {
-            wrap.innerHTML = '<div class="text-muted">' + esc(t('skills.empty')) + '</div>';
+            var filtered = (_userSkillsFilter.enabled && _userSkillsFilter.enabled !== 'all')
+                || (_userSkillsFilter.groupId && _userSkillsFilter.groupId !== 'all');
+            wrap.innerHTML = '<div class="text-muted">' + esc(filtered ? t('skills.emptyFiltered') : t('skills.empty')) + '</div>';
             return;
         }
         wrap.innerHTML = ''
             + '<table class="data-table table-compact-ellipsis"><colgroup>'
-            + '<col class="col-td-nowrap"><col class="col-td-md"><col><col class="col-td-xs"><col class="col-td-sm"><col class="col-td-actions">'
+            + '<col class="col-td-xs"><col class="col-td-nowrap"><col class="col-td-md"><col><col class="col-td-sm"><col class="col-td-sm"><col class="col-td-xs"><col class="col-td-sm"><col class="col-td-actions">'
             + '</colgroup><thead><tr>'
+            + '<th class="td-nowrap"><input type="checkbox" id="userSkillsSelectAll" title="' + esc(t('skills.selectAll')) + '"></th>'
             + '<th class="td-nowrap">' + esc(t('skills.colName')) + '</th><th>' + esc(t('skills.colDisplay')) + '</th><th class="td-fill">' + esc(t('skills.colDesc')) + '</th>'
+            + '<th class="td-nowrap">' + esc(t('skills.colGroup')) + '</th>'
+            + '<th class="td-nowrap">' + esc(t('skills.colStatus')) + '</th>'
             + '<th class="td-nowrap">' + esc(t('skills.colFile')) + '</th><th class="td-nowrap">' + esc(t('skills.colScopes')) + '</th><th class="td-nowrap td-actions">' + esc(t('skills.colActions')) + '</th>'
             + '</tr></thead><tbody>'
             + _userSkillsCache.map(_renderUserSkillRow).join('')
             + '</tbody></table>';
-        wrap.querySelectorAll('[data-skill-edit]').forEach(function(btn) {
-            btn.onclick = function() {
-                var id = parseInt(btn.getAttribute('data-skill-edit'), 10);
-                API.getUserSkill(id).then(function(res) {
-                    if (res && res.skill) _showUserSkillForm(res.skill);
-                }).catch(function(err) { showToast(err.message || t('toast.loadFailed'), 'error'); });
-            };
+        var allCb = wrap.querySelector('#userSkillsSelectAll');
+        if (allCb && _userSkillsCache.length) {
+            var allOn = _userSkillsCache.every(function(s) { return _userSkillsSelected[s.id]; });
+            allCb.checked = allOn;
+            allCb.indeterminate = !allOn && _userSkillsSelectedIds().length > 0;
+        }
+        _bindUserSkillsTableEvents(wrap);
+    }
+    var fetchList = function() {
+        return API.listUserSkills(listOpts).then(renderList).catch(function(e) {
+            wrap.innerHTML = '<div class="text-danger">' + esc(t('skills.loadFailed', { message: e.message || e })) + '</div>';
         });
-        wrap.querySelectorAll('[data-skill-del]').forEach(function(btn) {
-            btn.onclick = function() {
-                var id = parseInt(btn.getAttribute('data-skill-del'), 10);
-                var name = btn.getAttribute('data-skill-name') || '';
-                var rm = confirm(t('skills.confirmDelete', { name: name }) + '\n' + t('skills.confirmDeleteFiles', { name: name }));
-                API.deleteUserSkill(id, rm).then(function() {
-                    showToast(t('toast.deleted'));
-                    loadUserSkillsPage();
-                }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
-            };
-        });
-    }).catch(function(e) {
-        wrap.innerHTML = '<div class="text-danger">' + esc(t('skills.loadFailed', { message: e.message || e })) + '</div>';
-    });
+    };
+    if (opts.autoSync) {
+        return API.scanUserSkills().then(fetchList).catch(function() { return fetchList(); });
+    }
+    return fetchList();
 }
 
 function renderUserSkillsPage() {
@@ -13430,10 +13840,12 @@ function renderUserSkillsPage() {
         + '<div class="page-content">'
         + edgeopsPageIntroHtml(t('skills.subtitle'), true)
         + '<div class="card"><div class="card-header"><h3 style="margin:0">' + esc(t('skills.title')) + '</h3></div>'
-        + '<div class="card-body" id="userSkillsTableWrap">' + esc(t('common.loading')) + '</div></div>'
+        + '<div class="card-body">'
+        + '<div id="userSkillsFilterHost"></div>'
+        + '<div id="userSkillsTableWrap">' + esc(t('common.loading')) + '</div></div></div>'
         + '</div>';
     document.getElementById('skillAddBtn').onclick = function() { _showUserSkillForm(null); };
-    document.getElementById('skillRefreshBtn').onclick = function() { loadUserSkillsPage(); };
+    document.getElementById('skillRefreshBtn').onclick = function() { loadUserSkillsPage({ autoSync: true }); };
     document.getElementById('skillExportBtn').onclick = function() {
         API.exportUserSkills({}).then(function(res) {
             var uname = (API.user && API.user.username) ? API.user.username : 'user';
@@ -13474,6 +13886,7 @@ function renderUserSkillsPage() {
             var msg = t('skills.scanDone', {
                 imported: res.imported || 0,
                 updated: res.updated || 0,
+                removed: res.removed || 0,
                 skipped: res.skipped || 0
             });
             if (res.invalid) msg += '；' + t('skills.scanInvalid', { count: res.invalid });
@@ -13482,7 +13895,7 @@ function renderUserSkillsPage() {
             loadUserSkillsPage();
         }).catch(function(err) { showToast(err.message || t('toast.loadFailed'), 'error'); });
     };
-    loadUserSkillsPage();
+    loadUserSkillsPage({ autoSync: true });
 }
 
 // ── 模型配置（多 Profile + 快速切换）──

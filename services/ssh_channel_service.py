@@ -64,6 +64,82 @@ def memory_connected(channel_id: int) -> bool:
     return SSHChannelManager.get_instance().has_channel(channel_id)
 
 
+CHANNEL_SESSION_STATUS_KEYS = (
+    "connected",
+    "exists",
+    "pending",
+    "session_state",
+    "buffer_idle",
+    "ready_for_input",
+    "can_send",
+    "can_send_command",
+    "can_read_buffer",
+    "last_line",
+    "busy_reason",
+    "waiting_password",
+    "waiting_interactive",
+    "disconnect_reason",
+    "buffer_chars",
+    "memory_connected",
+    "db_status",
+)
+
+
+def get_channel_session_state(
+    channel_id: int,
+    *,
+    db_status: str = "open",
+    host_type: str | None = None,
+) -> dict[str, Any]:
+    """从 DB 状态 + 内存 TTY 缓冲推断 ssh_channel 通/断与闲/忙（与 Web 控制台 terminal_state 同源启发式）。"""
+    from services.terminal_state import analyze_terminal_buffer, merge_connection_flags
+
+    manager = SSHChannelManager.get_instance()
+    mem = manager.has_channel(channel_id)
+    db_st = (db_status or "").strip().lower()
+    db_open = db_st == "open"
+    connected = db_open and mem
+
+    tail_text = manager.get_tail_text(channel_id, last_n=40) or ""
+    pending = manager.get_pending_partial(channel_id) or ""
+    buffer = tail_text
+    if pending:
+        buffer = f"{buffer}{pending}" if buffer else pending
+
+    analysis = analyze_terminal_buffer(buffer, connected=connected, host_type=host_type)
+    merged = merge_connection_flags(
+        analysis,
+        connected=connected,
+        exists=db_st in ("open", "closed", "failed"),
+        pending=False,
+        can_read_buffer=connected,
+        disconnect_reason=None if connected else ("channel_closed" if not db_open else "memory_disconnected"),
+    )
+    merged["buffer_chars"] = len(buffer)
+    merged["memory_connected"] = mem
+    merged["db_status"] = db_status
+    return merged
+
+
+def channel_session_status_payload(state: dict | None) -> dict[str, Any]:
+    state = state or {}
+    return {k: state.get(k) for k in CHANNEL_SESSION_STATUS_KEYS}
+
+
+def enrich_channel_session_fields(channel: dict) -> dict:
+    """为通道 dict 附加 connected / buffer_idle / session_state 等状态字段。"""
+    cid = int(channel.get("id") or channel.get("channel_id") or 0)
+    if not cid:
+        return channel
+    st = get_channel_session_state(
+        cid,
+        db_status=str(channel.get("status") or "closed"),
+        host_type=(channel.get("host_type") or "").strip() or None,
+    )
+    channel.update(channel_session_status_payload(st))
+    return channel
+
+
 async def reconcile_channel_if_stale(db, user: dict, channel_id: int) -> bool:
     """DB 为 open 但内存无连接时标 closed。返回是否执行了 reconcile。"""
     rows = await db.execute_fetchall(
@@ -320,6 +396,7 @@ async def create_channel_and_open(
         enriched["oldest_line_no"], enriched["latest_line_no"] = rng
     else:
         enriched["oldest_line_no"] = enriched["latest_line_no"] = 0
+    enrich_channel_session_fields(enriched)
     return enriched
 
 
@@ -372,6 +449,7 @@ async def list_channels_for_user(
         d["host_prompt_snippet"] = await _fetch_host_prompt_snippet(
             db, int(user["id"]), int(d.get("host_id") or 0)
         )
+        enrich_channel_session_fields(d)
         out.append(d)
     return out
 
@@ -409,6 +487,7 @@ async def get_channel_detail(db, user: dict, channel_id: int) -> dict | None:
             d["oldest_line_no"] = d["latest_line_no"] = 0
     else:
         d["oldest_line_no"] = d["latest_line_no"] = 0
+    enrich_channel_session_fields(d)
     return d
 
 

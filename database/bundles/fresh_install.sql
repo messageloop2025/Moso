@@ -1,6 +1,6 @@
 -- 毛竹 fresh install SQL snapshot
--- schema_version target after apply: 35
--- generated_at_utc: 2026-06-24T04:50:40Z
+-- schema_version target after apply: 36
+-- generated_at_utc: 2026-07-01T04:28:10Z
 -- Regenerate: python scripts/regenerate_fresh_install_sql.py
 
 BEGIN TRANSACTION;
@@ -131,9 +131,9 @@ INSERT INTO "best_practices" VALUES(1,'新安装必做：安全与可用性','�
 - **系统提示词（ai_system_prompt）留空** 时，产品使用代码内置的完整毛竹（Moso）主助手提示词（与版本同步更新）；仅当您需要**完全自定义**主助手行为时，再在设置中填写全文覆盖。
 
 ## 邮件与其它
-- 配置 SMTP 后可使用找回密码、通知管理员等功能；时区键 **site_timezone** 默认为 Asia/Shanghai（可在设置中调整）。','system_seed',1,'2026-06-24 04:50:40','2026-06-24 04:50:40');
+- 配置 SMTP 后可使用找回密码、通知管理员等功能；时区键 **site_timezone** 默认为 Asia/Shanghai（可在设置中调整）。','system_seed',1,'2026-07-01 04:28:10','2026-07-01 04:28:10');
 INSERT INTO "best_practices" VALUES(2,'内置 Skills 与数据库 skills 表','系统运维','毛竹 的大量能力由代码内 `ai_skills` 注册；数据库 **skills** 表中的条目为历史/辅助用途，与界面「技能」列表相关。
-新装库会预置少量示例行；若列表为空或行为以代码为准，属正常现象。','system_seed',1,'2026-06-24 04:50:40','2026-06-24 04:50:40');
+新装库会预置少量示例行；若列表为空或行为以代码为准，属正常现象。','system_seed',1,'2026-07-01 04:28:10','2026-07-01 04:28:10');
 CREATE TABLE chat_attachments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             uuid TEXT NOT NULL UNIQUE,
@@ -185,7 +185,7 @@ CREATE TABLE host_groups (
     created_by INTEGER REFERENCES users(id),
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
-CREATE TABLE host_service_credentials (
+CREATE TABLE "host_service_credentials" (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             host_id INTEGER,
@@ -199,8 +199,7 @@ CREATE TABLE host_service_credentials (
             linked_credential_id INTEGER,
             linked_host_id INTEGER,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            last_accessed_at DATETIME,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, last_accessed_at DATETIME,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
             FOREIGN KEY (host_id) REFERENCES hosts(id) ON DELETE SET NULL,
             FOREIGN KEY (linked_credential_id) REFERENCES credentials(id) ON DELETE SET NULL,
@@ -339,7 +338,7 @@ CREATE TABLE schema_version (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     version INTEGER NOT NULL DEFAULT 0
 );
-INSERT INTO "schema_version" VALUES(1,35);
+INSERT INTO "schema_version" VALUES(1,36);
 CREATE TABLE server_maintenance_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     host TEXT NOT NULL,
@@ -356,44 +355,44 @@ CREATE TABLE settings (
     value TEXT,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
-INSERT INTO "settings" VALUES('ai_output_locale','','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('site_url','','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('site_timezone','Asia/Shanghai','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('smtp_host','','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('smtp_port','587','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('smtp_use_tls','true','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('smtp_user','','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('smtp_password','','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('smtp_from','','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('smtp_use_ssl','','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('email_notification_subject','毛竹通知','2026-06-24 04:50:40');
+INSERT INTO "settings" VALUES('ai_output_locale','','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('site_url','','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('site_timezone','Asia/Shanghai','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('smtp_host','','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('smtp_port','587','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('smtp_use_tls','true','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('smtp_user','','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('smtp_password','','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('smtp_from','','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('smtp_use_ssl','','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('email_notification_subject','毛竹通知','2026-07-01 04:28:10');
 INSERT INTO "settings" VALUES('email_template_lock_body','{{username}}用户您好，您的毛竹账号已锁定，可以通过登录页面找回功能解锁。
 
-毛竹','2026-06-24 04:50:40');
+毛竹','2026-07-01 04:28:10');
 INSERT INTO "settings" VALUES('email_template_unlock_body','{{username}}用户您好，你的毛竹账号解锁成功。
 
-毛竹','2026-06-24 04:50:40');
+毛竹','2026-07-01 04:28:10');
 INSERT INTO "settings" VALUES('email_template_suspend_body','{{username}}用户您好，你的毛竹账号被管理员暂时停止使用。请回复邮件以沟通解决。
 
-毛竹','2026-06-24 04:50:40');
+毛竹','2026-07-01 04:28:10');
 INSERT INTO "settings" VALUES('email_template_restore_body','{{username}}用户您好，你的毛竹账号恢复使用。
 
-毛竹','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('notify_admin_on_user_feedback','false','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('self_register','true','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('ai_api_key','','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('ai_base_url','https://dashscope.aliyuncs.com/compatible-mode/v1','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('ai_model','qwen3.6-plus','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('ai_system_prompt','','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('ai_auto_approve','false','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('ai_assistant_enabled','false','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('ai_context_size','0','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('ai_agent_max_steps','100','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('ai_assistant_max_rounds','100','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('login_announcement_md','','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('login_widget_message_board_enabled','true','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('login_widget_public_messages_enabled','true','2026-06-24 04:50:40');
-INSERT INTO "settings" VALUES('credentials_vault_enabled','false','2026-06-24 04:50:40');
+毛竹','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('notify_admin_on_user_feedback','false','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('self_register','true','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('ai_api_key','','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('ai_base_url','https://dashscope.aliyuncs.com/compatible-mode/v1','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('ai_model','qwen3.6-plus','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('ai_system_prompt','','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('ai_auto_approve','false','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('ai_assistant_enabled','false','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('ai_context_size','0','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('ai_agent_max_steps','100','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('ai_assistant_max_rounds','100','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('login_announcement_md','','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('login_widget_message_board_enabled','true','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('login_widget_public_messages_enabled','true','2026-07-01 04:28:10');
+INSERT INTO "settings" VALUES('credentials_vault_enabled','false','2026-07-01 04:28:10');
 CREATE TABLE skills (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     code TEXT UNIQUE NOT NULL,
@@ -403,9 +402,9 @@ CREATE TABLE skills (
     enabled INTEGER DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
-INSERT INTO "skills" VALUES(1,'ssh_exec','SSH 执行命令','在指定主机上执行一条 Shell 命令','{}',1,'2026-06-24 04:50:40');
-INSERT INTO "skills" VALUES(2,'scp_push','SCP 推送文件','通过 SCP 向主机推送文件或目录','{}',1,'2026-06-24 04:50:40');
-INSERT INTO "skills" VALUES(3,'batch_create','批量操作','向多台主机下发命令/上传/脚本/重启；脚本与资源放在文件系统 web/fs（如 scripts/）','{}',1,'2026-06-24 04:50:40');
+INSERT INTO "skills" VALUES(1,'ssh_exec','SSH 执行命令','在指定主机上执行一条 Shell 命令','{}',1,'2026-07-01 04:28:10');
+INSERT INTO "skills" VALUES(2,'scp_push','SCP 推送文件','通过 SCP 向主机推送文件或目录','{}',1,'2026-07-01 04:28:10');
+INSERT INTO "skills" VALUES(3,'batch_create','批量操作','向多台主机下发命令/上传/脚本/重启；脚本与资源放在文件系统 web/fs（如 scripts/）','{}',1,'2026-07-01 04:28:10');
 CREATE TABLE ssh_channels (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner_type TEXT NOT NULL,
@@ -558,6 +557,15 @@ CREATE TABLE user_search_config (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (user_id, provider)
 );
+CREATE TABLE user_skill_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, name)
+        );
 CREATE TABLE user_skills (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -572,7 +580,7 @@ CREATE TABLE user_skills (
             chat_scope_integration INTEGER NOT NULL DEFAULT 0,
             file_mtime REAL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, group_id INTEGER REFERENCES user_skill_groups(id) ON DELETE SET NULL,
             UNIQUE(user_id, name)
         );
 CREATE TABLE user_system_ai_usage (
@@ -591,7 +599,7 @@ CREATE TABLE users (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_login DATETIME
 , email TEXT DEFAULT '', failed_login_attempts INTEGER DEFAULT 0, locked_until DATETIME, skills_enabled INTEGER NOT NULL DEFAULT 0);
-INSERT INTO "users" VALUES(1,'admin','管理员','$2b$12$NX.4bzp76zhk9CRoleHVX.bYIu437VZXdXfR4aI8KKgwPzQdRlWiW','admin','active','2026-06-24 04:50:40','2026-06-24 04:50:40',NULL,'',0,NULL,0);
+INSERT INTO "users" VALUES(1,'admin','管理员','$2b$12$VdwC3V9nMO0xn8O3HPSJfOqrTBqXDHzJQ7Vl9Pdad427IQ8A/06Mi','admin','active','2026-07-01 04:28:10','2026-07-01 04:28:10',NULL,'',0,NULL,0);
 CREATE UNIQUE INDEX idx_credentials_code ON credentials(code);
 CREATE INDEX idx_hosts_credential ON hosts(credential_id);
 CREATE INDEX idx_operation_logs_created_at ON operation_logs(created_at);
@@ -655,8 +663,11 @@ CREATE INDEX idx_user_skills_user ON user_skills(user_id, enabled);
 CREATE INDEX idx_hsc_user ON host_service_credentials(user_id);
 CREATE INDEX idx_hsc_user_lookup ON host_service_credentials(user_id, service, address, port, service_username);
 CREATE INDEX idx_hsc_user_last_access ON host_service_credentials(user_id, last_accessed_at);
+CREATE INDEX idx_user_skill_groups_user ON user_skill_groups(user_id, sort_order);
+CREATE INDEX idx_user_skills_group ON user_skills(user_id, group_id);
 DELETE FROM "sqlite_sequence";
 INSERT INTO "sqlite_sequence" VALUES('users',1);
 INSERT INTO "sqlite_sequence" VALUES('skills',3);
 INSERT INTO "sqlite_sequence" VALUES('best_practices',2);
+INSERT INTO "sqlite_sequence" VALUES('host_service_credentials',0);
 COMMIT;

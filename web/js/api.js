@@ -466,7 +466,30 @@ var API = {
     refreshUserMcpServerTools: function(id) { return this.post('/user-mcp-servers/' + id + '/refresh-tools', {}); },
 
     getUserSkillsStatus: function() { return this.get('/user-skills/status'); },
-    listUserSkills: function() { return this.get('/user-skills'); },
+    listUserSkills: function(opts) {
+        opts = opts || {};
+        var q = [];
+        if (opts.enabled !== undefined && opts.enabled !== null && opts.enabled !== '') {
+            q.push('enabled=' + encodeURIComponent(opts.enabled));
+        }
+        if (opts.groupId !== undefined && opts.groupId !== null && opts.groupId !== '') {
+            q.push('group_id=' + encodeURIComponent(opts.groupId));
+        }
+        return this.get('/user-skills' + (q.length ? '?' + q.join('&') : ''));
+    },
+    listUserSkillGroups: function() { return this.get('/user-skills/groups'); },
+    createUserSkillGroup: function(data) { return this.post('/user-skills/groups', data); },
+    updateUserSkillGroup: function(id, data) { return this.put('/user-skills/groups/' + encodeURIComponent(id), data); },
+    deleteUserSkillGroup: function(id) { return this.delete('/user-skills/groups/' + encodeURIComponent(id)); },
+    bulkUserSkillGroupEnabled: function(groupId, enabled) {
+        return this.post('/user-skills/groups/bulk-enabled', {
+            group_id: groupId == null ? null : groupId,
+            enabled: !!enabled
+        });
+    },
+    bulkAssignUserSkillsGroup: function(data) {
+        return this.post('/user-skills/groups/bulk-assign', data || {});
+    },
     createUserSkill: function(data) { return this.post('/user-skills', data); },
     getUserSkill: function(id) { return this.get('/user-skills/' + id); },
     updateUserSkill: function(id, data) { return this.put('/user-skills/' + id, data); },

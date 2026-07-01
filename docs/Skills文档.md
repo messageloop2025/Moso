@@ -350,7 +350,7 @@
 | read_user_skill_file | 读取 reference.md 等附属文件 | name, path |
 | save_user_skill | 按 name upsert（Cursor 格式） | name, content?, body?, description?, chat_scope_*? |
 | delete_user_skill | 删除 | name 或 skill_id, remove_files? |
-| scan_user_skills | 扫描磁盘同步到库（返回 imported/updated/skipped/warnings） | — |
+| scan_user_skills | 扫描磁盘与库**双向同步**：导入/更新 SKILL.md 元数据；磁盘已删除或改名的 Skill 从库移除（改名=删旧行+新增行，分组/启停不继承） | — |
 | export_user_skills_config | 导出 JSON 包 | include_disabled? |
 | import_user_skills_config | 导入 JSON 包 | data, overwrite? |
 

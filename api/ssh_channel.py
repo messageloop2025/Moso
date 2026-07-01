@@ -20,6 +20,8 @@ from services.ssh_channel_service import (
     dump_channel_buffer_to_file,
     format_lines_as_text,
     get_channel_detail,
+    get_channel_session_state,
+    channel_session_status_payload,
     list_channels_for_user,
     maybe_spill_channel_text,
     reconcile_channel_if_stale,
@@ -166,6 +168,28 @@ async def get_channel(
             _check_host_alive, detail.get("host_ip") or "", int(port or 22), 3.0
         )
     return out
+
+
+@router.get("/{channel_id}/status")
+async def get_channel_status(channel_id: int, user=Depends(get_current_user)):
+    """轻量返回通道通/断与闲/忙（与 AI 工具 ssh_channel_get_status 同源）。"""
+    db = await get_db()
+    await reconcile_channel_if_stale(db, user, channel_id)
+    rows = await db.execute_fetchall(
+        """SELECT c.status, h.host_type FROM ssh_channels c
+           JOIN hosts h ON h.id = c.host_id
+           WHERE c.id = ? AND c.user_id = ?""",
+        (channel_id, user["id"]),
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="通道不存在")
+    row = dict(rows[0])
+    st = get_channel_session_state(
+        channel_id,
+        db_status=str(row.get("status") or "closed"),
+        host_type=(row.get("host_type") or "").strip() or None,
+    )
+    return {"success": True, "channel_id": channel_id, **channel_session_status_payload(st)}
 
 
 @router.post("/close-batch")

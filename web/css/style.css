@@ -1009,6 +1009,14 @@ tbody tr:hover { background: rgba(59, 130, 246, 0.05); }
 
 select.form-control { cursor: pointer; }
 
+select.form-control.form-control-sm {
+    height: 26px;
+    padding: 0 1.5rem 0 8px;
+    font-size: 12px;
+    line-height: 24px;
+    box-sizing: border-box;
+}
+
 textarea.form-control { min-height: 100px; resize: vertical; font-family: inherit; }
 
 .form-row {
@@ -1031,6 +1039,65 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
 .badge-unknown { background: rgba(245,158,11,0.2); color: var(--warning); }
 .badge-admin { background: rgba(59,130,246,0.2); color: var(--accent); }
 .badge-user { background: rgba(100,116,139,0.2); color: var(--text-secondary); }
+.badge-muted { background: rgba(100,116,139,0.2); color: var(--text-muted); }
+
+.skills-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px 16px;
+    margin-bottom: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+}
+.skills-toolbar-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 16px;
+    align-items: flex-end;
+}
+.skills-filter-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+.skills-filter-item select.form-control-sm {
+    min-width: 140px;
+}
+.skills-toolbar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+.skills-status-badge {
+    margin-right: 4px;
+    vertical-align: middle;
+}
+.skills-toggle-btn {
+    vertical-align: middle;
+}
+
+.skills-bulk-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    margin-bottom: 10px;
+    padding: 8px 10px;
+    border-radius: var(--radius);
+    background: rgba(59, 130, 246, 0.08);
+    border: 1px solid rgba(59, 130, 246, 0.2);
+    font-size: 13px;
+}
+.skills-group-select {
+    min-width: 120px;
+    max-width: 180px;
+}
+
 .badge-success { background: rgba(16,185,129,0.2); color: var(--success); }
 .badge-danger { background: rgba(239,68,68,0.2); color: var(--danger); }
 .badge-warning { background: rgba(245,158,11,0.2); color: var(--warning); }
@@ -4908,11 +4975,6 @@ textarea.form-control { min-height: 100px; resize: vertical; font-family: inheri
 .host-ai-chat-bar .ai-profile-quick-select {
     max-width: 120px;
     min-width: 72px;
-    height: 26px;
-    padding: 0 1.5rem 0 8px;
-    font-size: 12px;
-    line-height: 24px;
-    box-sizing: border-box;
 }
 .ai-chat-container .chat-messages {
     flex: 1;

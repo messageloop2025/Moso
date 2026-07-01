@@ -35,6 +35,7 @@
     "create": "Create",
     "execute": "Run",
     "filter": "Filter",
+    "clear": "Clear",
     "sendVerification": "Send code",
     "completeBinding": "Finish",
     "userPound": "User #{{id}}",
