@@ -1893,6 +1893,7 @@ table.table-compact-ellipsis th.th-skill-group {
     display: flex;
     flex-direction: column;
     gap: 6px;
+    contain: layout style paint;
 }
 
 .chat-message {
@@ -1902,6 +1903,8 @@ table.table-compact-ellipsis th.th-skill-group {
     /* 列向 flex 子项默认 min-width:auto，会被超长行/栈迹撑破侧栏；允许收缩并在气泡内横向滚动 */
     min-width: 0;
     box-sizing: border-box;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 120px;
 }
 
 .chat-message.user { align-self: flex-end; flex-direction: row-reverse; }
@@ -3217,6 +3220,7 @@ table.table-compact-ellipsis th.th-skill-group {
     font-size: 13px;
     line-height: 1.4;
     box-sizing: border-box;
+    field-sizing: fixed;
 }
 .chat-input-area .chat-input-multiline {
     min-height: var(--chat-compose-height);
@@ -3227,6 +3231,7 @@ table.table-compact-ellipsis th.th-skill-group {
     font-size: 13px;
     line-height: 1.4;
     box-sizing: border-box;
+    field-sizing: fixed;
 }
 .chat-input-area .btn,
 .chat-input-area .chat-attach-upload-btn {

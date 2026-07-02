@@ -279,35 +279,88 @@ function edgeopsChoosePostLoginPath() {
         .then(function(ok) { return ok ? '/ai-mobile' : '/dashboard'; });
 }
 
+function edgeopsIsChatComposeFocused() {
+    var el = document.activeElement;
+    return !!(el && el.classList && el.classList.contains('chat-input-multiline'));
+}
+
+function edgeopsMeasureChatTextareaMetrics(textarea) {
+    var style = window.getComputedStyle(textarea);
+    var lineHeight = parseFloat(style.lineHeight) || 18;
+    var paddingTop = parseFloat(style.paddingTop) || 0;
+    var paddingBottom = parseFloat(style.paddingBottom) || 0;
+    var borderTop = parseFloat(style.borderTopWidth) || 0;
+    var borderBottom = parseFloat(style.borderBottomWidth) || 0;
+    var frameHeight = paddingTop + paddingBottom + borderTop + borderBottom;
+    var rowsAttr = parseInt(textarea.getAttribute('rows') || '2', 10);
+    var baseRows = edgeopsIsMobileViewport() ? 1 : (rowsAttr > 0 ? rowsAttr : 2);
+    var maxRows = 5;
+    return {
+        lineHeight: lineHeight,
+        frameHeight: frameHeight,
+        minHeight: Math.ceil(lineHeight * baseRows + frameHeight),
+        maxHeight: Math.ceil(lineHeight * maxRows + frameHeight),
+        maxRows: maxRows
+    };
+}
+
 function edgeopsInitChatTextarea(textarea) {
     if (!textarea) return function() {};
     try {
         textarea.removeAttribute('placeholder');
         textarea.placeholder = '';
     } catch (_e) {}
-    var maxRows = 5;
-    var rowsAttr = parseInt(textarea.getAttribute('rows') || '2', 10);
-    var baseRows = edgeopsIsMobileViewport() ? 1 : (rowsAttr > 0 ? rowsAttr : 2);
-    function syncHeight() {
-        var style = window.getComputedStyle(textarea);
-        var lineHeight = parseFloat(style.lineHeight) || 21;
-        var paddingTop = parseFloat(style.paddingTop) || 0;
-        var paddingBottom = parseFloat(style.paddingBottom) || 0;
-        var borderTop = parseFloat(style.borderTopWidth) || 0;
-        var borderBottom = parseFloat(style.borderBottomWidth) || 0;
-        var frameHeight = paddingTop + paddingBottom + borderTop + borderBottom;
-        var minHeight = Math.ceil(lineHeight * baseRows + frameHeight);
-        var maxHeight = Math.ceil(lineHeight * maxRows + frameHeight);
-        textarea.style.height = 'auto';
-        var nextHeight = Math.min(Math.max(textarea.scrollHeight, minHeight), maxHeight);
-        textarea.style.height = nextHeight + 'px';
-        textarea.style.overflowY = textarea.scrollHeight > maxHeight + 1 ? 'auto' : 'hidden';
+    var metrics = edgeopsMeasureChatTextareaMetrics(textarea);
+    textarea.rows = edgeopsIsMobileViewport() ? 1 : (parseInt(textarea.getAttribute('rows') || '2', 10) > 0 ? parseInt(textarea.getAttribute('rows') || '2', 10) : 2);
+
+    function heightFromLineCount(lineCount, useScrollMeasure) {
+        if (useScrollMeasure) {
+            var prev = textarea.style.height;
+            textarea.style.height = 'auto';
+            var measured = Math.min(Math.max(textarea.scrollHeight, metrics.minHeight), metrics.maxHeight);
+            textarea.style.height = prev || metrics.minHeight + 'px';
+            return measured;
+        }
+        var lines = Math.max(1, Math.min(metrics.maxRows, lineCount || 1));
+        return Math.min(Math.max(Math.ceil(metrics.lineHeight * lines + metrics.frameHeight), metrics.minHeight), metrics.maxHeight);
     }
-    textarea.rows = baseRows;
-    textarea._edgeopsAutoResize = syncHeight;
+
+    function applyHeight(nextHeight, lineCount) {
+        var h = Math.round(nextHeight);
+        if (textarea._edgeopsLastAppliedHeight === h && textarea._edgeopsLastLineCount === lineCount) return;
+        textarea._edgeopsLastAppliedHeight = h;
+        textarea._edgeopsLastLineCount = lineCount;
+        textarea.style.height = h + 'px';
+        var contentH = metrics.lineHeight * lineCount + metrics.frameHeight;
+        textarea.style.overflowY = contentH > metrics.maxHeight + 1 ? 'auto' : 'hidden';
+    }
+
+    function runSyncHeight(forceMeasure) {
+        var val = textarea.value || '';
+        var lineCount = val.split('\n').length;
+        if (lineCount > metrics.maxRows) lineCount = metrics.maxRows;
+        var next = forceMeasure ? heightFromLineCount(lineCount, true) : heightFromLineCount(lineCount, false);
+        applyHeight(next, lineCount);
+    }
+
+    function syncHeight() {
+        if (textarea._edgeopsSyncHeightRaf != null) return;
+        textarea._edgeopsSyncHeightRaf = requestAnimationFrame(function() {
+            textarea._edgeopsSyncHeightRaf = null;
+            runSyncHeight(false);
+        });
+    }
+
+    textarea._edgeopsAutoResize = function(force) {
+        if (force) runSyncHeight(true);
+        else syncHeight();
+    };
     textarea.addEventListener('input', syncHeight);
-    requestAnimationFrame(syncHeight);
-    return syncHeight;
+    textarea.addEventListener('paste', function() {
+        requestAnimationFrame(function() { runSyncHeight(true); });
+    });
+    requestAnimationFrame(function() { runSyncHeight(false); });
+    return textarea._edgeopsAutoResize;
 }
 
 function edgeopsBindChatSubmit(textarea, submit) {
@@ -4244,58 +4297,62 @@ function edgeopsChatScrollIsProgrammatic(box) {
     return Date.now() < until;
 }
 
+/** 流式期间才启用消息区 DOM 监听，避免空闲打字时被动触发滚底/layout。 */
+function edgeopsSetChatStickObserversActive(box, active) {
+    if (!box) return;
+    box._edgeopsStickObserversActive = !!active;
+}
+
 /** 绑定滚动监听：用户上滑则取消贴底跟随，滑回底部则恢复。 */
 function edgeopsBindChatStickToBottom(box) {
     if (!box || box._edgeopsStickBound) return;
     box._edgeopsStickBound = true;
     box._edgeopsStickToBottom = true;
+    box._edgeopsStickObserversActive = false;
     box.addEventListener('scroll', function() {
         if (edgeopsChatScrollIsProgrammatic(box)) return;
         box._edgeopsStickToBottom = edgeopsChatIsNearBottom(box);
     }, { passive: true });
     if (typeof MutationObserver !== 'undefined' && !box._edgeopsStickMutationObs) {
         box._edgeopsStickMutationObs = new MutationObserver(function() {
+            if (!box._edgeopsStickObserversActive) return;
+            if (edgeopsIsChatComposeFocused()) return;
             edgeopsScrollChatToBottomStepIfPinned(box);
         });
-        box._edgeopsStickMutationObs.observe(box, { childList: true, subtree: true, characterData: true });
-    }
-    if (typeof ResizeObserver !== 'undefined' && !box._edgeopsStickResizeObs) {
-        box._edgeopsStickResizeObs = new ResizeObserver(function() {
-            edgeopsScrollChatToBottomStepIfPinned(box);
-        });
-        box._edgeopsStickResizeObs.observe(box);
+        box._edgeopsStickMutationObs.observe(box, { childList: true, subtree: true });
     }
 }
 
 /** 程序化滚底（带标志位，避免 scroll 监听误判为用户上滑）。 */
 function edgeopsScrollChatToBottomNow(box) {
     if (!box) return;
-    box._edgeopsProgrammaticScrollUntil = Date.now() + 200;
+    box._edgeopsProgrammaticScrollUntil = Date.now() + 120;
     box._edgeopsProgrammaticScroll = true;
     try { box.scrollTop = box.scrollHeight; } catch (_e) {}
     requestAnimationFrame(function() {
         if (!box) return;
-        try { box.scrollTop = box.scrollHeight; } catch (_e) {}
-        requestAnimationFrame(function() {
-            if (!box) return;
-            try { box.scrollTop = box.scrollHeight; } catch (_e) {}
-            box._edgeopsProgrammaticScroll = false;
-        });
+        box._edgeopsProgrammaticScroll = false;
     });
 }
 
-/** AI 流式输出期间：贴底时每帧对齐（CoT/工具状态/异步排版增高时更可靠）。 */
+/** AI 流式输出期间：贴底对齐（节流读 scrollHeight，避免每帧 layout 阻塞输入）。 */
 function edgeopsStartChatStreamStickFollow(box) {
     if (!box || box._edgeopsStreamStickFollowActive) return;
     box._edgeopsStreamStickFollowActive = true;
+    edgeopsSetChatStickObserversActive(box, true);
     box._edgeopsLastScrollHeight = box.scrollHeight || 0;
-    function tick() {
+    box._edgeopsStreamStickLastCheck = 0;
+    function tick(now) {
         if (!box || !box._edgeopsStreamStickFollowActive) return;
         if (box._edgeopsStickToBottom !== false) {
-            var sh = box.scrollHeight;
-            if (sh !== box._edgeopsLastScrollHeight || !edgeopsChatIsNearBottom(box)) {
-                box._edgeopsLastScrollHeight = sh;
-                edgeopsScrollChatToBottomNow(box);
+            var ts = now || (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
+            if (ts - (box._edgeopsStreamStickLastCheck || 0) >= 120) {
+                box._edgeopsStreamStickLastCheck = ts;
+                var sh = box.scrollHeight;
+                if (sh !== box._edgeopsLastScrollHeight || !edgeopsChatIsNearBottom(box)) {
+                    box._edgeopsLastScrollHeight = sh;
+                    edgeopsScrollChatToBottomNow(box);
+                }
             }
         }
         box._edgeopsStreamStickFollowRaf = requestAnimationFrame(tick);
@@ -4306,6 +4363,7 @@ function edgeopsStartChatStreamStickFollow(box) {
 function edgeopsStopChatStreamStickFollow(box) {
     if (!box) return;
     box._edgeopsStreamStickFollowActive = false;
+    edgeopsSetChatStickObserversActive(box, false);
     if (box._edgeopsStreamStickFollowRaf != null) {
         try { cancelAnimationFrame(box._edgeopsStreamStickFollowRaf); } catch (_e) {}
         box._edgeopsStreamStickFollowRaf = null;
