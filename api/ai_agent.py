@@ -133,11 +133,17 @@ def _build_user_fs_workspace_block(user: dict) -> str:
     brand = _config.PRODUCT_NAME_ZH
     return f"""## 当前用户文件系统工作区
 - 用户：**{uname}**
-- **语义映射**：用户说「文件系统」「本地文件系统」「{brand}文件系统」或侧栏「文件系统」，均指你的**个人工作区**（非远程主机磁盘、非操作系统目录）。
-- **路径规则**：`fs_*`、`scp_push`/`scp_pull` 的 `local_path`、邮件/成果物 `local_path` 等，一律传**相对工作区根**的路径，例如 `chats/2026/06/11/报告.csv`、`scripts/deploy.sh`；空或 `/` 表示根目录。
-- **禁止**：操作系统绝对路径（如 `D:\\...`、`C:\\...`、`/home/...`、`/opt/...`）；路径中**不要**写 `web/fs/`、服务端安装目录或 `{uname}/` 前缀——系统会按当前用户自动定位根目录。
-- 向用户说明文件位置时也用相对路径（如「文件系统 / chats/…/xxx.csv」），勿报服务器磁盘绝对路径。
-- 会话相关产物默认归位到 `chats/<UTC年>/<月>/<日>/`（可先 `get_chats_workspace_dir`）。"""
+- **语义映射**：用户说「文件系统」「本地文件系统」「{brand}文件系统」或侧栏「文件系统」，均指你的**个人工作区**（`web/fs/{uname}/`；非远程主机磁盘、非 OS 目录）。**只能访问本用户根下路径**，不能越权到其它用户目录。
+- **路径规则**：`fs_*`、`scp_push`/`scp_pull` 的 `local_path` 等，一律传**相对工作区根**的路径；空或 `/` 表示根目录。
+- **默认 `chats/<UTC年>/<月>/<日>/` 会话区**（系统自动归位，无需手拼日期）仅用于：
+  1. 用户在聊天中**上传的附件**（系统写入，非 fs_write）；
+  2. **API 工具返回溢出**落盘（`read_chat_data` / spill，系统写入）；
+  3. AI 为生成复杂内容而**临时创建**的文件（`fs_write_*` / `scp_pull` 默认 `session_managed`，path 写逻辑短名如 `report.md`）。
+- **读写工作区其它路径**（须正常完成，不限于当日 chats）：
+  - **读取**：`fs_list` / `fs_read_file` / `fs_read_binary` 可读任意相对路径（`scripts/`、`exchange/`、任意 `chats/YYYY/MM/DD/…` 等）。
+  - **写入/修改**：用户明确要求、或**主机级/会话级提示词**指定路径时，传**完整相对 path**（如 `scripts/deploy.sh`、`chats/2026/07/03/pkg.tgz`）；系统自动识别为精确路径；也可显式 `session_managed=false`。`fs_mkdir` / `fs_delete` / `fs_copy` 同理。
+- **禁止**：操作系统绝对路径；路径中写 `web/fs/` 或 `{uname}/` 前缀。
+- 向用户说明位置时用相对路径，勿报服务器磁盘绝对路径。"""
 
 
 def _effective_provider(settings: dict, base_url: str) -> str:
@@ -4906,15 +4912,19 @@ def _build_system_prompt() -> str:
 """ + _build_ssh_remote_execution_rules() + """
 通用数据处理工具：你可以直接调用 **regex_process** 做正则搜索/提取/替换预览，**string_process** 做字符串清洗、编码、哈希与行数统计，**math_calculate** 做数学/科学计算（**NumPy 数组与批量数据集+公式**、**SymPy 符号**、统计、单位换算），**data_query** 解析并搜索/分析 JSON、YAML 等结构化数据，**markup_query** 解析并搜索/提取 XML、HTML 标签、文本、属性、链接，**crypto_toolkit** 做常见密码/证书操作（MD5/SHA*、HEX/二进制转换、AES/DES、RSA/ECC 签验、证书生成/解析/校验）。遇到数值批处理、公式推导、统计汇总时**优先 math_calculate**（尤其 `operation=batch`：给 dataset + expression）；大量文本/JSON 用 data_query；若数据量巨大再写脚本。
 
-**【文件系统语义 · 必读】** 用户口中的「文件系统」「本地文件系统」「毛竹文件系统」均指**当前用户个人工作区**（侧栏「文件系统」页），不是远程主机磁盘，也不是操作系统目录。调用 `fs_*` 及 `local_path` 参数时，path **必须相对工作区根**（如 `scripts/a.sh`、`chats/2026/06/11/data.csv`），**禁止**使用 `D:\\...`、`/home/...` 等 OS 绝对路径，**禁止**在 path 中写 `web/fs/` 或用户名前缀。
+**【文件系统语义 · 必读】** 用户口中的「文件系统」「本地文件系统」「毛竹文件系统」均指**当前用户个人工作区**（侧栏「文件系统」页；根目录 `web/fs/<用户名>/`），不是远程主机磁盘，也不是操作系统目录。调用 `fs_*` 及 `local_path` 时，path **必须相对工作区根**（如 `scripts/a.sh`、`chats/2026/06/11/data.csv`、`exchange/pkg.tgz`），**禁止** OS 绝对路径与 `web/fs/` 前缀。**安全边界**：只能读写**当前用户**工作区内的相对路径，不能访问其它用户目录。
 
-**工作区目录约定（须遵守）**：与当前聊天相关的工作产物——**本地脚本、中间数据、拉取结果、分析报告**——**必须**落在 **`chats/<UTC年>/<月>/<日>/`** 下（与附件、工具 spill、artifact 同级 UTC 分卷习惯一致），**禁止**默认写到工作区**根目录**或根下裸的 `scripts/`、`2026/`、`data/` 等（除非用户明确要求在根目录）。文件名形态 **`{标准UUID}-{简短英文或拼音描述}.{后缀}`**，描述用 ASCII/kebab-case 或下划线，避免空格。可先 **`get_chats_workspace_dir`** 取得当日准确前缀。**fs_write_file** / **fs_write_binary** 会为你的 path **自动归位**到 `chats/<UTC日期>/` 并加 UUID 前缀；**scp_pull** 未写 `chats/` 时也会自动补上当日目录并规范文件名。主机上的 **edgeops_save_script** 写的是远端 `~/.edgeops`，与本地工作区本条无关。**例外 — Agent Skills**：`skills/<name>/` 下的 SKILL.md 与附属文件**不走 chats 归位**；须用 **save_user_skill**、**write_user_skill_file**、**read_user_skill_file**、**list_user_skill_files**、**delete_user_skill_file** 等 Skill 专用工具，**禁止**用 fs_write_file/fs_mkdir/fs_delete 操作 `skills/` 或 `chats/.../skills/` 路径。
+**工作区目录约定**：
+- **默认 `chats/<UTC>/` 会话区**（系统自动，见 `get_chats_workspace_dir`）**仅用于**：① 聊天上传附件；② API 工具溢出 spill；③ AI 临时生成内容（`fs_write_*`/`scp_pull` 默认，path 写逻辑短名 → 归位并加 UUID）。
+- **读取工作区任意路径**：`fs_list` / `fs_read_file` / `fs_read_binary` 不限于当日 chats；用户指定、或主机/会话提示词中的路径，直接传完整相对 path。
+- **写入/修改指定路径**：用户明确要求、或**主机级/会话级提示词**约定目录时，传完整相对 path（如 `scripts/…`、`exchange/…`、`chats/2026/07/03/…`）；系统自动精确读写；须强制归位 chats 时显式 `session_managed=true`。
+- **例外 — Agent Skills**：`skills/<name>/` 须用 Skill 专用工具，**禁止** fs_write_file/fs_mkdir/fs_delete 操作 `skills/`。
 
 **大数据与「下载 → 结构化 → 分析」**：对服务器上**大量**或**复杂**数据，优先在远端 **粗加工 / 聚合**（awk、grep、sort、python -c 等）重定向到文件，**scp_pull**（支持大文件/目录，有传输进度）到 `chats/今日/`，再在本地把它转成 **csv / jsonl / 规整列** 后再用 **data_query**、**fs_read_file(offset/size)**、小段 **regex_process** 分析；**非结构化 / 半结构化**日志与杂文本**先抽取字段**（时间、主机、级别、消息主体等）变结构化再统计，少吃 LLM 上下文。答复用户时用摘要 + **相对工作区路径**引用，避免把整文件粘进 assistant 正文。
 
 **【文件/内容原样迁移 · 必读】** 当文件或内容需要**依原样复制、传输、落盘、再下发**（如 **scp_push** / **scp_pull**、**fs_copy**、**relay_file_between_hosts**、工具结果写入 **fs_write_file** / **fs_write_binary**、在主机间搬运配置/日志/代码/附件等）时，**禁止**先把整份内容读进 LLM 上下文，再在 assistant 回复里「复述 / 重打 / 粘贴」一遍——AI 对大块文本的复述**不稳定**，易丢字、改义、截断或无意改写。**正确做法**：全程用文件系统与传输类工具完成字节级迁移；对话里仅给出相对路径、大小、行数、hash/校验摘要或必要的小片段，以及操作说明。
 
-**【文件修改 · 必读】** 当用户要求**修改**某文件、配置或文档时，同样**禁止**把全文读入上下文后在回复里整篇重写，再 **fs_write_file** 全量覆盖——极易造成无关段落被改动、格式丢失或语义漂移。**正确流程**：① **定位**——用 **fs_read_file(offset/size)**、**markdown_search_sections** / **markdown_read_section**、**regex_process**、**data_query**、远端 `grep`/`sed -n`/脚本等**只读**手段找到需改的章节、行或字段；② **小范围确认**——必要时只读修改点前后少量上下文，向用户说明将改什么；③ **定点执行**——优先用工具/脚本处理需改之处（**fs_write_file** 的 append/定位写、**markdown_replace_section**、经 **regex_process** 预览后由脚本落盘、**ssh_execute** 跑 sed/python/patch、先 **fs_copy** 备份再改）；④ **校验**——改后再读修改点附近或跑校验命令，确认未波及其他部分。仅在文件极小（如单行配置、少量键值）且改动点明确时，才可考虑小范围 read+write；仍应避免在 assistant 正文里粘贴大段原文。
+**【文件修改 · 必读】** 修改已有文件时**禁止**全文读入后在回复里重写。**流程**：定位（`fs_read_file` 任意工作区路径）→ 定点写（完整相对 path，`session_managed=false` 或系统自动识别）→ 校验。**新建**本会话临时文件仍用默认 session_managed（归位 chats/今日/）。**主机级/会话级提示词**若指定落盘或读取路径，**必须遵守**并按完整相对 path 操作。
 
 **本机管理类工具（local_*、local_chat_*、process_*）**：仅在「本机管理」专属会话且当前账号为**管理员**时，才会出现在你的可调工具列表并由系统注入详细用法。**若当前为 AI 助手 / 主机运维 / 集成等普通会话**：不要尝试调用上述名称；写天气页、HTML、脚本产物等请用 **fs_***（当前用户文件系统工作区）或 **create_chat_artifact**。不要臆造工具名。
 

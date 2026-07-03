@@ -71,6 +71,7 @@ from api.terminal import (
     wait_for_terminal_session_ready,
 )
 from api.filesystem import (
+    coerce_fs_relative_path,
     get_user_fs_root,
     resolve_fs_path,
     fs_list_dir_async,
@@ -2171,8 +2172,9 @@ TOOLS = [
             "description": (
                 "通过 **SFTP** 从主机拉取**文件或目录**到**当前用户文件系统工作区**（流式落盘，调用卡显示进度）。"
                 "适合大日志、安装包、归档；目录拉取需 **recursive=true**。\n\n"
-                "`local_path`：相对工作区根的逻辑路径如 `data/host1-syslog.txt`；"
-                "未以 `chats/` 开头会自动加 **当天 UTC** 的 `chats/年/月/日/` 并补 UUID 前缀。"
+                "**默认 session_managed（会话区）**：`local_path` 写逻辑名 → 归位 `chats/<UTC>/` 并加 UUID。\n"
+                "**精确路径**：`local_path` 为 `scripts/…`、`exchange/…`、`chats/YYYY/MM/DD/…` 等完整相对路径"
+                "（或用户/主机/会话提示词指定）→ 按路径精确落盘；可显式 session_managed=false。\n"
                 "**禁止** OS 绝对路径。单文件受 `max_bytes` 约束；目录受系统整树字节上限约束。"
             ),
             "parameters": {
@@ -2182,9 +2184,13 @@ TOOLS = [
                     "remote_path": {"type": "string", "description": "远程绝对路径（文件或目录）"},
                     "local_path": {
                         "type": "string",
-                        "description": "逻辑落盘路径（文件或目录名，自动归位 chats/<UTC>/）",
+                        "description": "相对工作区路径；session_managed=false 时需完整相对路径",
                     },
                     "recursive": {"type": "boolean", "description": "远程为目录时必须 true"},
+                    "session_managed": {
+                        "type": "boolean",
+                        "description": "默认 true：归位 chats/<UTC>/；false：按 local_path 精确落盘",
+                    },
                     "max_bytes": {
                         "type": "integer",
                         "description": "单文件字节上限，默认与系统 SCP_PULL_MAX_BYTES 一致",
@@ -2265,7 +2271,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "fs_list",
-            "description": "列出**当前用户文件系统工作区**（侧栏「文件系统」；用户亦称本地/毛竹文件系统）下的文件和子目录。path 为**相对工作区根**的路径，空表示根目录。用户说「文件系统里有某文件」时用此工具；**禁止**传 OS 绝对路径或 web/fs/ 前缀。会话工作区多在 `chats/<UTC年>/<月>/<日>/` 下。",
+            "description": (
+                "列出**当前用户文件系统工作区**（侧栏「文件系统」）下的文件和子目录。"
+                "path 为**相对工作区根**的路径，空表示根目录；**可列出任意子目录**（scripts/、exchange/、任意日期的 chats/… 等），"
+                "不限于当日 chats。**禁止** OS 绝对路径或 web/fs/ 前缀。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2280,8 +2290,10 @@ TOOLS = [
         "function": {
             "name": "get_chats_workspace_dir",
             "description": (
-                "返回**当前 UTC 日期**的会话工作区目录前缀 `chats/年/月/日`（与附件、工具 spill、fs_write 自动归位规则一致）。"
-                "写脚本、落数据、scp_pull 前若不确定日期路径可调用。**不可**把大量工作文件默认写到用户 fs 根目录或顶层 `scripts/`。"
+                "返回**当前 UTC 日期**的会话工作区目录前缀 `chats/年/月/日`（与附件、工具 spill、默认 fs_write 归位一致）。"
+                "写**会话临时产物**（脚本、中间数据、scp 默认拉取）前若不确定日期路径可调用。"
+                "读取或修改工作区**其它已有目录**（scripts/、exchange/、历史 chats/…）时直接用 fs_* 传完整相对路径，"
+                "不必局限当日 chats。"
             ),
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
@@ -2290,7 +2302,12 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "fs_read_file",
-            "description": "读取**当前用户文件系统工作区**中的文本文件（UTF-8）。path 为**相对工作区根**；支持 offset/size 分段读取。**禁止** OS 绝对路径。",
+            "description": (
+                "读取**当前用户文件系统工作区**中的文本文件（UTF-8）。"
+                "path 为**相对工作区根**的完整路径，**可读取任意子目录**"
+                "（如 `scripts/deploy.sh`、`exchange/pkg.tgz` 旁路文本、`chats/2026/07/03/report.md`）；"
+                "支持 offset/size 分段读取。**禁止** OS 绝对路径。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2307,23 +2324,29 @@ TOOLS = [
         "function": {
             "name": "fs_write_file",
             "description": (
-                "向**当前用户文件系统工作区**写入文本文件（UTF-8）。path 为**相对工作区根**的逻辑路径；支持 overwrite/append 及按字符 offset 定位写。\n"
-                "**会话相关**写入（脚本、中间数据、报告）：path 只需写逻辑路径段如 `scripts/job.sh`、`data/raw.csv`；"
-                "后端会**自动**归位到 `chats/<UTC日期>/…`，并命名为 `{UUID}-{文件名 stem}{后缀}`。\n"
-                "本机管理会话（local）则归位到 `local/<UTC日期>/…`。\n"
-                "**禁止** OS 绝对路径、web/fs/ 前缀；**禁止**用本工具写 `skills/`（须 save_user_skill / write_user_skill_file）。"
+                "向**当前用户文件系统工作区**写入文本文件（UTF-8）。path 为**相对工作区根**；支持 overwrite/append 及按字符 offset 定位写。\n"
+                "**默认 session_managed（会话区）**：用于 AI 临时脚本、中间数据、复杂内容落盘；"
+                "path 写逻辑名如 `report.md`、`data/raw.csv` → 自动归位 `chats/<UTC>/` 并加 UUID。\n"
+                "**精确路径（自动识别或 session_managed=false）**：path 以 `scripts/`、`exchange/`、"
+                "`chats/YYYY/MM/DD/…` 等完整相对路径开头，或用户/主机/会话提示词指定路径 → 按 path 精确读写。\n"
+                "本机管理会话且 session_managed=true 时归位到 `local/<UTC日期>/…`。\n"
+                "**禁止** OS 绝对路径；**禁止**用本工具写 `skills/`（须 save_user_skill / write_user_skill_file）。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "相对工作区的逻辑路径（如 scripts/a.py）；勿手动拼 chats/ 完整日期除非你有意固定到某一天",
+                        "description": "相对工作区路径；session_managed=true 时可为逻辑段；false 时需完整相对路径",
                     },
                     "content": {"type": "string", "description": "文件内容（文本）"},
                     "mode": {"type": "string", "description": "可选：overwrite|append|insert|replace，默认 overwrite"},
                     "offset": {"type": "integer", "description": "可选，字符偏移；配合 insert/replace 可定位写"},
                     "replace_length": {"type": "integer", "description": "可选，replace 模式下替换的字符数；默认 0"},
+                    "session_managed": {
+                        "type": "boolean",
+                        "description": "省略时：逻辑短路径→归位 chats/<UTC>/；完整相对路径→精确读写。true 强制归位；false 强制精确",
+                    },
                 },
                 "required": ["path", "content"],
             },
@@ -2333,7 +2356,10 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "fs_read_binary",
-            "description": "从**当前用户文件系统工作区**读取二进制文件，返回 base64 或 hex。path 为相对工作区根；支持 offset/size。**禁止** OS 绝对路径。",
+            "description": (
+                "从**当前用户文件系统工作区**读取二进制文件，返回 base64 或 hex。"
+                "path 为相对工作区根的**完整路径**，可读取任意子目录；支持 offset/size。**禁止** OS 绝对路径。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2351,17 +2377,21 @@ TOOLS = [
         "function": {
             "name": "fs_write_binary",
             "description": (
-                "向**当前用户文件系统工作区**写入二进制（content 为 base64 或 hex）。path 为相对工作区根；"
-                "**路径归位**与 fs_write_file 相同。**禁止** OS 绝对路径。"
+                "向**当前用户文件系统工作区**写入二进制（content 为 base64 或 hex）。"
+                "**session_managed** 与 fs_write_file 相同（省略时按 path 自动识别）。**禁止** OS 绝对路径。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "逻辑相对路径（如 data/blob.bin）；自动归位到 chats/<UTC日期>/"},
+                    "path": {"type": "string", "description": "相对工作区路径；session_managed=false 时需完整相对路径"},
                     "content": {"type": "string", "description": "二进制编码内容（base64 或 hex）"},
                     "offset": {"type": "integer", "description": "可选，写入字节偏移"},
                     "truncate": {"type": "boolean", "description": "可选，无 offset 时是否覆盖写（默认 false=追加）"},
                     "encoding": {"type": "string", "description": "content 编码：base64 或 hex，默认 base64"},
+                    "session_managed": {
+                        "type": "boolean",
+                        "description": "默认 true：归位 chats/<UTC>/；false：按 path 精确写入",
+                    },
                 },
                 "required": ["path", "content"],
             },
@@ -2387,8 +2417,9 @@ TOOLS = [
         "function": {
             "name": "fs_mkdir",
             "description": (
-                "在**当前用户文件系统工作区**创建目录。path 为相对工作区根；建议建在 `chats/<UTC日期>/` 下（可先 get_chats_workspace_dir）。"
-                "**禁止** OS 绝对路径。"
+                "在**当前用户文件系统工作区**创建目录。path 为相对工作区根的**完整路径**，"
+                "可在任意子目录下创建（scripts/、exchange/、chats/任意日期/…）。"
+                "会话临时目录可先 get_chats_workspace_dir。**禁止** OS 绝对路径。"
             ),
             "parameters": {
                 "type": "object",
@@ -6199,8 +6230,172 @@ def _scheduled_task_dict_for_tool(row) -> dict:
     return d
 
 
-def _normalize_sftp_pull_local_path(raw_local: str, remote_path: str, *, as_directory: bool) -> str:
-    """将 pull 的 local_path 归位到 chats/<UTC>/ 并补 UUID 前缀。"""
+def _arg_session_managed(arguments: dict) -> bool:
+    """解析 session_managed：默认 True（会话产物归位 chats/<UTC>/）；False 则按 path 精确落盘。"""
+    v = arguments.get("session_managed")
+    if v is None:
+        return True
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() not in ("0", "false", "no", "off")
+
+
+# 工作区根下常见「持久/指定」目录：path 以此开头且未显式 session_managed 时按精确路径读写
+_EXPLICIT_FS_TOPLEVEL_DIRS = frozenset({
+    "scripts", "exchange", "data", "backups", "backup", "templates", "template",
+    "exports", "export", "imports", "import", "staging", "workspace", "projects",
+    "project", "lib", "libs", "cache", "tmp", "temp", "public", "static", "tools",
+    "bin", "configs", "config", "archive", "archives", "packages", "pkg", "repos",
+    "repo", "output", "outputs", "downloads", "download", "upload", "uploads", "files",
+    "assets", "media", "docs", "notes", "reports", "report", "build", "builds",
+    "dist", "release", "releases", "vendor", "vendors", "share", "shared",
+})
+_CHATS_DATE_PREFIX_RE = re.compile(r"^chats/\d{4}/\d{2}/\d{2}/", re.I)
+_LOCAL_DATE_PREFIX_RE = re.compile(r"^local/\d{4}/\d{2}/\d{2}/", re.I)
+
+
+def _looks_like_explicit_workspace_path(path: str, *, base=None) -> bool:
+    """path 是否像用户指定的完整相对路径（非会话临时逻辑名）。"""
+    try:
+        rel = coerce_fs_relative_path(path or "", base)
+    except ValueError:
+        return False
+    if not rel:
+        return False
+    low = rel.lower()
+    if _CHATS_DATE_PREFIX_RE.match(low) or _LOCAL_DATE_PREFIX_RE.match(low):
+        return True
+    first = low.split("/")[0]
+    return first in _EXPLICIT_FS_TOPLEVEL_DIRS
+
+
+def _effective_session_managed(arguments: dict, path: str, *, base=None) -> bool:
+    """未传 session_managed 时：逻辑短路径 → 归位 chats/<UTC>/；完整/指定目录路径 → 精确读写。"""
+    if arguments.get("session_managed") is not None:
+        return _arg_session_managed(arguments)
+    return not _looks_like_explicit_workspace_path(path, base=base)
+
+
+def _fs_safe_suffix(path_like: str) -> str:
+    raw_name = (path_like or "").replace("\\", "/").strip().split("/")[-1]
+    p = Path(raw_name)
+    suffix = p.suffix or ""
+    if len(suffix) > 16:
+        suffix = ""
+    if suffix and not re.fullmatch(r"\.[A-Za-z0-9._-]+", suffix):
+        suffix = ""
+    return suffix
+
+
+def _fs_safe_stem(path_like: str, fallback: str) -> str:
+    raw_name = (path_like or "").replace("\\", "/").strip().split("/")[-1]
+    stem = Path(raw_name).stem or fallback
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-") or fallback
+    return stem[:48]
+
+
+def _fs_safe_subdir(path_like: str) -> str:
+    raw = (path_like or "").replace("\\", "/").strip().lstrip("/")
+    if not raw:
+        return ""
+    parts = raw.split("/")
+    if len(parts) <= 1:
+        return ""
+    cleaned: list[str] = []
+    for seg in parts[:-1]:
+        s = re.sub(r"[^A-Za-z0-9._-]+", "_", (seg or "").strip())
+        s = s.strip("._-")
+        if not s or s in (".", ".."):
+            continue
+        cleaned.append(s[:64])
+    return "/".join(cleaned[:8])
+
+
+def _chat_managed_relative_path(
+    requested_path: str,
+    *,
+    local_scope: bool = False,
+    fallback_ext: str = ".txt",
+) -> str:
+    """会话相关落盘：普通会话 → chats/<UTC>/；本机 → local/<UTC>/；文件名加 UUID 前缀。"""
+    date_dir = datetime.now(timezone.utc).strftime("%Y/%m/%d")
+    if local_scope:
+        prefix = f"local/{date_dir}"
+    else:
+        prefix = f"chats/{date_dir}"
+    rp = (requested_path or "").replace("\\", "/").strip().lstrip("/")
+    lp = f"local/{date_dir}"
+    low = rp.lower()
+    if local_scope:
+        if low.startswith(lp.lower() + "/"):
+            rp = rp[len(lp) + 1 :].lstrip("/")
+        elif low == lp.lower():
+            rp = ""
+        low = rp.lower()
+    else:
+        cp = f"chats/{date_dir}".lower()
+        if low.startswith(cp + "/"):
+            rp = rp[len(f"chats/{date_dir}") + 1 :].lstrip("/")
+        elif low == cp:
+            rp = ""
+        else:
+            low2 = (rp or "").lower()
+            if low2.startswith(date_dir.lower() + "/"):
+                rp = rp[len(date_dir) + 1 :].lstrip("/")
+            elif low2 == date_dir.lower():
+                rp = ""
+    low = rp.lower()
+    if low.startswith(date_dir.lower() + "/"):
+        rp = rp[len(date_dir) + 1 :].lstrip("/")
+    elif low == date_dir.lower():
+        rp = ""
+    if local_scope:
+        rp = re.sub(r"^local/", "", rp, count=1, flags=re.I).lstrip("/")
+    if not rp:
+        rp = "output.txt"
+    subdir = _fs_safe_subdir(rp)
+    ext = _fs_safe_suffix(rp) or fallback_ext
+    stem = _fs_safe_stem(rp, "file")
+    uid = str(uuid4())
+    filename = f"{uid}-{stem}{ext}"
+    if subdir:
+        return f"{prefix}/{subdir}/{filename}"
+    return f"{prefix}/{filename}"
+
+
+def _resolve_fs_write_relative_path(
+    requested_path: str,
+    *,
+    session_managed: bool = True,
+    local_scope: bool = False,
+    fallback_ext: str = ".txt",
+    base=None,
+) -> str:
+    """session_managed=True 归位 chats/local 日期目录；False 则按相对工作区根的精确路径读写。"""
+    if session_managed:
+        return _chat_managed_relative_path(
+            requested_path, local_scope=local_scope, fallback_ext=fallback_ext
+        )
+    rel = coerce_fs_relative_path(requested_path or "", base)
+    if not rel:
+        raise ValueError("缺少有效 path（session_managed=false 时需传完整相对路径）")
+    return rel
+
+
+def _normalize_sftp_pull_local_path(
+    raw_local: str,
+    remote_path: str,
+    *,
+    as_directory: bool,
+    session_managed: bool = True,
+) -> str:
+    """session_managed=True 时归位 chats/<UTC>/ 并补 UUID；False 时按 local_path 精确落盘。"""
+    if not session_managed:
+        norm = coerce_fs_relative_path(raw_local or "")
+        if not norm:
+            name = Path(remote_path.replace("\\", "/")).name or "pull.bin"
+            norm = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._-")[:96] or "pull.bin"
+        return norm
     date_u = datetime.now(timezone.utc).strftime("%Y/%m/%d")
     norm = (raw_local or "").replace("\\", "/").strip().lstrip("/")
     if not norm.lower().startswith("chats/"):
@@ -6291,87 +6486,6 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             from services.user_mcp_client import invoke_user_mcp_tool
 
             return await invoke_user_mcp_tool(user, name, arguments, session_id=session_id)
-        def _safe_suffix(path_like: str) -> str:
-            raw_name = (path_like or "").replace("\\", "/").strip().split("/")[-1]
-            p = Path(raw_name)
-            suffix = p.suffix or ""
-            if len(suffix) > 16:
-                suffix = ""
-            if suffix and not re.fullmatch(r"\.[A-Za-z0-9._-]+", suffix):
-                suffix = ""
-            return suffix
-
-        def _safe_stem(path_like: str, fallback: str) -> str:
-            raw_name = (path_like or "").replace("\\", "/").strip().split("/")[-1]
-            stem = Path(raw_name).stem or fallback
-            stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-") or fallback
-            return stem[:48]
-
-        def _safe_subdir(path_like: str) -> str:
-            raw = (path_like or "").replace("\\", "/").strip().lstrip("/")
-            if not raw:
-                return ""
-            parts = raw.split("/")
-            if len(parts) <= 1:
-                return ""
-            # 仅取目录部分，并做段级净化，禁止 . / .. / 空段 与奇怪字符
-            cleaned: list[str] = []
-            for seg in parts[:-1]:
-                s = re.sub(r"[^A-Za-z0-9._-]+", "_", (seg or "").strip())
-                s = s.strip("._-")
-                if not s or s in (".", ".."):
-                    continue
-                cleaned.append(s[:64])
-            return "/".join(cleaned[:8])  # 防止路径过深
-
-        def _chat_managed_relative_path(requested_path: str, *, local_scope: bool = False, fallback_ext: str = ".txt") -> str:
-            """与会话相关的落盘路径：普通会话一律在 chats/<UTC日期>/ 下；本机会话在 local/<UTC日期>/ 下。
-            文件名：{UUID}-{净化后的 stem}{ext}，避免与用户根目录裸放 scripts/、日期文件夹混淆。"""
-            date_dir = datetime.now(timezone.utc).strftime("%Y/%m/%d")
-            if local_scope:
-                prefix = f"local/{date_dir}"
-            else:
-                prefix = f"chats/{date_dir}"
-            rp = (requested_path or "").replace("\\", "/").strip().lstrip("/")
-            lp = f"local/{date_dir}"
-            low = rp.lower()
-            if local_scope:
-                if low.startswith(lp.lower() + "/"):
-                    rp = rp[len(lp) + 1 :].lstrip("/")
-                elif low == lp.lower():
-                    rp = ""
-                low = rp.lower()
-            else:
-                cp = f"chats/{date_dir}".lower()
-                if low.startswith(cp + "/"):
-                    rp = rp[len(f"chats/{date_dir}") + 1 :].lstrip("/")
-                elif low == cp:
-                    rp = ""
-                else:
-                    low2 = (rp or "").lower()
-                    # 兼容历史：AI 只写了 YYYY/MM/DD/...（落在用户根下）时去掉日期前缀
-                    if low2.startswith(date_dir.lower() + "/"):
-                        rp = rp[len(date_dir) + 1 :].lstrip("/")
-                    elif low2 == date_dir.lower():
-                        rp = ""
-            low = rp.lower()
-            if low.startswith(date_dir.lower() + "/"):
-                rp = rp[len(date_dir) + 1 :].lstrip("/")
-            elif low == date_dir.lower():
-                rp = ""
-            if local_scope:
-                rp = re.sub(r"^local/", "", rp, count=1, flags=re.I).lstrip("/")
-            if not rp:
-                rp = "output.txt"
-            subdir = _safe_subdir(rp)
-            ext = _safe_suffix(rp) or fallback_ext
-            stem = _safe_stem(rp, "file")
-            uid = str(uuid4())
-            filename = f"{uid}-{stem}{ext}"
-            if subdir:
-                return f"{prefix}/{subdir}/{filename}"
-            return f"{prefix}/{filename}"
-
         def _safe_optional_subdir_only(s: str) -> str:
             """本机管理 local_chat_data_paths：仅子目录段净化，不含文件名。"""
             clean: list[str] = []
@@ -11481,7 +11595,10 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             max_bytes = max(1024, min(max_bytes, cap))
             timeout = _sftp_timeout_from_args(arguments)
             local_path = _normalize_sftp_pull_local_path(
-                raw_local_requested, remote_path, as_directory=recursive
+                raw_local_requested,
+                remote_path,
+                as_directory=recursive,
+                session_managed=_effective_session_managed(arguments, raw_local_requested),
             )
             host_row = await _get_host_row(host_id)
             if not host_row:
@@ -13503,9 +13620,10 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     "chats_workspace_relative_prefix": f"chats/{sub}",
                     "filename_format": "{UUID}-{kebab-or-safe-ascii-desc}.{ext}",
                     "notes": (
-                        "fs_write_file / fs_write_binary 会自动把 path 归位到上述前缀下并加 UUID 文件名。"
-                        "scp_pull 的 local_path 若未以 chats/ 开头也会自动补上当日 chats 前缀。"
-                        "与聊天附件、chat_tool_spill 使用同一 UTC 日期分层。"
+                        "chats/<UTC>/ 为默认会话区：聊天附件、API 工具 spill、AI 临时生成文件（session_managed 默认）。"
+                        "读取工作区任意路径用 fs_read_* / fs_list；"
+                        "写入 scripts/、exchange/、完整 chats/日期/… 等指定路径时传完整相对 path（可省略 session_managed，系统自动识别）；"
+                        "强制归位 chats 可显式 session_managed=true。"
                     ),
                 },
                 ensure_ascii=False,
@@ -13549,9 +13667,15 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 base = get_user_fs_root(user)
                 offset_i = int(offset) if offset is not None else None
                 rl_i = int(replace_length or 0)
-                # 聊天生成文件统一落到 web/fs/<username>/YYYY/MM/DD/uuid+功能名.ext
                 is_local_scope = (scope or "").strip().lower() == "local"
-                managed_rel = _chat_managed_relative_path(path, local_scope=is_local_scope, fallback_ext=".txt")
+                session_managed = _effective_session_managed(arguments, path, base=base)
+                managed_rel = _resolve_fs_write_relative_path(
+                    path,
+                    session_managed=session_managed,
+                    local_scope=is_local_scope,
+                    fallback_ext=".txt",
+                    base=base,
+                )
                 out = await fs_write_file_async(
                     managed_rel,
                     content if isinstance(content, str) else str(content),
@@ -13562,6 +13686,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 )
                 out["requested_path"] = path
                 out["managed_relative_path"] = managed_rel
+                out["session_managed"] = session_managed
                 return json.dumps(out, ensure_ascii=False)
             except ValueError as e:
                 return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
@@ -13599,7 +13724,14 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 base = get_user_fs_root(user)
                 offset_i = int(offset) if offset is not None else None
                 is_local_scope = (scope or "").strip().lower() == "local"
-                managed_rel = _chat_managed_relative_path(path, local_scope=is_local_scope, fallback_ext=".bin")
+                session_managed = _effective_session_managed(arguments, path, base=base)
+                managed_rel = _resolve_fs_write_relative_path(
+                    path,
+                    session_managed=session_managed,
+                    local_scope=is_local_scope,
+                    fallback_ext=".bin",
+                    base=base,
+                )
                 out = await fs_write_binary_async(
                     managed_rel,
                     str(content),
@@ -13610,6 +13742,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 )
                 out["requested_path"] = path
                 out["managed_relative_path"] = managed_rel
+                out["session_managed"] = session_managed
                 return json.dumps(out, ensure_ascii=False)
             except ValueError as e:
                 return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
