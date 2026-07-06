@@ -211,6 +211,130 @@ async def list_profiles(db, user_id: int) -> tuple[list[dict], int | None]:
     return items, active_id
 
 
+async def get_profile_row_by_name(db, user_id: int, name: str) -> dict | None:
+    await ensure_profiles_schema(db)
+    n = (name or "").strip()
+    if not n:
+        return None
+    rows = await db.execute_fetchall(
+        "SELECT * FROM user_ai_model_profiles WHERE user_id = ? AND name = ?",
+        (user_id, n),
+    )
+    return dict(rows[0]) if rows else None
+
+
+async def get_resolved_user_ai_settings(db, user_id: int) -> dict[str, str]:
+    """获取用户 AI 配置：优先当前激活 Profile，缺项用全局 settings 补全。返回 ai_* 键字典。"""
+    keys = [
+        "ai_api_key", "ai_base_url", "ai_model", "ai_system_prompt",
+        "ai_auto_approve", "ai_assistant_enabled", "ai_context_size",
+        "ai_agent_max_steps", "ai_assistant_max_rounds", "ai_provider",
+        "ai_vision_enabled", "ai_output_locale",
+    ]
+    out: dict[str, str] = {}
+    await ensure_profiles_schema(db)
+    prof = await get_active_profile_row(db, user_id)
+    if prof:
+        out = profile_row_to_settings(prof)
+    else:
+        row = await db.execute_fetchall("SELECT * FROM user_ai_config WHERE user_id = ?", (user_id,))
+        if row:
+            r = dict(row[0])
+            out["ai_api_key"] = (r.get("api_key") or "").strip()
+            out["ai_base_url"] = (r.get("base_url") or "").strip()
+            out["ai_model"] = (r.get("model") or "").strip()
+            out["ai_system_prompt"] = (r.get("system_prompt") or "").strip()
+            out["ai_auto_approve"] = (r.get("auto_approve") or "false").strip().lower()
+            out["ai_assistant_enabled"] = (r.get("assistant_enabled") or "false").strip().lower()
+            out["ai_context_size"] = (r.get("context_size") or "0").strip()
+            out["ai_agent_max_steps"] = (r.get("agent_max_steps") or "").strip()
+            out["ai_assistant_max_rounds"] = (r.get("assistant_max_rounds") or "").strip()
+            out["ai_provider"] = (r.get("provider") or "").strip()
+            _vision_raw = r.get("vision_enabled") if "vision_enabled" in r else None
+            out["ai_vision_enabled"] = ((_vision_raw or "true").strip().lower() or "true")
+            out["ai_output_locale"] = (r.get("ai_output_locale") or "").strip()
+    for k in keys:
+        if k not in out or out[k] == "":
+            if k == "ai_provider":
+                out[k] = ""
+                continue
+            if k == "ai_vision_enabled":
+                out[k] = "true"
+                continue
+            if k == "ai_output_locale":
+                out[k] = out.get(k) or ""
+                continue
+            rows = await db.execute_fetchall("SELECT value FROM settings WHERE key = ?", (k,))
+            val = (rows[0]["value"] if rows else "") or (
+                "true" if k == "ai_auto_approve" else ("0" if k == "ai_context_size" else "")
+            )
+            if k == "ai_api_key":
+                val = ""
+            out[k] = val
+    return out
+
+
+async def sync_legacy_user_ai_config_from_profile(db, user_id: int, profile_row: dict) -> None:
+    """将 Profile 同步到 user_ai_config 遗留列（兼容旧读取路径）。"""
+    s = profile_row_to_settings(profile_row)
+    await _ensure_user_config_row(db, user_id)
+    await db.execute(
+        """INSERT INTO user_ai_config (
+               user_id, api_key, base_url, model, system_prompt, auto_approve, assistant_enabled,
+               context_size, agent_max_steps, assistant_max_rounds, provider, vision_enabled,
+               ai_output_locale, active_profile_id, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(user_id) DO UPDATE SET
+           api_key=excluded.api_key, base_url=excluded.base_url, model=excluded.model,
+           system_prompt=excluded.system_prompt, auto_approve=excluded.auto_approve,
+           assistant_enabled=excluded.assistant_enabled, context_size=excluded.context_size,
+           agent_max_steps=excluded.agent_max_steps, assistant_max_rounds=excluded.assistant_max_rounds,
+           provider=excluded.provider, vision_enabled=excluded.vision_enabled,
+           ai_output_locale=excluded.ai_output_locale, active_profile_id=excluded.active_profile_id,
+           updated_at=CURRENT_TIMESTAMP""",
+        (
+            user_id,
+            s.get("ai_api_key") or "",
+            s.get("ai_base_url") or "",
+            s.get("ai_model") or "",
+            s.get("ai_system_prompt") or "",
+            s.get("ai_auto_approve") or "false",
+            s.get("ai_assistant_enabled") or "false",
+            s.get("ai_context_size") or "0",
+            s.get("ai_agent_max_steps") or "",
+            s.get("ai_assistant_max_rounds") or "",
+            s.get("ai_provider") or "",
+            s.get("ai_vision_enabled") or "true",
+            s.get("ai_output_locale") or "",
+            int(profile_row["id"]),
+        ),
+    )
+
+
+def profile_row_to_tool_config(row: dict) -> dict[str, Any]:
+    """Profile 行 → AI 工具返回的配置字典（api_key 脱敏）。"""
+    s = profile_row_to_settings(row)
+    ak = (s.get("ai_api_key") or "").strip()
+    return {
+        "id": int(row["id"]),
+        "name": (row.get("name") or "").strip() or DEFAULT_PROFILE_NAME,
+        "api_key": "***" if ak else "",
+        "api_key_set": bool(ak),
+        "base_url": s.get("ai_base_url") or "",
+        "model": s.get("ai_model") or "",
+        "system_prompt": s.get("ai_system_prompt") or "",
+        "auto_approve": (s.get("ai_auto_approve") or "false").lower() == "true",
+        "assistant_enabled": (s.get("ai_assistant_enabled") or "false").lower() == "true",
+        "context_size": int(s.get("ai_context_size") or "0"),
+        "provider": s.get("ai_provider") or "",
+        "agent_max_steps": int(s.get("ai_agent_max_steps") or "0") if (s.get("ai_agent_max_steps") or "").strip() else 0,
+        "assistant_max_rounds": int(s.get("ai_assistant_max_rounds") or "0") if (s.get("ai_assistant_max_rounds") or "").strip() else 0,
+        "vision_enabled": (s.get("ai_vision_enabled") or "true").lower() != "false",
+        "output_locale": s.get("ai_output_locale") or "",
+        "updated_at": row.get("updated_at"),
+    }
+
+
 async def get_profile_row(db, user_id: int, profile_id: int) -> dict | None:
     await ensure_profiles_schema(db)
     rows = await db.execute_fetchall(

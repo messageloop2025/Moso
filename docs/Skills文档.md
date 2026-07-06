@@ -248,8 +248,12 @@
 | update_setting | 更新系统设置项（需管理员） | key, value |
 | list_logs | 查询操作日志（**普通用户仅能查自己的日志**；管理员可传 user_id 筛选） | limit?, host_id?, user_id? |
 | clear_logs | 清空操作日志（普通用户清空自己的，管理员可清空全部或指定 user_id） | user_id?（仅管理员可选） |
-| get_ai_config | 获取 AI 配置。当前用户查看自己的；**管理员可传 user_id 查看指定用户** | user_id?（仅管理员） |
-| update_ai_config | 更新 AI 配置。当前用户更新自己的；**管理员可传 user_id 更新指定用户** | user_id? / api_key? / base_url? / model? / system_prompt? / auto_approve? / assistant_enabled? / **context_size?** 等 |
+| get_ai_config | 获取当前激活 AI 配置 + 全部模型配置组列表 profiles / active_profile_id | user_id?（仅管理员） |
+| update_ai_config | 更新**当前激活**模型配置（不新建配置组） | user_id? / api_key? / base_url? / model? 等 |
+| list_ai_model_profiles | 列出全部模型配置组（名称、model、是否当前等） | user_id? |
+| create_ai_model_profile | **新建**模型配置组；`set_active=false` 时不切换当前模型 | name（必填）/ set_active? / provider? / base_url? / model? 等 |
+| update_ai_model_profile | 按 profile_id 或 profile_name 更新指定配置组 | profile_id? / profile_name? / 各配置字段 |
+| activate_ai_model_profile | **切换当前模型** | profile_id? / profile_name? |
 | apply_system_ai_config_to_user | **仅管理员**：将系统默认 AI 配置（全局设置）直接写入指定用户的 AI 配置 | user_id（必填） |
 
 ---
@@ -439,7 +443,7 @@
 | 终端 | /terminal buffer/list/send、控制台创建/关闭 | get_terminal_buffer、send_to_terminal、list_terminals、create_console、close_console、connect_terminal |
 | 批量操作 | /batch POST/GET/cancel/retry/clear/export | batch_create、list_batch_operations、get_batch_detail、batch_cancel、batch_retry、**clear_batches** |
 | 本机管理 | /local fs/list\|read\|write\|mkdir、execute、run-script、sessions、ws、buffer | **local_exec**、**local_run_script**、**create_local_console**、**close_local_console**、**local_fs_list/read/write/mkdir/delete/rename/truncate/read_binary/write_binary**、**process_start/terminate/wait/stdin_write/stdin_close/stdout_read/stderr_read/process_list**（仅管理员） |
-| AI 助手 | /ai config/sessions/chat、prompt、summarize-title | get_ai_config、update_ai_config、list_ai_sessions、get_ai_session、create_ai_session、update_ai_session、delete_ai_session、clear_ai_sessions、**update_session_prompt**、**get_session_operations**、**get_session_chat_detail** |
+| AI 助手 | /ai config/sessions/chat、prompt、summarize-title、profiles | get_ai_config、update_ai_config、**list/create/update/activate_ai_model_profile**、list_ai_sessions、get_ai_session、create_ai_session、update_ai_session、delete_ai_session、clear_ai_sessions、**update_session_prompt**、**get_session_operations**、**get_session_chat_detail** |
 | 聊天附件 | /ai/attachments POST/GET/DELETE、bind | read_chat_attachment、save_image_description、list_chat_attachments |
 | AI 成果物 | /ai/artifacts GET/download/file、bind、DELETE | create_chat_artifact、list_chat_artifacts、read_chat_artifact_file |
 | 系统设置与日志 | /settings、/logs、/logs/export、/logs/clear | get_settings、update_setting、list_logs、**clear_logs** |

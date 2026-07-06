@@ -3355,7 +3355,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_ai_config",
-            "description": "获取 AI 助手配置（api_key、base_url、model、system_prompt、auto_approve、assistant_enabled、context_size、agent_max_steps、assistant_max_rounds、output_locale 等）。其中 agent_max_steps / assistant_max_rounds 为 0 表示沿用全局默认值；output_locale 空表示未设个人默认回复语言。当前用户查看自己的；管理员可传 user_id 查看指定用户的配置。",
+            "description": "获取当前激活的 AI 模型配置（api_key 脱敏为 ***），并返回全部模型配置组列表 profiles 与 active_profile_id。新增/切换模型请用 create_ai_model_profile、activate_ai_model_profile；仅改当前激活项可用 update_ai_config 或 update_ai_model_profile。管理员可传 user_id。",
             "parameters": {
                 "type": "object",
                 "properties": {"user_id": {"type": "integer", "description": "仅管理员：要查看的用户 ID，不传则当前用户"}},
@@ -3367,7 +3367,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "update_ai_config",
-            "description": "更新 AI 配置（api_key、base_url、model、system_prompt、auto_approve、assistant_enabled、context_size、agent_max_steps、assistant_max_rounds、output_locale 等）。当前用户更新自己的；管理员可传 user_id 更新指定用户的配置。所有未传字段保持原值不变（除 api_key 传空或 *** 时同样保留）。",
+            "description": "更新当前激活的模型配置（不会新建配置组；未传字段保持原值）。若需添加新的候选模型但不切换，请用 create_ai_model_profile(set_active=false)；切换当前模型请用 activate_ai_model_profile。管理员可传 user_id。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3384,6 +3384,91 @@ TOOLS = [
                     "assistant_max_rounds": {"type": "integer", "description": "辅助 AI 外层最大轮次（连续助手轮次）。0 表示沿用全局默认（默认 100），上限 1000。"},
                     "vision_enabled": {"type": "boolean", "description": "所配模型是否支持图像识别（多模态视觉输入）。默认 true；关闭后后端不再把图片按 OpenAI image_url 段内联到 user 消息（改为只挂 📎 附件清单，让 AI 用 read_chat_attachment 拿 data_url 兜底）。"},
                     "output_locale": {"type": "string", "enum": ["", "en", "zh-CN"], "description": "无法从用户输入判断语言时使用的个人默认；空表示不设，走站点/界面语言链路。"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_ai_model_profiles",
+            "description": "列出用户的全部 AI 模型配置组（名称、model、base_url、provider、是否当前激活等；不含完整 api_key）。管理员可传 user_id。",
+            "parameters": {
+                "type": "object",
+                "properties": {"user_id": {"type": "integer", "description": "仅管理员：目标用户 ID"}},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_ai_model_profile",
+            "description": "新建一组 AI 模型配置并加入模型列表。默认不切换为当前模型（set_active=false）；仅当用户尚无任何配置组时系统会自动激活首个。用于「添加候选模型但不立即使用」。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_id": {"type": "integer", "description": "仅管理员：目标用户 ID"},
+                    "name": {"type": "string", "description": "配置组名称（用户内唯一，必填）"},
+                    "set_active": {"type": "boolean", "description": "创建后是否立即设为当前模型，默认 false"},
+                    "api_key": {"type": "string"},
+                    "base_url": {"type": "string"},
+                    "model": {"type": "string"},
+                    "system_prompt": {"type": "string"},
+                    "auto_approve": {"type": "boolean"},
+                    "assistant_enabled": {"type": "boolean"},
+                    "context_size": {"type": "integer"},
+                    "provider": {"type": "string", "enum": ["aliyun", "ollama", "openai", ""]},
+                    "agent_max_steps": {"type": "integer"},
+                    "assistant_max_rounds": {"type": "integer"},
+                    "vision_enabled": {"type": "boolean"},
+                    "output_locale": {"type": "string", "enum": ["", "en", "zh-CN"]},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_ai_model_profile",
+            "description": "按 profile_id 或 profile_name 更新指定模型配置组（未传字段不变）。不会自动切换为当前模型。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_id": {"type": "integer", "description": "仅管理员：目标用户 ID"},
+                    "profile_id": {"type": "integer", "description": "配置组 ID（与 profile_name 二选一）"},
+                    "profile_name": {"type": "string", "description": "配置组名称（与 profile_id 二选一）"},
+                    "name": {"type": "string", "description": "重命名配置组"},
+                    "api_key": {"type": "string"},
+                    "base_url": {"type": "string"},
+                    "model": {"type": "string"},
+                    "system_prompt": {"type": "string"},
+                    "auto_approve": {"type": "boolean"},
+                    "assistant_enabled": {"type": "boolean"},
+                    "context_size": {"type": "integer"},
+                    "provider": {"type": "string", "enum": ["aliyun", "ollama", "openai", ""]},
+                    "agent_max_steps": {"type": "integer"},
+                    "assistant_max_rounds": {"type": "integer"},
+                    "vision_enabled": {"type": "boolean"},
+                    "output_locale": {"type": "string", "enum": ["", "en", "zh-CN"]},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "activate_ai_model_profile",
+            "description": "将指定模型配置组设为当前使用的模型（切换模型）。按 profile_id 或 profile_name 指定。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_id": {"type": "integer", "description": "仅管理员：目标用户 ID"},
+                    "profile_id": {"type": "integer", "description": "配置组 ID（与 profile_name 二选一）"},
+                    "profile_name": {"type": "string", "description": "配置组名称（与 profile_id 二选一）"},
                 },
                 "required": [],
             },
@@ -6573,6 +6658,103 @@ def _relay_default_staging_path(source_path: str, *, is_dir: bool) -> str:
     if is_dir:
         return f"exchange/{ts}-{token}/{name}"
     return f"exchange/{ts}-{token}-{name}"
+
+
+def _profile_tool_target_uid(user: dict, arguments: dict) -> tuple[int | None, str | None]:
+    uid = user["id"]
+    if arguments.get("user_id") is not None:
+        if not _is_admin(user):
+            return None, "需要管理员权限"
+        uid = int(arguments["user_id"])
+    return uid, None
+
+
+async def _profile_tool_resolve_row(db, uid: int, arguments: dict):
+    from services.ai_model_profiles import get_profile_row, get_profile_row_by_name
+
+    pid = arguments.get("profile_id")
+    if pid is not None:
+        row = await get_profile_row(db, uid, int(pid))
+        if row:
+            return row, None
+        return None, "配置不存在"
+    pname = (arguments.get("profile_name") or "").strip()
+    if pname:
+        row = await get_profile_row_by_name(db, uid, pname)
+        if row:
+            return row, None
+        return None, f"未找到名为「{pname}」的配置"
+    return None, "请提供 profile_id 或 profile_name"
+
+
+def _profile_create_fields_from_tool_args(arguments: dict) -> dict:
+    provider = (arguments.get("provider") or "").strip()
+    if provider not in ("aliyun", "ollama", "openai"):
+        provider = ""
+    out_loc = (arguments.get("output_locale") or "").strip()
+    if out_loc not in ("", "en", "zh-CN"):
+        out_loc = ""
+    try:
+        ctx = max(0, int(arguments.get("context_size") or 0))
+    except (TypeError, ValueError):
+        ctx = 0
+    try:
+        steps = max(0, int(arguments.get("agent_max_steps") or 0))
+    except (TypeError, ValueError):
+        steps = 0
+    try:
+        rounds = max(0, int(arguments.get("assistant_max_rounds") or 0))
+    except (TypeError, ValueError):
+        rounds = 0
+    return {
+        "api_key": (arguments.get("api_key") or "").strip(),
+        "base_url": (arguments.get("base_url") or "").strip().rstrip("/"),
+        "model": (arguments.get("model") or "").strip(),
+        "system_prompt": (arguments.get("system_prompt") or "").strip(),
+        "auto_approve": bool(arguments.get("auto_approve")),
+        "assistant_enabled": bool(arguments.get("assistant_enabled")),
+        "context_size": ctx,
+        "provider": provider,
+        "agent_max_steps": steps,
+        "assistant_max_rounds": rounds,
+        "vision_enabled": arguments.get("vision_enabled", True) is not False,
+        "output_locale": out_loc,
+    }
+
+
+def _profile_patch_from_tool_args(arguments: dict) -> dict:
+    patch: dict = {}
+    if "api_key" in arguments:
+        ak = str(arguments.get("api_key") or "").strip()
+        if ak not in ("", "***"):
+            patch["api_key"] = ak
+    for key in ("base_url", "model", "system_prompt"):
+        if key in arguments and arguments.get(key) is not None:
+            val = str(arguments.get(key) or "").strip()
+            if key == "base_url":
+                val = val.rstrip("/")
+            patch[key] = val
+    for key in ("auto_approve", "assistant_enabled", "vision_enabled"):
+        if key in arguments and arguments.get(key) is not None:
+            patch[key] = bool(arguments.get(key))
+    if "context_size" in arguments and arguments.get("context_size") is not None:
+        try:
+            patch["context_size"] = max(0, int(arguments.get("context_size")))
+        except (TypeError, ValueError):
+            patch["context_size"] = 0
+    if "provider" in arguments and arguments.get("provider") is not None:
+        provider = str(arguments.get("provider") or "").strip()
+        patch["provider"] = provider if provider in ("aliyun", "ollama", "openai") else ""
+    for key in ("agent_max_steps", "assistant_max_rounds"):
+        if key in arguments and arguments.get(key) is not None:
+            try:
+                patch[key] = max(0, int(arguments.get(key)))
+            except (TypeError, ValueError):
+                patch[key] = 0
+    if "output_locale" in arguments and arguments.get("output_locale") is not None:
+        out_loc = str(arguments.get("output_locale") or "").strip()
+        patch["output_locale"] = out_loc if out_loc in ("", "en", "zh-CN") else ""
+    return patch
 
 
 async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None = None, terminal_scope_id: str | None = None, default_terminal_slot: int | None = None, task_id: int | None = None, ui_capable: bool = True, stream_callback=None, session_id: int | None = None, ui_locale: str | None = None, transfer_cancel_event=None) -> str:
@@ -12293,62 +12475,51 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             return json.dumps({"success": True, "batch": batch}, ensure_ascii=False)
 
         if name == "get_ai_config":
+            from services.ai_model_profiles import (
+                get_active_profile_id,
+                get_resolved_user_ai_settings,
+                list_profiles,
+            )
+
             db = await get_db()
-            uid = user["id"]
+            uid, err = _profile_tool_target_uid(user, arguments)
+            if err:
+                return json.dumps({"success": False, "error": err}, ensure_ascii=False)
             if arguments.get("user_id") is not None and _is_admin(user):
-                uid = int(arguments["user_id"])
-            result = {}
-            row = await db.execute_fetchall("SELECT * FROM user_ai_config WHERE user_id = ?", (uid,))
-            if row:
-                r = dict(row[0])
-                result["api_key"] = (r.get("api_key") or "").strip() or "***"
-                result["base_url"] = (r.get("base_url") or "").strip()
-                result["model"] = (r.get("model") or "").strip()
-                result["system_prompt"] = (r.get("system_prompt") or "").strip()
-                result["auto_approve"] = (r.get("auto_approve") or "false").strip().lower() == "true"
-                result["assistant_enabled"] = (r.get("assistant_enabled") or "false").strip().lower() == "true"
-                result["context_size"] = int((r.get("context_size") or "0").strip() or "0")
-                result["provider"] = (r.get("provider") or "").strip()
-                # 0 表示"未设、用全局默认"
+                rows = await db.execute_fetchall("SELECT id FROM users WHERE id = ?", (uid,))
+                if not rows:
+                    return json.dumps({"success": False, "error": "用户不存在"}, ensure_ascii=False)
+            settings = await get_resolved_user_ai_settings(db, uid)
+
+            def _safe_int(s: str | None) -> int:
                 try:
-                    result["agent_max_steps"] = int((r.get("agent_max_steps") or "0").strip() or "0")
+                    return int((s or "0").strip() or "0")
                 except (TypeError, ValueError):
-                    result["agent_max_steps"] = 0
-                try:
-                    result["assistant_max_rounds"] = int((r.get("assistant_max_rounds") or "0").strip() or "0")
-                except (TypeError, ValueError):
-                    result["assistant_max_rounds"] = 0
-                # 视觉识图开关：老行 / NULL 一律回退为默认 true
-                _ve = (r.get("vision_enabled") if "vision_enabled" in r else None)
-                _ve_s = (_ve or "true").strip().lower() if isinstance(_ve, str) else "true"
-                result["vision_enabled"] = (_ve_s != "false")
-                result["output_locale"] = (r.get("ai_output_locale") or "").strip()
-            if "output_locale" not in result:
-                result["output_locale"] = ""
-            if "vision_enabled" not in result:
-                result["vision_enabled"] = True
-            for k, default in [
-                ("api_key", ""), ("base_url", ""), ("model", ""), ("system_prompt", ""),
-                ("auto_approve", False), ("assistant_enabled", False), ("context_size", 0), ("provider", ""),
-            ]:
-                if k not in result or result[k] == "" or (k in ("context_size",) and result[k] == 0) or (k == "provider" and (result.get(k) or "") == ""):
-                    if k == "provider":
-                        result[k] = result.get(k) or ""
-                        continue
-                    sk = ("ai_" + k) if k != "api_key" else "ai_api_key"
-                    if k in ("auto_approve", "assistant_enabled"):
-                        sk = "ai_auto_approve" if k == "auto_approve" else "ai_assistant_enabled"
-                    rows = await db.execute_fetchall("SELECT value FROM settings WHERE key = ?", (sk,))
-                    v = (rows[0]["value"] if rows else "").strip() if rows else ""
-                    if k in ("auto_approve", "assistant_enabled"):
-                        result[k] = result.get(k) if result.get(k) is not False else (v.lower() == "true")
-                    elif k == "context_size":
-                        result[k] = result.get(k) or int(v or "0")
-                    elif k == "api_key" and (not result.get(k) or result.get(k) == "***"):
-                        result[k] = "***" if v else ""
-                    else:
-                        result[k] = result.get(k) or v or ("" if k != "api_key" else "***")
-            # agent_max_steps / assistant_max_rounds 回退：用户行未设（=0）时读全局 settings；仍为 0 表示沿用代码默认
+                    return 0
+
+            ak = (settings.get("ai_api_key") or "").strip()
+            result = {
+                "api_key": "***" if ak else "",
+                "api_key_set": bool(ak),
+                "base_url": settings.get("ai_base_url") or "",
+                "model": settings.get("ai_model") or "",
+                "system_prompt": settings.get("ai_system_prompt") or "",
+                "auto_approve": (settings.get("ai_auto_approve") or "false").lower() == "true",
+                "assistant_enabled": (settings.get("ai_assistant_enabled") or "false").lower() == "true",
+                "context_size": int(settings.get("ai_context_size") or "0"),
+                "provider": (settings.get("ai_provider") or "").strip(),
+                "agent_max_steps": _safe_int(settings.get("ai_agent_max_steps")),
+                "assistant_max_rounds": _safe_int(settings.get("ai_assistant_max_rounds")),
+                "vision_enabled": (settings.get("ai_vision_enabled") or "true").lower() != "false",
+                "output_locale": (settings.get("ai_output_locale") or "").strip(),
+            }
+            try:
+                from config import AGENT_MAX_STEPS as _AGENT_DEF
+                from config import ASSISTANT_MAX_ROUNDS as _ROUNDS_DEF
+                from config import AGENT_MAX_STEPS_CAP as _AGENT_CAP
+                from config import ASSISTANT_MAX_ROUNDS_CAP as _ROUNDS_CAP
+            except Exception:
+                _AGENT_DEF, _ROUNDS_DEF, _AGENT_CAP, _ROUNDS_CAP = 100, 100, 1000, 1000
             for _k, _sk in (
                 ("agent_max_steps", "ai_agent_max_steps"),
                 ("assistant_max_rounds", "ai_assistant_max_rounds"),
@@ -12359,105 +12530,190 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                         v = int(((rows[0]["value"] if rows else "") or "0"))
                     except (TypeError, ValueError):
                         v = 0
-                    result[_k] = v
-            return json.dumps({"success": True, "config": result}, ensure_ascii=False)
+                    result[_k] = v or (_AGENT_DEF if _k == "agent_max_steps" else _ROUNDS_DEF)
+            prof_items, _ = await list_profiles(db, uid)
+            active_id = await get_active_profile_id(db, uid)
+            return json.dumps({
+                "success": True,
+                "config": result,
+                "active_profile_id": active_id,
+                "profiles": prof_items,
+                "agent_max_steps_default": _AGENT_DEF,
+                "assistant_max_rounds_default": _ROUNDS_DEF,
+                "agent_max_steps_cap": _AGENT_CAP,
+                "assistant_max_rounds_cap": _ROUNDS_CAP,
+            }, ensure_ascii=False)
 
         if name == "update_ai_config":
+            from services.ai_model_profiles import (
+                get_active_profile_row,
+                sync_legacy_user_ai_config_from_profile,
+                upsert_active_profile_from_config,
+            )
+
             db = await get_db()
-            uid = user["id"]
+            uid, err = _profile_tool_target_uid(user, arguments)
+            if err:
+                return json.dumps({"success": False, "error": err}, ensure_ascii=False)
             if arguments.get("user_id") is not None and _is_admin(user):
-                uid = int(arguments["user_id"])
                 rows = await db.execute_fetchall("SELECT id FROM users WHERE id = ?", (uid,))
                 if not rows:
                     return json.dumps({"success": False, "error": "用户不存在"}, ensure_ascii=False)
-            # 读取当前行（如果有），未提供的字段一律保留原值，避免 AI 为改某一项而误清其它。
-            existing_row = await db.execute_fetchall("SELECT * FROM user_ai_config WHERE user_id = ?", (uid,))
-            cur = dict(existing_row[0]) if existing_row else {}
-
-            def _pick_str(arg_key: str, db_col: str) -> str:
-                v = arguments.get(arg_key)
-                if v is None:
-                    return (cur.get(db_col) or "")
-                return str(v)
-
-            def _pick_bool_str(arg_key: str, db_col: str) -> str:
-                v = arguments.get(arg_key)
-                if v is None:
-                    return (cur.get(db_col) or "false").strip().lower()
-                return "true" if v else "false"
-
-            def _pick_int_str(arg_key: str, db_col: str, cap: int | None = None) -> str:
-                v = arguments.get(arg_key)
-                if v is None:
-                    return (cur.get(db_col) or "")
-                try:
-                    iv = max(0, int(v))
-                except (TypeError, ValueError):
-                    iv = 0
-                if cap is not None and iv > cap:
-                    iv = cap
-                return str(iv) if iv > 0 else ""
-
-            api_key = _pick_str("api_key", "api_key").strip()
-            if api_key in ("", "***"):
-                api_key = (cur.get("api_key") or "").strip()
-            base_url = _pick_str("base_url", "base_url").strip().rstrip("/")
-            model = _pick_str("model", "model").strip()
-            system_prompt = _pick_str("system_prompt", "system_prompt").strip()
-            auto_approve = _pick_bool_str("auto_approve", "auto_approve")
-            assistant_enabled = _pick_bool_str("assistant_enabled", "assistant_enabled")
-            ctx_v = arguments.get("context_size")
-            if ctx_v is None:
-                context_size = (cur.get("context_size") or "0").strip() or "0"
-            else:
-                try:
-                    context_size = str(max(0, int(ctx_v)))
-                except (TypeError, ValueError):
-                    context_size = "0"
-            provider = _pick_str("provider", "provider").strip()
-            if provider not in ("aliyun", "ollama", "openai"):
-                provider = ""
+            patch = _profile_patch_from_tool_args(arguments)
+            if not patch:
+                return json.dumps({"success": False, "error": "未提供要更新的字段"}, ensure_ascii=False)
+            try:
+                await upsert_active_profile_from_config(db, uid, patch)
+            except ValueError as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+            prof = await get_active_profile_row(db, uid)
+            if prof:
+                await sync_legacy_user_ai_config_from_profile(db, uid, prof)
+            await db.commit()
             try:
                 from config import AGENT_MAX_STEPS_CAP as _AGENT_CAP
                 from config import ASSISTANT_MAX_ROUNDS_CAP as _ROUNDS_CAP
             except Exception:
                 _AGENT_CAP, _ROUNDS_CAP = 1000, 1000
-            agent_max_steps = _pick_int_str("agent_max_steps", "agent_max_steps", _AGENT_CAP)
-            assistant_max_rounds = _pick_int_str("assistant_max_rounds", "assistant_max_rounds", _ROUNDS_CAP)
-            vision_enabled = _pick_bool_str("vision_enabled", "vision_enabled")
-            # _pick_bool_str 在老行里 vision_enabled 列为空时会退化成 'false'，
-            # 但我们的产品默认是"启用识图"，这里再兜一层把真正的缺省补回 'true'。
-            if not (cur.get("vision_enabled") or "").strip() and arguments.get("vision_enabled") is None:
-                vision_enabled = "true"
-            out_loc = _pick_str("output_locale", "ai_output_locale").strip()
-            if out_loc not in ("", "en", "zh-CN"):
-                out_loc = ""
-
-            await db.execute(
-                """INSERT INTO user_ai_config (user_id, api_key, base_url, model, system_prompt, auto_approve, assistant_enabled, context_size, agent_max_steps, assistant_max_rounds, provider, vision_enabled, ai_output_locale, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                   ON CONFLICT(user_id) DO UPDATE SET
-                   api_key=excluded.api_key, base_url=excluded.base_url, model=excluded.model,
-                   system_prompt=excluded.system_prompt, auto_approve=excluded.auto_approve,
-                   assistant_enabled=excluded.assistant_enabled, context_size=excluded.context_size,
-                   agent_max_steps=excluded.agent_max_steps, assistant_max_rounds=excluded.assistant_max_rounds,
-                   provider=excluded.provider, vision_enabled=excluded.vision_enabled, ai_output_locale=excluded.ai_output_locale, updated_at=CURRENT_TIMESTAMP""",
-                (
-                    uid, api_key, base_url, model, system_prompt,
-                    auto_approve, assistant_enabled, str(context_size),
-                    agent_max_steps, assistant_max_rounds, provider, vision_enabled, out_loc,
-                ),
-            )
-            await db.commit()
             return json.dumps({
                 "success": True,
-                "message": "已更新 AI 配置",
+                "message": "已更新当前激活的模型配置",
+                "active_profile_id": int(prof["id"]) if prof else None,
                 "applied": {
-                    "agent_max_steps": int(agent_max_steps or 0),
-                    "assistant_max_rounds": int(assistant_max_rounds or 0),
                     "agent_max_steps_cap": _AGENT_CAP,
                     "assistant_max_rounds_cap": _ROUNDS_CAP,
                 },
+            }, ensure_ascii=False)
+
+        if name == "list_ai_model_profiles":
+            from services.ai_model_profiles import list_profiles
+
+            db = await get_db()
+            uid, err = _profile_tool_target_uid(user, arguments)
+            if err:
+                return json.dumps({"success": False, "error": err}, ensure_ascii=False)
+            if arguments.get("user_id") is not None and _is_admin(user):
+                rows = await db.execute_fetchall("SELECT id FROM users WHERE id = ?", (uid,))
+                if not rows:
+                    return json.dumps({"success": False, "error": "用户不存在"}, ensure_ascii=False)
+            items, active_id = await list_profiles(db, uid)
+            return json.dumps({
+                "success": True,
+                "profiles": items,
+                "active_profile_id": active_id,
+            }, ensure_ascii=False)
+
+        if name == "create_ai_model_profile":
+            from services.ai_model_profiles import (
+                activate_profile,
+                create_profile,
+                get_active_profile_id,
+                list_profiles,
+                profile_row_to_tool_config,
+                sync_legacy_user_ai_config_from_profile,
+            )
+
+            db = await get_db()
+            uid, err = _profile_tool_target_uid(user, arguments)
+            if err:
+                return json.dumps({"success": False, "error": err}, ensure_ascii=False)
+            if arguments.get("user_id") is not None and _is_admin(user):
+                rows = await db.execute_fetchall("SELECT id FROM users WHERE id = ?", (uid,))
+                if not rows:
+                    return json.dumps({"success": False, "error": "用户不存在"}, ensure_ascii=False)
+            pname = (arguments.get("name") or "").strip()
+            if not pname:
+                return json.dumps({"success": False, "error": "缺少 name"}, ensure_ascii=False)
+            fields = _profile_create_fields_from_tool_args(arguments)
+            try:
+                row = await create_profile(db, uid, pname, fields)
+            except ValueError as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+            set_active = bool(arguments.get("set_active"))
+            active_id = await get_active_profile_id(db, uid)
+            if set_active:
+                await activate_profile(db, uid, int(row["id"]))
+                row = dict(row)
+                active_id = int(row["id"])
+                await sync_legacy_user_ai_config_from_profile(db, uid, row)
+                await db.commit()
+            items, active_id = await list_profiles(db, uid)
+            return json.dumps({
+                "success": True,
+                "message": "已创建模型配置" + ("并已设为当前模型" if set_active else "（未切换当前模型）"),
+                "profile": profile_row_to_tool_config(row),
+                "profiles": items,
+                "active_profile_id": active_id,
+            }, ensure_ascii=False)
+
+        if name == "update_ai_model_profile":
+            from services.ai_model_profiles import (
+                get_active_profile_id,
+                list_profiles,
+                profile_row_to_tool_config,
+                sync_legacy_user_ai_config_from_profile,
+                update_profile,
+            )
+
+            db = await get_db()
+            uid, err = _profile_tool_target_uid(user, arguments)
+            if err:
+                return json.dumps({"success": False, "error": err}, ensure_ascii=False)
+            row, resolve_err = await _profile_tool_resolve_row(db, uid, arguments)
+            if resolve_err:
+                return json.dumps({"success": False, "error": resolve_err}, ensure_ascii=False)
+            patch = _profile_patch_from_tool_args(arguments)
+            rename = (arguments.get("name") or "").strip() if "name" in arguments else None
+            if not patch and rename is None:
+                return json.dumps({"success": False, "error": "未提供要更新的字段"}, ensure_ascii=False)
+            try:
+                updated = await update_profile(db, uid, int(row["id"]), patch, name=rename)
+            except ValueError as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+            active_id = await get_active_profile_id(db, uid)
+            if active_id is not None and int(active_id) == int(updated["id"]):
+                await sync_legacy_user_ai_config_from_profile(db, uid, updated)
+            await db.commit()
+            items, active_id = await list_profiles(db, uid)
+            return json.dumps({
+                "success": True,
+                "message": "已更新模型配置",
+                "profile": profile_row_to_tool_config(updated),
+                "profiles": items,
+                "active_profile_id": active_id,
+            }, ensure_ascii=False)
+
+        if name == "activate_ai_model_profile":
+            from services.ai_model_profiles import (
+                activate_profile,
+                get_profile_row,
+                list_profiles,
+                profile_row_to_tool_config,
+                sync_legacy_user_ai_config_from_profile,
+            )
+
+            db = await get_db()
+            uid, err = _profile_tool_target_uid(user, arguments)
+            if err:
+                return json.dumps({"success": False, "error": err}, ensure_ascii=False)
+            row, resolve_err = await _profile_tool_resolve_row(db, uid, arguments)
+            if resolve_err:
+                return json.dumps({"success": False, "error": resolve_err}, ensure_ascii=False)
+            try:
+                await activate_profile(db, uid, int(row["id"]))
+            except ValueError as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+            updated = await get_profile_row(db, uid, int(row["id"]))
+            assert updated is not None
+            await sync_legacy_user_ai_config_from_profile(db, uid, updated)
+            await db.commit()
+            items, active_id = await list_profiles(db, uid)
+            return json.dumps({
+                "success": True,
+                "message": "已切换当前模型配置",
+                "profile": profile_row_to_tool_config(updated),
+                "profiles": items,
+                "active_profile_id": active_id,
             }, ensure_ascii=False)
 
         if name == "apply_system_ai_config_to_user":
