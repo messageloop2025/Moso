@@ -2018,6 +2018,19 @@ table.table-compact-ellipsis th.th-skill-group {
 .ai-reply-prose-body.ai-reply-prose-collapsed {
     display: none;
 }
+.ai-reply-prose-active-peek {
+    padding: 6px 10px 8px;
+    border-top: 1px solid rgba(16, 185, 129, 0.12);
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    max-height: 6em;
+    overflow: hidden;
+}
+.ai-reply-prose-active-peek.ai-reply-prose-active-peek-hidden {
+    display: none;
+}
 .ai-reply-prose-panel.ai-reply-prose-collapsed .ai-reply-prose-chevron {
     transform: none;
 }
@@ -2739,6 +2752,62 @@ table.table-compact-ellipsis th.th-skill-group {
 }
 .ai-cot-body.ai-cot-collapsed {
     display: none;
+}
+.ai-cot-active-peek {
+    padding: 6px 10px 8px;
+    border-top: 1px solid rgba(59, 130, 246, 0.12);
+    font-size: 12px;
+    line-height: 1.45;
+}
+.ai-cot-active-peek.ai-cot-active-peek-hidden {
+    display: none;
+}
+.ai-cot-peek-step {
+    border-radius: 8px;
+    padding: 6px 8px;
+    background: rgba(59, 130, 246, 0.06);
+    border: 1px solid rgba(59, 130, 246, 0.15);
+}
+.ai-cot-peek-step.ai-cot-peek-tool {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 8px;
+}
+.ai-cot-peek-step.ai-cot-peek-tool .ai-cot-step-title {
+    font-weight: 600;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.ai-cot-peek-stream-line {
+    flex: 1 0 100%;
+    margin-top: 4px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11px;
+    color: var(--text-muted, #64748b);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.ai-cot-peek-text {
+    margin-top: 4px;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    max-height: 4.5em;
+    overflow: hidden;
+}
+.ai-cot-peek-label {
+    font-weight: 600;
+    font-size: 12px;
+}
+.ai-cot-peek-thinking {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+.ai-cot-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
 }
 .ai-tool-transfer-progress {
     margin: 6px 0 8px;

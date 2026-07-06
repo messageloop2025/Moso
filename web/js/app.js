@@ -1085,6 +1085,7 @@ function edgeopsMarkOpenToolRowsFailed(toolsEl, logBuffer, renderLogFn) {
         if (cotPanel && cotPanel._edgeopsCotState) cotPanel._edgeopsCotState.activeToolEl = null;
         var liveEl = toolsEl.querySelector('.ai-cot-live');
         if (liveEl) liveEl.textContent = '';
+        if (cotPanel) edgeopsCotSyncActivePeek(cotPanel);
     }
     if (logBuffer && logBuffer.length) {
         for (var j = 0; j < logBuffer.length; j++) {
@@ -2465,24 +2466,34 @@ function edgeopsCotCollapsePanelAfterStream(toolsEl) {
     if (!panel) return;
     var body = panel.querySelector('.ai-cot-body');
     var header = panel.querySelector('.ai-cot-header');
-    if (!body || body.classList.contains('ai-cot-collapsed')) return;
+    if (!body || body.classList.contains('ai-cot-collapsed')) {
+        edgeopsCotSyncActivePeek(panel);
+        return;
+    }
     body.classList.add('ai-cot-collapsed');
     panel.classList.add('ai-cot-collapsed');
     if (header) header.setAttribute('aria-expanded', 'false');
     var ch = panel.querySelector('.ai-cot-chevron');
     if (ch) ch.textContent = '\u25b6';
+    edgeopsCotSyncActivePeek(panel);
 }
 
 function edgeopsCollapseReplyProsePanel(panel) {
     if (!panel) return;
     var body = panel.querySelector('.ai-reply-prose-body');
     var header = panel.querySelector('.ai-reply-prose-header');
-    if (!body || body.classList.contains('ai-reply-prose-collapsed')) return;
+    if (!body || body.classList.contains('ai-reply-prose-collapsed')) {
+        var replyWrapIdle = panel.closest('.ai-reply-stream, .ai-reply-persisted');
+        if (replyWrapIdle) edgeopsSyncProseActivePeek(replyWrapIdle);
+        return;
+    }
     body.classList.add('ai-reply-prose-collapsed');
     panel.classList.add('ai-reply-prose-collapsed');
     if (header) header.setAttribute('aria-expanded', 'false');
     var ch = panel.querySelector('.ai-reply-prose-chevron');
     if (ch) ch.textContent = '\u25b6';
+    var replyWrapDone = panel.closest('.ai-reply-stream, .ai-reply-persisted');
+    if (replyWrapDone) edgeopsSyncProseActivePeek(replyWrapDone);
 }
 
 function edgeopsResetProcessProseLiveMount(textEl) {
@@ -2608,7 +2619,57 @@ function edgeopsBindReplyProsePanelToggle(panel) {
         header.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
         var ch = panel.querySelector('.ai-reply-prose-chevron');
         if (ch) ch.textContent = collapsed ? '\u25b6' : '\u25bc';
+        var replyWrap = panel.closest('.ai-reply-stream, .ai-reply-persisted');
+        if (replyWrap) edgeopsSyncProseActivePeek(replyWrap);
     });
+}
+
+function edgeopsEnsureReplyProseActivePeekEl(panel) {
+    if (!panel) return null;
+    var peek = panel.querySelector('.ai-reply-prose-active-peek');
+    if (peek) return peek;
+    peek = document.createElement('div');
+    peek.className = 'ai-reply-prose-active-peek';
+    peek.setAttribute('aria-live', 'polite');
+    var body = panel.querySelector('.ai-reply-prose-body');
+    if (body) panel.insertBefore(peek, body);
+    else panel.appendChild(peek);
+    return peek;
+}
+
+function edgeopsSyncProseActivePeek(replyWrap) {
+    if (!replyWrap) return;
+    var panel = replyWrap.querySelector('.ai-reply-prose-panel');
+    if (!panel) return;
+    var peek = edgeopsEnsureReplyProseActivePeekEl(panel);
+    if (!peek) return;
+    var body = panel.querySelector('.ai-reply-prose-body');
+    var expanded = body && !body.classList.contains('ai-reply-prose-collapsed');
+    if (expanded) {
+        peek.classList.add('ai-reply-prose-active-peek-hidden');
+        peek.textContent = '';
+        return;
+    }
+    var textEl = panel.querySelector('.ai-reply-text');
+    var liveText = '';
+    if (textEl) {
+        var tail = textEl.querySelector('.edgeops-stream-tail, [data-edgeops-stream-tail]');
+        if (tail && (tail.textContent || '').trim()) {
+            liveText = String(tail.textContent).trim();
+        }
+    }
+    if (!liveText && replyWrap._edgeopsProseStreamText) {
+        var full = stripThinkTags(replyWrap._edgeopsProseStreamText || '');
+        liveText = full.slice(replyWrap._edgeopsProseLastCommit || 0).trim();
+    }
+    if (!liveText) {
+        peek.classList.add('ai-reply-prose-active-peek-hidden');
+        peek.textContent = '';
+        return;
+    }
+    peek.classList.remove('ai-reply-prose-active-peek-hidden');
+    var preview = liveText.length > 320 ? liveText.slice(0, 320) + '…' : liveText;
+    peek.textContent = preview;
 }
 
 function edgeopsRefreshReplyProseHeader(panel, opts) {
@@ -2699,6 +2760,7 @@ function edgeopsCommitProcessProseSegment(replyWrap, textEl) {
     edgeopsResetProcessProseLiveMount(textEl);
     var panel = replyWrap.querySelector('.ai-reply-prose-panel');
     if (panel) edgeopsRefreshReplyProseHeader(panel, { live: false });
+    edgeopsSyncProseActivePeek(replyWrap);
 }
 
 function edgeopsFinalizeProcessProsePanel(replyWrap, textEl, collapsePanel) {
@@ -2731,6 +2793,7 @@ function edgeopsApplyAssistantStreamTextPaint(replyWrap, textEl, streamedText, t
     if (replyWrap && replyWrap._edgeopsProcessProseEnabled) {
         var panel = replyWrap.querySelector('.ai-reply-prose-panel');
         if (panel) edgeopsRefreshReplyProseHeader(panel, { live: !!(renderText && renderText.trim()) });
+        edgeopsSyncProseActivePeek(replyWrap);
     }
 }
 
@@ -2800,19 +2863,23 @@ function edgeopsEnsureReplyProsePanel(replyWrap) {
         replyWrap.appendChild(textEl);
     }
     panel = document.createElement('div');
-    panel.className = 'ai-reply-prose-panel';
+    panel.className = 'ai-reply-prose-panel ai-reply-prose-collapsed';
     var header = document.createElement('button');
     header.type = 'button';
     header.className = 'ai-reply-prose-header';
-    header.setAttribute('aria-expanded', 'true');
-    header.innerHTML = '<span class="ai-reply-prose-chevron">\u25bc</span>'
+    header.setAttribute('aria-expanded', 'false');
+    header.innerHTML = '<span class="ai-reply-prose-chevron">\u25b6</span>'
         + '<span class="ai-reply-prose-head-main"></span>'
         + '<span class="ai-reply-prose-head-status"></span>';
+    var peek = document.createElement('div');
+    peek.className = 'ai-reply-prose-active-peek ai-reply-prose-active-peek-hidden';
+    peek.setAttribute('aria-live', 'polite');
     var body = document.createElement('div');
-    body.className = 'ai-reply-prose-body';
+    body.className = 'ai-reply-prose-body ai-reply-prose-collapsed';
     textEl.parentNode.insertBefore(panel, textEl);
     body.appendChild(textEl);
     panel.appendChild(header);
+    panel.appendChild(peek);
     panel.appendChild(body);
     edgeopsBindReplyProsePanelToggle(panel);
     edgeopsRefreshReplyProseHeader(panel, { live: true });
@@ -6729,17 +6796,21 @@ function edgeopsGetCotState(panel) {
 function edgeopsGetOrCreateCotPanel(toolsEl) {
     if (!toolsEl) return null;
     var first = toolsEl.firstElementChild;
-    if (first && first.classList && first.classList.contains('ai-cot-panel')) return first;
+    if (first && first.classList && first.classList.contains('ai-cot-panel')) {
+        edgeopsCotEnsureActivePeekEl(first);
+        return first;
+    }
     var panel = document.createElement('div');
-    panel.className = 'ai-cot-panel';
-    panel.innerHTML = '<button type="button" class="ai-cot-header" aria-expanded="true">'
-        + '<span class="ai-cot-chevron">\u25bc</span>'
+    panel.className = 'ai-cot-panel ai-cot-collapsed';
+    panel.innerHTML = '<button type="button" class="ai-cot-header" aria-expanded="false">'
+        + '<span class="ai-cot-chevron">\u25b6</span>'
         + '<span class="ai-cot-head-main"></span>'
         + '<span class="ai-cot-head-status"></span>'
         + '</button>'
-        + '<div class="ai-cot-body">'
+        + '<div class="ai-cot-active-peek" aria-live="polite"></div>'
+        + '<div class="ai-cot-body ai-cot-collapsed">'
         + '<div class="ai-cot-steps"></div>'
-        + '<div class="ai-cot-live"></div>'
+        + '<div class="ai-cot-live" hidden></div>'
         + '</div>';
     toolsEl.appendChild(panel);
     var header = panel.querySelector('.ai-cot-header');
@@ -6750,10 +6821,77 @@ function edgeopsGetOrCreateCotPanel(toolsEl) {
         header.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
         var ch = panel.querySelector('.ai-cot-chevron');
         if (ch) ch.textContent = collapsed ? '\u25b6' : '\u25bc';
+        edgeopsCotSyncActivePeek(panel);
     });
     edgeopsGetCotState(panel);
     edgeopsCotRefreshHeader(panel);
     return panel;
+}
+
+function edgeopsCotEnsureActivePeekEl(panel) {
+    if (!panel) return null;
+    var peek = panel.querySelector('.ai-cot-active-peek');
+    if (peek) return peek;
+    peek = document.createElement('div');
+    peek.className = 'ai-cot-active-peek';
+    peek.setAttribute('aria-live', 'polite');
+    var body = panel.querySelector('.ai-cot-body');
+    if (body) panel.insertBefore(peek, body);
+    else panel.appendChild(peek);
+    return peek;
+}
+
+function edgeopsCotSyncActivePeek(panel) {
+    if (!panel) return;
+    edgeopsCotEnsureActivePeekEl(panel);
+    var peek = panel.querySelector('.ai-cot-active-peek');
+    if (!peek) return;
+    var st = edgeopsGetCotState(panel);
+    var body = panel.querySelector('.ai-cot-body');
+    var expanded = body && !body.classList.contains('ai-cot-collapsed');
+    if (expanded || st.done) {
+        peek.classList.add('ai-cot-active-peek-hidden');
+        peek.innerHTML = '';
+        return;
+    }
+    if (st.activeToolEl) {
+        var titleEl = st.activeToolEl.querySelector('.ai-cot-step-title');
+        var badgeEl = st.activeToolEl.querySelector('.ai-cot-tool-badge');
+        var transferEl = st.activeToolEl.querySelector('.ai-cot-transfer-head-progress');
+        var peekHtml = '<div class="ai-cot-peek-step ai-cot-peek-tool">'
+            + (titleEl ? titleEl.outerHTML : '')
+            + (transferEl ? transferEl.outerHTML : '')
+            + (badgeEl ? badgeEl.outerHTML : '')
+            + '</div>';
+        var stream = st.activeToolEl.querySelector('.ai-tool-stream');
+        if (stream && stream.lastElementChild && (stream.lastElementChild.textContent || '').trim()) {
+            peekHtml = peekHtml.slice(0, -6) + '<div class="ai-cot-peek-stream-line">'
+                + esc(String(stream.lastElementChild.textContent).trim().slice(0, 240))
+                + '</div></div>';
+        }
+        peek.classList.remove('ai-cot-active-peek-hidden');
+        peek.innerHTML = peekHtml;
+        return;
+    }
+    if (st.reasoningBodyEl && (st.reasoningBuffer || '').trim()) {
+        var plain = edgeopsReasoningBufferToPlain(st.reasoningBuffer);
+        var truncated = plain.length > 280 ? plain.slice(0, 280) + '…' : plain;
+        var rLabel = typeof t === 'function' ? t('hostAi.cotRoundReasoning', { round: st.roundSeq || 1 }) : 'Reasoning';
+        peek.classList.remove('ai-cot-active-peek-hidden');
+        peek.innerHTML = '<div class="ai-cot-peek-step ai-cot-peek-reasoning">'
+            + '<div class="ai-cot-peek-label">' + esc(rLabel) + '</div>'
+            + '<div class="ai-cot-peek-text">' + esc(truncated) + '</div></div>';
+        return;
+    }
+    var live = panel.querySelector('.ai-cot-live');
+    var thinkingText = (live && live.textContent) || (typeof t === 'function' ? t('hostAi.cotThinking') : '');
+    if (thinkingText) {
+        peek.classList.remove('ai-cot-active-peek-hidden');
+        peek.innerHTML = '<div class="ai-cot-peek-step ai-cot-peek-thinking">' + esc(thinkingText) + '</div>';
+        return;
+    }
+    peek.classList.add('ai-cot-active-peek-hidden');
+    peek.innerHTML = '';
 }
 
 function edgeopsCotRefreshHeader(panel) {
@@ -6790,6 +6928,7 @@ function edgeopsCotEnsureThinkingPlaceholder(toolsEl) {
         var label = typeof t === 'function' ? t('hostAi.cotThinking') : 'AI is thinking…';
         live.textContent = label;
     }
+    edgeopsCotSyncActivePeek(panel);
 }
 
 function edgeopsCotOnReasoningChunk(toolsEl, cot) {
@@ -6807,6 +6946,7 @@ function edgeopsCotOnReasoningChunk(toolsEl, cot) {
         steps.appendChild(step);
         st.reasoningBodyEl = step.querySelector('.ai-cot-reasoning-text');
         edgeopsCotRefreshHeader(panel);
+        edgeopsCotSyncActivePeek(panel);
     }
     st.reasoningBuffer += cot.text != null ? String(cot.text) : '';
     if (!st.reasoningBodyEl) return;
@@ -6816,6 +6956,7 @@ function edgeopsCotOnReasoningChunk(toolsEl, cot) {
         if (st.reasoningBodyEl) {
             st.reasoningBodyEl.textContent = edgeopsReasoningBufferToPlain(st.reasoningBuffer);
         }
+        edgeopsCotSyncActivePeek(panel);
         var chatBox = toolsEl && toolsEl.closest ? toolsEl.closest('.chat-messages') : null;
         if (chatBox) edgeopsScrollChatToBottomStepIfPinned(chatBox);
     });
@@ -6836,6 +6977,7 @@ function edgeopsCotOnReasoningEnd(toolsEl) {
     if (chatBoxEnd) edgeopsScrollChatToBottomStepIfPinned(chatBoxEnd);
     st.reasoningBodyEl = null;
     st.reasoningBuffer = '';
+    edgeopsCotSyncActivePeek(panel);
 }
 
 function edgeopsCotDispatch(toolsEl, cot) {
@@ -6925,6 +7067,7 @@ function edgeopsCotOnToolExecuting(toolsEl, ev) {
     var live = panel.querySelector('.ai-cot-live');
     if (live) live.textContent = typeof t === 'function' ? t('hostAi.cotExecuting', { tool: ev.tool || '' }) : '';
     edgeopsCotRefreshHeader(panel);
+    edgeopsCotSyncActivePeek(panel);
 }
 
 function edgeopsCotOnToolFinished(toolsEl, ev) {
@@ -6969,6 +7112,7 @@ function edgeopsCotOnToolFinished(toolsEl, ev) {
             var live = panel.querySelector('.ai-cot-live');
             if (live) live.textContent = '';
             edgeopsCotRefreshHeader(panel);
+            edgeopsCotSyncActivePeek(panel);
         }
     }
     if (ev.action !== 'executing') edgeopsMaybeSyncSshChannelFromTool(ev);
@@ -6985,6 +7129,7 @@ function edgeopsCotMarkStreamDone(toolsEl) {
     var live = panel.querySelector('.ai-cot-live');
     if (live) live.textContent = '';
     edgeopsCotRefreshHeader(panel);
+    edgeopsCotSyncActivePeek(panel);
 }
 
 /** 流已结束但任务未跑完（等待用户点「继续」、或工具仍显示执行中）— 勿标「已完成」。 */
@@ -7002,6 +7147,7 @@ function edgeopsCotMarkStreamPaused(toolsEl, hintKey) {
         live.textContent = typeof t === 'function' ? t(key) : '';
     }
     edgeopsCotRefreshHeader(panel);
+    edgeopsCotSyncActivePeek(panel);
 }
 
 function edgeopsCotHasOpenToolSteps(toolsEl) {
@@ -7582,6 +7728,7 @@ function renderToolStreamEvent(toolsEl, ev) {
         for (var ri = 0; ri < all.length - 40; ri++) body.removeChild(all[ri]);
     }
     body.scrollTop = body.scrollHeight;
+    if (panel) edgeopsCotSyncActivePeek(panel);
 }
 
 function renderAiLog() {
