@@ -13978,7 +13978,7 @@ function edgeopsAiConfigFormRows(idPrefix) {
         + '<tr><td>' + esc(t('settings.aiForm.assistantEnabled')) + '</td><td><label><input type="checkbox" id="' + p + 'AssistantEnabled"> ' + esc(t('settings.aiForm.assistantEnabledLabel')) + '</label> <span class="inline-hint">' + t('settings.aiForm.assistantEnabledHelp') + '</span></td></tr>'
         + '<tr><td>' + esc(t('settings.aiForm.vision')) + '</td><td><label><input type="checkbox" id="' + p + 'VisionEnabled" checked> ' + esc(t('settings.aiForm.visionLabel')) + '</label> <span class="inline-hint">' + t('settings.aiForm.visionHelp') + '</span></td></tr>'
         + '<tr><td>' + esc(t('settings.aiForm.outputLocale')) + '</td><td><select class="form-control" id="' + p + 'OutputLocale" style="max-width:220px"><option value="">' + esc(t('settings.aiForm.outputLocaleAuto')) + '</option><option value="zh-CN">' + esc(t('settings.aiForm.outputLocaleZh')) + '</option><option value="en">' + esc(t('settings.aiForm.outputLocaleEn')) + '</option></select> <span class="inline-hint">' + t('settings.aiForm.outputLocaleHelp') + '</span></td></tr>'
-        + '<tr><td>' + esc(t('settings.aiForm.agentMax')) + '</td><td><input type="number" class="form-control" id="' + p + 'AgentMaxSteps" min="0" max="1000" step="1" placeholder="' + esc(t('settings.aiForm.agentPh')) + '" style="max-width:160px"> <span class="text-muted" id="' + p + 'AgentMaxStepsHint" style="margin-left:8px;font-size:12px"></span></td></tr>'
+        + '<tr><td>' + esc(t('settings.aiForm.agentMax')) + '</td><td><input type="number" class="form-control" id="' + p + 'AgentMaxSteps" min="0" max="100000" step="1" placeholder="' + esc(t('settings.aiForm.agentPh')) + '" style="max-width:160px"> <span class="text-muted" id="' + p + 'AgentMaxStepsHint" style="margin-left:8px;font-size:12px"></span></td></tr>'
         + '<tr><td>' + esc(t('settings.aiForm.assistantMax')) + '</td><td><input type="number" class="form-control" id="' + p + 'AssistantMaxRounds" min="0" max="1000" step="1" placeholder="' + esc(t('settings.aiForm.assistantPh')) + '" style="max-width:160px"> <span class="text-muted" id="' + p + 'AssistantMaxRoundsHint" style="margin-left:8px;font-size:12px"></span></td></tr>';
 }
 
@@ -13987,7 +13987,7 @@ function edgeopsInitAiConfigFormMeta(idPrefix, meta) {
     var modelTypes = meta.model_types || [];
     var contextOpts = meta.context_size_options || [0, 4000, 8000, 16000, 32000, 64000, 128000, 8388608];
     var contextMax = meta.context_size_max || (8 * 1024 * 1024);
-    var amsCap = parseInt(meta.agent_max_steps_cap, 10) || 1000;
+    var amsCap = parseInt(meta.agent_max_steps_cap, 10) || 100000;
     var amrCap = parseInt(meta.assistant_max_rounds_cap, 10) || 1000;
     var amsDef = parseInt(meta.agent_max_steps_default, 10) || 100;
     var amrDef = parseInt(meta.assistant_max_rounds_default, 10) || 100;
@@ -14074,7 +14074,7 @@ function edgeopsFillAiConfigForm(idPrefix, c, meta) {
         var prov = (c.provider || '').trim();
         typeEl.value = (prov === 'aliyun' || prov === 'ollama' || prov === 'openai') ? prov : '';
     }
-    var amsCap = parseInt(meta.agent_max_steps_cap, 10) || 1000;
+    var amsCap = parseInt(meta.agent_max_steps_cap, 10) || 100000;
     var amrCap = parseInt(meta.assistant_max_rounds_cap, 10) || 1000;
     if (amsEl) amsEl.value = (c.agent_max_steps && c.agent_max_steps > 0) ? String(c.agent_max_steps) : '';
     if (amrEl) amrEl.value = (c.assistant_max_rounds && c.assistant_max_rounds > 0) ? String(c.assistant_max_rounds) : '';
@@ -14095,7 +14095,7 @@ function edgeopsCollectAiConfigPayload(idPrefix, meta) {
     var typeEl = document.getElementById(idPrefix + 'ModelType');
     var providerVal = (typeEl && typeEl.value) ? typeEl.value : '';
     if (providerVal !== 'aliyun' && providerVal !== 'ollama' && providerVal !== 'openai') providerVal = '';
-    var amsCap = parseInt(meta.agent_max_steps_cap, 10) || 1000;
+    var amsCap = parseInt(meta.agent_max_steps_cap, 10) || 100000;
     var amrCap = parseInt(meta.assistant_max_rounds_cap, 10) || 1000;
     var amsRaw = ((document.getElementById(idPrefix + 'AgentMaxSteps') || {}).value || '').trim();
     var amrRaw = ((document.getElementById(idPrefix + 'AssistantMaxRounds') || {}).value || '').trim();
@@ -14605,7 +14605,7 @@ function renderSettings() {
                 + '<tr><td>' + esc(t('settings.aiForm.assistantEnabled')) + '</td><td><label><input type="checkbox" id="aiCfgUserAssistantEnabled"> ' + esc(t('settings.aiForm.assistantEnabledLabel')) + '</label> <span class="inline-hint">' + t('settings.aiForm.assistantEnabledHelp') + '</span></td></tr>'
                 + '<tr><td>' + esc(t('settings.admin.vision')) + '</td><td><label><input type="checkbox" id="aiCfgUserVisionEnabled" checked> ' + esc(t('settings.admin.visionLabel')) + '</label> <span class="inline-hint">' + t('settings.admin.visionHelp') + '</span></td></tr>'
                 + '<tr><td>' + esc(t('settings.aiForm.outputLocale')) + '</td><td><select class="form-control" id="aiCfgUserOutputLocale" style="max-width:220px"><option value="">' + esc(t('settings.aiForm.outputLocaleAuto')) + '</option><option value="zh-CN">' + esc(t('settings.aiForm.outputLocaleZh')) + '</option><option value="en">' + esc(t('settings.aiForm.outputLocaleEn')) + '</option></select> <span class="inline-hint">' + t('settings.aiForm.outputLocaleHelp') + '</span></td></tr>'
-                + '<tr><td>' + esc(t('settings.admin.agentMax')) + '</td><td><input type="number" class="form-control" id="aiCfgUserAgentMaxSteps" min="0" max="1000" step="1" placeholder="' + esc(t('settings.admin.agentPh')) + '" style="max-width:160px"> <span class="text-muted" id="aiCfgUserAgentMaxStepsHint" style="margin-left:8px;font-size:12px">' + t('settings.admin.agentHint', { def: 100, cap: 1000 }) + '</span></td></tr>'
+                + '<tr><td>' + esc(t('settings.admin.agentMax')) + '</td><td><input type="number" class="form-control" id="aiCfgUserAgentMaxSteps" min="0" max="100000" step="1" placeholder="' + esc(t('settings.admin.agentPh')) + '" style="max-width:160px"> <span class="text-muted" id="aiCfgUserAgentMaxStepsHint" style="margin-left:8px;font-size:12px">' + t('settings.admin.agentHint', { def: 100, cap: 100000 }) + '</span></td></tr>'
                 + '<tr><td>' + esc(t('settings.admin.assistantMax')) + '</td><td><input type="number" class="form-control" id="aiCfgUserAssistantMaxRounds" min="0" max="1000" step="1" placeholder="' + esc(t('settings.admin.assistantPh')) + '" style="max-width:160px"> <span class="text-muted" id="aiCfgUserAssistantMaxRoundsHint" style="margin-left:8px;font-size:12px">' + t('settings.admin.assistantHint', { def: 100, cap: 1000 }) + '</span></td></tr>'
                 + '</tbody></table></div>';
             var notifyOn = ((keyVal.notify_admin_on_user_feedback || 'false') + '').toLowerCase() === 'true';
@@ -14722,7 +14722,7 @@ function renderSettings() {
                 }
                 var amsU = document.getElementById('aiCfgUserAgentMaxSteps');
                 var amrU = document.getElementById('aiCfgUserAssistantMaxRounds');
-                var capS = parseInt(r.agent_max_steps_cap, 10) || 1000;
+                var capS = parseInt(r.agent_max_steps_cap, 10) || 100000;
                 var capR = parseInt(r.assistant_max_rounds_cap, 10) || 1000;
                 var defS = parseInt(r.agent_max_steps_default, 10) || 100;
                 var defR = parseInt(r.assistant_max_rounds_default, 10) || 100;
@@ -14757,8 +14757,10 @@ function renderSettings() {
                 if (providerVal !== 'aliyun' && providerVal !== 'ollama' && providerVal !== 'openai') providerVal = '';
                 var amsURaw = ((document.getElementById('aiCfgUserAgentMaxSteps') || {}).value || '').trim();
                 var amrURaw = ((document.getElementById('aiCfgUserAssistantMaxRounds') || {}).value || '').trim();
-                var amsUVal = amsURaw === '' ? 0 : Math.max(0, Math.min(1000, parseInt(amsURaw, 10) || 0));
-                var amrUVal = amrURaw === '' ? 0 : Math.max(0, Math.min(1000, parseInt(amrURaw, 10) || 0));
+                var amsCapSave = parseInt((document.getElementById('aiCfgUserAgentMaxSteps') || {}).max, 10) || 100000;
+                var amrCapSave = parseInt((document.getElementById('aiCfgUserAssistantMaxRounds') || {}).max, 10) || 1000;
+                var amsUVal = amsURaw === '' ? 0 : Math.max(0, Math.min(amsCapSave, parseInt(amsURaw, 10) || 0));
+                var amrUVal = amrURaw === '' ? 0 : Math.max(0, Math.min(amrCapSave, parseInt(amrURaw, 10) || 0));
                 var visUSave = document.getElementById('aiCfgUserVisionEnabled');
                 var outLocUSave = ((document.getElementById('aiCfgUserOutputLocale') || {}).value || '').trim();
                 if (outLocUSave !== 'zh-CN' && outLocUSave !== 'en') outLocUSave = '';

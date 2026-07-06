@@ -19,7 +19,7 @@ from config import (
     AGENT_POLL_WAIT_CHUNK_SEC,
     EDGEOPS_SESSION_TITLE_CLIENT_PLACEHOLDERS,
     EDGEOPS_TEMP_SESSION_PREFIX,
-)  # 默认值与硬上限：默认 100，硬上限 1000
+)  # 默认值与硬上限：Agent 默认 100、硬上限 AGENT_MAX_STEPS_CAP（默认 100000）；辅助轮次硬上限 ASSISTANT_MAX_ROUNDS_CAP
 SYSTEM_AI_USAGE_LIMIT = getattr(_config, "SYSTEM_AI_USAGE_LIMIT", 200)
 from database import get_db
 from api.auth import get_current_user, require_admin, _is_admin_role
@@ -3030,7 +3030,7 @@ class AIConfigRequest(BaseModel):
     context_size: int = 0  # 聊天上下文总字符数上限，0 表示不限制
     provider: str = ""  # AI 源类型：aliyun/ollama/openai，空表示按 base_url 自动探测
     # AI 多轮执行控制：0 表示沿用全局默认（config.AGENT_MAX_STEPS / ASSISTANT_MAX_ROUNDS）
-    # 上限均为 AGENT_MAX_STEPS_CAP / ASSISTANT_MAX_ROUNDS_CAP（默认 1000）；超出会被截断。
+    # 上限均为 AGENT_MAX_STEPS_CAP / ASSISTANT_MAX_ROUNDS_CAP；超出会被截断。
     agent_max_steps: int = 0
     assistant_max_rounds: int = 0
     # 模型是否支持图像识别（多模态视觉输入）。默认 True：后端会把用户本轮上传的图片
@@ -3361,7 +3361,7 @@ async def get_ai_config(user_id: int | None = None, user=Depends(get_current_use
         "context_size_max": context_size_max,
         "agent_max_steps_default": getattr(config, "AGENT_MAX_STEPS", 100),
         "assistant_max_rounds_default": getattr(config, "ASSISTANT_MAX_ROUNDS", 100),
-        "agent_max_steps_cap": getattr(config, "AGENT_MAX_STEPS_CAP", 1000),
+        "agent_max_steps_cap": getattr(config, "AGENT_MAX_STEPS_CAP", 100000),
         "assistant_max_rounds_cap": getattr(config, "ASSISTANT_MAX_ROUNDS_CAP", 1000),
         "active_profile_id": await get_active_profile_id(db, target_id),
         "profiles": prof_items,
@@ -3377,7 +3377,7 @@ def _profile_fields_from_ai_config_request(req: AIConfigRequest) -> dict:
     ctx_max = getattr(_cfg, "CONTEXT_SIZE_MAX", 8 * 1024 * 1024)
     if ctx > ctx_max:
         ctx = ctx_max
-    agent_cap = getattr(_cfg, "AGENT_MAX_STEPS_CAP", 1000)
+    agent_cap = getattr(_cfg, "AGENT_MAX_STEPS_CAP", 100000)
     rounds_cap = getattr(_cfg, "ASSISTANT_MAX_ROUNDS_CAP", 1000)
     raw_steps = max(0, int(getattr(req, "agent_max_steps", 0) or 0))
     raw_rounds = max(0, int(getattr(req, "assistant_max_rounds", 0) or 0))

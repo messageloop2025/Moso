@@ -45,15 +45,15 @@ WORKERS = max(0, int(os.getenv("EDGEOPS_WORKERS", "0")))
 AI_API_KEY = os.getenv("AI_API_KEY", "")
 AI_BASE_URL = os.getenv("AI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 AI_MODEL = os.getenv("AI_MODEL", "qwen3.6-plus")  # 阿里 compatible-mode 推荐 / Aliyun compatible-mode default
-# Agent 内层（单轮内最多调用工具/思考步数）默认 100，硬上限 1000
-# Inner agent loop: max tool/thinking steps per model round (default 100, cap 1000).
+# Agent 内层（单轮内最多调用工具/思考步数）默认 100，硬上限 100000
+# Inner agent loop: max tool/thinking steps per model round (default 100, cap 100000).
 AGENT_MAX_STEPS = int(os.getenv("EDGEOPS_AGENT_MAX_STEPS", "100"))
 # 辅助 AI 外层（连续助手轮次）默认 100，硬上限 1000
 # Outer assistant rounds: max consecutive assistant follow-up rounds (default 100, cap 1000).
 ASSISTANT_MAX_ROUNDS = int(os.getenv("EDGEOPS_ASSISTANT_MAX_ROUNDS", "100"))
 # 上限常量：用户/管理员设置时同步校验，避免任何入口溢出
 # Hard caps: validated when users/admins change settings to prevent overflow.
-AGENT_MAX_STEPS_CAP = int(os.getenv("EDGEOPS_AGENT_MAX_STEPS_CAP", "1000"))
+AGENT_MAX_STEPS_CAP = int(os.getenv("EDGEOPS_AGENT_MAX_STEPS_CAP", "100000"))
 # Agent 轮询等待（get_terminal_buffer next_poll_in_seconds）分片间隔（秒），便于 SSE 心跳与用户中断
 AGENT_POLL_WAIT_CHUNK_SEC = max(1, min(5, int(os.getenv("EDGEOPS_AGENT_POLL_WAIT_CHUNK_SEC", "1"))))
 # 模型未传 next_poll 时：sudo/输出稳定后再读、长命令默认等待、buffer 出现进度条时的等待（秒）

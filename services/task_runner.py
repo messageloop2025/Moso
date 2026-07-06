@@ -32,7 +32,7 @@ from services.ai_output_language import build_output_language_system_section
 
 logger = logging.getLogger("edgeops.task_runner")
 
-# 任务 Agent 最大步数：默认 100，硬上限 1000（与 config.AGENT_MAX_STEPS_CAP 对齐）
+# 任务 Agent 最大步数：默认 100，硬上限与 config.AGENT_MAX_STEPS_CAP 对齐（默认 100000）
 TASK_AGENT_MAX_STEPS = 100
 AI_MESSAGE_SAVE = 200_000
 
