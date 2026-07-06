@@ -394,10 +394,20 @@ _REPLY_DONE_MARKERS = (
     "上传完成",
     "部署完成",
     "安装完成",
+    "已生成",
+    "生成完毕",
+    "已创建",
+    "已导出",
+    "已输出",
+    "报告已",
+    "已交付",
+    "已就绪",
     "successfully completed",
     "completed successfully",
     "already done",
     "finished successfully",
+    "has been generated",
+    "report generated",
 )
 
 
@@ -441,6 +451,47 @@ def _reply_suggests_pending_work(content: str, user_text: str) -> bool:
         if any(k in s for k in toolish) and not any(m.lower() in s for m in _REPLY_DONE_MARKERS):
             return True
     return False
+
+
+def _assistant_should_skip_continue(
+    content: str,
+    user_text: str,
+    *,
+    round_had_tool_call: bool,
+) -> bool:
+    """主助手本轮已调工具且最终回复不像「还要接着干」→ 无需辅助 AI 追问继续。"""
+    if not round_had_tool_call:
+        return False
+    return not _reply_suggests_pending_work(content, user_text)
+
+
+def _format_assistant_tool_context(
+    round_had_tool_call: bool,
+    tool_trace: list | None,
+) -> str:
+    if not round_had_tool_call:
+        return "本轮主助手 tool_call：无。"
+    names: list[str] = []
+    finished = 0
+    for step in tool_trace or []:
+        if not isinstance(step, dict) or step.get("type") != "tool":
+            continue
+        if step.get("event") == "finished":
+            finished += 1
+            tn = (step.get("tool") or "").strip()
+            if tn:
+                names.append(tn)
+    uniq = list(dict.fromkeys(names))
+    if uniq:
+        return (
+            f"本轮主助手 tool_call：是（finished 记录 {finished} 条；工具含："
+            f"{', '.join(uniq[:24])}）。"
+            "勿仅凭正文判断「未调用工具」；若当前输出已是交付/总结/报告，应 action=stop。"
+        )
+    return (
+        "本轮主助手 tool_call：是（主助手已发起工具调用）。"
+        "若当前输出已是交付/总结/报告，应 action=stop。"
+    )
 
 
 def _format_force_tool_notice(output_locale: str | None = None) -> str:
@@ -5327,7 +5378,8 @@ def _build_assistant_system_prompt() -> str:
 重要：本系统中真实执行只能通过 tool_call 完成。若用户要求做某件「执行类」事情（如执行命令、上传文件、创建主机等），而{brand}仅在文字里说「已执行」「已经为您安装了」等，但本轮没有对应的工具调用记录，则视为未真正执行，属于幻觉，必须返回 continue，引导其实际发起工具调用。
 
 你的任务：根据「用户原始指令」和「{brand}的当前输出」，判断：
-1. 若用户目标已明确完成（如安装完成、配置已就绪、任务成功、已给出检查结论），且关键步骤有对应 tool_call → 返回 action: "stop"，不再生成 message。
+1. 若用户目标已明确完成（如安装完成、配置已就绪、任务成功、已给出检查结论、报告/文件已生成），且关键步骤有对应 tool_call → 返回 action: "stop"，不再生成 message。
+1b. 若「执行上下文」标明本轮已有 tool_call，且{brand}当前输出已是交付物总结（如报告已生成、文件可下载、操作已完成），即使正文未逐条复述工具名 → 也必须 action: "stop"。
 2. 若{brand}在请求用户输入（如请提供密码、请确认、请选择）、或遇到仅用户能决定的错误 → 返回 action: "stop"。
 2b. 若「用户原始指令」明显是在补充背景、追问原因、澄清约束（如“为什么会这样/先回答这个问题/补充一点”），即使存在未完成任务，也应优先 stop，让主 AI 先回答用户问题，再由主 AI 询问是否继续原任务。
 2a. 强制 stop 场景（无论是否有 tool_call、无论目标是否完成都必须 stop，下游已加硬拦截，但你也要识别）：
@@ -5354,6 +5406,8 @@ async def _call_assistant_ai(
     provider: str | None = None,
     *,
     output_lang_section: str | None = None,
+    round_had_tool_call: bool = False,
+    tool_trace: list | None = None,
 ) -> dict:
     """调用辅助 AI，返回 {"action": "continue"|"stop", "message": "..."}。"""
     if not provider or provider not in ("aliyun", "ollama", "openai"):
@@ -5363,7 +5417,12 @@ async def _call_assistant_ai(
     headers = prepare_headers(provider, api_key, base_url)
     _ap = _build_assistant_system_prompt()
     system_prompt = f"{(output_lang_section or '').strip()}\n\n{_ap}".strip() if (output_lang_section or "").strip() else _ap
-    user_content = f"""用户原始指令：\n{user_goal[:2000]}\n\n{_config.PRODUCT_NAME_ZH}当前输出：\n{(ops_response or '')[:3000]}"""
+    tool_ctx = _format_assistant_tool_context(round_had_tool_call, tool_trace)
+    user_content = (
+        f"用户原始指令：\n{user_goal[:2000]}\n\n"
+        f"{_config.PRODUCT_NAME_ZH}当前输出：\n{(ops_response or '')[:3000]}\n\n"
+        f"执行上下文：\n{tool_ctx}"
+    )
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
@@ -7189,6 +7248,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                         # 一并写进 assistant content，前端 loadSession 重渲后可还原；写完即清空。
                         round_had_ui_action = bool(pending_ui_actions)
                         pending_ui_actions = _dedupe_ui_actions_ask_user_choice_keep_last(pending_ui_actions)
+                        round_tool_trace_snapshot = list(pending_tool_trace)
                         _content_to_save = _embed_run_stats_into_content(
                             _embed_tool_trace_into_content(
                                 _embed_ui_actions_into_content(content, pending_ui_actions),
@@ -7222,6 +7282,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                 )
                     except Exception as e:
                         logger.warning("保存会话消息失败: %s", e)
+                        round_tool_trace_snapshot = list(pending_tool_trace)
 
                     yield _sse({"run_stats": _final_run_stats})
 
@@ -7237,6 +7298,15 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                     # 流程、再问一次同样的问题（如「是否升级」反复弹两遍）。
                     if round_had_ui_action or (
                         _is_user_choice_reply(last_user_message) and not round_had_tool_call
+                    ):
+                        yield _sse({"stream_status": {"phase": "completed"}})
+                        yield "data: [DONE]\n\n"
+                        return
+
+                    if _assistant_should_skip_continue(
+                        content,
+                        last_user_message,
+                        round_had_tool_call=round_had_tool_call,
                     ):
                         yield _sse({"stream_status": {"phase": "completed"}})
                         yield "data: [DONE]\n\n"
@@ -7278,6 +7348,8 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                         content,
                         provider=provider,
                         output_lang_section=_asst_lang,
+                        round_had_tool_call=round_had_tool_call,
+                        tool_trace=round_tool_trace_snapshot,
                     )
                     if assistant_result.get("action") != "continue":
                         yield _sse({"stream_status": {"phase": "completed"}})
@@ -8127,6 +8199,13 @@ async def run_ops_integration_chat_complete(
                 if _is_user_choice_reply(last_user_message) and not round_had_tool_call:
                     return {"success": True, "reply": content, "session_id": sid}
 
+                if _assistant_should_skip_continue(
+                    content,
+                    last_user_message,
+                    round_had_tool_call=round_had_tool_call,
+                ):
+                    return {"success": True, "reply": content, "session_id": sid}
+
                 assistant_rounds += 1
                 _asst_lang_i = build_output_language_system_section(
                     last_user_message or "",
@@ -8142,6 +8221,7 @@ async def run_ops_integration_chat_complete(
                     content,
                     provider=provider,
                     output_lang_section=_asst_lang_i,
+                    round_had_tool_call=round_had_tool_call,
                 )
                 if assistant_result.get("action") != "continue":
                     return {"success": True, "reply": content, "session_id": sid}
