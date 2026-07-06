@@ -2836,6 +2836,8 @@ TOOLS = [
                 "- 用户要求导出报告（csv / markdown / json / html / pdf 等）；\n"
                 "- 需要交付一份包含多个文件的结果（html + images/ + js/ + data.json 等）；\n"
                 "- 希望结果持久保留、可再次下载，而不是仅在聊天里以文本/代码块展示。\n\n"
+                "**首次创建**用本工具；用户要求**修改已有报告/成果物**时改用 **`update_chat_artifact`**（同一 UUID），"
+                "不要重复 create。\n\n"
                 "**参数（JSON 结构，勿把 HTML 字符串直接当作 files）**：\n"
                 "- `title`（必填）：成果物标题；\n"
                 "- `description`（可选）：一句话说明；\n"
@@ -2912,6 +2914,49 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "update_chat_artifact",
+            "description": (
+                "**在原成果物上修订**（覆盖/追加文件），**不新建** artifact、**不换 UUID**。"
+                "当用户说「改一下报告」「时间不对」「修个小问题」「在原来的 HTML 上改」时，"
+                "**必须**用本工具，**禁止**再调 `create_chat_artifact` 整份重生成。\n\n"
+                "**推荐流程**：\n"
+                "1. `list_chat_artifacts`（或从上一轮 `artifact:UUID` 链接）定位 uuid；\n"
+                "2. `read_chat_artifact_file(uuid, path)` 读现有 `index.html` 等；\n"
+                "3. 只改必要片段后 `update_chat_artifact(uuid, files=[{path, content}])`；\n"
+                "4. 答复里**仍用同一** `[标题](artifact:原UUID)` 链接，说明「已在原报告上更新」。\n\n"
+                "小改动也可用 `fs_write_file(path=\"chats/…/index.html\", mode=\"replace\", offset=…)` 但需已知 storage 路径；"
+                "优先 uuid 流程。\n"
+                "参数：`uuid`（必填）；`files`（必填，至少 1 项 `{path, content}`）；"
+                "可选 `title` / `description` / `entry_file`。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "uuid": {"type": "string", "description": "要更新的 artifact UUID（与下载卡片相同）"},
+                    "files": {
+                        "type": "array",
+                        "description": "要覆盖或新增的文件列表，格式同 create_chat_artifact",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "content": {"type": "string"},
+                                "encoding": {"type": "string", "enum": ["utf-8", "base64"]},
+                            },
+                            "required": ["path", "content"],
+                        },
+                    },
+                    "title": {"type": "string", "description": "可选，更新标题"},
+                    "description": {"type": "string", "description": "可选，更新描述"},
+                    "entry_file": {"type": "string", "description": "可选，更新入口文件路径（须已存在）"},
+                },
+                "required": ["uuid", "files"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_chat_artifacts",
             "description": "列出当前用户已生成的 artifacts（可按 session_id 过滤）；仅返回本人数据。",
             "parameters": {
@@ -2930,7 +2975,7 @@ TOOLS = [
             "name": "read_chat_artifact_file",
             "description": (
                 "读取某个 artifact 内部的一个文件文本内容（仅支持 text/markdown/json/csv/html/css/js 等文本扩展名），"
-                "便于 AI 二次加工或复核生成结果。超长内容会按 max_chars 截断。"
+                "便于 AI **在原成果物上二次修订**（配合 `update_chat_artifact`）或复核生成结果。超长内容会按 max_chars 截断。"
             ),
             "parameters": {
                 "type": "object",
@@ -15013,6 +15058,50 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             # 附一个 markdown_link 方便 AI 直接贴到最终答复里；前端见到 `artifact:UUID` 会渲染为下载按钮。
             artifact["markdown_link"] = f"[{title}](artifact:{artifact.get('uuid')})"
             return json.dumps({"success": True, "artifact": artifact}, ensure_ascii=False)
+
+        if name == "update_chat_artifact":
+            from api.ai_artifacts import update_artifact as _update_artifact
+            uuid_s = (arguments.get("uuid") or "").strip()
+            if not uuid_s:
+                return json.dumps({"success": False, "error": "uuid 不能为空"}, ensure_ascii=False)
+            files_arg = _normalize_create_chat_artifact_files(arguments.get("files"))
+            if not isinstance(files_arg, list) or not files_arg:
+                return json.dumps({
+                    "success": False,
+                    "error": "files 必须是非空数组，每项为 {path, content}",
+                }, ensure_ascii=False)
+            normalized_files = []
+            for idx, item in enumerate(files_arg):
+                if not isinstance(item, dict):
+                    return json.dumps({
+                        "success": False,
+                        "error": f"files[{idx}] 必须是对象 {{path, content}}",
+                    }, ensure_ascii=False)
+                path = (item.get("path") or "").strip()
+                if not path or "content" not in item:
+                    return json.dumps({
+                        "success": False,
+                        "error": f"files[{idx}] 缺少 path 或 content",
+                    }, ensure_ascii=False)
+                normalized_files.append(item)
+            db = await get_db()
+            try:
+                artifact = await _update_artifact(
+                    db,
+                    user,
+                    uuid=uuid_s,
+                    files=normalized_files,
+                    title=(arguments.get("title") or None),
+                    description=arguments.get("description"),
+                    entry_file=arguments.get("entry_file") or None,
+                )
+            except ValueError as exc:
+                return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)
+            except Exception as exc:  # noqa: BLE001
+                return json.dumps({"success": False, "error": f"更新失败: {exc}"}, ensure_ascii=False)
+            title_out = artifact.get("title") or "成果物"
+            artifact["markdown_link"] = f"[{title_out}](artifact:{artifact.get('uuid')})"
+            return json.dumps({"success": True, "artifact": artifact, "updated": True}, ensure_ascii=False)
 
         if name == "list_chat_artifacts":
             db = await get_db()

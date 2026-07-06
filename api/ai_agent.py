@@ -5269,7 +5269,8 @@ AI 成果物（artifacts，让用户可直接下载你整理的报告/数据包/
   - 需要 echarts/mermaid 等：加 `"libs": ["echarts"]`，**不要**把 vendor JS 塞进 `files[].content`（见「本地资源包」）。
 - 入口文件：HTML 报告推荐 `entry_file: "index.html"`；纯数据可用 `report.md` / `data.csv`。
 - 调用成功后：把返回的 `markdown_link`（`[标题](artifact:UUID)`）**原样**贴到最终答复；不要改写链接。
-- 读取已有成果：`list_chat_artifacts`、`read_chat_artifact_file(uuid, path)`。
+- **修订已有报告（重要）**：用户要求改时间、改样式、修错字、补一小段等**局部修改**时，**禁止**再 `create_chat_artifact` 整份重生成。流程：`list_chat_artifacts` → `read_chat_artifact_file(uuid, path)` → **`update_chat_artifact(uuid, files=[...])`**，**保持同一 UUID**；答复说明「已在原报告上更新」，链接仍用原 `artifact:UUID`。
+- 读取已有成果：`list_chat_artifacts`、`read_chat_artifact_file(uuid, path)`；更新：`update_chat_artifact`。
 - 不要滥用：简单问答、一两行数据直接在正文展示即可。
 
 敏感信息不得泄露（全局 AI 与主机维度 AI、以及查看历史会话时均须遵守）：

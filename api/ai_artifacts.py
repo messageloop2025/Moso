@@ -627,6 +627,130 @@ async def create_artifact(
     return out
 
 
+def _build_artifact_write_plan(files: Iterable[dict]) -> tuple[list[tuple[str, bytes]], set[str], int]:
+    """校验 files 参数并返回 (plan, seen_paths, new_bytes_sum)。"""
+    plan: list[tuple[str, bytes]] = []
+    total = 0
+    seen_paths: set[str] = set()
+    file_list = list(files or [])
+    if not file_list:
+        raise ValueError("files 不能为空")
+    if len(file_list) > MAX_FILES:
+        raise ValueError(f"单个 artifact 文件数不能超过 {MAX_FILES}")
+    for idx, f in enumerate(file_list):
+        if not isinstance(f, dict):
+            raise ValueError(f"files[{idx}] 必须是 {{path, content[, encoding]}}")
+        try:
+            rel = _validate_relative_path(str(f.get("path") or ""))
+        except ValueError as exc:
+            raise ValueError(f"files[{idx}] 路径非法: {exc}") from exc
+        try:
+            data = _coerce_bytes(f.get("content"), f.get("encoding"))
+        except ValueError as exc:
+            raise ValueError(f"files[{idx}] 内容解码失败: {exc}") from exc
+        if len(data) > MAX_FILE_BYTES:
+            raise ValueError(f"files[{idx}]（{rel}）超过单文件上限 {MAX_FILE_BYTES // (1024 * 1024)} MB")
+        if rel in seen_paths:
+            raise ValueError(f"files 中存在重复路径: {rel}")
+        seen_paths.add(rel)
+        total += len(data)
+        if total > MAX_TOTAL_BYTES:
+            raise ValueError(f"artifact 总字节超出上限 {MAX_TOTAL_BYTES // (1024 * 1024)} MB")
+        plan.append((rel, data))
+    return plan, seen_paths, total
+
+
+def _scan_artifact_dir_stats(dir_path: Path) -> tuple[int, int]:
+    count = 0
+    total = 0
+    if not dir_path.is_dir():
+        return 0, 0
+    for p in dir_path.rglob("*"):
+        if p.is_file():
+            count += 1
+            try:
+                total += p.stat().st_size
+            except OSError:
+                pass
+    return count, total
+
+
+async def update_artifact(
+    db,
+    user: dict,
+    *,
+    uuid: str,
+    files: Iterable[dict] | None = None,
+    title: str | None = None,
+    description: str | None = None,
+    entry_file: str | None = None,
+) -> dict:
+    """在原 artifact 目录内覆盖/追加文件，**不新建 UUID**。用于用户要求「改报告里的小问题」等增量修订。"""
+    uuid_str = (uuid or "").strip()
+    if not uuid_str:
+        raise ValueError("uuid 不能为空")
+    rows = await load_artifacts_for_user(db, int(user["id"]), [uuid_str])
+    if not rows:
+        raise ValueError("artifact 不存在或无权访问")
+    row = dict(rows[0])
+    username = await _load_username(db, int(user["id"]))
+    dest = _artifact_dir_for(row, username)
+    if not dest.is_dir():
+        raise ValueError("artifact 物理目录不存在，无法更新")
+
+    plan, seen_paths, _ = _build_artifact_write_plan(files)
+    try:
+        for rel, data in plan:
+            target = (dest / rel).resolve()
+            try:
+                target.relative_to(dest.resolve())
+            except ValueError as exc:
+                raise ValueError(f"文件路径越界: {rel}") from exc
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+    except OSError as exc:
+        logger.exception("更新 artifact 失败 uuid=%s: %s", uuid_str, exc)
+        raise ValueError(f"更新 artifact 失败: {exc}") from exc
+
+    new_entry = (entry_file or "").strip() or (row.get("entry_file") or "")
+    if entry_file:
+        new_entry = _validate_relative_path(entry_file)
+        entry_path = (dest / new_entry).resolve()
+        if not entry_path.is_file():
+            raise ValueError(f"entry_file '{new_entry}' 在 artifact 中不存在")
+
+    new_title = (title or row.get("title") or "").strip()[:200]
+    new_desc = (description if description is not None else row.get("description") or "")
+    new_desc = str(new_desc).strip()[:1000]
+    file_count, total_bytes = _scan_artifact_dir_stats(dest)
+    kind = row.get("kind") or "bundle"
+    if file_count <= 1:
+        kind = "single_file"
+    elif file_count > 1:
+        kind = "bundle"
+
+    await db.execute(
+        """UPDATE ai_artifacts SET title=?, description=?, kind=?, entry_file=?,
+                  file_count=?, total_bytes=? WHERE uuid=? AND user_id=?""",
+        (
+            new_title,
+            new_desc,
+            kind,
+            new_entry,
+            file_count,
+            total_bytes,
+            uuid_str,
+            int(user["id"]),
+        ),
+    )
+    await db.commit()
+    updated = await _load_artifact_row(db, uuid_str)
+    out = _artifact_to_dict(updated or row)
+    out["updated"] = True
+    out["updated_paths"] = [rel for rel, _ in plan]
+    return out
+
+
 # ───────────────────────── 路由 ─────────────────────────
 
 
