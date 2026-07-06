@@ -2548,6 +2548,7 @@ function edgeopsBuildProcessProsePanelFromSegments(segments, collapsed) {
         + '<span class="ai-reply-prose-head-main">' + esc(title) + '</span>'
         + '<span class="ai-reply-prose-head-status ai-reply-prose-status-done">' + esc(doneHint) + '</span>'
         + '</button>'
+        + '<div class="ai-reply-prose-active-peek ai-reply-prose-active-peek-hidden" aria-live="polite"></div>'
         + '<div class="ai-reply-prose-body' + bodyCollapsed + '">'
         + '<div class="ai-reply-text">' + itemsHtml + '</div>'
         + '</div></div>';
@@ -2569,6 +2570,7 @@ function edgeopsRestoreProcessProseOnLastAssistant(box, segments) {
     else replyWrap.insertAdjacentHTML('beforeend', html);
     edgeopsBindReplyProsePanelsIn(replyWrap);
     edgeopsBindFrozenProseItemsIn(replyWrap);
+    edgeopsSyncProseActivePeek(replyWrap);
     if (typeof edgeopsHydrateChatDiagrams === 'function') edgeopsHydrateChatDiagrams(replyWrap);
 }
 
@@ -2637,6 +2639,54 @@ function edgeopsEnsureReplyProseActivePeekEl(panel) {
     return peek;
 }
 
+function edgeopsResolveProsePeekText(textEl, replyWrap) {
+    var liveText = '';
+    if (textEl) {
+        var tail = textEl.querySelector('.edgeops-stream-tail, [data-edgeops-stream-tail]');
+        if (tail && (tail.textContent || '').trim()) {
+            liveText = String(tail.textContent).trim();
+        }
+    }
+    if (!liveText && replyWrap && replyWrap._edgeopsProseStreamText) {
+        var full = stripThinkTags(replyWrap._edgeopsProseStreamText || '');
+        liveText = full.slice(replyWrap._edgeopsProseLastCommit || 0).trim();
+    }
+    if (liveText) {
+        return liveText.length > 320 ? liveText.slice(0, 320) + '\u2026' : liveText;
+    }
+    if (!textEl) return '';
+    var liveItem = textEl.querySelector('.ai-reply-prose-item-live');
+    if (liveItem) {
+        var liveTitle = liveItem.querySelector('.ai-reply-prose-item-title');
+        if (liveTitle && (liveTitle.textContent || '').trim()) {
+            return String(liveTitle.textContent).trim();
+        }
+        var liveBody = liveItem.querySelector('.ai-reply-prose-item-body');
+        var livePlain = liveBody ? (liveBody.innerText || liveBody.textContent || '').trim() : '';
+        if (livePlain) {
+            return livePlain.length > 320 ? livePlain.slice(0, 320) + '\u2026' : livePlain;
+        }
+    }
+    var items = textEl.querySelectorAll('.ai-reply-prose-item-frozen, .ai-reply-prose-item');
+    var lastItem = items.length ? items[items.length - 1] : null;
+    if (lastItem) {
+        var titleEl = lastItem.querySelector('.ai-reply-prose-item-title');
+        if (titleEl && (titleEl.textContent || '').trim()) {
+            return String(titleEl.textContent).trim();
+        }
+        var headEl = lastItem.querySelector('.ai-reply-prose-item-head');
+        if (headEl && (headEl.textContent || '').trim()) {
+            return String(headEl.textContent).replace(/^\s*[\u25b6\u25bc]\s*/, '').trim();
+        }
+        var bodyEl = lastItem.querySelector('.ai-reply-prose-item-body');
+        var bodyPlain = bodyEl ? (bodyEl.innerText || bodyEl.textContent || '').trim() : '';
+        if (bodyPlain) {
+            return bodyPlain.length > 320 ? bodyPlain.slice(0, 320) + '\u2026' : bodyPlain;
+        }
+    }
+    return '';
+}
+
 function edgeopsSyncProseActivePeek(replyWrap) {
     if (!replyWrap) return;
     var panel = replyWrap.querySelector('.ai-reply-prose-panel');
@@ -2651,24 +2701,13 @@ function edgeopsSyncProseActivePeek(replyWrap) {
         return;
     }
     var textEl = panel.querySelector('.ai-reply-text');
-    var liveText = '';
-    if (textEl) {
-        var tail = textEl.querySelector('.edgeops-stream-tail, [data-edgeops-stream-tail]');
-        if (tail && (tail.textContent || '').trim()) {
-            liveText = String(tail.textContent).trim();
-        }
-    }
-    if (!liveText && replyWrap._edgeopsProseStreamText) {
-        var full = stripThinkTags(replyWrap._edgeopsProseStreamText || '');
-        liveText = full.slice(replyWrap._edgeopsProseLastCommit || 0).trim();
-    }
-    if (!liveText) {
+    var preview = edgeopsResolveProsePeekText(textEl, replyWrap);
+    if (!preview) {
         peek.classList.add('ai-reply-prose-active-peek-hidden');
         peek.textContent = '';
         return;
     }
     peek.classList.remove('ai-reply-prose-active-peek-hidden');
-    var preview = liveText.length > 320 ? liveText.slice(0, 320) + '…' : liveText;
     peek.textContent = preview;
 }
 
@@ -2770,6 +2809,7 @@ function edgeopsFinalizeProcessProsePanel(replyWrap, textEl, collapsePanel) {
     if (panel) {
         edgeopsRefreshReplyProseHeader(panel, { live: false });
         if (collapsePanel) edgeopsCollapseReplyProsePanel(panel);
+        else edgeopsSyncProseActivePeek(replyWrap);
     }
     edgeopsBindFrozenProseItemsIn(replyWrap);
 }
@@ -2883,6 +2923,7 @@ function edgeopsEnsureReplyProsePanel(replyWrap) {
     panel.appendChild(body);
     edgeopsBindReplyProsePanelToggle(panel);
     edgeopsRefreshReplyProseHeader(panel, { live: true });
+    edgeopsSyncProseActivePeek(replyWrap);
     return panel;
 }
 
@@ -2915,6 +2956,7 @@ function edgeopsBuildFinalProsePanelHtml(finalText, fmtFn, collapsed) {
         + '<span class="ai-reply-prose-head-main">' + esc(title) + '</span>'
         + '<span class="ai-reply-prose-head-status ai-reply-prose-status-done">' + esc(doneHint) + '</span>'
         + '</button>'
+        + '<div class="ai-reply-prose-active-peek ai-reply-prose-active-peek-hidden" aria-live="polite"></div>'
         + '<div class="ai-reply-prose-body' + bodyCollapsed + '">'
         + '<div class="ai-reply-text message-body">' + itemsHtml + '</div>'
         + '</div></div>';
@@ -2924,6 +2966,9 @@ function edgeopsBindReplyProsePanelsIn(root) {
     if (!root) return;
     root.querySelectorAll('.ai-reply-prose-panel').forEach(function(p) {
         edgeopsBindReplyProsePanelToggle(p);
+        edgeopsEnsureReplyProseActivePeekEl(p);
+        var replyWrap = p.closest('.ai-reply-stream, .ai-reply-persisted, .chat-message.assistant');
+        edgeopsSyncProseActivePeek(replyWrap);
     });
 }
 
@@ -7717,6 +7762,23 @@ function renderToolStreamEvent(toolsEl, ev) {
     } else if (tag === 'chain_step_line' || tag === 'sub_agent_line') {
         var prefix = tag === 'chain_step_line' ? ('[' + (s.index + 1) + '] ' + (s.step_kind || '') + ' \u00b7 ') : '';
         line = prefix + '[' + (s.stream || 'stdout') + '] ' + (s.line || '').slice(0, 500);
+    } else if (tag === 'sub_ai_batch_start') {
+        line = '\u25b6 [' + (s.task_index + 1) + '] ' + (s.task_name || 'sub-ai') + '  starting';
+    } else if (tag === 'sub_ai_batch_end') {
+        line = (s.success ? '\u2713' : '\u2717') + ' [' + (s.task_index + 1) + '] ' + (s.task_name || 'sub-ai')
+            + (s.duration_sec != null ? '  ' + s.duration_sec + 's' : '')
+            + (s.error ? '  err=' + String(s.error).slice(0, 80) : '')
+            + (s.preview ? '\n  ' + String(s.preview).slice(0, 200) : '');
+    } else if (tag === 'sub_ai_step') {
+        var ti = s.task_index != null ? ('[' + (s.task_index + 1) + '] ' + (s.task_name || '') + ' \u00b7 ') : '';
+        var tools = (s.tool_calls || []).join(', ');
+        line = ti + 'step ' + (s.step || '?') + (tools ? ' \u2192 ' + tools : '');
+    } else if (tag === 'sub_ai_tool') {
+        var ti2 = s.task_index != null ? ('[' + (s.task_index + 1) + '] ' + (s.task_name || '') + ' \u00b7 ') : '';
+        line = ti2 + (s.tool || '?') + ': ' + String(s.preview || '').slice(0, 180);
+    } else if (tag === 'sub_ai_done') {
+        var ti3 = s.task_index != null ? ('[' + (s.task_index + 1) + '] ' + (s.task_name || '') + ' \u00b7 ') : '';
+        line = ti3 + 'done step ' + (s.step || '?') + ': ' + String(s.preview || '').slice(0, 220);
     } else {
         line = tag + ' ' + JSON.stringify(s).slice(0, 200);
     }

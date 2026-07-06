@@ -722,8 +722,9 @@ TOOLS = [
                 "典型用法：\\n"
                 f"- 「把这些日志整理成运维报告」：起一个只有读工具的子 AI，system_prompt 写清『你是毛竹（Moso）的报告撰写员』\\n"
                 "- 「让另一个 AI 审查你刚才写的脚本」：起一个 reviewer 子 AI\\n"
-                "- 「聚合 3 个分析任务并给结论」（串行调用 3 次子 AI，每次不同 subtask，最后主 AI 汇总）\\n\\n"
-                "安全：**递归深度硬限制为 2**（主→子→孙即拒），子 AI 不允许再调 `delegate_to_edgeops_ai`；"
+                "- 「聚合 3 个分析任务并给结论」：用 `delegate_sub_tasks_batch` 一次并发多个子 AI，或串行多次 `delegate_to_edgeops_ai`\\n\\n"
+                "进度：执行期间通过 SSE 推送 `sub_ai_step` / `sub_ai_tool` / `sub_ai_done` 事件到 CoT 面板。\\n"
+                "安全：**递归深度硬限制为 2**（主→子→孙即拒），子 AI 不允许再调 `delegate_to_edgeops_ai` 或 `delegate_sub_tasks_batch`；"
                 "工具白名单必须显式声明，默认不给任何工具（纯推理）；建议只给读类工具。"
             ),
             "parameters": {
@@ -745,6 +746,64 @@ TOOLS = [
                     "context_hint": {"type": "string", "description": "附加贴到子 AI system 末尾的上下文片段（例如先前的关键工具输出摘要）"},
                 },
                 "required": ["task", "system_prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delegate_sub_tasks_batch",
+            "description": (
+                "**内部子 AI 批量并发**：一次发起 1–8 个独立的 `delegate_to_edgeops_ai` 子任务，"
+                "受 `max_parallel`（默认 3，上限 5）限制并发度，全部完成后返回按 index 排序的聚合结果。"
+                "适合 Map-Reduce：主 AI 把大日志/多主机/多维度分析拆成 N 个子任务并行跑，最后汇总 `final_text`。"
+                "\\n\\n"
+                "每个子任务可单独指定 `task` / `system_prompt` / `allowed_tools` / `context_hint`；"
+                "也可在顶层设 `shared_system_prompt` 与 `default_allowed_tools` 作为默认值。"
+                "大数据请用 spill 引用 + 子任务内 `read_chat_data`，不要把全文塞进 `context_hint`。"
+                "\\n\\n"
+                "进度：SSE 推送 `sub_ai_batch_start` / `sub_ai_step` / `sub_ai_tool` / `sub_ai_batch_end`。"
+                "子 AI 内禁止再调本工具或 `delegate_to_edgeops_ai`。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tasks": {
+                        "type": "array",
+                        "description": "子任务列表（1–8 项）",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string", "description": "可选，子任务标识（前端进度与结果索引）"},
+                                "task": {"type": "string", "description": "给该子 AI 的用户消息"},
+                                "system_prompt": {"type": "string", "description": "可选；省略则用 shared_system_prompt"},
+                                "allowed_tools": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "可选；省略则用 default_allowed_tools",
+                                },
+                                "context_hint": {"type": "string", "description": "可选，贴到该子 AI system 末尾的上下文摘要"},
+                                "max_steps": {"type": "integer", "description": "可选，覆盖顶层 max_steps"},
+                                "timeout_sec": {"type": "integer", "description": "可选，覆盖顶层 timeout_sec"},
+                            },
+                            "required": ["task"],
+                        },
+                    },
+                    "shared_system_prompt": {
+                        "type": "string",
+                        "description": "所有子任务共用的 system prompt（单任务未写 system_prompt 时使用）",
+                    },
+                    "default_allowed_tools": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "默认工具白名单；建议 read_chat_data / get_recent_tool_result 等只读工具",
+                    },
+                    "max_parallel": {"type": "integer", "description": "最大并发子 AI 数，默认 3，上限 5"},
+                    "max_steps": {"type": "integer", "description": "默认每子任务 LLM 轮次上限，默认 10，上限 30"},
+                    "max_depth": {"type": "integer", "description": "递归深度上限，默认 2"},
+                    "timeout_sec": {"type": "integer", "description": "默认每子任务墙钟超时秒数，默认 120，上限 600"},
+                },
+                "required": ["tasks"],
             },
         },
     },
@@ -6476,9 +6535,11 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
     ui_capable: 调用方是否带浏览器交互（False 表示 OpenClaw 集成 / 后台任务等无 UI 场景，
     `ask_user_choice` 等需要前端渲染的工具会改用纯文本回退）。task scope 自动视为 ui_capable=False。
     stream_callback: 可选的 async 回调 `fn(event: dict) -> None`。当工具支持流式进度时
-    （`delegate_to_cli_agent` / `delegate_chain` / `run_workflow_template` / `scp_push` / `scp_pull`），
+    （`delegate_to_cli_agent` / `delegate_chain` / `run_workflow_template` / `delegate_to_edgeops_ai` /
+    `delegate_sub_tasks_batch` / `scp_push` / `scp_pull`），
     工具会边跑边调该回调把增量事件推给调用方（例如 SSE 生成器），事件 dict 必含 `kind` 字段
-    （sub_agent_line / chain_step_start / chain_step_line / chain_step_end / chain_step_skip）。
+    （sub_agent_line / chain_step_start / sub_ai_step / sub_ai_tool / sub_ai_done /
+    sub_ai_batch_start / sub_ai_batch_end / chain_step_line / chain_step_end / chain_step_skip）。
     ui_locale: 可选；浏览器/界面 BCP-47（如 zh-CN、en），传入时子技能（如 delegate_to_edgeops_ai）可将回复语言策略与界面一致。
     权限由本函数内程序逻辑强制校验，不依赖 AI 描述。本机类工具仅在本机管理会话中且仅管理员可调用。"""
     try:
@@ -7915,6 +7976,15 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 timeout_sec = 120
             context_hint = str(arguments.get("context_hint") or "")
 
+            _on_step = None
+            if stream_callback is not None:
+                async def _on_step(ev: dict) -> None:
+                    try:
+                        await stream_callback(ev)
+                    except Exception:
+                        pass
+                _on_step = _on_step
+
             # 外层拦截：当前已经是子 AI 环境时，再叫一次等于再深一层——depth+1 是否越上限由 run_sub_ai 判定
             cur_depth = _sub_ai_depth()
             try:
@@ -7929,6 +7999,9 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     timeout_sec=timeout_sec,
                     context_hint=context_hint,
                     browser_ui_locale=(ui_locale or "").strip() or None,
+                    on_step=_on_step,
+                    task_id=task_id,
+                    session_id=session_id,
                 )
             except Exception as e:
                 return json.dumps({"success": False, "error": f"子 AI 运行异常：{type(e).__name__}: {e}"}, ensure_ascii=False)
@@ -7943,6 +8016,63 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 "tool_calls_summary": result.get("tool_calls_summary", []),
                 "error": result.get("error"),
             }, ensure_ascii=False)
+
+        if name == "delegate_sub_tasks_batch":
+            from services.sub_ai import run_sub_ai_batch as _run_sub_ai_batch
+
+            raw_tasks = arguments.get("tasks")
+            if not isinstance(raw_tasks, list) or not raw_tasks:
+                return json.dumps({"success": False, "error": "tasks 必须是非空数组"}, ensure_ascii=False)
+            shared_sys = str(arguments.get("shared_system_prompt") or "")
+            default_allowed = arguments.get("default_allowed_tools") or []
+            if default_allowed is not None and not isinstance(default_allowed, list):
+                return json.dumps({"success": False, "error": "default_allowed_tools 必须是字符串数组"}, ensure_ascii=False)
+            try:
+                max_parallel_ = int(arguments.get("max_parallel") or 3)
+            except Exception:
+                max_parallel_ = 3
+            try:
+                max_steps_ = int(arguments.get("max_steps") or 10)
+            except Exception:
+                max_steps_ = 10
+            try:
+                max_depth_ = int(arguments.get("max_depth") or 2)
+            except Exception:
+                max_depth_ = 2
+            try:
+                timeout_sec = int(arguments.get("timeout_sec") or 120)
+            except Exception:
+                timeout_sec = 120
+
+            _on_step = None
+            if stream_callback is not None:
+                async def _on_step(ev: dict) -> None:
+                    try:
+                        await stream_callback(ev)
+                    except Exception:
+                        pass
+                _on_step = _on_step
+
+            try:
+                batch = await _run_sub_ai_batch(
+                    user=user,
+                    scope=scope or "default",
+                    tasks=raw_tasks,
+                    shared_system_prompt=shared_sys,
+                    default_allowed_tools=[str(x) for x in default_allowed] if default_allowed else [],
+                    max_parallel=max_parallel_,
+                    max_steps=max_steps_,
+                    max_depth=max_depth_,
+                    timeout_sec=timeout_sec,
+                    browser_ui_locale=(ui_locale or "").strip() or None,
+                    on_step=_on_step,
+                    task_id=task_id,
+                    session_id=session_id,
+                )
+            except Exception as e:
+                return json.dumps({"success": False, "error": f"子 AI 批量运行异常：{type(e).__name__}: {e}"}, ensure_ascii=False)
+
+            return json.dumps(batch, ensure_ascii=False)
 
         if name == "ssh_execute":
             from services.ssh_background import (

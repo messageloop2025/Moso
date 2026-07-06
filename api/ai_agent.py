@@ -5095,7 +5095,7 @@ def _build_system_prompt() -> str:
   可用 agent：`cursor-agent` / `opencode` / `aider` / `claude` / `codex` / `goose` / `cline` / `llm`，或 `auto`（按画像自动挑）。传 `env` 追加 API Key（如 `CURSOR_API_KEY`），审计日志只会记录变量名不记值。`task` 范围下（后台任务）无需确认即可调用。
 - **多步编排（delegate_chain）**：当用户任务天然是一条流水线——"改代码→跑测试→失败就让子 AI 自愈"、"扫一下→让 llm 总结结果"、"装包→等 2s→验证"——**优先用 `delegate_chain` 一次性声明整条链**，不要拆成多次 tool_call 手动串。每一步是 `delegate`（子 AI）、`ssh`（普通命令）或 `sleep`，可设 `when=on_success|on_failure|always` 做分支，并用 `{prev_stdout}` / `{prev_stderr}` / `{prev_exit_code}` / `{prev_files_changed}` 等模板变量把上一步结果喂给下一步（典型：让 cursor-agent 根据 `{prev_stderr}` 修复 pytest 报错）。**跨主机**：每一步可选 `host_id` 覆盖顶层默认主机——典型"A 机改代码 → rsync 到 B 机 → B 机跑测试 → C 机部署"写成一条链即可；所有涉及主机会各自做画像校验、访问控制与凭证解析，审计对每台机都会留一条记录。链里含写类 delegate 时，整条链要先让用户一次性确认全部步骤（`ask_user_choice` 展示 steps_preview，其中会带每步的 `host_label`）再以 `confirmed=true` 调用；`task` scope 视为已授权。链跑完后同样要给用户一句话总结：哪一步失败、在哪台机、总共改了几个文件、是否需要回滚。
 - **工作流模板（save/list/run_workflow_template）**：用户在跑完一条复杂 `delegate_chain` 后说"这条以后我还要跑"或"叫它 daily-deploy，下次直接跑"，应调 `save_workflow_template` 把 **原 payload** 存库；payload 里可把易变字段（目标分支、构建标签、主机 ID 等）写成 `${var}` 占位符，后续复用时主 AI 用 `run_workflow_template(template_id, variable_overrides={...})` 填值跑起来。调用流程："先 `list_workflow_templates(query)` 找出候选 → 若歧义让用户挑 → `run_workflow_template(..., dry_run=true)` 展示 resolved_payload 与缺失变量 → 用户确认后 `confirmed=true` 真跑"。模板本身是 `delegate_chain` payload 的包装，所有安全门禁（画像校验、写类 `confirmed`、访问控制、审计）完全走同一条后端路径，不需要在模板侧再实现一遍。
-- **内部 AI 递归（delegate_to_edgeops_ai）**：当任务需要**独立上下文 / 独立身份**时（如"整理一份运维周报"、"让另一个 AI 审查你这段脚本"、"并发/串行跑 N 个分析子任务再汇总"），用这个技能起一个子 AI 对话——它会用你账号下同一份 LLM 配置，但用一份你写的专用 `system_prompt`、一份你指定的 `allowed_tools` 白名单（不传就是纯推理）跑完回传 Markdown。**必须**写清子 AI 身份与输出要求；强烈建议只给读类工具；不要用它代替 `delegate_chain`（编排）或 `delegate_to_cli_agent`（远端 CLI）。系统硬限制递归深度=2（孙 AI 被拒）且子 AI 不允许再调 `delegate_to_edgeops_ai`。
+- **内部 AI 递归（delegate_to_edgeops_ai / delegate_sub_tasks_batch）**：当任务需要**独立上下文 / 独立身份**时（如"整理一份运维周报"、"让另一个 AI 审查你这段脚本"、"并行跑 N 个分析子任务再汇总"），用 `delegate_to_edgeops_ai` 起单个子 AI，或用 **`delegate_sub_tasks_batch` 一次并发 1–8 个子任务**（默认并发 3，适合 Map-Reduce 大数据分析）。子 AI 走你账号下同一份 LLM 配置，但用专用 `system_prompt` 与 `allowed_tools` 白名单；大数据优先 spill 引用 + 子任务内 `read_chat_data`，勿把全文塞进 `context_hint`。执行期间 SSE 会推送 `sub_ai_step` / `sub_ai_tool` 进度。**必须**写清子 AI 身份与输出要求；强烈建议只给读类工具；不要用它代替 `delegate_chain`（编排）或 `delegate_to_cli_agent`（远端 CLI）。系统硬限制递归深度=2（孙 AI 被拒）且子 AI 不允许再调上述委派工具。
 
 .edgeops 工作区（主机端落盘，**仅用于需要主机本地保留的可复用脚本与任务过程文件**）：
 - 新定位：**主机的规则 / 能力 / 配置信息不再默认落盘到 `.edgeops/rules` 或 `.edgeops/info`，一律优先写入「主机级提示词」**（数据库、按用户隔离、可跨主机搜索）。`.edgeops` 主要作用是存可复用**脚本**以及（可选的）任务过程记录。
@@ -6636,6 +6636,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                     "delegate_chain",
                                     "run_workflow_template",
                                     "delegate_to_edgeops_ai",
+                                    "delegate_sub_tasks_batch",
                                     "scp_push",
                                     "scp_pull",
                                     "relay_file_between_hosts",

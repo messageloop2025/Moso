@@ -11,7 +11,7 @@ Agent 对话——走同一个 LLM 配置、同一套 TOOLS、但系统提示/�
 - 「把刚才这些工具输出**整理成一份运维报告**」→ 起一个只允许读的子 AI，给它一份
   专注于"写报告"的 system prompt，避免污染主会话上下文；
 - 「让另一个 AI 代理审查你写的这段脚本是否有安全风险」→ 子 AI 扮演 reviewer；
-- 「并发跑 5 个分析子任务，结果聚合」（未来扩展）。
+- 「并发跑多个分析子任务，结果聚合」→ 主 AI 用 `delegate_sub_tasks_batch` 一次发起。
 
 为了安全：
 - **递归深度限制**：用 ContextVar 追踪当前嵌套层数，默认最多 2 层，防止 AI 互相递归
@@ -51,8 +51,12 @@ DEFAULT_READONLY_TOOLS = {
     # 主机与凭证相关（读）
     "list_hosts", "get_host_detail", "search_hosts_by_prompt", "get_host_prompt",
     "get_host_capabilities", "list_credentials",
-    # 聊天会话 / 对话记忆
+    # 聊天会话 / 对话记忆 / spill 分段读取
     "list_recent_tool_results", "get_recent_tool_result",
+    "read_chat_data", "read_chat_attachment",
+    "list_ai_sessions", "get_ai_session", "get_session_chat_detail",
+    # 本机工作区读
+    "fs_read_file", "fs_list_dir",
     # 最佳实践 / 知识库
     "list_best_practices", "get_best_practice", "search_best_practices",
     # 工作流模板（读）
@@ -75,6 +79,14 @@ HARD_MAX_STEPS = 30
 DEFAULT_TIMEOUT = 120
 HARD_MAX_TIMEOUT = 600
 DEFAULT_MAX_TOKENS = 4096
+HARD_MAX_BATCH = 8
+DEFAULT_MAX_PARALLEL = 3
+HARD_MAX_PARALLEL = 5
+
+# 子 AI 内禁止再起的委派类工具
+_SUB_AI_FORBIDDEN_TOOLS = frozenset({"delegate_to_edgeops_ai", "delegate_sub_tasks_batch"})
+
+
 def current_depth() -> int:
     return _SUB_AI_DEPTH.get()
 
@@ -114,6 +126,8 @@ async def run_sub_ai(
     context_hint: str = "",
     browser_ui_locale: str | None = None,
     on_step: Callable[[dict], Awaitable[None]] | None = None,
+    task_id: int | None = None,
+    session_id: int | None = None,
 ) -> dict[str, Any]:
     """运行一次子 AI 会话，返回 {success, final_text, steps, tool_calls_summary, truncated, error}。
 
@@ -124,6 +138,7 @@ async def run_sub_ai(
     - `context_hint`：额外贴在 system 末尾的上下文（"上面这堆日志是..."）
     - `browser_ui_locale`：可选，与主会话一致的界面语言（zh-CN / en），注入「回复语言策略」时作为浏览器回退链
     - `on_step`：可选回调，每一轮 LLM 调用/工具执行后送事件给调用方（用于 SSE 流推进度）
+    - `task_id` / `session_id`：可选，传给子 AI 内部工具（后台 task scope 的 SSH 通道绑定、spill 归属）
     """
     # 递归深度卫兵
     depth = _SUB_AI_DEPTH.get()
@@ -201,7 +216,7 @@ async def run_sub_ai(
     final_system += (
         f"\n\n# 子 AI 约束\n"
         f"- 当前你作为一个子 AI 被主 AI 调起，递归深度 = {depth + 1}（上限 {max_depth}）。"
-        f"\n- **不要**再调用 `delegate_to_edgeops_ai`，主 AI 已禁止更深一层递归。"
+        f"\n- **不要**再调用 `delegate_to_edgeops_ai` 或 `delegate_sub_tasks_batch`，主 AI 已禁止更深一层递归。"
         f"\n- 工具白名单：{sorted(allowed) if allowed else '（无，请纯文本推理）'}。"
         f"\n- 步数上限：{max_steps}；墙钟超时：{timeout_sec}s。"
         f"\n- 完成后用一段 Markdown 总结交付；不要输出闲聊。"
@@ -275,11 +290,10 @@ async def run_sub_ai(
                             fn_args = json.loads(tc["function"]["arguments"])
                         except json.JSONDecodeError:
                             fn_args = {}
-                        # 递归防御：硬拒绝子 AI 再起 delegate_to_edgeops_ai
-                        if fn_name == "delegate_to_edgeops_ai":
+                        if fn_name in _SUB_AI_FORBIDDEN_TOOLS:
                             tool_result = json.dumps({
                                 "success": False,
-                                "error": "子 AI 不允许再起 delegate_to_edgeops_ai（递归深度受限）",
+                                "error": f"子 AI 不允许调用 {fn_name}（递归深度受限）",
                             }, ensure_ascii=False)
                         elif allowed and fn_name not in allowed:
                             tool_result = json.dumps({
@@ -290,7 +304,8 @@ async def run_sub_ai(
                             try:
                                 tool_result = await _execute_tool(
                                     fn_name, fn_args, user,
-                                    scope=scope, task_id=None, ui_capable=False,
+                                    scope=scope, task_id=task_id, ui_capable=False,
+                                    session_id=session_id,
                                     ui_locale=(browser_ui_locale or "").strip() or None,
                                 )
                             except Exception as e:
@@ -310,7 +325,7 @@ async def run_sub_ai(
                         from services.chat_tool_spill import spill_and_wrap_tool_message
                         _lim = _tool_result_message_limit(262_144)
                         _compact = _compact_tool_result_for_messages(fn_name, tool_result or "", _lim, "standard")
-                        _body = await spill_and_wrap_tool_message(user, None, fn_name, fn_id, tool_result or "", _compact)
+                        _body = await spill_and_wrap_tool_message(user, session_id, fn_name, fn_id, tool_result or "", _compact)
                         messages.append({
                             "role": "tool",
                             "tool_call_id": fn_id,
@@ -319,6 +334,11 @@ async def run_sub_ai(
                     continue
 
                 final_text = (extract_message_content(msg) or "").strip()
+                if on_step and final_text:
+                    try:
+                        await on_step({"kind": "sub_ai_done", "step": steps, "preview": final_text[:400]})
+                    except Exception:
+                        pass
                 break
     finally:
         _SUB_AI_DEPTH.reset(tok)
@@ -336,4 +356,132 @@ async def run_sub_ai(
         "truncated": truncated,
         "depth": depth + 1,
         "error": err,
+    }
+
+
+async def run_sub_ai_batch(
+    *,
+    user: dict,
+    scope: str,
+    tasks: list[dict[str, Any]],
+    shared_system_prompt: str = "",
+    default_allowed_tools: list[str] | None = None,
+    max_parallel: int = DEFAULT_MAX_PARALLEL,
+    max_steps: int = DEFAULT_MAX_STEPS,
+    max_depth: int = DEFAULT_MAX_DEPTH,
+    timeout_sec: int = DEFAULT_TIMEOUT,
+    browser_ui_locale: str | None = None,
+    on_step: Callable[[dict], Awaitable[None]] | None = None,
+    task_id: int | None = None,
+    session_id: int | None = None,
+) -> dict[str, Any]:
+    """并发运行多个子 AI 子任务，返回聚合结果。"""
+    if not tasks:
+        return {"success": False, "error": "tasks 不能为空", "results": [], "total": 0}
+    if len(tasks) > HARD_MAX_BATCH:
+        return {
+            "success": False,
+            "error": f"子任务数 {len(tasks)} 超过上限 {HARD_MAX_BATCH}",
+            "results": [],
+            "total": len(tasks),
+        }
+
+    parallel = max(1, min(HARD_MAX_PARALLEL, int(max_parallel or DEFAULT_MAX_PARALLEL)))
+    sem = asyncio.Semaphore(parallel)
+    shared_sys = (shared_system_prompt or "").strip()
+    default_allowed = [str(x) for x in (default_allowed_tools or [])]
+    results: list[dict[str, Any] | None] = [None] * len(tasks)
+    t0 = time.time()
+
+    async def _run_one(idx: int, spec: dict[str, Any]) -> None:
+        name = (spec.get("name") or f"task-{idx + 1}").strip()
+        task_text = (spec.get("task") or "").strip()
+        sys_p = (spec.get("system_prompt") or shared_sys or "").strip()
+        if not task_text or not sys_p:
+            results[idx] = {
+                "index": idx,
+                "name": name,
+                "success": False,
+                "error": "task 与 system_prompt（或 shared_system_prompt）不能都为空",
+            }
+            return
+        allowed = spec.get("allowed_tools")
+        if allowed is None:
+            allowed = default_allowed
+        try:
+            steps_ = int(spec.get("max_steps") or max_steps)
+        except (TypeError, ValueError):
+            steps_ = max_steps
+        try:
+            timeout_ = int(spec.get("timeout_sec") or timeout_sec)
+        except (TypeError, ValueError):
+            timeout_ = timeout_sec
+        context_hint = str(spec.get("context_hint") or "")
+
+        async def _on_step(ev: dict) -> None:
+            if on_step:
+                payload = dict(ev)
+                payload["task_index"] = idx
+                payload["task_name"] = name
+                await on_step(payload)
+
+        if on_step:
+            try:
+                await on_step({"kind": "sub_ai_batch_start", "task_index": idx, "task_name": name})
+            except Exception:
+                pass
+
+        async with sem:
+            out = await run_sub_ai(
+                user=user,
+                scope=scope,
+                task=task_text,
+                system_prompt=sys_p,
+                allowed_tools=[str(x) for x in allowed] if allowed else [],
+                max_steps=steps_,
+                max_depth=max_depth,
+                timeout_sec=timeout_,
+                context_hint=context_hint,
+                browser_ui_locale=browser_ui_locale,
+                on_step=_on_step,
+                task_id=task_id,
+                session_id=session_id,
+            )
+
+        results[idx] = {
+            "index": idx,
+            "name": name,
+            "success": bool(out.get("success")),
+            "final_text": out.get("final_text", ""),
+            "steps_used": out.get("steps", 0),
+            "duration_sec": out.get("duration_sec", 0),
+            "truncated": out.get("truncated", False),
+            "tool_calls_summary": out.get("tool_calls_summary", []),
+            "error": out.get("error"),
+        }
+        if on_step:
+            try:
+                await on_step({
+                    "kind": "sub_ai_batch_end",
+                    "task_index": idx,
+                    "task_name": name,
+                    "success": bool(out.get("success")),
+                    "duration_sec": out.get("duration_sec", 0),
+                    "preview": (out.get("final_text") or "")[:300],
+                    "error": out.get("error"),
+                })
+            except Exception:
+                pass
+
+    await asyncio.gather(*[_run_one(i, spec) for i, spec in enumerate(tasks)])
+
+    ok_count = sum(1 for r in results if r and r.get("success"))
+    return {
+        "success": ok_count == len(tasks),
+        "total": len(tasks),
+        "succeeded": ok_count,
+        "failed": len(tasks) - ok_count,
+        "duration_sec": round(time.time() - t0, 2),
+        "max_parallel": parallel,
+        "results": [r for r in results if r is not None],
     }
