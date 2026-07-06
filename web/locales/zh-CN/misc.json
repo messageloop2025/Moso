@@ -228,6 +228,7 @@
       "aria": "附件预览",
       "uploadTitle": "上传图片/文本/Markdown/Office/PDF 附件",
       "uploading": "上传中…",
+      "uploadingPct": "上传 {{pct}}%",
       "uploadFailed": "上传失败",
       "missingMeta": "上传失败：缺少附件元信息",
       "failed": "失败",

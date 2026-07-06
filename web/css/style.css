@@ -2758,6 +2758,9 @@ table.table-compact-ellipsis th.th-skill-group {
     border-top: 1px solid rgba(59, 130, 246, 0.12);
     font-size: 12px;
     line-height: 1.45;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
 }
 .ai-cot-active-peek.ai-cot-active-peek-hidden {
     display: none;
@@ -2768,11 +2771,29 @@ table.table-compact-ellipsis th.th-skill-group {
     background: rgba(59, 130, 246, 0.06);
     border: 1px solid rgba(59, 130, 246, 0.15);
 }
+.ai-cot-peek-step.ai-cot-peek-wait {
+    background: rgba(245, 158, 11, 0.12);
+    border-color: rgba(245, 158, 11, 0.35);
+    padding: 0;
+}
+.ai-cot-peek-step.ai-cot-peek-wait .ai-cot-wait-bar {
+    margin: 0;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    width: 100%;
+}
 .ai-cot-peek-step.ai-cot-peek-tool {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 6px 8px;
+}
+.ai-cot-peek-step.ai-cot-peek-tool .ai-cot-transfer-head-progress {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11px;
+    color: var(--text-muted, #64748b);
+    flex: 1 0 100%;
 }
 .ai-cot-peek-step.ai-cot-peek-tool .ai-cot-step-title {
     font-weight: 600;
@@ -5110,6 +5131,18 @@ table.table-compact-ellipsis th.th-skill-group {
     color: var(--text-muted);
     white-space: nowrap;
     align-self: center;
+    max-width: 42%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.ai-runtime-wake-btn {
+    flex-shrink: 0;
+    background: rgba(245, 158, 11, 0.15);
+    border: 1px solid rgba(245, 158, 11, 0.45);
+    color: var(--text);
+}
+.ai-runtime-wake-btn:hover {
+    background: rgba(245, 158, 11, 0.25);
 }
 .ai-runtime-control-input {
     min-width: 220px;

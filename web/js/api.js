@@ -598,23 +598,37 @@ var API = {
     chat: function(message, sessionId, hostId, scope, terminalScopeId) { var b = { message: message, session_id: sessionId || null }; if (hostId != null) b.host_id = hostId; if (scope) b.scope = scope; if (terminalScopeId) b.terminal_scope_id = terminalScopeId; if (typeof I18n !== 'undefined' && I18n.getEffectiveLocale) { var _ul = I18n.getEffectiveLocale(); if (_ul) b.ui_locale = _ul; } return this.post('/ai/chat', b); },
 
     /** 上传一个聊天附件（图片/文本/Markdown 等），返回 { success, attachment: { uuid, name, mime, size, kind, url } } */
-    uploadChatAttachment: function(file, sessionId) {
+    uploadChatAttachment: function(file, sessionId, onProgress) {
         var fd = new FormData();
         fd.append('file', file);
         if (sessionId != null) fd.append('session_id', String(sessionId));
         var headers = {};
         if (this.token) headers['Authorization'] = 'Bearer ' + this.token;
-        return fetch('/api/ai/attachments', { method: 'POST', headers: headers, body: fd }).then(function(resp) {
-            return resp.text().then(function(t) {
+        return new Promise(function(resolve, reject) {
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/ai/attachments');
+            if (headers['Authorization']) xhr.setRequestHeader('Authorization', headers['Authorization']);
+            if (typeof onProgress === 'function' && xhr.upload) {
+                xhr.upload.onprogress = function(ev) {
+                    if (ev.lengthComputable) onProgress(ev.loaded, ev.total);
+                };
+            }
+            xhr.onload = function() {
+                var text = xhr.responseText || '';
                 var data = {};
-                try { data = t ? JSON.parse(t) : {}; } catch (e) {}
-                if (!resp.ok) {
-                    var defUp = (typeof t === 'function' ? t('api.uploadFailedWithStatus', { status: resp.status }) : 'Upload failed (' + resp.status + ')');
+                try { data = text ? JSON.parse(text) : {}; } catch (e) {}
+                if (xhr.status < 200 || xhr.status >= 300) {
+                    var defUp = (typeof t === 'function' ? t('api.uploadFailedWithStatus', { status: xhr.status }) : 'Upload failed (' + xhr.status + ')');
                     var msg = (data && data.detail) ? data.detail : defUp;
-                    throw new Error(typeof msg === 'string' ? msg : (typeof t === 'function' ? t('api.uploadFailed') : 'Upload failed'));
+                    reject(new Error(typeof msg === 'string' ? msg : (typeof t === 'function' ? t('api.uploadFailed') : 'Upload failed')));
+                    return;
                 }
-                return data;
-            });
+                resolve(data);
+            };
+            xhr.onerror = function() {
+                reject(new Error(typeof t === 'function' ? t('api.uploadFailed') : 'Upload failed'));
+            };
+            xhr.send(fd);
         });
     },
     /** 把已上传的附件绑定到会话（及可选消息 id）。 */

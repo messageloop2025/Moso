@@ -228,6 +228,7 @@
       "aria": "Attachments",
       "uploadTitle": "Upload image / text / Markdown / Office / PDF",
       "uploading": "Uploading…",
+      "uploadingPct": "Upload {{pct}}%",
       "uploadFailed": "Upload failed",
       "missingMeta": "Upload failed: missing attachment metadata",
       "failed": "Failed",

@@ -1191,6 +1191,11 @@ function edgeopsInstallRuntimeControlBar(opts) {
     sendBtn.type = 'button';
     sendBtn.className = 'btn btn-sm btn-primary';
     sendBtn.textContent = t('hostAi.runtimeSupplement');
+    var wakeBtn = document.createElement('button');
+    wakeBtn.type = 'button';
+    wakeBtn.className = 'btn btn-sm ai-runtime-wake-btn';
+    wakeBtn.textContent = typeof t === 'function' ? t('hostAi.pollWaitWake') : 'Wake';
+    wakeBtn.style.display = 'none';
     var stopBtn = document.createElement('button');
     stopBtn.type = 'button';
     stopBtn.className = 'btn btn-sm btn-danger';
@@ -1199,6 +1204,7 @@ function edgeopsInstallRuntimeControlBar(opts) {
     bar.appendChild(input);
     bar.appendChild(pauseBtn);
     bar.appendChild(sendBtn);
+    bar.appendChild(wakeBtn);
     bar.appendChild(stopBtn);
     var awaitingHint = document.createElement('span');
     awaitingHint.className = 'ai-runtime-awaiting-hint';
@@ -1261,10 +1267,27 @@ function edgeopsInstallRuntimeControlBar(opts) {
             focusChatInput();
         }
     }
+    var pollWakeHandler = null;
+    wakeBtn.onclick = function() {
+        if (typeof pollWakeHandler === 'function') pollWakeHandler();
+    };
     var ctl = {
         setStreaming: function(flag, awaitingConfirm) {
             if (flag === 'awaiting' || flag === 'awaiting_confirm') setRuntimeMode(false, true);
             else setRuntimeMode(!!flag && flag !== 'awaiting', !!awaitingConfirm);
+            if (!flag || flag === 'awaiting' || flag === 'awaiting_confirm') {
+                wakeBtn.style.display = 'none';
+                pollWakeHandler = null;
+            }
+        },
+        setPollWait: function(active, handlers) {
+            if (active && handlers && typeof handlers.onWake === 'function') {
+                pollWakeHandler = handlers.onWake;
+                wakeBtn.style.display = '';
+            } else {
+                pollWakeHandler = null;
+                wakeBtn.style.display = 'none';
+            }
         },
         note: function(text) {
             var noteText = text || t('hostAi.runtimeTipCompact');
@@ -1353,8 +1376,11 @@ function edgeopsInstallChatAttachments(opts) {
             }
             if (it.uploading) {
                 var busy = document.createElement('span');
-                busy.className = 'chip-size';
-                busy.textContent = t('ui.attach.uploading');
+                busy.className = 'chip-size chip-upload-pct';
+                var pct = it.uploadPct != null ? it.uploadPct : null;
+                busy.textContent = pct != null && pct >= 0
+                    ? (typeof t === 'function' ? t('ui.attach.uploadingPct', { pct: pct }) : (pct + '%'))
+                    : t('ui.attach.uploading');
                 chip.appendChild(busy);
             } else if (it.error) {
                 var err = document.createElement('span');
@@ -1437,7 +1463,10 @@ function edgeopsInstallChatAttachments(opts) {
         state.items.push(it);
         renderChips();
         var sessionId = (typeof opts.getSessionId === 'function') ? opts.getSessionId() : null;
-        return API.uploadChatAttachment(file, sessionId || null).then(function(resp) {
+        return API.uploadChatAttachment(file, sessionId || null, function(loaded, total) {
+            if (total > 0) it.uploadPct = Math.max(0, Math.min(100, Math.round((loaded / total) * 100)));
+            renderChips();
+        }).then(function(resp) {
             var a = resp && resp.attachment;
             if (!a || !a.uuid) throw new Error(t('ui.attach.missingMeta'));
             it.uuid = a.uuid;
@@ -6899,44 +6928,56 @@ function edgeopsCotSyncActivePeek(panel) {
         peek.innerHTML = '';
         return;
     }
+    var parts = [];
+    var pollWait = panel._edgeopsPollWait;
+    if (pollWait && pollWait.tip) {
+        parts.push('<div class="ai-cot-peek-step ai-cot-peek-wait"><div class="ai-cot-wait-bar ai-cot-peek-wait-bar"></div></div>');
+    }
     if (st.activeToolEl) {
         var titleEl = st.activeToolEl.querySelector('.ai-cot-step-title');
         var badgeEl = st.activeToolEl.querySelector('.ai-cot-tool-badge');
         var transferEl = st.activeToolEl.querySelector('.ai-cot-transfer-head-progress');
-        var peekHtml = '<div class="ai-cot-peek-step ai-cot-peek-tool">'
+        var toolPeek = '<div class="ai-cot-peek-step ai-cot-peek-tool">'
             + (titleEl ? titleEl.outerHTML : '')
             + (transferEl ? transferEl.outerHTML : '')
-            + (badgeEl ? badgeEl.outerHTML : '')
-            + '</div>';
+            + (badgeEl ? badgeEl.outerHTML : '');
         var stream = st.activeToolEl.querySelector('.ai-tool-stream');
         if (stream && stream.lastElementChild && (stream.lastElementChild.textContent || '').trim()) {
-            peekHtml = peekHtml.slice(0, -6) + '<div class="ai-cot-peek-stream-line">'
+            toolPeek += '<div class="ai-cot-peek-stream-line">'
                 + esc(String(stream.lastElementChild.textContent).trim().slice(0, 240))
-                + '</div></div>';
+                + '</div>';
         }
-        peek.classList.remove('ai-cot-active-peek-hidden');
-        peek.innerHTML = peekHtml;
-        return;
-    }
-    if (st.reasoningBodyEl && (st.reasoningBuffer || '').trim()) {
+        parts.push(toolPeek + '</div>');
+    } else if (!pollWait && st.reasoningBodyEl && (st.reasoningBuffer || '').trim()) {
         var plain = edgeopsReasoningBufferToPlain(st.reasoningBuffer);
         var truncated = plain.length > 280 ? plain.slice(0, 280) + '…' : plain;
         var rLabel = typeof t === 'function' ? t('hostAi.cotRoundReasoning', { round: st.roundSeq || 1 }) : 'Reasoning';
-        peek.classList.remove('ai-cot-active-peek-hidden');
-        peek.innerHTML = '<div class="ai-cot-peek-step ai-cot-peek-reasoning">'
+        parts.push('<div class="ai-cot-peek-step ai-cot-peek-reasoning">'
             + '<div class="ai-cot-peek-label">' + esc(rLabel) + '</div>'
-            + '<div class="ai-cot-peek-text">' + esc(truncated) + '</div></div>';
+            + '<div class="ai-cot-peek-text">' + esc(truncated) + '</div></div>');
+    } else if (!pollWait) {
+        var live = panel.querySelector('.ai-cot-live');
+        var thinkingText = (live && live.textContent) || (typeof t === 'function' ? t('hostAi.cotThinking') : '');
+        if (thinkingText) {
+            parts.push('<div class="ai-cot-peek-step ai-cot-peek-thinking">' + esc(thinkingText) + '</div>');
+        }
+    }
+    if (!parts.length) {
+        peek.classList.add('ai-cot-active-peek-hidden');
+        peek.innerHTML = '';
         return;
     }
-    var live = panel.querySelector('.ai-cot-live');
-    var thinkingText = (live && live.textContent) || (typeof t === 'function' ? t('hostAi.cotThinking') : '');
-    if (thinkingText) {
-        peek.classList.remove('ai-cot-active-peek-hidden');
-        peek.innerHTML = '<div class="ai-cot-peek-step ai-cot-peek-thinking">' + esc(thinkingText) + '</div>';
-        return;
+    peek.classList.remove('ai-cot-active-peek-hidden');
+    peek.innerHTML = parts.join('');
+    if (pollWait && pollWait.tip) {
+        var barHost = peek.querySelector('.ai-cot-peek-wait-bar');
+        if (barHost) {
+            edgeopsRenderChatPollWaitBar(barHost, pollWait.tip, {
+                onWake: pollWait.onWake,
+                onAbort: pollWait.onAbort
+            });
+        }
     }
-    peek.classList.add('ai-cot-active-peek-hidden');
-    peek.innerHTML = '';
 }
 
 function edgeopsCotRefreshHeader(panel) {
@@ -7320,6 +7361,11 @@ function edgeopsClearChatPollWait(toolsEl) {
     if (!toolsEl) return;
     var panel = toolsEl.querySelector('.ai-cot-panel');
     if (!panel) return;
+    if (panel._edgeopsPollWait) {
+        var rc = panel._edgeopsPollWait.runtimeCtl;
+        if (rc && typeof rc.setPollWait === 'function') rc.setPollWait(false);
+        panel._edgeopsPollWait = null;
+    }
     var host = panel.querySelector('.ai-cot-wait-host');
     if (host) {
         host.innerHTML = '';
@@ -7329,6 +7375,7 @@ function edgeopsClearChatPollWait(toolsEl) {
     panel.querySelectorAll('.ai-cot-step-tool.ai-tool-waiting').forEach(function(step) {
         step.classList.remove('ai-tool-waiting');
     });
+    edgeopsCotSyncActivePeek(panel);
 }
 
 function edgeopsRenderChatPollWaitBar(container, tip, opts) {
@@ -7359,6 +7406,18 @@ function edgeopsUpdateChatPollWait(toolsEl, ev, opts) {
     var tip = typeof t === 'function'
         ? t('hostAi.pollWaitOnTool', { remaining: rem, tool: toolName })
         : (toolName + ' · ' + rem + 's');
+    var fallbackTip = typeof t === 'function'
+        ? t('hostAi.pollWaitRuntimeTip', { remaining: rem })
+        : (rem + 's');
+    var panel = toolsEl.querySelector('.ai-cot-panel');
+    if (panel) {
+        panel._edgeopsPollWait = {
+            tip: tip,
+            onWake: opts.onWake,
+            onAbort: opts.onAbort,
+            runtimeCtl: opts.runtimeCtl
+        };
+    }
     var step = edgeopsFindCotToolStep(toolsEl, toolName);
     if (step) {
         step.classList.add('ai-tool-waiting');
@@ -7371,7 +7430,6 @@ function edgeopsUpdateChatPollWait(toolsEl, ev, opts) {
             else step.appendChild(waitEl);
         }
         edgeopsRenderChatPollWaitBar(waitEl, tip, opts);
-        var panel = toolsEl.querySelector('.ai-cot-panel');
         var host = panel && panel.querySelector('.ai-cot-wait-host');
         if (host) {
             host.innerHTML = '';
@@ -7385,16 +7443,20 @@ function edgeopsUpdateChatPollWait(toolsEl, ev, opts) {
         var bar = document.createElement('div');
         bar.className = 'ai-cot-wait-bar';
         host.appendChild(bar);
-        var fallbackTip = typeof t === 'function'
-            ? t('hostAi.pollWaitRuntimeTip', { remaining: rem })
-            : (rem + 's');
         edgeopsRenderChatPollWaitBar(bar, fallbackTip, opts);
+        if (panel) {
+            panel._edgeopsPollWait.tip = fallbackTip;
+        }
     }
-    if (opts.runtimeCtl && opts.runtimeCtl.note) {
-        opts.runtimeCtl.note(typeof t === 'function'
-            ? t('hostAi.pollWaitRuntimeTip', { remaining: rem })
-            : tip);
+    if (opts.runtimeCtl) {
+        if (typeof opts.runtimeCtl.setPollWait === 'function') {
+            opts.runtimeCtl.setPollWait(true, { onWake: opts.onWake });
+        }
+        if (typeof opts.runtimeCtl.note === 'function') {
+            opts.runtimeCtl.note(step ? tip : fallbackTip);
+        }
     }
+    if (panel) edgeopsCotSyncActivePeek(panel);
 }
 
 function edgeopsApplyStreamStatus(replyWrap, setStreamingUI, phase) {
@@ -7751,6 +7813,7 @@ function renderToolStreamEvent(toolsEl, ev) {
             ? panel._edgeopsCotState.activeToolEl
             : (attachParent.closest ? attachParent.closest('.ai-cot-step-tool') : attachParent);
         edgeopsUpdateTransferProgress(stepForProgress || attachParent, s);
+        if (panel) edgeopsCotSyncActivePeek(panel);
         return;
     }
     if (tag === 'chain_step_start') {
