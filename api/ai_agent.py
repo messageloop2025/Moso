@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import threading
+import time
 from datetime import datetime
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -185,6 +186,8 @@ UI_ACTION_SENTINEL_SUFFIX = " -->"
 # 工具调用 / 推理步骤轨迹：随 assistant 落库，前端历史消息可折叠还原「调用流程」。
 TOOL_TRACE_SENTINEL_PREFIX = "<!-- EDGEOPS:TOOL_TRACE:v1 "
 TOOL_TRACE_SENTINEL_SUFFIX = " -->"
+RUN_STATS_SENTINEL_PREFIX = "<!-- EDGEOPS:RUN_STATS:v1 "
+RUN_STATS_SENTINEL_SUFFIX = " -->"
 # 嵌入前控制体积，避免单条消息过大（实际值见 config.TOOL_TRACE_*）
 TOOL_TRACE_MAX_STEPS = 5000
 TOOL_TRACE_MAX_JSON_CHARS = 400_000
@@ -222,9 +225,22 @@ def _strip_tool_trace_sentinels(content: str) -> str:
     return cleaned.rstrip() if cleaned else cleaned
 
 
+def _strip_run_stats_sentinels(content: str) -> str:
+    """从 assistant content 中移除运行统计哨兵。"""
+    if not content or RUN_STATS_SENTINEL_PREFIX not in content:
+        return content or ""
+    import re as _re
+
+    pat = _re.compile(
+        _re.escape(RUN_STATS_SENTINEL_PREFIX) + r"[A-Za-z0-9+/=]+" + _re.escape(RUN_STATS_SENTINEL_SUFFIX)
+    )
+    cleaned = pat.sub("", content)
+    return cleaned.rstrip() if cleaned else cleaned
+
+
 def _strip_assistant_embedded_sentinels(content: str) -> str:
-    """剥离落库时嵌入的 UI_ACTION + TOOL_TRACE 哨兵（供历史上下文与展示清洗）。"""
-    return _strip_tool_trace_sentinels(_strip_ui_action_sentinels(content or ""))
+    """剥离落库时嵌入的 UI_ACTION + TOOL_TRACE + RUN_STATS 哨兵（供历史上下文与展示清洗）。"""
+    return _strip_run_stats_sentinels(_strip_tool_trace_sentinels(_strip_ui_action_sentinels(content or "")))
 
 
 _TOOL_MARKUP_BLOCK_RE = None
@@ -699,6 +715,63 @@ def _embed_tool_trace_into_content(content: str, trace_steps: list[dict] | None)
         content = candidate
         embedded += len(chunk)
     return content
+
+
+def _message_content_char_len(content) -> int:
+    """估算单条 message content 字符数（含多模态 image_url 粗算）。"""
+    if content is None:
+        return 0
+    if isinstance(content, str):
+        return len(content)
+    if isinstance(content, list):
+        total = 0
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            ptype = (part.get("type") or "").strip().lower()
+            if ptype == "text":
+                total += len(part.get("text") or "")
+            elif ptype == "image_url":
+                url = (part.get("image_url") or {}).get("url") or ""
+                total += min(len(url), 12_000)
+        return total
+    return len(str(content))
+
+
+def estimate_messages_context_chars(messages: list) -> int:
+    """估算当前 LLM messages 数组字符总量（含 tool_calls 参数 JSON）。"""
+    total = 0
+    for m in messages or []:
+        if not isinstance(m, dict):
+            continue
+        total += _message_content_char_len(m.get("content"))
+        for tc in m.get("tool_calls") or []:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+            total += len((fn.get("name") or ""))
+            total += len((fn.get("arguments") or ""))
+    return total
+
+
+def _embed_run_stats_into_content(content: str, stats: dict | None) -> str:
+    """把本轮上下文/耗时统计嵌入 assistant content 末尾（前端重载后仍可展示）。"""
+    if not stats:
+        return content
+    import base64 as _b64
+
+    try:
+        payload = {
+            "context_chars": int(stats.get("context_chars") or 0),
+            "context_budget": int(stats.get("context_budget") or 0),
+            "elapsed_ms": int(stats.get("elapsed_ms") or 0),
+        }
+        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        b64 = _b64.b64encode(raw.encode("utf-8")).decode("ascii")
+    except (TypeError, ValueError):
+        return content
+    sep = "\n\n" if (content and not content.endswith("\n")) else ""
+    return content + sep + RUN_STATS_SENTINEL_PREFIX + b64 + RUN_STATS_SENTINEL_SUFFIX
 
 
 def _fingerprint_ask_user_choice(ui_action: dict) -> str:
@@ -5994,6 +6067,15 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         pending_ui_actions: list[dict] = []
         # 工具 / 推理步骤：落库进 TOOL_TRACE 哨兵，便于历史会话折叠查看调用流程。
         pending_tool_trace: list[dict] = []
+        run_started_mono = time.monotonic()
+        context_budget_for_stats = int(context_size or 0)
+
+        def _make_run_stats() -> dict:
+            return {
+                "context_chars": estimate_messages_context_chars(messages),
+                "context_budget": context_budget_for_stats,
+                "elapsed_ms": int((time.monotonic() - run_started_mono) * 1000),
+            }
 
         # 新一轮普通聊天开始时，丢弃上一轮结束后误入队列的运行时控制指令。
         # 否则用户在 UI 已结束但控制条未复位时点击“补充”，下一轮会被误判为插入指令。
@@ -6027,6 +6109,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
             tool_trace: list | None = None,
             partial_assistant: str | None = None,
             retry_detail: str | None = None,
+            run_stats: dict | None = None,
         ):
             """把失败信息落库为 assistant 消息；可附带本轮 TOOL_TRACE 与中断前已生成的助手正文。"""
             try:
@@ -6041,7 +6124,10 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                         pa = pa[: cap - 24] + "\n\n…（正文过长已截断）"
                     blocks.append("---\n**中断前助手已输出的正文（若有）**\n\n" + pa)
                 body = "\n\n".join(blocks)
-                body = _embed_tool_trace_into_content(body, list(tool_trace) if tool_trace else [])
+                body = _embed_run_stats_into_content(
+                    _embed_tool_trace_into_content(body, list(tool_trace) if tool_trace else []),
+                    run_stats or _make_run_stats(),
+                )
                 await db.execute(
                     "INSERT INTO ai_chat_messages (session_id, role, content) VALUES (?, 'assistant', ?)",
                     (session_id, body[:AI_MESSAGE_SAVE_MAX]),
@@ -6074,6 +6160,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
 
         # 先把用户消息落库；即便随后 AI 超时/异常，用户发言与错误痕迹仍可通过 loadSession 恢复
         await _persist_pending_user_msg()
+        yield _sse({"run_stats": _make_run_stats()})
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 while assistant_rounds < assistant_max_rounds:
@@ -6136,6 +6223,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                             reason="runtime_control",
                             output_locale=_output_locale,
                         )
+                        yield _sse({"run_stats": _make_run_stats()})
                         for _llm_try in range(_max_llm_tries):
                             # 单次重试前重置流式累积器；只有「上一轮重试连一个 token 都没收到」时
                             # 才会真正复用此分支，复用后继续重试
@@ -6827,6 +6915,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                     "tool_call_id": fn_id,
                                     "content": tool_content,
                                 })
+                                yield _sse({"run_stats": _make_run_stats()})
                                 if result_obj.get("wait_for_user"):
                                     # ask_user_choice 等交互工具一旦产生等待用户输入的状态，就挂起当前 SSE。
                                     # 前端通过 runtime-control(choice) 把用户选择插回当前轮，避免模型代替用户选择。
@@ -6841,9 +6930,12 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                         pending_ui_actions = _dedupe_ui_actions_ask_user_choice_keep_last(
                                             pending_ui_actions
                                         )
-                                        _content_to_save = _embed_tool_trace_into_content(
-                                            _embed_ui_actions_into_content(wait_text, pending_ui_actions),
-                                            pending_tool_trace,
+                                        _content_to_save = _embed_run_stats_into_content(
+                                            _embed_tool_trace_into_content(
+                                                _embed_ui_actions_into_content(wait_text, pending_ui_actions),
+                                                pending_tool_trace,
+                                            ),
+                                            _make_run_stats(),
                                         )
                                         pending_ui_actions = []
                                         pending_tool_trace = []
@@ -7083,6 +7175,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                     # streamed_content_text，因此 msg["content"] 自带 banner），这里不再重复拼接，
                     # 落库时直接保存 content 即可。
 
+                    _final_run_stats = _make_run_stats()
                     try:
                         # 用户消息已在流开始前落库；仅在辅助 AI 触发的后续轮次中需要补写
                         if not pending_user_msg["saved"]:
@@ -7095,9 +7188,12 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                         # 一并写进 assistant content，前端 loadSession 重渲后可还原；写完即清空。
                         round_had_ui_action = bool(pending_ui_actions)
                         pending_ui_actions = _dedupe_ui_actions_ask_user_choice_keep_last(pending_ui_actions)
-                        _content_to_save = _embed_tool_trace_into_content(
-                            _embed_ui_actions_into_content(content, pending_ui_actions),
-                            pending_tool_trace,
+                        _content_to_save = _embed_run_stats_into_content(
+                            _embed_tool_trace_into_content(
+                                _embed_ui_actions_into_content(content, pending_ui_actions),
+                                pending_tool_trace,
+                            ),
+                            _final_run_stats,
                         )
                         pending_ui_actions = []
                         pending_tool_trace = []
@@ -7125,6 +7221,8 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                 )
                     except Exception as e:
                         logger.warning("保存会话消息失败: %s", e)
+
+                    yield _sse({"run_stats": _final_run_stats})
 
                     if not assistant_enabled:
                         yield _sse({"stream_status": {"phase": "completed"}})

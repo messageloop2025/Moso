@@ -2089,6 +2089,28 @@ table.table-compact-ellipsis th.th-skill-group {
     min-width: 0;
     max-width: 100%;
 }
+.chat-message .message-content .message-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 6px;
+}
+.chat-message .message-content .message-run-stats {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 11px;
+    line-height: 1.2;
+    color: var(--text-muted);
+    opacity: 0.85;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.chat-message .message-content .message-footer .message-time {
+    flex: 0 0 auto;
+    margin-top: 0;
+}
 .chat-message .message-content .message-time {
     margin-top: 6px;
     font-size: 11px;

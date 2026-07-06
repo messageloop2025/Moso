@@ -695,9 +695,138 @@ function edgeopsFormatChatTimestamp(raw) {
     return String(raw);
 }
 
-function edgeopsRenderMessageBubble(contentHtml, createdAt) {
+function edgeopsFormatRunStatsDuration(ms) {
+    var n = Math.max(0, parseInt(ms, 10) || 0);
+    if (n < 1000) return (n / 1000).toFixed(1) + 's';
+    var sec = Math.floor(n / 1000);
+    if (sec < 60) return sec + 's';
+    var min = Math.floor(sec / 60);
+    var rem = sec % 60;
+    return rem > 0 ? (min + 'm ' + rem + 's') : (min + 'm');
+}
+
+function edgeopsFormatContextSizeChars(chars, budget) {
+    var c = Math.max(0, parseInt(chars, 10) || 0);
+    var b = parseInt(budget, 10);
+    function fmt(n) {
+        if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+        if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+        return String(n);
+    }
+    if (b > 0) return fmt(c) + '/' + fmt(b);
+    if (c > 0) return fmt(c);
+    return '';
+}
+
+function edgeopsFormatRunStatsText(stats) {
+    if (!stats) return '';
+    var ctxLabel = typeof t === 'function' ? t('ui.chat.runStatsContext') : '上下文';
+    var durLabel = typeof t === 'function' ? t('ui.chat.runStatsDuration') : '耗时';
+    var ctx = edgeopsFormatContextSizeChars(stats.context_chars, stats.context_budget);
+    var dur = edgeopsFormatRunStatsDuration(stats.elapsed_ms);
+    var parts = [];
+    if (ctx) parts.push(ctxLabel + ' ' + ctx);
+    if (dur || stats.elapsed_ms != null) parts.push(durLabel + ' ' + dur);
+    return parts.join(' · ');
+}
+
+function edgeopsRenderMessageFooter(ts, runStats) {
+    var statsText = edgeopsFormatRunStatsText(runStats);
+    var statsHtml = statsText
+        ? '<span class="message-run-stats" title="' + esc(statsText) + '">' + esc(statsText) + '</span>'
+        : '<span class="message-run-stats"></span>';
+    return '<div class="message-footer">' + statsHtml + '<div class="message-time">' + esc(ts) + '</div></div>';
+}
+
+function edgeopsEnsureMessageFooterEl(messageContentEl) {
+    if (!messageContentEl) return null;
+    var footer = messageContentEl.querySelector('.message-footer');
+    if (footer) return footer;
+    var timeEl = messageContentEl.querySelector('.message-time');
+    footer = document.createElement('div');
+    footer.className = 'message-footer';
+    var statsEl = document.createElement('span');
+    statsEl.className = 'message-run-stats';
+    footer.appendChild(statsEl);
+    if (timeEl) {
+        footer.appendChild(timeEl);
+    } else {
+        var timeEl2 = document.createElement('div');
+        timeEl2.className = 'message-time';
+        footer.appendChild(timeEl2);
+    }
+    messageContentEl.appendChild(footer);
+    return footer;
+}
+
+function edgeopsGetRunStatsElapsedMs(messageEl) {
+    var rs = messageEl && messageEl._edgeopsRunStats;
+    if (!rs) return 0;
+    if (rs.elapsed_base_at != null && rs.elapsed_base_ms != null) {
+        return rs.elapsed_base_ms + (Date.now() - rs.elapsed_base_at);
+    }
+    if (messageEl._edgeopsRunStatsStartedAt) return Date.now() - messageEl._edgeopsRunStatsStartedAt;
+    return rs.elapsed_ms || 0;
+}
+
+function edgeopsRefreshRunStatsDisplay(messageEl) {
+    if (!messageEl || !messageEl._edgeopsRunStats) return;
+    var statsEl = messageEl.querySelector('.message-run-stats');
+    if (!statsEl) return;
+    var rs = messageEl._edgeopsRunStats;
+    var text = edgeopsFormatRunStatsText({
+        context_chars: rs.context_chars,
+        context_budget: rs.context_budget,
+        elapsed_ms: edgeopsGetRunStatsElapsedMs(messageEl)
+    });
+    statsEl.textContent = text;
+    if (text) statsEl.title = text;
+}
+
+function edgeopsUpdateRunStats(messageEl, stats) {
+    if (!messageEl || !stats) return;
+    edgeopsEnsureMessageFooterEl(messageEl.querySelector('.message-content'));
+    messageEl._edgeopsRunStats = messageEl._edgeopsRunStats || {};
+    if (stats.context_chars != null) messageEl._edgeopsRunStats.context_chars = parseInt(stats.context_chars, 10) || 0;
+    if (stats.context_budget != null) messageEl._edgeopsRunStats.context_budget = parseInt(stats.context_budget, 10) || 0;
+    if (stats.elapsed_ms != null) {
+        messageEl._edgeopsRunStats.elapsed_base_ms = parseInt(stats.elapsed_ms, 10) || 0;
+        messageEl._edgeopsRunStats.elapsed_base_at = Date.now();
+    }
+    edgeopsRefreshRunStatsDisplay(messageEl);
+}
+
+function edgeopsStopRunStatsTracking(messageEl) {
+    if (!messageEl || !messageEl._edgeopsRunStatsTimerId) return;
+    clearInterval(messageEl._edgeopsRunStatsTimerId);
+    messageEl._edgeopsRunStatsTimerId = null;
+    edgeopsRefreshRunStatsDisplay(messageEl);
+}
+
+function edgeopsInitRunStatsTracking(messageEl) {
+    if (!messageEl) return;
+    edgeopsStopRunStatsTracking(messageEl);
+    messageEl._edgeopsRunStatsStartedAt = Date.now();
+    messageEl._edgeopsRunStats = {
+        context_chars: 0,
+        context_budget: 0,
+        elapsed_base_ms: 0,
+        elapsed_base_at: messageEl._edgeopsRunStatsStartedAt
+    };
+    edgeopsEnsureMessageFooterEl(messageEl.querySelector('.message-content'));
+    messageEl._edgeopsRunStatsTimerId = setInterval(function() {
+        edgeopsRefreshRunStatsDisplay(messageEl);
+    }, 1000);
+}
+
+function edgeopsOnChatStreamRunStats(replyMsgEl, ev) {
+    if (!replyMsgEl || !ev || !ev.run_stats) return;
+    edgeopsUpdateRunStats(replyMsgEl, ev.run_stats);
+}
+
+function edgeopsRenderMessageBubble(contentHtml, createdAt, runStats) {
     var ts = edgeopsFormatChatTimestamp(createdAt);
-    return '<div class="message-content"><div class="message-body">' + contentHtml + '</div><div class="message-time">' + esc(ts) + '</div></div>';
+    return '<div class="message-content"><div class="message-body">' + contentHtml + '</div>' + edgeopsRenderMessageFooter(ts, runStats) + '</div>';
 }
 
 /** 取聊天记录容器内最后一个真正在流式中的 .ai-reply-stream 气泡。
@@ -2304,6 +2433,31 @@ function edgeopsExtractToolTrace(content) {
 }
 
 /**
+ * 从持久化 assistant 内容中解析 RUN_STATS 哨兵（与 ai_agent._embed_run_stats_into_content 成对）。
+ * 返回 { cleanContent, runStats: { context_chars, context_budget, elapsed_ms } | null }
+ */
+function edgeopsExtractRunStats(content) {
+    var raw = String(content == null ? '' : content);
+    if (!raw || raw.indexOf('<!-- EDGEOPS:RUN_STATS:v1 ') < 0) {
+        return { cleanContent: raw, runStats: null };
+    }
+    var pattern = /<!--\s*EDGEOPS:RUN_STATS:v1\s+([A-Za-z0-9+/=]+)\s*-->/g;
+    var runStats = null;
+    var cleaned = raw.replace(pattern, function(_m, b64) {
+        try {
+            var bin = atob(b64);
+            var bytes = new Uint8Array(bin.length);
+            for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            var json = new TextDecoder('utf-8').decode(bytes);
+            var obj = JSON.parse(json);
+            if (obj) runStats = obj;
+        } catch (e) { /* ignore */ }
+        return '';
+    });
+    return { cleanContent: cleaned.replace(/\s+$/, ''), runStats: runStats };
+}
+
+/**
  * 调用流程已结束：把 CoT 面板收到「已完成」并默认折叠（仍在 DOM 中，可点击展开）。
  */
 function edgeopsCotCollapsePanelAfterStream(toolsEl) {
@@ -2847,14 +3001,16 @@ function edgeopsRenderSessionMessages(box, msgs, formatter, sessionId, options) 
         if (m && m.role === 'assistant') {
             var extracted = edgeopsExtractUIActions(raw);
             var extractedT = edgeopsExtractToolTrace(extracted.cleanContent);
+            var extractedR = edgeopsExtractRunStats(extractedT.cleanContent);
             return {
                 raw: raw,
-                clean: stripThinkTags(extractedT.cleanContent),
+                clean: stripThinkTags(extractedR.cleanContent),
                 uiActions: extracted.uiActions,
                 toolTrace: extractedT.toolTrace,
+                runStats: extractedR.runStats,
             };
         }
-        return { raw: raw, clean: raw, uiActions: [], toolTrace: null };
+        return { raw: raw, clean: raw, uiActions: [], toolTrace: null, runStats: null };
     });
     box.innerHTML = list.map(function(m, idx) {
         var p = perMsg[idx];
@@ -2866,7 +3022,7 @@ function edgeopsRenderSessionMessages(box, msgs, formatter, sessionId, options) 
                 + '<div class="message-content"><div class="ai-reply-stream ai-reply-persisted">'
                 + '<div class="ai-reply-tools"></div>'
                 + '<div class="ai-reply-text message-body">' + formatter(p.clean) + '</div>'
-                + '</div><div class="message-time">' + esc(tsP) + '</div></div></div>';
+                + '</div>' + edgeopsRenderMessageFooter(tsP, p.runStats) + '</div></div>';
         }
         if (m && m.role === 'user') {
             var userAttachments = edgeopsParseAttachmentsFromUserContent(p.raw);
@@ -2877,7 +3033,7 @@ function edgeopsRenderSessionMessages(box, msgs, formatter, sessionId, options) 
             }
             return '<div class="chat-message user"' + sidAttr + midAttr + '><div class="avatar">U</div>' + edgeopsRenderMessageBubble(userBody, m && m.created_at) + '</div>';
         }
-        return '<div class="chat-message ' + (m.role || 'assistant') + '"' + sidAttr + midAttr + '><div class="avatar">' + ((m && m.role) === 'user' ? 'U' : 'A') + '</div>' + edgeopsRenderMessageBubble(formatter(p.clean), m && m.created_at) + '</div>';
+        return '<div class="chat-message ' + (m.role || 'assistant') + '"' + sidAttr + midAttr + '><div class="avatar">' + ((m && m.role) === 'user' ? 'U' : 'A') + '</div>' + edgeopsRenderMessageBubble(formatter(p.clean), m && m.created_at, p.runStats) + '</div>';
     }).join('');
     var lastUnansweredAssistantNode = null;
     var lastUnansweredHadCard = false;
@@ -4523,12 +4679,14 @@ function stripThinkTags(text) {
     var reUnclosed = new RegExp('</think>[\\s\\S]*$', 'gi');
     var reUIAction = /<!--\s*EDGEOPS:UI_ACTION:v1\s+[A-Za-z0-9+/=]+\s*-->/g;
     var reToolTrace = /<!--\s*EDGEOPS:TOOL_TRACE:v1\s+[A-Za-z0-9+/=]+\s*-->/g;
+    var reRunStats = /<!--\s*EDGEOPS:RUN_STATS:v1\s+[A-Za-z0-9+/=]+\s*-->/g;
     return edgeopsApplyLeakedToolMarkupSanitize(
         text
             .replace(reBlock, '')
             .replace(reUnclosed, '')
             .replace(reUIAction, '')
             .replace(reToolTrace, '')
+            .replace(reRunStats, '')
     ).trim();
 }
 
@@ -7254,6 +7412,7 @@ function edgeopsFinalizeAssistantStreamReply(opts) {
         edgeopsHydrateChatDiagrams(replyWrap);
         if (typeof edgeopsEnhanceChatMessageArtifacts === 'function') edgeopsEnhanceChatMessageArtifacts(replyWrap);
         replyWrap._edgeopsStreamEndPhase = endPhase;
+        edgeopsStopRunStatsTracking(replyMsgEl);
         return endPhase;
     }
     var finalText = edgeopsFinalAssistantText(streamedText, hasTools);
@@ -7268,6 +7427,7 @@ function edgeopsFinalizeAssistantStreamReply(opts) {
     edgeopsHydrateChatDiagrams(replyWrap);
     if (typeof edgeopsEnhanceChatMessageArtifacts === 'function') edgeopsEnhanceChatMessageArtifacts(replyWrap);
     replyWrap._edgeopsStreamEndPhase = endPhase;
+    edgeopsStopRunStatsTracking(replyMsgEl);
     return endPhase;
 }
 
@@ -8355,7 +8515,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         var userBubble = edgeopsRenderMessageBubble(fmtMd(msg) + edgeopsRenderAttachmentsInline(attachments), now);
         box.insertAdjacentHTML('beforeend', '<div class="chat-message user"><div class="avatar">U</div>' + userBubble + '</div>');
         if (hostAiAttachCtl) hostAiAttachCtl.clear();
-        box.insertAdjacentHTML('beforeend', '<div class="chat-message assistant"><div class="avatar">A</div><div class="message-content"><div class="ai-reply-stream"><div class="ai-reply-tools"></div><div class="ai-reply-text"></div></div><div class="message-time">' + esc(nowTs) + '</div></div></div>');
+        box.insertAdjacentHTML('beforeend', '<div class="chat-message assistant"><div class="avatar">A</div><div class="message-content"><div class="ai-reply-stream"><div class="ai-reply-tools"></div><div class="ai-reply-text"></div></div>' + edgeopsRenderMessageFooter(nowTs) + '</div></div>');
         edgeopsHydrateChatDiagrams(box);
         if (wasNearBottom) edgeopsScrollChatMessagesToBottom(box);
         else edgeopsScrollChatToBottomStepIfPinned(box);
@@ -8365,6 +8525,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         var textEl = replyWrap.querySelector('.ai-reply-text');
         var replyMsgEl = replyWrap.closest('.chat-message');
         edgeopsInitStreamReplyState(replyWrap, msg);
+        edgeopsInitRunStatsTracking(replyMsgEl);
         edgeopsSetMessagePersistenceMeta(replyMsgEl, sessionId, null, '');
         edgeopsCotEnsureThinkingPlaceholder(toolsEl);
         if (wasNearBottom) edgeopsScrollChatMessagesToBottom(box);
@@ -8389,6 +8550,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         try { edgeopsClearUIActionCache(sessionId); } catch (_e) {}
         API.chatStream(msg, sessionId, function(ev) {
             if (ev.session_id != null) { sessionId = ev.session_id; edgeopsSetMessagePersistenceMeta(replyMsgEl, sessionId, null, replyMsgEl && replyMsgEl._edgeopsPersistContent); }
+            edgeopsOnChatStreamRunStats(replyMsgEl, ev);
             if (ev.ui_action) {
                 if (ev.ui_action.action === 'ask_user_choice') {
                     var _dupFp = edgeopsChoiceCardFingerprint(ev.ui_action);
@@ -10551,7 +10713,7 @@ function renderAIPage() {
         var userBubble = edgeopsRenderMessageBubble(fmtMd(msg) + edgeopsRenderAttachmentsInline(attachments), now);
         box.insertAdjacentHTML('beforeend', '<div class="chat-message user"><div class="avatar">U</div>' + userBubble + '</div>');
         if (aiAttachCtl) aiAttachCtl.clear();
-        box.insertAdjacentHTML('beforeend', '<div class="chat-message assistant"><div class="avatar">A</div><div class="message-content"><div class="ai-reply-stream"><div class="ai-reply-tools"></div><div class="ai-reply-text"></div></div><div class="message-time">' + esc(nowTs) + '</div></div></div>');
+        box.insertAdjacentHTML('beforeend', '<div class="chat-message assistant"><div class="avatar">A</div><div class="message-content"><div class="ai-reply-stream"><div class="ai-reply-tools"></div><div class="ai-reply-text"></div></div>' + edgeopsRenderMessageFooter(nowTs) + '</div></div>');
         edgeopsHydrateChatDiagrams(box);
         if (wasNearBottom) edgeopsScrollChatMessagesToBottom(box);
         else edgeopsScrollChatToBottomStepIfPinned(box);
@@ -10561,6 +10723,7 @@ function renderAIPage() {
         var textEl = replyWrap.querySelector('.ai-reply-text');
         var replyMsgEl = replyWrap.closest('.chat-message');
         edgeopsInitStreamReplyState(replyWrap, msg);
+        edgeopsInitRunStatsTracking(replyMsgEl);
         edgeopsSetMessagePersistenceMeta(replyMsgEl, sessionId, null, '');
         edgeopsCotEnsureThinkingPlaceholder(toolsEl);
         if (wasNearBottom) edgeopsScrollChatMessagesToBottom(box);
@@ -10585,6 +10748,7 @@ function renderAIPage() {
         try { edgeopsClearUIActionCache(sessionId); } catch (_e) {}
         API.chatStream(msg, sessionId, function(ev) {
             if (ev.session_id != null) { sessionId = ev.session_id; edgeopsSetMessagePersistenceMeta(replyMsgEl, sessionId, null, replyMsgEl && replyMsgEl._edgeopsPersistContent); }
+            edgeopsOnChatStreamRunStats(replyMsgEl, ev);
             if (ev.ui_action) {
                 if (ev.ui_action.action === 'ask_user_choice') {
                     var _dupFp2 = edgeopsChoiceCardFingerprint(ev.ui_action);
@@ -15233,7 +15397,7 @@ function renderLocalPage() {
         var userBubble = edgeopsRenderMessageBubble(fmtMdLocal(msg) + edgeopsRenderAttachmentsInline(attachments), now);
         box.insertAdjacentHTML('beforeend', '<div class="chat-message user"><div class="avatar">U</div>' + userBubble + '</div>');
         if (localAiAttachCtl) localAiAttachCtl.clear();
-        box.insertAdjacentHTML('beforeend', '<div class="chat-message assistant"><div class="avatar">A</div><div class="message-content"><div class="ai-reply-stream"><div class="ai-reply-tools"></div><div class="ai-reply-text"></div></div><div class="message-time">' + esc(nowTs) + '</div></div></div>');
+        box.insertAdjacentHTML('beforeend', '<div class="chat-message assistant"><div class="avatar">A</div><div class="message-content"><div class="ai-reply-stream"><div class="ai-reply-tools"></div><div class="ai-reply-text"></div></div>' + edgeopsRenderMessageFooter(nowTs) + '</div></div>');
         edgeopsHydrateChatDiagrams(box);
         if (wasNearBottom) edgeopsScrollChatMessagesToBottom(box);
         else edgeopsScrollChatToBottomStepIfPinned(box);
@@ -15243,6 +15407,7 @@ function renderLocalPage() {
         var textEl = replyWrap.querySelector('.ai-reply-text');
         var replyMsgEl = replyWrap.closest('.chat-message');
         edgeopsInitStreamReplyState(replyWrap, msg);
+        edgeopsInitRunStatsTracking(replyMsgEl);
         edgeopsSetMessagePersistenceMeta(replyMsgEl, currentSessionId, null, '');
         edgeopsCotEnsureThinkingPlaceholder(toolsEl);
         if (wasNearBottom) edgeopsScrollChatMessagesToBottom(box);
@@ -15266,6 +15431,7 @@ function renderLocalPage() {
         try { edgeopsClearUIActionCache(currentSessionId); } catch (_e) {}
         API.chatStream(msg, currentSessionId, function(ev) {
             if (ev.session_id != null) { currentSessionId = ev.session_id; edgeopsSetMessagePersistenceMeta(replyMsgEl, currentSessionId, null, replyMsgEl && replyMsgEl._edgeopsPersistContent); }
+            edgeopsOnChatStreamRunStats(replyMsgEl, ev);
             if (ev.ui_action && ev.ui_action.action === 'ask_user_choice') {
                 var _dupFp3 = edgeopsChoiceCardFingerprint(ev.ui_action);
                 if (_dupFp3 && replyMsgEl && replyMsgEl._edgeopsLastStreamChoiceFp === _dupFp3) {
