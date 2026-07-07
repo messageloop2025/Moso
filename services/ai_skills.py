@@ -2329,6 +2329,101 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "http_request",
+            "description": (
+                "发起 **HTTP/HTTPS 出站请求**（GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS）。"
+                "适合调用 REST API、Webhook、健康检查、提交 JSON 等。**非流式**，响应体有字节上限；超大响应请改用 `http_download` 落盘。\n\n"
+                "**安全**：默认禁止访问内网/本机地址（SSRF 防护）；默认仅 HTTPS，明文 HTTP 需环境变量放行。\n"
+                "**body_encoding**：`text`（默认）| `json` | `base64`（二进制）。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "method": {
+                        "type": "string",
+                        "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+                        "description": "HTTP 方法，默认 GET",
+                    },
+                    "url": {"type": "string", "description": "完整 URL（http:// 或 https://）"},
+                    "headers": {"type": "object", "description": "请求头键值对"},
+                    "query": {"type": "object", "description": "URL 查询参数（追加到 url）"},
+                    "body": {"type": "string", "description": "请求体（GET/HEAD/OPTIONS 忽略）"},
+                    "body_encoding": {
+                        "type": "string",
+                        "enum": ["text", "json", "base64"],
+                        "description": "请求体编码，默认 text",
+                    },
+                    "timeout": {"type": "integer", "description": "超时秒数，默认 60，最大 600"},
+                    "max_response_bytes": {"type": "integer", "description": "响应体字节上限，默认与系统配置一致"},
+                    "follow_redirects": {"type": "boolean", "description": "是否跟随重定向，默认 true"},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "http_download",
+            "description": (
+                "从 **HTTP/HTTPS URL 下载文件**到**当前用户文件系统工作区**（流式落盘，调用卡显示进度，用户可点停止取消）。\n\n"
+                "**默认 session_managed**：`local_path` 写逻辑短名 → 归位 `chats/<UTC>/` 并加 UUID；"
+                "完整相对路径（`scripts/…`、`exchange/…`）→ 精确落盘。\n"
+                "**禁止** OS 绝对路径。受 `max_bytes` 与系统下载上限约束。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "下载 URL"},
+                    "local_path": {"type": "string", "description": "相对工作区根的保存路径"},
+                    "headers": {"type": "object", "description": "可选请求头"},
+                    "session_managed": {
+                        "type": "boolean",
+                        "description": "默认 true：归位 chats/<UTC>/；false：按 local_path 精确落盘",
+                    },
+                    "max_bytes": {"type": "integer", "description": "单文件字节上限"},
+                    "timeout": {"type": "integer", "description": "超时秒数，默认 60，最大 600"},
+                    "follow_redirects": {"type": "boolean", "description": "是否跟随重定向，默认 true"},
+                },
+                "required": ["url", "local_path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "http_upload",
+            "description": (
+                "从**用户文件系统工作区**上传文件到 **HTTP/HTTPS URL**（流式上传，调用卡显示进度，用户可点停止取消）。\n\n"
+                "默认 **multipart/form-data**（`field_name` 默认 file）；`multipart=false` 时以原始 body 流上传。\n"
+                "`local_path` 为**相对工作区根**的文件路径。**禁止** OS 绝对路径。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "上传目标 URL"},
+                    "local_path": {"type": "string", "description": "相对工作区根的文件路径"},
+                    "method": {
+                        "type": "string",
+                        "enum": ["POST", "PUT", "PATCH"],
+                        "description": "HTTP 方法，默认 POST",
+                    },
+                    "headers": {"type": "object", "description": "可选请求头"},
+                    "field_name": {"type": "string", "description": "multipart 字段名，默认 file"},
+                    "form_fields": {"type": "object", "description": "multipart 额外表单字段"},
+                    "content_type": {"type": "string", "description": "文件 Content-Type；multipart 时可选"},
+                    "multipart": {"type": "boolean", "description": "是否 multipart 上传，默认 true"},
+                    "timeout": {"type": "integer", "description": "超时秒数，默认 60，最大 600"},
+                    "max_bytes": {"type": "integer", "description": "单文件字节上限"},
+                    "follow_redirects": {"type": "boolean", "description": "是否跟随重定向，默认 true"},
+                },
+                "required": ["url", "local_path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "fs_list",
             "description": (
                 "列出**当前用户文件系统工作区**（侧栏「文件系统」）下的文件和子目录。"
@@ -6619,6 +6714,45 @@ def _sftp_timeout_from_args(arguments: dict, default: int = 300) -> int:
     except (TypeError, ValueError):
         timeout = default
     return max(30, min(3600, timeout))
+
+
+def _http_timeout_from_args(arguments: dict) -> int | None:
+    if arguments.get("timeout") is None:
+        return None
+    try:
+        timeout = int(arguments.get("timeout"))
+    except (TypeError, ValueError):
+        return None
+    return max(5, min(timeout, int(getattr(config, "HTTP_TOOL_MAX_TIMEOUT_SEC", 600))))
+
+
+def _http_result_payload(result) -> dict:
+    out: dict = {
+        "success": result.success,
+        "url": result.url,
+        "duration_sec": result.duration_sec,
+    }
+    if result.status_code is not None:
+        out["status_code"] = result.status_code
+    if result.response_headers:
+        out["headers"] = result.response_headers
+    if result.content_type:
+        out["content_type"] = result.content_type
+    if result.body_text is not None:
+        out["body"] = result.body_text
+    if result.body_base64 is not None:
+        out["body_base64"] = result.body_base64
+    if result.bytes_transferred:
+        out["bytes_transferred"] = result.bytes_transferred
+    if result.local_path:
+        out["local_path"] = result.local_path
+    if result.truncated:
+        out["truncated"] = True
+    if result.interrupted:
+        out["interrupted"] = True
+    if result.error:
+        out["error"] = result.error
+    return out
 
 
 async def _probe_remote_path_kind(host_row: dict, auth: dict, remote_path: str) -> tuple[str | None, str, str, int]:
@@ -12028,6 +12162,120 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 },
                 ensure_ascii=False,
             )
+
+        if name == "http_request":
+            from services.http_transfer import http_request_async
+
+            url = (arguments.get("url") or "").strip()
+            if not url:
+                return json.dumps({"success": False, "error": "需要 url"}, ensure_ascii=False)
+            method = (arguments.get("method") or "GET").strip().upper()
+            result = await http_request_async(
+                method=method,
+                url=url,
+                headers=arguments.get("headers"),
+                query=arguments.get("query"),
+                body=arguments.get("body"),
+                body_encoding=(arguments.get("body_encoding") or "text"),
+                timeout=_http_timeout_from_args(arguments),
+                max_response_bytes=arguments.get("max_response_bytes"),
+                follow_redirects=arguments.get("follow_redirects") is not False,
+                stream_callback=stream_callback,
+                cancel_event=transfer_cancel_event,
+            )
+            return json.dumps(_http_result_payload(result), ensure_ascii=False)
+
+        if name == "http_download":
+            from services.http_transfer import http_download_async
+
+            url = (arguments.get("url") or "").strip()
+            raw_local_requested = (arguments.get("local_path") or "").strip()
+            if not url or not raw_local_requested:
+                return json.dumps(
+                    {"success": False, "error": "需要 url 和 local_path（相对工作区根的路径）"},
+                    ensure_ascii=False,
+                )
+            cap = int(getattr(config, "HTTP_TOOL_MAX_DOWNLOAD_BYTES", 200 * 1024 * 1024))
+            try:
+                max_bytes = int(arguments.get("max_bytes") or cap)
+            except (TypeError, ValueError):
+                max_bytes = cap
+            max_bytes = max(1024, min(max_bytes, cap))
+            local_path = _normalize_sftp_pull_local_path(
+                raw_local_requested,
+                url,
+                as_directory=False,
+                session_managed=_effective_session_managed(arguments, raw_local_requested),
+            )
+            try:
+                base = get_user_fs_root(user)
+                path_obj = resolve_fs_path(local_path, base)
+            except ValueError as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+            path_obj = path_obj.resolve()
+            try:
+                path_obj.relative_to(base.resolve())
+            except ValueError:
+                return json.dumps({"success": False, "error": "local_path 越界"}, ensure_ascii=False)
+            result = await http_download_async(
+                url=url,
+                local_path=path_obj,
+                headers=arguments.get("headers"),
+                timeout=_http_timeout_from_args(arguments),
+                max_bytes=max_bytes,
+                follow_redirects=arguments.get("follow_redirects") is not False,
+                stream_callback=stream_callback,
+                cancel_event=transfer_cancel_event,
+            )
+            payload = _http_result_payload(result)
+            if result.success:
+                payload["message"] = f"已保存到工作区:{local_path}"
+                payload["requested_local_path"] = raw_local_requested
+            return json.dumps(payload, ensure_ascii=False)
+
+        if name == "http_upload":
+            from services.http_transfer import http_upload_async
+
+            url = (arguments.get("url") or "").strip()
+            local_path = (arguments.get("local_path") or "").strip()
+            if not url or not local_path:
+                return json.dumps(
+                    {"success": False, "error": "需要 url 和 local_path（相对工作区根的文件路径）"},
+                    ensure_ascii=False,
+                )
+            cap = int(getattr(config, "HTTP_TOOL_MAX_UPLOAD_BYTES", 200 * 1024 * 1024))
+            try:
+                max_bytes = int(arguments.get("max_bytes") or cap)
+            except (TypeError, ValueError):
+                max_bytes = cap
+            max_bytes = max(1024, min(max_bytes, cap))
+            try:
+                base = get_user_fs_root(user)
+                path_obj = resolve_fs_path(local_path, base).resolve()
+                path_obj.relative_to(base.resolve())
+            except ValueError as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+            if not path_obj.is_file():
+                return json.dumps({"success": False, "error": f"本地文件不存在: {local_path}"}, ensure_ascii=False)
+            result = await http_upload_async(
+                url=url,
+                local_path=path_obj,
+                method=(arguments.get("method") or "POST"),
+                headers=arguments.get("headers"),
+                field_name=(arguments.get("field_name") or "file"),
+                form_fields=arguments.get("form_fields"),
+                content_type=arguments.get("content_type"),
+                timeout=_http_timeout_from_args(arguments),
+                max_bytes=max_bytes,
+                follow_redirects=arguments.get("follow_redirects") is not False,
+                multipart=arguments.get("multipart") is not False,
+                stream_callback=stream_callback,
+                cancel_event=transfer_cancel_event,
+            )
+            payload = _http_result_payload(result)
+            if result.success:
+                payload["message"] = f"已上传 {local_path}"
+            return json.dumps(payload, ensure_ascii=False)
 
         if name == "ask_user_choice":
             question = (arguments.get("question") or "").strip()

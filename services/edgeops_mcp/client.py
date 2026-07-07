@@ -693,6 +693,122 @@ class EdgeOpsRestClient:
             timeout=SHORT_TIMEOUT,
         )
 
+    async def http_request(
+        self,
+        *,
+        url: str,
+        method: str = "GET",
+        headers: dict[str, Any] | None = None,
+        query: dict[str, Any] | None = None,
+        body: str | None = None,
+        body_encoding: str = "text",
+        timeout: int | None = None,
+        max_response_bytes: int | None = None,
+        follow_redirects: bool = True,
+        session_id: int | None = None,
+    ) -> Any:
+        payload: dict[str, Any] = {
+            "url": url,
+            "method": method,
+            "body_encoding": body_encoding,
+            "follow_redirects": follow_redirects,
+        }
+        if headers:
+            payload["headers"] = headers
+        if query:
+            payload["query"] = query
+        if body is not None:
+            payload["body"] = body
+        if timeout is not None:
+            payload["timeout"] = timeout
+        if max_response_bytes is not None:
+            payload["max_response_bytes"] = max_response_bytes
+        if session_id is not None:
+            payload["session_id"] = session_id
+        return await self._request(
+            "POST",
+            "/api/integration/mcp/http-request",
+            json_body=payload,
+            timeout=httpx.Timeout(float(timeout or 120), connect=30.0),
+        )
+
+    async def http_download(
+        self,
+        *,
+        url: str,
+        local_path: str,
+        headers: dict[str, Any] | None = None,
+        session_managed: bool | None = None,
+        max_bytes: int | None = None,
+        timeout: int | None = None,
+        follow_redirects: bool = True,
+        session_id: int | None = None,
+    ) -> Any:
+        payload: dict[str, Any] = {
+            "url": url,
+            "local_path": local_path,
+            "follow_redirects": follow_redirects,
+        }
+        if headers:
+            payload["headers"] = headers
+        if session_managed is not None:
+            payload["session_managed"] = session_managed
+        if max_bytes is not None:
+            payload["max_bytes"] = max_bytes
+        if timeout is not None:
+            payload["timeout"] = timeout
+        if session_id is not None:
+            payload["session_id"] = session_id
+        return await self._request(
+            "POST",
+            "/api/integration/mcp/http-download",
+            json_body=payload,
+            timeout=httpx.Timeout(float(timeout or 600), connect=30.0),
+        )
+
+    async def http_upload(
+        self,
+        *,
+        url: str,
+        local_path: str,
+        method: str = "POST",
+        headers: dict[str, Any] | None = None,
+        field_name: str = "file",
+        form_fields: dict[str, Any] | None = None,
+        content_type: str | None = None,
+        multipart: bool = True,
+        max_bytes: int | None = None,
+        timeout: int | None = None,
+        follow_redirects: bool = True,
+        session_id: int | None = None,
+    ) -> Any:
+        payload: dict[str, Any] = {
+            "url": url,
+            "local_path": local_path,
+            "method": method,
+            "field_name": field_name,
+            "multipart": multipart,
+            "follow_redirects": follow_redirects,
+        }
+        if headers:
+            payload["headers"] = headers
+        if form_fields:
+            payload["form_fields"] = form_fields
+        if content_type:
+            payload["content_type"] = content_type
+        if max_bytes is not None:
+            payload["max_bytes"] = max_bytes
+        if timeout is not None:
+            payload["timeout"] = timeout
+        if session_id is not None:
+            payload["session_id"] = session_id
+        return await self._request(
+            "POST",
+            "/api/integration/mcp/http-upload",
+            json_body=payload,
+            timeout=httpx.Timeout(float(timeout or 600), connect=30.0),
+        )
+
 
 def create_client(*, ctx: Any | None = None) -> EdgeOpsRestClient:
     token = resolve_access_token(ctx)

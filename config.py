@@ -9,7 +9,7 @@ PRODUCT_NAME_ZH = "毛竹"
 PRODUCT_NAME_EN = "Moso"
 PRODUCT_DISPLAY = f"{PRODUCT_NAME_ZH}（{PRODUCT_NAME_EN}）"  # AI 提示词中的产品指称
 
-VERSION = os.getenv("EDGEOPS_VERSION", "1.7.2")
+VERSION = os.getenv("EDGEOPS_VERSION", "1.7.3")
 
 # 数据库 / Database
 DATABASE_PATH = os.getenv("EDGEOPS_DB", str(BASE_DIR / "edgeops.db"))
@@ -276,6 +276,24 @@ MCP_REMOTE_FETCH_MAX_BYTES = int(
     os.getenv("EDGEOPS_MCP_REMOTE_FETCH_MAX_BYTES", str(20 * 1024 * 1024))
 )
 MCP_REMOTE_FETCH_MAX_URLS = int(os.getenv("EDGEOPS_MCP_REMOTE_FETCH_MAX_URLS", "5"))
+
+# AI HTTP 出站工具（http_request / http_download / http_upload）
+HTTP_TOOL_ENABLED = os.getenv("EDGEOPS_HTTP_TOOL_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+HTTP_TOOL_ALLOW_INSECURE = os.getenv("EDGEOPS_HTTP_TOOL_ALLOW_INSECURE", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+HTTP_TOOL_SSRF_BLOCK_PRIVATE = os.getenv("EDGEOPS_HTTP_TOOL_SSRF_BLOCK_PRIVATE", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+HTTP_TOOL_DEFAULT_TIMEOUT_SEC = int(os.getenv("EDGEOPS_HTTP_TOOL_DEFAULT_TIMEOUT_SEC", "60"))
+HTTP_TOOL_MAX_TIMEOUT_SEC = int(os.getenv("EDGEOPS_HTTP_TOOL_MAX_TIMEOUT_SEC", "600"))
+HTTP_TOOL_MAX_RESPONSE_BYTES = int(os.getenv("EDGEOPS_HTTP_TOOL_MAX_RESPONSE_BYTES", str(5 * 1024 * 1024)))
+HTTP_TOOL_MAX_DOWNLOAD_BYTES = int(os.getenv("EDGEOPS_HTTP_TOOL_MAX_DOWNLOAD_BYTES", str(200 * 1024 * 1024)))
+HTTP_TOOL_MAX_UPLOAD_BYTES = int(os.getenv("EDGEOPS_HTTP_TOOL_MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
 # 反向代理后保留 X-Forwarded-Proto（避免 /mcp 等重定向降级为 http）
 TRUST_PROXY_HEADERS = os.getenv("EDGEOPS_TRUST_PROXY_HEADERS", "true").strip().lower() in ("1", "true", "yes")
 TRUSTED_PROXY_HOSTS = os.getenv("EDGEOPS_TRUSTED_PROXY_HOSTS", "*").strip() or "*"

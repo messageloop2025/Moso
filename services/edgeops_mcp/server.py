@@ -717,3 +717,102 @@ async def edgeops_list_session_messages(
     """只读：integration / MCP 编排会话消息历史。"""
     sid = _session(session_id, ctx) or session_id
     return await _run(lambda c: c.list_session_messages(sid, limit=limit), ctx=ctx)
+
+
+@mcp.tool()
+async def edgeops_http_request(
+    url: str,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+    query: dict[str, str] | None = None,
+    body: str | None = None,
+    body_encoding: str = "text",
+    timeout: int | None = None,
+    max_response_bytes: int | None = None,
+    follow_redirects: bool = True,
+    session_id: int | None = None,
+    ctx: Context | None = None,
+) -> str:
+    """HTTP/HTTPS 出站请求（GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS）。响应体有字节上限；超大请用 http_download。"""
+    sid = _session(session_id, ctx)
+    return await _run(
+        lambda c: c.http_request(
+            url=url,
+            method=method,
+            headers=headers,
+            query=query,
+            body=body,
+            body_encoding=body_encoding,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            follow_redirects=follow_redirects,
+            session_id=sid,
+        ),
+        ctx=ctx,
+    )
+
+
+@mcp.tool()
+async def edgeops_http_download(
+    url: str,
+    local_path: str,
+    headers: dict[str, str] | None = None,
+    session_managed: bool | None = None,
+    max_bytes: int | None = None,
+    timeout: int | None = None,
+    follow_redirects: bool = True,
+    session_id: int | None = None,
+    ctx: Context | None = None,
+) -> str:
+    """从 HTTP/HTTPS URL 下载文件到用户 web/fs 工作区（流式落盘，显示进度）。"""
+    sid = _session(session_id, ctx)
+    return await _run(
+        lambda c: c.http_download(
+            url=url,
+            local_path=local_path,
+            headers=headers,
+            session_managed=session_managed,
+            max_bytes=max_bytes,
+            timeout=timeout,
+            follow_redirects=follow_redirects,
+            session_id=sid,
+        ),
+        ctx=ctx,
+    )
+
+
+@mcp.tool()
+async def edgeops_http_upload(
+    url: str,
+    local_path: str,
+    method: str = "POST",
+    headers: dict[str, str] | None = None,
+    field_name: str = "file",
+    form_fields: dict[str, str] | None = None,
+    content_type: str | None = None,
+    multipart: bool = True,
+    max_bytes: int | None = None,
+    timeout: int | None = None,
+    follow_redirects: bool = True,
+    session_id: int | None = None,
+    ctx: Context | None = None,
+) -> str:
+    """从用户 web/fs 工作区上传文件到 HTTP/HTTPS URL（流式上传，显示进度）。"""
+    sid = _session(session_id, ctx)
+    return await _run(
+        lambda c: c.http_upload(
+            url=url,
+            local_path=local_path,
+            method=method,
+            headers=headers,
+            field_name=field_name,
+            form_fields=form_fields,
+            content_type=content_type,
+            multipart=multipart,
+            max_bytes=max_bytes,
+            timeout=timeout,
+            follow_redirects=follow_redirects,
+            session_id=sid,
+        ),
+        ctx=ctx,
+    )

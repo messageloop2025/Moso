@@ -172,6 +172,19 @@
 | build_scp_transfer_script | 生成在源主机 A 上执行的 `scp -C` 推送脚本（A→B），仅生成不执行；用于跨主机直连方案 | source_host_id, source_path, target_host_id, target_path, compress? |
 | transfer_file_between_hosts | 自动跨主机传输：先探测 A↔B 22 端口可达性，按 [scp, rsync, sshfs] 顺序尝试直连；全部失败时自动回退到 毛竹 `web/fs` 中转 | source_host_id, source_path, target_host_id, target_path, methods?, edgeops_base_url?, ttl_seconds?, keep_staging_for_multi_target?, auto_unpack_on_target?, transfer_timeout_seconds? |
 | relay_file_between_hosts | 经 毛竹 `web/fs` 中转：A 用 curl 上传 → B 用 curl 下载；自动签发短时效 API key，完成后默认撤销 key 并删除中转文件；目录会先在 A 上打 .tgz 再传 | source_host_id, source_path, target_host_id, target_path, edgeops_base_url?, staging_path?, ttl_seconds?, keep_staging_for_multi_target?, auto_unpack_on_target?, cleanup_staging?, revoke_token_on_finish? |
+
+### 7.0 HTTP 出站（毛竹服务器 → 外网）
+
+从毛竹进程向外发 HTTP/HTTPS（非 SSH 主机上的 curl）。**`http_request` 支持 GET/POST 及自定义 `headers`**，一般 API 调用够用；大文件用下载/上传工具。
+
+| 名称 | 说明 | 主要参数 |
+|------|------|----------|
+| http_request | HTTP/HTTPS 请求：GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS；可设 **headers**、query、body（text/json/base64） | url, method?, **headers?**, query?, body?, body_encoding?, timeout?, max_response_bytes? |
+| http_download | 从 URL 流式下载到用户 web/fs；进度条；Web 可停止取消 | url, local_path, **headers?**, session_managed?, max_bytes?, timeout? |
+| http_upload | 从 web/fs 流式上传到 URL（multipart 或 raw）；进度条；可取消 | url, local_path, method?, **headers?**, field_name?, form_fields?, multipart?, max_bytes?, timeout? |
+
+MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_upload`。默认禁止内网 SSRF；明文 HTTP 需 `EDGEOPS_HTTP_TOOL_ALLOW_INSECURE=true`。
+
 | fs_list | 列出 **web/fs/当前用户名** 下某目录的文件与子目录（作用范围 per-user） | path? |
 | fs_read_file | 读取 **web/fs/当前用户名** 下文本文件内容 | path |
 | fs_write_file | 向 **web/fs/当前用户名** 写入文本文件 | path, content |

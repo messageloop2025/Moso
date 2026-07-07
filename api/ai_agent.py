@@ -6701,6 +6701,8 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                     "scp_pull",
                                     "relay_file_between_hosts",
                                     "transfer_file_between_hosts",
+                                    "http_download",
+                                    "http_upload",
                                 }
                                 _transfer_cancel = (
                                     threading.Event()
@@ -6709,6 +6711,8 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                         "scp_pull",
                                         "relay_file_between_hosts",
                                         "transfer_file_between_hosts",
+                                        "http_download",
+                                        "http_upload",
                                     )
                                     else None
                                 )

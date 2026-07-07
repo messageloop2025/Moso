@@ -895,6 +895,27 @@ body：`text`
 
 代理 `/api/remote-fs`（无 web/fs 本地路径依赖）。
 
+### POST /integration/mcp/http-request
+
+等同 MCP 工具 `edgeops_http_request` / AI 技能 `http_request`。从毛竹服务器向外发起 HTTP/HTTPS 请求。
+
+**请求体**：`url`（必填）、`method?`（默认 `GET`；支持 GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS）、`headers?`（对象，自定义 HTTP 头）、`query?`、`body?`、`body_encoding?`（`text` | `json` | `base64`）、`timeout?`、`max_response_bytes?`、`follow_redirects?`、`session_id?`  
+**响应**：`success`、`status_code`、`headers`、响应体（`body` 或 `body_base64`）；过大时 `truncated: true`。
+
+### POST /integration/mcp/http-download
+
+等同 `edgeops_http_download` / `http_download`。从 URL 流式下载到用户 `web/fs`（进度条；Web 聊天可停止取消）。
+
+**请求体**：`url`、`local_path`（相对工作区）、`headers?`、`session_managed?`、`max_bytes?`、`timeout?`、`follow_redirects?`、`session_id?`
+
+### POST /integration/mcp/http-upload
+
+等同 `edgeops_http_upload` / `http_upload`。从用户 `web/fs` 流式上传到 URL（multipart 或 raw body；进度条；可取消）。
+
+**请求体**：`url`、`local_path`、`method?`（默认 POST）、`headers?`、`field_name?`、`form_fields?`、`content_type?`、`multipart?`、`max_bytes?`、`timeout?`、`follow_redirects?`、`session_id?`
+
+**安全（默认）**：SSRF 防护禁止内网/本机；仅 HTTPS（明文 HTTP 需 `EDGEOPS_HTTP_TOOL_ALLOW_INSECURE=true`）。环境变量见 [技术栈说明.md](技术栈说明.md) §5。
+
 **其它 MCP 工具**（分组、审计、batch/定时任务等）直接调用既有 REST（`/api/host-groups`、`/api/logs` 等），见 [services/edgeops_mcp/README.md](../services/edgeops_mcp/README.md)。
 
 ---

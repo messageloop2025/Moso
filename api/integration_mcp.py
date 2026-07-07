@@ -123,6 +123,45 @@ class RemoteFsWriteRequest(BaseModel):
     content: str = Field(default="")
 
 
+class HttpRequestBody(BaseModel):
+    url: str = Field(..., min_length=1)
+    method: str = Field(default="GET")
+    headers: dict[str, str] | None = None
+    query: dict[str, str] | None = None
+    body: str | None = None
+    body_encoding: str = Field(default="text")
+    timeout: int | None = Field(default=None, ge=5, le=600)
+    max_response_bytes: int | None = Field(default=None, ge=1024)
+    follow_redirects: bool = True
+    session_id: int | None = None
+
+
+class HttpDownloadBody(BaseModel):
+    url: str = Field(..., min_length=1)
+    local_path: str = Field(..., min_length=1)
+    headers: dict[str, str] | None = None
+    session_managed: bool | None = None
+    max_bytes: int | None = Field(default=None, ge=1024)
+    timeout: int | None = Field(default=None, ge=5, le=600)
+    follow_redirects: bool = True
+    session_id: int | None = None
+
+
+class HttpUploadBody(BaseModel):
+    url: str = Field(..., min_length=1)
+    local_path: str = Field(..., min_length=1)
+    method: str = Field(default="POST")
+    headers: dict[str, str] | None = None
+    field_name: str = Field(default="file")
+    form_fields: dict[str, str] | None = None
+    content_type: str | None = None
+    multipart: bool = True
+    max_bytes: int | None = Field(default=None, ge=1024)
+    timeout: int | None = Field(default=None, ge=5, le=600)
+    follow_redirects: bool = True
+    session_id: int | None = None
+
+
 @router.post("/ssh-execute", dependencies=[Depends(require_mcp_client)])
 async def mcp_ssh_execute(req: SshExecuteRequest, user=Depends(get_current_user)):
     """MCP：非交互 SSH（支持 detach / poll_log，无 Web UI）。"""
@@ -303,3 +342,80 @@ async def mcp_remote_fs_write(req: RemoteFsWriteRequest, user=Depends(get_curren
         body=WriteBody(content=req.content),
         user=user,
     )
+
+
+@router.post("/http-request", dependencies=[Depends(require_mcp_client)])
+async def mcp_http_request(req: HttpRequestBody, user=Depends(get_current_user)):
+    """MCP：HTTP/HTTPS 出站请求。"""
+    db = await get_db()
+    sid = await _ensure_mcp_runtime_session(db, user, req.session_id)
+    args: dict[str, Any] = {
+        "url": req.url,
+        "method": req.method,
+        "body_encoding": req.body_encoding,
+        "follow_redirects": req.follow_redirects,
+    }
+    if req.headers:
+        args["headers"] = req.headers
+    if req.query:
+        args["query"] = req.query
+    if req.body is not None:
+        args["body"] = req.body
+    if req.timeout is not None:
+        args["timeout"] = req.timeout
+    if req.max_response_bytes is not None:
+        args["max_response_bytes"] = req.max_response_bytes
+    out = await _tool_json("http_request", args, user, session_id=sid)
+    out["session_id"] = sid
+    return out
+
+
+@router.post("/http-download", dependencies=[Depends(require_mcp_client)])
+async def mcp_http_download(req: HttpDownloadBody, user=Depends(get_current_user)):
+    """MCP：HTTP/HTTPS 下载到用户 web/fs。"""
+    db = await get_db()
+    sid = await _ensure_mcp_runtime_session(db, user, req.session_id)
+    args: dict[str, Any] = {
+        "url": req.url,
+        "local_path": req.local_path,
+        "follow_redirects": req.follow_redirects,
+    }
+    if req.headers:
+        args["headers"] = req.headers
+    if req.session_managed is not None:
+        args["session_managed"] = req.session_managed
+    if req.max_bytes is not None:
+        args["max_bytes"] = req.max_bytes
+    if req.timeout is not None:
+        args["timeout"] = req.timeout
+    out = await _tool_json("http_download", args, user, session_id=sid)
+    out["session_id"] = sid
+    return out
+
+
+@router.post("/http-upload", dependencies=[Depends(require_mcp_client)])
+async def mcp_http_upload(req: HttpUploadBody, user=Depends(get_current_user)):
+    """MCP：从用户 web/fs 上传到 HTTP/HTTPS URL。"""
+    db = await get_db()
+    sid = await _ensure_mcp_runtime_session(db, user, req.session_id)
+    args: dict[str, Any] = {
+        "url": req.url,
+        "local_path": req.local_path,
+        "method": req.method,
+        "field_name": req.field_name,
+        "multipart": req.multipart,
+        "follow_redirects": req.follow_redirects,
+    }
+    if req.headers:
+        args["headers"] = req.headers
+    if req.form_fields:
+        args["form_fields"] = req.form_fields
+    if req.content_type:
+        args["content_type"] = req.content_type
+    if req.max_bytes is not None:
+        args["max_bytes"] = req.max_bytes
+    if req.timeout is not None:
+        args["timeout"] = req.timeout
+    out = await _tool_json("http_upload", args, user, session_id=sid)
+    out["session_id"] = sid
+    return out

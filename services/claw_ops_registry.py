@@ -13,7 +13,7 @@ from typing import Any
 from database import get_db
 
 # manifest 版本：变更 extended_tools / system_prompt 时递增
-CAPABILITIES_VERSION = "2026062301"
+CAPABILITIES_VERSION = "2026070701"
 CLAW_OPS_PLUGIN_MIN_VERSION = "1.0.0"
 CLAW_OPS_PLUGIN_RECOMMENDED_VERSION = "1.1.0"
 
@@ -286,6 +286,69 @@ def get_extended_tools_manifest() -> list[dict[str, Any]]:
             "parameters_schema": _tool_schema(
                 {"session_id": int_opt, "limit": int_opt},
                 ["session_id"],
+            ),
+        },
+        {
+            "name": "edgeops_http_request",
+            "label": "毛竹（Moso） · HTTP 请求",
+            "description": "HTTP/HTTPS 出站请求（GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS）",
+            "timeout_ms": 600_000,
+            "parameters_schema": _tool_schema(
+                {
+                    "url": {**str_opt, "description": "完整 URL"},
+                    "method": {**str_opt, "description": "HTTP 方法，默认 GET"},
+                    "headers": {"type": "object"},
+                    "query": {"type": "object"},
+                    "body": str_opt,
+                    "body_encoding": str_opt,
+                    "timeout": int_opt,
+                    "max_response_bytes": int_opt,
+                    "follow_redirects": bool_t,
+                    "session_id": int_opt,
+                },
+                ["url"],
+            ),
+        },
+        {
+            "name": "edgeops_http_download",
+            "label": "毛竹（Moso） · HTTP 下载",
+            "description": "从 HTTP/HTTPS URL 下载到用户 web/fs（流式，显示进度）",
+            "timeout_ms": 600_000,
+            "parameters_schema": _tool_schema(
+                {
+                    "url": str_opt,
+                    "local_path": {**str_opt, "description": "相对工作区路径"},
+                    "headers": {"type": "object"},
+                    "session_managed": bool_t,
+                    "max_bytes": int_opt,
+                    "timeout": int_opt,
+                    "follow_redirects": bool_t,
+                    "session_id": int_opt,
+                },
+                ["url", "local_path"],
+            ),
+        },
+        {
+            "name": "edgeops_http_upload",
+            "label": "毛竹（Moso） · HTTP 上传",
+            "description": "从用户 web/fs 上传文件到 HTTP/HTTPS URL（流式，显示进度）",
+            "timeout_ms": 600_000,
+            "parameters_schema": _tool_schema(
+                {
+                    "url": str_opt,
+                    "local_path": {**str_opt, "description": "相对工作区文件路径"},
+                    "method": str_opt,
+                    "headers": {"type": "object"},
+                    "field_name": str_opt,
+                    "form_fields": {"type": "object"},
+                    "content_type": str_opt,
+                    "multipart": bool_t,
+                    "max_bytes": int_opt,
+                    "timeout": int_opt,
+                    "follow_redirects": bool_t,
+                    "session_id": int_opt,
+                },
+                ["url", "local_path"],
             ),
         },
     ]
@@ -583,5 +646,20 @@ async def invoke_claw_ops_tool(
             int(args["session_id"]),
             limit=int(args.get("limit") or 50),
         )
+
+    if name in ("edgeops_http_request", "edgeops_http_download", "edgeops_http_upload"):
+        internal_name = name.replace("edgeops_", "")
+        sid = await _ensure_integration_runtime_session(db, user, args.pop("session_id", None))
+        raw = await execute_tool(
+            internal_name,
+            {k: v for k, v in args.items() if v is not None},
+            user,
+            scope="default",
+            ui_capable=False,
+            session_id=sid,
+        )
+        out = json.loads(raw)
+        out["session_id"] = sid
+        return out
 
     return {"success": False, "error": f"工具 {name} 尚未实现 invoke"}
