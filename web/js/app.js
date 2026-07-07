@@ -4568,11 +4568,18 @@ function edgeopsBindDiagramBlock(block) {
 
 function edgeopsHydrateChatDiagrams(root) {
     if (!root || !root.querySelectorAll) return;
+    var box = (root.classList && root.classList.contains('chat-messages')) ? root : (root.closest ? root.closest('.chat-messages') : null);
+    var pending = [];
     root.querySelectorAll('.chat-diagram-block').forEach(function(block) {
         edgeopsBindDiagramBlock(block);
         if (block.getAttribute('data-diagram-ready')) return;
-        edgeopsRenderDiagramBlock(block);
+        pending.push(Promise.resolve(edgeopsRenderDiagramBlock(block)));
     });
+    if (pending.length && box) {
+        Promise.all(pending).finally(function() {
+            edgeopsScheduleChatScrollToBottomAfterLayout(box);
+        });
+    }
 }
 
 /** 判断聊天消息区是否贴近底部（用于「仅贴底时自动跟随滚动」）。 */
@@ -4623,7 +4630,7 @@ function edgeopsBindChatStickToBottom(box) {
 /** 程序化滚底（带标志位，避免 scroll 监听误判为用户上滑）。 */
 function edgeopsScrollChatToBottomNow(box) {
     if (!box) return;
-    box._edgeopsProgrammaticScrollUntil = Date.now() + 120;
+    box._edgeopsProgrammaticScrollUntil = Date.now() + 280;
     box._edgeopsProgrammaticScroll = true;
     try { box.scrollTop = box.scrollHeight; } catch (_e) {}
     requestAnimationFrame(function() {
@@ -4664,6 +4671,51 @@ function edgeopsStopChatStreamStickFollow(box) {
     if (box._edgeopsStreamStickFollowRaf != null) {
         try { cancelAnimationFrame(box._edgeopsStreamStickFollowRaf); } catch (_e) {}
         box._edgeopsStreamStickFollowRaf = null;
+    }
+    // 流式结束：Markdown/图表/CoT 折叠仍会改变高度，延迟对齐到底部
+    edgeopsScheduleChatScrollToBottomAfterLayout(box);
+}
+
+/** 异步布局（图表/Markdown/会话重载）后多次滚底；贴底状态下用 ResizeObserver 短暂跟随增高。 */
+function edgeopsScheduleChatScrollToBottomAfterLayout(box, opts) {
+    opts = opts || {};
+    if (!box) return;
+    if (box._edgeopsStickToBottom === false && !opts.force) return;
+    box._edgeopsStickToBottom = true;
+    function step() {
+        if (box._edgeopsStickToBottom === false && !opts.force) return;
+        edgeopsScrollChatToBottomNow(box);
+        if (!edgeopsChatIsNearBottom(box)) edgeopsScrollChatToBottomNow(box);
+    }
+    edgeopsScrollChatMessagesToBottom(box);
+    requestAnimationFrame(function() {
+        step();
+        requestAnimationFrame(step);
+    });
+    [350, 800, 1500].forEach(function(ms) {
+        setTimeout(step, ms);
+    });
+    if (typeof ResizeObserver !== 'undefined') {
+        if (box._edgeopsLayoutScrollObs) {
+            try { box._edgeopsLayoutScrollObs.disconnect(); } catch (_e) {}
+            box._edgeopsLayoutScrollObs = null;
+        }
+        if (box._edgeopsLayoutScrollObsTimer) {
+            clearTimeout(box._edgeopsLayoutScrollObsTimer);
+            box._edgeopsLayoutScrollObsTimer = null;
+        }
+        var obs = new ResizeObserver(function() {
+            if (box._edgeopsStickToBottom === false && !opts.force) return;
+            edgeopsScrollChatToBottomStepIfPinned(box);
+        });
+        try { obs.observe(box); } catch (_e) {}
+        box._edgeopsLayoutScrollObs = obs;
+        box._edgeopsLayoutScrollObsTimer = setTimeout(function() {
+            try { obs.disconnect(); } catch (_e) {}
+            if (box._edgeopsLayoutScrollObs === obs) box._edgeopsLayoutScrollObs = null;
+            box._edgeopsLayoutScrollObsTimer = null;
+            step();
+        }, opts.observeMs != null ? opts.observeMs : 2800);
     }
 }
 
@@ -4717,6 +4769,14 @@ function edgeopsScrollChatMessagesToBottom(box) {
     });
     setTimeout(_edgeopsFullScrollStep, 50);
     setTimeout(_edgeopsFullScrollStep, 200);
+    setTimeout(_edgeopsFullScrollStep, 500);
+}
+
+/** 从消息节点向上查找聊天滚动容器。 */
+function edgeopsFindChatMessagesBox(el) {
+    if (!el) return null;
+    if (el.classList && el.classList.contains('chat-messages')) return el;
+    return el.closest ? el.closest('.chat-messages') : null;
 }
 
 /** 从侧栏缓存恢复 AI/本机/主机详情聊天页时，将当前消息列表滚到底部。 */
@@ -4725,12 +4785,12 @@ function edgeopsScrollRestoredAiChatToBottom(path) {
     if (path === '/ai' || path === '/ai-mobile' || path === '/local') {
         var mid = path === '/local' ? 'localMessages' : 'aiMessages';
         var b = document.getElementById(mid);
-        if (b) edgeopsScrollChatMessagesToBottom(b);
+        if (b) edgeopsScheduleChatScrollToBottomAfterLayout(b);
         return;
     }
     if (path.indexOf('/hosts/') === 0 && path !== '/hosts') {
         var hb = document.getElementById('hostAiMessages');
-        if (hb) edgeopsScrollChatMessagesToBottom(hb);
+        if (hb) edgeopsScheduleChatScrollToBottomAfterLayout(hb);
     }
 }
 
@@ -6582,7 +6642,7 @@ function renderHostDetail(hostId) {
                 if (panel && !panel.innerHTML.trim()) initHostAIPanel(hostId, hostForAi, panel, h);
                 setTimeout(function() {
                     var msgBox = document.getElementById('hostAiMessages');
-                    if (msgBox && typeof edgeopsScrollChatMessagesToBottom === 'function') edgeopsScrollChatMessagesToBottom(msgBox);
+                    if (msgBox && typeof edgeopsScheduleChatScrollToBottomAfterLayout === 'function') edgeopsScheduleChatScrollToBottomAfterLayout(msgBox);
                 }, 0);
             }
         }
@@ -7512,6 +7572,10 @@ function edgeopsFinishChatStreamRound(opts) {
         if (typeof console !== 'undefined' && console.error) console.error('edgeopsFinishChatStreamRound', e);
     }
     edgeopsApplyStreamEndUI(endPhase, opts.setStreamingUI);
+    var msgBox = opts.messagesBox
+        || (opts.replyMsgEl && edgeopsFindChatMessagesBox(opts.replyMsgEl))
+        || (opts.replyWrap && edgeopsFindChatMessagesBox(opts.replyWrap));
+    if (msgBox) edgeopsScheduleChatScrollToBottomAfterLayout(msgBox);
     return endPhase;
 }
 
@@ -8534,7 +8598,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
                 onChoice: function(text) { edgeopsTriggerChatSend('hostAiInput', 'hostAiSend', text); }
             });
             edgeopsHydrateChatDiagrams(box);
-            edgeopsScrollChatMessagesToBottom(box);
+            edgeopsScheduleChatScrollToBottomAfterLayout(box);
         }).catch(function(err) {
             showToast((err && err.message) || t('toast.requestFailed'), 'error');
         });
@@ -8949,7 +9013,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
             loadSession(sessionId); loadSessions();
             requestAnimationFrame(function() {
                 var _boxF = document.getElementById('hostAiMessages');
-                if (_boxF) edgeopsScrollChatMessagesToBottom(_boxF);
+                if (_boxF) edgeopsScheduleChatScrollToBottomAfterLayout(_boxF);
             });
         }).catch(function(err) {
             edgeopsMarkOpenToolRowsFailed(toolsEl, hostAiLogBuffer, renderHostAiLog);
@@ -10930,7 +10994,7 @@ function renderAIPage() {
                 onChoice: function(text) { edgeopsTriggerChatSend('aiInput', 'aiSend', text); }
             });
             edgeopsHydrateChatDiagrams(box);
-            edgeopsScrollChatMessagesToBottom(box);
+            edgeopsScheduleChatScrollToBottomAfterLayout(box);
         }).catch(function(err) {
             showToast((err && err.message) || t('toast.requestFailed'), 'error');
         });
@@ -11137,7 +11201,7 @@ function renderAIPage() {
             loadSessions();
             requestAnimationFrame(function() {
                 var _boxF = document.getElementById('aiMessages');
-                if (_boxF) edgeopsScrollChatMessagesToBottom(_boxF);
+                if (_boxF) edgeopsScheduleChatScrollToBottomAfterLayout(_boxF);
             });
         }).catch(function(err) {
             edgeopsMarkOpenToolRowsFailed(toolsEl, aiLogBuffer, renderAiLog);
@@ -15479,7 +15543,7 @@ function renderLocalPage() {
                 onChoice: function(text) { edgeopsTriggerChatSend('localInput', 'localSend', text); }
             });
             edgeopsHydrateChatDiagrams(box);
-            edgeopsScrollChatMessagesToBottom(box);
+            edgeopsScheduleChatScrollToBottomAfterLayout(box);
         }).catch(function(err) { showToast(err.message, 'error'); });
     }
     (function() {
@@ -15882,7 +15946,7 @@ function renderLocalPage() {
             loadLocalSessions();
             requestAnimationFrame(function() {
                 var _bL = document.getElementById('localMessages');
-                if (_bL) edgeopsScrollChatMessagesToBottom(_bL);
+                if (_bL) edgeopsScheduleChatScrollToBottomAfterLayout(_bL);
             });
         }).catch(function(err) {
             edgeopsMarkOpenToolRowsFailed(toolsEl, localAiLogBuffer, renderLocalAiLog);
