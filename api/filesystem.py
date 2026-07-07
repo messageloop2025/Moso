@@ -1,10 +1,12 @@
 """文件系统 API：web/fs 目录下列表、读写、上传下载、tgz 打包解压、复制/移动。路径均相对 fs 根，禁止 .. 逃逸。"""
 import asyncio
 import os
+import re
 import shutil
 import stat
 import tarfile
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -208,6 +210,200 @@ def fs_list_dir(relative: str, base: Optional[Path] = None) -> dict:
 
 async def fs_list_dir_async(relative: str, base: Optional[Path] = None) -> dict:
     return await asyncio.to_thread(fs_list_dir, relative, base)
+
+
+def _normalize_extension_set(extensions) -> set[str]:
+    out: set[str] = set()
+    if not extensions:
+        return out
+    items = extensions if isinstance(extensions, (list, tuple, set)) else str(extensions).split(",")
+    for raw in items:
+        s = str(raw or "").strip().lower()
+        if not s:
+            continue
+        if not s.startswith("."):
+            s = "." + s
+        out.add(s)
+    return out
+
+
+def _compile_fs_search_regex(pattern: str, *, label: str) -> re.Pattern[str] | None:
+    raw = (pattern or "").strip()
+    if not raw:
+        return None
+    if len(raw) > int(getattr(config, "FS_SEARCH_MAX_REGEX_LEN", 500)):
+        raise ValueError(f"{label} 正则过长")
+    try:
+        return re.compile(raw, re.IGNORECASE)
+    except re.error as exc:
+        raise ValueError(f"{label} 正则无效: {exc}") from exc
+
+
+def _parse_optional_mtime(value, *, label: str) -> float | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        if re.fullmatch(r"-?\d+(\.\d+)?", s):
+            return float(s)
+    except ValueError:
+        pass
+    try:
+        iso = s.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except ValueError as exc:
+        raise ValueError(f"{label} 时间格式无效（支持 Unix 秒或 ISO8601）: {value}") from exc
+
+
+def fs_search_files(
+    relative_root: str = "",
+    base: Optional[Path] = None,
+    *,
+    name_regex: str = "",
+    path_regex: str = "",
+    extensions=None,
+    min_bytes: int | None = None,
+    max_bytes: int | None = None,
+    min_mtime: float | None = None,
+    max_mtime: float | None = None,
+    modified_after: str = "",
+    modified_before: str = "",
+    recursive: bool = True,
+    files_only: bool = True,
+    limit: int | None = None,
+) -> dict:
+    """在用户文件系统工作区内搜索。各筛选条件均为可选，可单独或任意组合（多条件 AND）；未传条件时列出根目录下文件。"""
+    base = base or FS_DIR
+    rel_root = coerce_fs_relative_path(relative_root or "", base)
+    root = resolve_fs_path(rel_root, base) if rel_root else base.resolve()
+    if not root.exists():
+        raise ValueError("搜索根路径不存在")
+
+    name_re = _compile_fs_search_regex(name_regex, label="name_regex")
+    path_re = _compile_fs_search_regex(path_regex, label="path_regex")
+    ext_set = _normalize_extension_set(extensions)
+
+    eff_min_mtime = _parse_optional_mtime(min_mtime if min_mtime is not None else modified_after, label="min_mtime")
+    eff_max_mtime = _parse_optional_mtime(max_mtime if max_mtime is not None else modified_before, label="max_mtime")
+
+    try:
+        min_b = int(min_bytes) if min_bytes is not None else None
+    except (TypeError, ValueError):
+        min_b = None
+    try:
+        max_b = int(max_bytes) if max_bytes is not None else None
+    except (TypeError, ValueError):
+        max_b = None
+    if min_b is not None and min_b < 0:
+        min_b = 0
+    if max_b is not None and max_b < 0:
+        max_b = 0
+
+    max_results = int(getattr(config, "FS_SEARCH_MAX_RESULTS", 500))
+    try:
+        req_limit = int(limit) if limit is not None else max_results
+    except (TypeError, ValueError):
+        req_limit = max_results
+    req_limit = max(1, min(req_limit, max_results))
+
+    max_scan = int(getattr(config, "FS_SEARCH_MAX_SCAN", 50000))
+    filters_applied: dict = {}
+    if name_re:
+        filters_applied["name_regex"] = name_regex.strip()
+    if path_re:
+        filters_applied["path_regex"] = path_regex.strip()
+    if ext_set:
+        filters_applied["extensions"] = sorted(ext_set)
+    if min_b is not None:
+        filters_applied["min_bytes"] = min_b
+    if max_b is not None:
+        filters_applied["max_bytes"] = max_b
+    if eff_min_mtime is not None:
+        filters_applied["min_mtime"] = eff_min_mtime
+    if eff_max_mtime is not None:
+        filters_applied["max_mtime"] = eff_max_mtime
+
+    hits: list[dict] = []
+    scanned = 0
+    truncated_scan = False
+
+    def _iter_candidates():
+        if root.is_file():
+            yield root
+            return
+        if recursive:
+            yield from root.rglob("*")
+        else:
+            yield from root.iterdir()
+
+    for candidate in _iter_candidates():
+        scanned += 1
+        if scanned > max_scan:
+            truncated_scan = True
+            break
+        if files_only and not candidate.is_file():
+            continue
+        try:
+            rel = str(candidate.relative_to(base)).replace("\\", "/")
+            st = candidate.stat()
+        except OSError:
+            continue
+        if name_re and not name_re.search(candidate.name):
+            continue
+        if path_re and not path_re.search(rel):
+            continue
+        if ext_set:
+            if not candidate.is_file():
+                continue
+            if candidate.suffix.lower() not in ext_set:
+                continue
+        if min_b is not None and st.st_size < min_b:
+            continue
+        if max_b is not None and st.st_size > max_b:
+            continue
+        if eff_min_mtime is not None and st.st_mtime < eff_min_mtime:
+            continue
+        if eff_max_mtime is not None and st.st_mtime > eff_max_mtime:
+            continue
+        hits.append(
+            {
+                "name": candidate.name,
+                "path": rel,
+                "dir": candidate.is_dir(),
+                "size": st.st_size if candidate.is_file() else 0,
+                "mtime": st.st_mtime,
+            }
+        )
+        if len(hits) >= req_limit:
+            break
+
+    return {
+        "success": True,
+        "root": rel_root or "/",
+        "count": len(hits),
+        "items": hits,
+        "scanned": scanned,
+        "truncated_results": len(hits) >= req_limit,
+        "truncated_scan": truncated_scan,
+        "limit": req_limit,
+        "filters_applied": filters_applied,
+        "filter_logic": "and",
+    }
+
+
+async def fs_search_files_async(
+    relative_root: str = "",
+    base: Optional[Path] = None,
+    **kwargs,
+) -> dict:
+    return await asyncio.to_thread(fs_search_files, relative_root, base, **kwargs)
 
 
 def fs_read_file(
@@ -539,6 +735,48 @@ async def list_dir(path: str = "", username: Optional[str] = None, user=Depends(
     base = _user_base(user, username)
     try:
         return await fs_list_dir_async(path, base)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/search")
+async def search_files(
+    path: str = "",
+    name_regex: str = "",
+    path_regex: str = "",
+    extensions: str = "",
+    min_bytes: Optional[int] = None,
+    max_bytes: Optional[int] = None,
+    min_mtime: Optional[float] = None,
+    max_mtime: Optional[float] = None,
+    modified_after: str = "",
+    modified_before: str = "",
+    recursive: bool = True,
+    files_only: bool = True,
+    limit: Optional[int] = None,
+    username: Optional[str] = None,
+    user=Depends(get_current_user),
+):
+    """在用户文件系统内搜索：文件名/路径正则、后缀、大小、修改时间。"""
+    base = _user_base(user, username)
+    ext_list = [s.strip() for s in extensions.split(",") if s.strip()] if extensions else None
+    try:
+        return await fs_search_files_async(
+            path,
+            base,
+            name_regex=name_regex,
+            path_regex=path_regex,
+            extensions=ext_list,
+            min_bytes=min_bytes,
+            max_bytes=max_bytes,
+            min_mtime=min_mtime,
+            max_mtime=max_mtime,
+            modified_after=modified_after,
+            modified_before=modified_before,
+            recursive=recursive,
+            files_only=files_only,
+            limit=limit,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

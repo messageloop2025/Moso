@@ -180,12 +180,14 @@
 | 名称 | 说明 | 主要参数 |
 |------|------|----------|
 | http_request | HTTP/HTTPS 请求：GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS；可设 **headers**、query、body（text/json/base64） | url, method?, **headers?**, query?, body?, body_encoding?, timeout?, max_response_bytes? |
-| http_download | 从 URL 流式下载到用户 web/fs；进度条；Web 可停止取消 | url, local_path, **headers?**, session_managed?, max_bytes?, timeout? |
-| http_upload | 从 web/fs 流式上传到 URL（multipart 或 raw）；进度条；可取消 | url, local_path, method?, **headers?**, field_name?, form_fields?, multipart?, max_bytes?, timeout? |
+| http_download | HTTP/HTTPS 下载到 web/fs；**默认不限制体积**；`chunked`/`chunk_size` 启用 Range 分块并自动合并 | url, local_path, headers?, chunked?, chunk_size?, chunk_index?, merge_chunks?, max_bytes?(0=不限) |
+| http_download_merge | 合并 `local_path.part000000` … 为最终文件 | local_path, part_paths?, delete_parts? |
+| http_upload | 从 web/fs 流式上传到 URL；**默认不限制体积** | url, local_path, method?, headers?, multipart?, max_bytes?(0=不限) |
 
 MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_upload`。默认禁止内网 SSRF；明文 HTTP 需 `EDGEOPS_HTTP_TOOL_ALLOW_INSECURE=true`。
 
 | fs_list | 列出 **web/fs/当前用户名** 下某目录的文件与子目录（作用范围 per-user） | path? |
+| fs_search | 在用户工作区内搜索文件；**各条件可选**，可单独或组合（AND） | path?、name_regex?、path_regex?、extensions?、min_bytes?、max_bytes?、min_mtime?、max_mtime?、modified_after?、modified_before?、recursive?、files_only?、limit? |
 | fs_read_file | 读取 **web/fs/当前用户名** 下文本文件内容 | path |
 | fs_write_file | 向 **web/fs/当前用户名** 写入文本文件 | path, content |
 | fs_mkdir | 在 **web/fs/当前用户名** 中创建目录 | path |
@@ -451,7 +453,7 @@ MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_up
 | 凭证 | /credentials CRUD、generate-key | list_credentials、get_credential_detail、create_credential、update_credential、delete_credential、cleanup_orphan_credentials、generate_key |
 | 维护历史 | /maintenance-history CRUD | list_maintenance_history、get_maintenance_item、create_maintenance、update_maintenance、delete_maintenance |
 | 最佳实践 | /best-practices CRUD、categories | get_best_practices、add_best_practice、update_best_practice、delete_best_practice |
-| 本地文件系统 | /fs list/read/write/mkdir/upload/download/pack-tgz/unpack-tgz/delete/copy | fs_list、fs_read_file、fs_write_file、fs_mkdir、fs_pack_tgz、fs_unpack_tgz、**fs_delete**、**fs_copy**（上传为二进制可经 fs_write_file 写文本或由用户界面操作） |
+| 本地文件系统 | /fs list/search/read/write/mkdir/upload/download/pack-tgz/unpack-tgz/delete/copy | fs_list、**fs_search**、fs_read_file、fs_write_file、fs_mkdir、fs_pack_tgz、fs_unpack_tgz、**fs_delete**、**fs_copy**（上传为二进制可经 fs_write_file 写文本或由用户界面操作） |
 | 远程文件系统 | /remote-fs list/read/download/mkdir/upload/write/delete/rename/copy | **scp_push** 对应写/上传内容；列目录、读文件、删除/重命名/复制等可由 **ssh_execute** 执行相应命令实现，无独立 remote_fs_* 工具 |
 | 终端 | /terminal buffer/list/send、控制台创建/关闭 | get_terminal_buffer、send_to_terminal、list_terminals、create_console、close_console、connect_terminal |
 | 批量操作 | /batch POST/GET/cancel/retry/clear/export | batch_create、list_batch_operations、get_batch_detail、batch_cancel、batch_retry、**clear_batches** |

@@ -9,7 +9,7 @@ PRODUCT_NAME_ZH = "毛竹"
 PRODUCT_NAME_EN = "Moso"
 PRODUCT_DISPLAY = f"{PRODUCT_NAME_ZH}（{PRODUCT_NAME_EN}）"  # AI 提示词中的产品指称
 
-VERSION = os.getenv("EDGEOPS_VERSION", "1.7.4")
+VERSION = os.getenv("EDGEOPS_VERSION", "1.7.5")
 
 # 数据库 / Database
 DATABASE_PATH = os.getenv("EDGEOPS_DB", str(BASE_DIR / "edgeops.db"))
@@ -155,6 +155,11 @@ WEB_DIR = str(BASE_DIR / "web")
 # Filesystem root (cache, node upload/download) under web/fs
 FS_DIR = BASE_DIR / "web" / "fs"
 
+# 用户文件系统搜索（fs_search）：单次最多返回条数 / 最多扫描文件数
+FS_SEARCH_MAX_RESULTS = max(1, int(os.getenv("EDGEOPS_FS_SEARCH_MAX_RESULTS", "500")))
+FS_SEARCH_MAX_SCAN = max(100, int(os.getenv("EDGEOPS_FS_SEARCH_MAX_SCAN", "50000")))
+FS_SEARCH_MAX_REGEX_LEN = max(32, int(os.getenv("EDGEOPS_FS_SEARCH_MAX_REGEX_LEN", "500")))
+
 # AI 帮助文档目录（Markdown，管理员可编辑，用户只读）
 # AI help docs (Markdown); admin-editable, users read-only
 AIHELP_DIR = BASE_DIR / "web" / "aihelp"
@@ -290,10 +295,13 @@ HTTP_TOOL_SSRF_BLOCK_PRIVATE = os.getenv("EDGEOPS_HTTP_TOOL_SSRF_BLOCK_PRIVATE",
     "yes",
 )
 HTTP_TOOL_DEFAULT_TIMEOUT_SEC = int(os.getenv("EDGEOPS_HTTP_TOOL_DEFAULT_TIMEOUT_SEC", "60"))
-HTTP_TOOL_MAX_TIMEOUT_SEC = int(os.getenv("EDGEOPS_HTTP_TOOL_MAX_TIMEOUT_SEC", "600"))
+HTTP_TOOL_MAX_TIMEOUT_SEC = int(os.getenv("EDGEOPS_HTTP_TOOL_MAX_TIMEOUT_SEC", "3600"))
 HTTP_TOOL_MAX_RESPONSE_BYTES = int(os.getenv("EDGEOPS_HTTP_TOOL_MAX_RESPONSE_BYTES", str(5 * 1024 * 1024)))
-HTTP_TOOL_MAX_DOWNLOAD_BYTES = int(os.getenv("EDGEOPS_HTTP_TOOL_MAX_DOWNLOAD_BYTES", str(200 * 1024 * 1024)))
-HTTP_TOOL_MAX_UPLOAD_BYTES = int(os.getenv("EDGEOPS_HTTP_TOOL_MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
+# 0 表示不限制上传/下载体积
+HTTP_TOOL_MAX_DOWNLOAD_BYTES = int(os.getenv("EDGEOPS_HTTP_TOOL_MAX_DOWNLOAD_BYTES", "0"))
+HTTP_TOOL_MAX_UPLOAD_BYTES = int(os.getenv("EDGEOPS_HTTP_TOOL_MAX_UPLOAD_BYTES", "0"))
+# 分块下载默认块大小（字节）；http_download 传 chunk_size 或 chunked=true 时启用 Range 分块
+HTTP_TOOL_DOWNLOAD_CHUNK_SIZE = int(os.getenv("EDGEOPS_HTTP_TOOL_DOWNLOAD_CHUNK_SIZE", str(64 * 1024 * 1024)))
 # 反向代理后保留 X-Forwarded-Proto（避免 /mcp 等重定向降级为 http）
 TRUST_PROXY_HEADERS = os.getenv("EDGEOPS_TRUST_PROXY_HEADERS", "true").strip().lower() in ("1", "true", "yes")
 TRUSTED_PROXY_HOSTS = os.getenv("EDGEOPS_TRUSTED_PROXY_HOSTS", "*").strip() or "*"

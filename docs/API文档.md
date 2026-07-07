@@ -904,15 +904,21 @@ body：`text`
 
 ### POST /integration/mcp/http-download
 
-等同 `edgeops_http_download` / `http_download`。从 URL 流式下载到用户 `web/fs`（进度条；Web 聊天可停止取消）。
+等同 `edgeops_http_download` / `http_download`。从 URL 流式下载到用户 `web/fs`（**默认不限制体积**；可选 Range 分块并自动合并）。
 
-**请求体**：`url`、`local_path`（相对工作区）、`headers?`、`session_managed?`、`max_bytes?`、`timeout?`、`follow_redirects?`、`session_id?`
+**请求体**：`url`、`local_path`（相对工作区）、`headers?`、`session_managed?`、`max_bytes?`（**0=不限制**）、`chunked?`、`chunk_size?`、`chunk_index?`、`merge_chunks?`（默认 true）、`delete_parts?`、`timeout?`、`follow_redirects?`、`session_id?`
+
+### POST /integration/mcp/http-download-merge
+
+等同 `edgeops_http_download_merge` / `http_download_merge`。合并 `<local_path>.part000000` 等分块为最终文件。
+
+**请求体**：`local_path`、`part_paths?`、`delete_parts?`、`session_id?`
 
 ### POST /integration/mcp/http-upload
 
-等同 `edgeops_http_upload` / `http_upload`。从用户 `web/fs` 流式上传到 URL（multipart 或 raw body；进度条；可取消）。
+等同 `edgeops_http_upload` / `http_upload`。从用户 `web/fs` 流式上传到 URL（**默认不限制体积**；multipart 或 raw body；进度条；可取消）。
 
-**请求体**：`url`、`local_path`、`method?`（默认 POST）、`headers?`、`field_name?`、`form_fields?`、`content_type?`、`multipart?`、`max_bytes?`、`timeout?`、`follow_redirects?`、`session_id?`
+**请求体**：`url`、`local_path`、`method?`（默认 POST）、`headers?`、`field_name?`、`form_fields?`、`content_type?`、`multipart?`、`max_bytes?`（**0=不限制**）、`timeout?`、`follow_redirects?`、`session_id?`
 
 **安全（默认）**：SSRF 防护禁止内网/本机；仅 HTTPS（明文 HTTP 需 `EDGEOPS_HTTP_TOOL_ALLOW_INSECURE=true`）。环境变量见 [技术栈说明.md](技术栈说明.md) §5。
 

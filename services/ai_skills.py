@@ -75,6 +75,7 @@ from api.filesystem import (
     get_user_fs_root,
     resolve_fs_path,
     fs_list_dir_async,
+    fs_search_files_async,
     fs_read_file_async,
     fs_write_file_async,
     fs_read_binary_async,
@@ -2369,23 +2370,55 @@ TOOLS = [
                 "从 **HTTP/HTTPS URL 下载文件**到**当前用户文件系统工作区**（流式落盘，调用卡显示进度，用户可点停止取消）。\n\n"
                 "**默认 session_managed**：`local_path` 写逻辑短名 → 归位 `chats/<UTC>/` 并加 UUID；"
                 "完整相对路径（`scripts/…`、`exchange/…`）→ 精确落盘。\n"
-                "**禁止** OS 绝对路径。受 `max_bytes` 与系统下载上限约束。"
+                "**默认不限制体积**（`max_bytes=0` 或不传）。\n"
+                "**分块下载**：设 `chunked=true` 或 `chunk_size`（字节）启用 HTTP Range 分块；"
+                "默认下载全部分块后 **自动合并** 到 `local_path`（`merge_chunks=false` 仅保留 `.part000000` 等）。"
+                "可用 `chunk_index` 只下指定块；合并用 `http_download_merge`。\n"
+                "**禁止** OS 绝对路径。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "url": {"type": "string", "description": "下载 URL"},
-                    "local_path": {"type": "string", "description": "相对工作区根的保存路径"},
+                    "local_path": {"type": "string", "description": "相对工作区根的保存路径（合并后的最终文件名）"},
                     "headers": {"type": "object", "description": "可选请求头"},
                     "session_managed": {
                         "type": "boolean",
                         "description": "默认 true：归位 chats/<UTC>/；false：按 local_path 精确落盘",
                     },
-                    "max_bytes": {"type": "integer", "description": "单文件字节上限"},
-                    "timeout": {"type": "integer", "description": "超时秒数，默认 60，最大 600"},
+                    "max_bytes": {"type": "integer", "description": "可选字节上限；0 或不传表示不限制"},
+                    "chunked": {"type": "boolean", "description": "启用 Range 分块下载（默认块大小见系统配置）"},
+                    "chunk_size": {"type": "integer", "description": "分块大小（字节），如 67108864"},
+                    "chunk_index": {"type": "integer", "description": "仅下载指定分块（0 起），落盘为 local_path.partNNNNNN"},
+                    "merge_chunks": {"type": "boolean", "description": "下载全部分块后自动合并到 local_path，默认 true"},
+                    "delete_parts": {"type": "boolean", "description": "合并后删除 .part 文件，默认 true"},
+                    "timeout": {"type": "integer", "description": "超时秒数，默认 60，最大 3600"},
                     "follow_redirects": {"type": "boolean", "description": "是否跟随重定向，默认 true"},
                 },
                 "required": ["url", "local_path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "http_download_merge",
+            "description": (
+                "合并已下载的 HTTP 分块文件（`<local_path>.part000000`、`.part000001` …）为最终文件。\n"
+                "不传 `part_paths` 时自动扫描 `local_path` 同目录下匹配的分块。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "local_path": {"type": "string", "description": "合并输出文件（相对工作区根）"},
+                    "part_paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "可选，显式指定分块相对路径列表（按顺序合并）",
+                    },
+                    "delete_parts": {"type": "boolean", "description": "合并后删除分块，默认 true"},
+                },
+                "required": ["local_path"],
             },
         },
     },
@@ -2396,7 +2429,8 @@ TOOLS = [
             "description": (
                 "从**用户文件系统工作区**上传文件到 **HTTP/HTTPS URL**（流式上传，调用卡显示进度，用户可点停止取消）。\n\n"
                 "默认 **multipart/form-data**（`field_name` 默认 file）；`multipart=false` 时以原始 body 流上传。\n"
-                "`local_path` 为**相对工作区根**的文件路径。**禁止** OS 绝对路径。"
+                "`local_path` 为**相对工作区根**的文件路径；**默认不限制体积**（`max_bytes=0` 或不传）。\n"
+                "**禁止** OS 绝对路径。"
             ),
             "parameters": {
                 "type": "object",
@@ -2413,8 +2447,8 @@ TOOLS = [
                     "form_fields": {"type": "object", "description": "multipart 额外表单字段"},
                     "content_type": {"type": "string", "description": "文件 Content-Type；multipart 时可选"},
                     "multipart": {"type": "boolean", "description": "是否 multipart 上传，默认 true"},
-                    "timeout": {"type": "integer", "description": "超时秒数，默认 60，最大 600"},
-                    "max_bytes": {"type": "integer", "description": "单文件字节上限"},
+                    "timeout": {"type": "integer", "description": "超时秒数，默认 60，最大 3600"},
+                    "max_bytes": {"type": "integer", "description": "可选字节上限；0 或不传表示不限制"},
                     "follow_redirects": {"type": "boolean", "description": "是否跟随重定向，默认 true"},
                 },
                 "required": ["url", "local_path"],
@@ -2434,6 +2468,43 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "相对工作区根的目录路径，空或 / 表示根目录；例 chats/2026/06/11"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fs_search",
+            "description": (
+                "在**当前用户文件系统工作区**内搜索文件（默认仅文件、递归子目录）。"
+                "**所有筛选条件均为可选**，可**单独使用**任一条件，也可**任意组合**（多条件同时满足，AND 关系）。"
+                "支持：文件名正则 name_regex、相对路径正则 path_regex、后缀 extensions、"
+                "文件大小 min_bytes/max_bytes、修改时间 min_mtime/max_mtime 或 modified_after/modified_before。"
+                "不传任何筛选条件时，返回 path 根目录下所有文件（受 limit 限制）。"
+                "path 为搜索根目录（相对工作区根，空表示根）；modified_after/modified_before 支持 Unix 秒或 ISO8601。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "搜索根目录相对路径，空表示工作区根"},
+                    "name_regex": {"type": "string", "description": "可选。文件名正则（Python re，忽略大小写），如 \".*\\.log$\""},
+                    "path_regex": {"type": "string", "description": "可选。相对路径正则（忽略大小写）"},
+                    "extensions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "可选。后缀列表，如 [\".log\", \"txt\"]",
+                    },
+                    "min_bytes": {"type": "integer", "description": "可选。最小文件大小（字节，含）"},
+                    "max_bytes": {"type": "integer", "description": "可选。最大文件大小（字节，含）"},
+                    "min_mtime": {"type": "number", "description": "可选。最早修改时间（Unix 秒）"},
+                    "max_mtime": {"type": "number", "description": "可选。最晚修改时间（Unix 秒）"},
+                    "modified_after": {"type": "string", "description": "可选。修改时间不早于（Unix 秒或 ISO8601）"},
+                    "modified_before": {"type": "string", "description": "可选。修改时间不晚于（Unix 秒或 ISO8601）"},
+                    "recursive": {"type": "boolean", "description": "是否递归子目录，默认 true"},
+                    "files_only": {"type": "boolean", "description": "仅返回文件，默认 true"},
+                    "limit": {"type": "integer", "description": "最多返回条数，默认 200"},
                 },
                 "required": [],
             },
@@ -6723,7 +6794,19 @@ def _http_timeout_from_args(arguments: dict) -> int | None:
         timeout = int(arguments.get("timeout"))
     except (TypeError, ValueError):
         return None
-    return max(5, min(timeout, int(getattr(config, "HTTP_TOOL_MAX_TIMEOUT_SEC", 600))))
+    return max(5, min(timeout, int(getattr(config, "HTTP_TOOL_MAX_TIMEOUT_SEC", 3600))))
+
+
+def _http_transfer_cap(arguments: dict, config_attr: str) -> int | None:
+    from services.http_transfer import _resolve_transfer_cap
+
+    raw = arguments.get("max_bytes")
+    if raw is None:
+        return _resolve_transfer_cap(None, config_attr)
+    try:
+        return _resolve_transfer_cap(int(raw), config_attr)
+    except (TypeError, ValueError):
+        return _resolve_transfer_cap(None, config_attr)
 
 
 def _http_result_payload(result) -> dict:
@@ -6750,6 +6833,20 @@ def _http_result_payload(result) -> dict:
         out["truncated"] = True
     if result.interrupted:
         out["interrupted"] = True
+    if getattr(result, "content_length", None) is not None:
+        out["content_length"] = result.content_length
+    if getattr(result, "chunks_total", None) is not None:
+        out["chunks_total"] = result.chunks_total
+    if getattr(result, "chunk_index", None) is not None:
+        out["chunk_index"] = result.chunk_index
+    if getattr(result, "chunk_size", None) is not None:
+        out["chunk_size"] = result.chunk_size
+    if getattr(result, "chunk_paths", None):
+        out["chunk_paths"] = result.chunk_paths
+    if getattr(result, "merged", False):
+        out["merged"] = True
+    if getattr(result, "accept_ranges", False):
+        out["accept_ranges"] = True
     if result.error:
         out["error"] = result.error
     return out
@@ -12195,12 +12292,13 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     {"success": False, "error": "需要 url 和 local_path（相对工作区根的路径）"},
                     ensure_ascii=False,
                 )
-            cap = int(getattr(config, "HTTP_TOOL_MAX_DOWNLOAD_BYTES", 200 * 1024 * 1024))
-            try:
-                max_bytes = int(arguments.get("max_bytes") or cap)
-            except (TypeError, ValueError):
-                max_bytes = cap
-            max_bytes = max(1024, min(max_bytes, cap))
+            max_bytes = _http_transfer_cap(arguments, "HTTP_TOOL_MAX_DOWNLOAD_BYTES")
+            chunk_size = arguments.get("chunk_size")
+            if chunk_size is not None:
+                try:
+                    chunk_size = max(1024 * 1024, int(chunk_size))
+                except (TypeError, ValueError):
+                    return json.dumps({"success": False, "error": "chunk_size 无效"}, ensure_ascii=False)
             local_path = _normalize_sftp_pull_local_path(
                 raw_local_requested,
                 url,
@@ -12217,6 +12315,12 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 path_obj.relative_to(base.resolve())
             except ValueError:
                 return json.dumps({"success": False, "error": "local_path 越界"}, ensure_ascii=False)
+            chunk_index = arguments.get("chunk_index")
+            if chunk_index is not None:
+                try:
+                    chunk_index = int(chunk_index)
+                except (TypeError, ValueError):
+                    return json.dumps({"success": False, "error": "chunk_index 无效"}, ensure_ascii=False)
             result = await http_download_async(
                 url=url,
                 local_path=path_obj,
@@ -12224,13 +12328,52 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 timeout=_http_timeout_from_args(arguments),
                 max_bytes=max_bytes,
                 follow_redirects=arguments.get("follow_redirects") is not False,
+                chunk_size=chunk_size,
+                chunked=bool(arguments.get("chunked")),
+                chunk_index=chunk_index,
+                merge_chunks=arguments.get("merge_chunks") is not False,
+                delete_parts=arguments.get("delete_parts") is not False,
                 stream_callback=stream_callback,
                 cancel_event=transfer_cancel_event,
             )
             payload = _http_result_payload(result)
             if result.success:
-                payload["message"] = f"已保存到工作区:{local_path}"
+                payload["message"] = (
+                    f"已合并保存到工作区:{local_path}"
+                    if result.merged
+                    else f"已保存到工作区:{payload.get('local_path') or local_path}"
+                )
                 payload["requested_local_path"] = raw_local_requested
+            return json.dumps(payload, ensure_ascii=False)
+
+        if name == "http_download_merge":
+            from services.http_transfer import http_download_merge_async
+
+            raw_local = (arguments.get("local_path") or "").strip()
+            if not raw_local:
+                return json.dumps({"success": False, "error": "需要 local_path"}, ensure_ascii=False)
+            try:
+                base = get_user_fs_root(user)
+                path_obj = resolve_fs_path(raw_local, base).resolve()
+                path_obj.relative_to(base.resolve())
+            except ValueError as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+            part_paths = None
+            raw_parts = arguments.get("part_paths")
+            if isinstance(raw_parts, list) and raw_parts:
+                part_paths = []
+                for rp in raw_parts:
+                    p = resolve_fs_path(str(rp).strip(), base).resolve()
+                    p.relative_to(base.resolve())
+                    part_paths.append(p)
+            result = await http_download_merge_async(
+                output_path=path_obj,
+                part_paths=part_paths,
+                delete_parts=arguments.get("delete_parts") is not False,
+            )
+            payload = _http_result_payload(result)
+            if result.success:
+                payload["message"] = f"已合并到工作区:{raw_local}"
             return json.dumps(payload, ensure_ascii=False)
 
         if name == "http_upload":
@@ -12243,12 +12386,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     {"success": False, "error": "需要 url 和 local_path（相对工作区根的文件路径）"},
                     ensure_ascii=False,
                 )
-            cap = int(getattr(config, "HTTP_TOOL_MAX_UPLOAD_BYTES", 200 * 1024 * 1024))
-            try:
-                max_bytes = int(arguments.get("max_bytes") or cap)
-            except (TypeError, ValueError):
-                max_bytes = cap
-            max_bytes = max(1024, min(max_bytes, cap))
+            max_bytes = _http_transfer_cap(arguments, "HTTP_TOOL_MAX_UPLOAD_BYTES")
             try:
                 base = get_user_fs_root(user)
                 path_obj = resolve_fs_path(local_path, base).resolve()
@@ -14312,6 +14450,29 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 base = get_user_fs_root(user)
                 path = (arguments.get("path") or "").strip()
                 out = await fs_list_dir_async(path, base)
+                return json.dumps(out, ensure_ascii=False)
+            except ValueError as e:
+                return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+        if name == "fs_search":
+            try:
+                base = get_user_fs_root(user)
+                path = (arguments.get("path") or "").strip()
+                out = await fs_search_files_async(
+                    path,
+                    base,
+                    name_regex=(arguments.get("name_regex") or "").strip(),
+                    path_regex=(arguments.get("path_regex") or "").strip(),
+                    extensions=arguments.get("extensions"),
+                    min_bytes=arguments.get("min_bytes"),
+                    max_bytes=arguments.get("max_bytes"),
+                    min_mtime=arguments.get("min_mtime"),
+                    max_mtime=arguments.get("max_mtime"),
+                    modified_after=(arguments.get("modified_after") or "").strip(),
+                    modified_before=(arguments.get("modified_before") or "").strip(),
+                    recursive=bool(arguments.get("recursive", True)),
+                    files_only=bool(arguments.get("files_only", True)),
+                    limit=arguments.get("limit"),
+                )
                 return json.dumps(out, ensure_ascii=False)
             except ValueError as e:
                 return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)

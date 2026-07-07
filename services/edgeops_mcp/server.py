@@ -759,12 +759,17 @@ async def edgeops_http_download(
     headers: dict[str, str] | None = None,
     session_managed: bool | None = None,
     max_bytes: int | None = None,
+    chunked: bool = False,
+    chunk_size: int | None = None,
+    chunk_index: int | None = None,
+    merge_chunks: bool = True,
+    delete_parts: bool = True,
     timeout: int | None = None,
     follow_redirects: bool = True,
     session_id: int | None = None,
     ctx: Context | None = None,
 ) -> str:
-    """从 HTTP/HTTPS URL 下载文件到用户 web/fs 工作区（流式落盘，显示进度）。"""
+    """从 HTTP/HTTPS URL 下载到用户 web/fs（无体积上限；可选 Range 分块并自动合并）。"""
     sid = _session(session_id, ctx)
     return await _run(
         lambda c: c.http_download(
@@ -773,8 +778,34 @@ async def edgeops_http_download(
             headers=headers,
             session_managed=session_managed,
             max_bytes=max_bytes,
+            chunked=chunked,
+            chunk_size=chunk_size,
+            chunk_index=chunk_index,
+            merge_chunks=merge_chunks,
+            delete_parts=delete_parts,
             timeout=timeout,
             follow_redirects=follow_redirects,
+            session_id=sid,
+        ),
+        ctx=ctx,
+    )
+
+
+@mcp.tool()
+async def edgeops_http_download_merge(
+    local_path: str,
+    part_paths: list[str] | None = None,
+    delete_parts: bool = True,
+    session_id: int | None = None,
+    ctx: Context | None = None,
+) -> str:
+    """合并 HTTP 分块下载产物（local_path.part000000 …）为最终文件。"""
+    sid = _session(session_id, ctx)
+    return await _run(
+        lambda c: c.http_download_merge(
+            local_path=local_path,
+            part_paths=part_paths,
+            delete_parts=delete_parts,
             session_id=sid,
         ),
         ctx=ctx,
@@ -797,7 +828,7 @@ async def edgeops_http_upload(
     session_id: int | None = None,
     ctx: Context | None = None,
 ) -> str:
-    """从用户 web/fs 工作区上传文件到 HTTP/HTTPS URL（流式上传，显示进度）。"""
+    """从用户 web/fs 工作区上传文件到 HTTP/HTTPS URL（流式上传，无体积上限，显示进度）。"""
     sid = _session(session_id, ctx)
     return await _run(
         lambda c: c.http_upload(

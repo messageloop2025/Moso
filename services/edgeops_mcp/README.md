@@ -46,7 +46,7 @@ python -m services.edgeops_mcp          # stdio（Cursor 本地子进程模式�
 
 **HTTPS 反代**：推荐客户端 URL 带尾斜杠 `https://host/mcp/`；nginx 示例见 [docker/nginx-edgeops.example.conf](../../docker/nginx-edgeops.example.conf)。
 
-## 工具一览（52 个）
+## 工具一览（54 个）
 
 ### 基础（22 个）
 
@@ -95,8 +95,9 @@ python -m services.edgeops_mcp          # stdio（Cursor 本地子进程模式�
 | 工具 | 说明 |
 |------|------|
 | `edgeops_http_request` | GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS；响应体有字节上限 |
-| `edgeops_http_download` | 从 URL 流式下载到用户 web/fs（进度条，可取消） |
-| `edgeops_http_upload` | 从 web/fs 流式上传到 URL（multipart 或 raw body，进度条，可取消） |
+| `edgeops_http_download` | 从 URL 流式下载（无上限；可选 Range 分块+自动合并） |
+| `edgeops_http_download_merge` | 合并 `.part000000` 等分块为最终文件 |
+| `edgeops_http_upload` | 从 web/fs 流式上传（无上限，进度条，可取消） |
 
 默认 SSRF 防护（禁止内网/本机）；明文 HTTP 需 `EDGEOPS_HTTP_TOOL_ALLOW_INSECURE=true`。
 

@@ -8,10 +8,11 @@ import httpx
 import pytest
 
 from services.http_transfer import (
-    HttpTransferResult,
     http_download_async,
+    http_download_merge_async,
     http_request_async,
     http_upload_async,
+    merge_http_download_chunks,
     validate_outbound_url,
 )
 
@@ -38,6 +39,27 @@ def test_validate_outbound_url_allows_public_https(monkeypatch):
     )
     url = validate_outbound_url("https://example.com/path?q=1")
     assert url.startswith("https://example.com/")
+
+
+def test_resolve_transfer_cap_unlimited(monkeypatch):
+    from services.http_transfer import _resolve_transfer_cap
+
+    monkeypatch.setattr("services.http_transfer.config.HTTP_TOOL_MAX_DOWNLOAD_BYTES", 0)
+    assert _resolve_transfer_cap(None, "HTTP_TOOL_MAX_DOWNLOAD_BYTES") is None
+    assert _resolve_transfer_cap(0, "HTTP_TOOL_MAX_DOWNLOAD_BYTES") is None
+
+
+def test_merge_http_download_chunks(tmp_path):
+    out = tmp_path / "final.bin"
+    p0 = tmp_path / "final.bin.part000000"
+    p1 = tmp_path / "final.bin.part000001"
+    p0.write_bytes(b"abc")
+    p1.write_bytes(b"def")
+    total = merge_http_download_chunks(out, [p0, p1], delete_parts=True)
+    assert total == 6
+    assert out.read_bytes() == b"abcdef"
+    assert not p0.exists()
+    assert not p1.exists()
 
 
 @pytest.mark.asyncio
@@ -119,6 +141,19 @@ async def test_http_download_async_cancel(monkeypatch, tmp_path):
         )
     assert result.success is False
     assert result.interrupted is True
+
+
+@pytest.mark.asyncio
+async def test_http_download_merge_async(tmp_path):
+    out = tmp_path / "pkg.iso"
+    p0 = tmp_path / "pkg.iso.part000000"
+    p1 = tmp_path / "pkg.iso.part000001"
+    p0.write_bytes(b"12")
+    p1.write_bytes(b"34")
+    result = await http_download_merge_async(output_path=out, delete_parts=True)
+    assert result.success is True
+    assert result.merged is True
+    assert out.read_bytes() == b"1234"
 
 
 @pytest.mark.asyncio

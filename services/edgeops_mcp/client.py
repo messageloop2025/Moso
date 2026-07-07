@@ -740,6 +740,11 @@ class EdgeOpsRestClient:
         headers: dict[str, Any] | None = None,
         session_managed: bool | None = None,
         max_bytes: int | None = None,
+        chunked: bool = False,
+        chunk_size: int | None = None,
+        chunk_index: int | None = None,
+        merge_chunks: bool = True,
+        delete_parts: bool = True,
         timeout: int | None = None,
         follow_redirects: bool = True,
         session_id: int | None = None,
@@ -748,6 +753,9 @@ class EdgeOpsRestClient:
             "url": url,
             "local_path": local_path,
             "follow_redirects": follow_redirects,
+            "chunked": chunked,
+            "merge_chunks": merge_chunks,
+            "delete_parts": delete_parts,
         }
         if headers:
             payload["headers"] = headers
@@ -755,6 +763,10 @@ class EdgeOpsRestClient:
             payload["session_managed"] = session_managed
         if max_bytes is not None:
             payload["max_bytes"] = max_bytes
+        if chunk_size is not None:
+            payload["chunk_size"] = chunk_size
+        if chunk_index is not None:
+            payload["chunk_index"] = chunk_index
         if timeout is not None:
             payload["timeout"] = timeout
         if session_id is not None:
@@ -763,7 +775,30 @@ class EdgeOpsRestClient:
             "POST",
             "/api/integration/mcp/http-download",
             json_body=payload,
-            timeout=httpx.Timeout(float(timeout or 600), connect=30.0),
+            timeout=httpx.Timeout(float(timeout or 3600), connect=30.0),
+        )
+
+    async def http_download_merge(
+        self,
+        *,
+        local_path: str,
+        part_paths: list[str] | None = None,
+        delete_parts: bool = True,
+        session_id: int | None = None,
+    ) -> Any:
+        payload: dict[str, Any] = {
+            "local_path": local_path,
+            "delete_parts": delete_parts,
+        }
+        if part_paths:
+            payload["part_paths"] = part_paths
+        if session_id is not None:
+            payload["session_id"] = session_id
+        return await self._request(
+            "POST",
+            "/api/integration/mcp/http-download-merge",
+            json_body=payload,
+            timeout=httpx.Timeout(3600.0, connect=30.0),
         )
 
     async def http_upload(
@@ -806,7 +841,7 @@ class EdgeOpsRestClient:
             "POST",
             "/api/integration/mcp/http-upload",
             json_body=payload,
-            timeout=httpx.Timeout(float(timeout or 600), connect=30.0),
+            timeout=httpx.Timeout(float(timeout or 3600), connect=30.0),
         )
 
 

@@ -130,7 +130,7 @@ class HttpRequestBody(BaseModel):
     query: dict[str, str] | None = None
     body: str | None = None
     body_encoding: str = Field(default="text")
-    timeout: int | None = Field(default=None, ge=5, le=600)
+    timeout: int | None = Field(default=None, ge=5, le=3600)
     max_response_bytes: int | None = Field(default=None, ge=1024)
     follow_redirects: bool = True
     session_id: int | None = None
@@ -141,9 +141,21 @@ class HttpDownloadBody(BaseModel):
     local_path: str = Field(..., min_length=1)
     headers: dict[str, str] | None = None
     session_managed: bool | None = None
-    max_bytes: int | None = Field(default=None, ge=1024)
-    timeout: int | None = Field(default=None, ge=5, le=600)
+    max_bytes: int | None = Field(default=None, ge=0)
+    chunked: bool = False
+    chunk_size: int | None = Field(default=None, ge=1024 * 1024)
+    chunk_index: int | None = Field(default=None, ge=0)
+    merge_chunks: bool = True
+    delete_parts: bool = True
+    timeout: int | None = Field(default=None, ge=5, le=3600)
     follow_redirects: bool = True
+    session_id: int | None = None
+
+
+class HttpDownloadMergeBody(BaseModel):
+    local_path: str = Field(..., min_length=1)
+    part_paths: list[str] | None = None
+    delete_parts: bool = True
     session_id: int | None = None
 
 
@@ -156,8 +168,8 @@ class HttpUploadBody(BaseModel):
     form_fields: dict[str, str] | None = None
     content_type: str | None = None
     multipart: bool = True
-    max_bytes: int | None = Field(default=None, ge=1024)
-    timeout: int | None = Field(default=None, ge=5, le=600)
+    max_bytes: int | None = Field(default=None, ge=0)
+    timeout: int | None = Field(default=None, ge=5, le=3600)
     follow_redirects: bool = True
     session_id: int | None = None
 
@@ -386,9 +398,35 @@ async def mcp_http_download(req: HttpDownloadBody, user=Depends(get_current_user
         args["session_managed"] = req.session_managed
     if req.max_bytes is not None:
         args["max_bytes"] = req.max_bytes
+    if req.chunked:
+        args["chunked"] = True
+    if req.chunk_size is not None:
+        args["chunk_size"] = req.chunk_size
+    if req.chunk_index is not None:
+        args["chunk_index"] = req.chunk_index
+    if req.merge_chunks is not None:
+        args["merge_chunks"] = req.merge_chunks
+    if req.delete_parts is not None:
+        args["delete_parts"] = req.delete_parts
     if req.timeout is not None:
         args["timeout"] = req.timeout
     out = await _tool_json("http_download", args, user, session_id=sid)
+    out["session_id"] = sid
+    return out
+
+
+@router.post("/http-download-merge", dependencies=[Depends(require_mcp_client)])
+async def mcp_http_download_merge(req: HttpDownloadMergeBody, user=Depends(get_current_user)):
+    """MCP：合并 HTTP 分块下载文件。"""
+    db = await get_db()
+    sid = await _ensure_mcp_runtime_session(db, user, req.session_id)
+    args: dict[str, Any] = {
+        "local_path": req.local_path,
+        "delete_parts": req.delete_parts,
+    }
+    if req.part_paths:
+        args["part_paths"] = req.part_paths
+    out = await _tool_json("http_download_merge", args, user, session_id=sid)
     out["session_id"] = sid
     return out
 

@@ -13,7 +13,7 @@ from typing import Any
 from database import get_db
 
 # manifest 版本：变更 extended_tools / system_prompt 时递增
-CAPABILITIES_VERSION = "2026070701"
+CAPABILITIES_VERSION = "2026070721"
 CLAW_OPS_PLUGIN_MIN_VERSION = "1.0.0"
 CLAW_OPS_PLUGIN_RECOMMENDED_VERSION = "1.1.0"
 
@@ -312,8 +312,8 @@ def get_extended_tools_manifest() -> list[dict[str, Any]]:
         {
             "name": "edgeops_http_download",
             "label": "毛竹（Moso） · HTTP 下载",
-            "description": "从 HTTP/HTTPS URL 下载到用户 web/fs（流式，显示进度）",
-            "timeout_ms": 600_000,
+            "description": "从 HTTP/HTTPS URL 下载到用户 web/fs（无体积上限；可选 Range 分块并合并）",
+            "timeout_ms": 3_600_000,
             "parameters_schema": _tool_schema(
                 {
                     "url": str_opt,
@@ -321,6 +321,11 @@ def get_extended_tools_manifest() -> list[dict[str, Any]]:
                     "headers": {"type": "object"},
                     "session_managed": bool_t,
                     "max_bytes": int_opt,
+                    "chunked": bool_t,
+                    "chunk_size": int_opt,
+                    "chunk_index": int_opt,
+                    "merge_chunks": bool_t,
+                    "delete_parts": bool_t,
                     "timeout": int_opt,
                     "follow_redirects": bool_t,
                     "session_id": int_opt,
@@ -329,10 +334,25 @@ def get_extended_tools_manifest() -> list[dict[str, Any]]:
             ),
         },
         {
+            "name": "edgeops_http_download_merge",
+            "label": "毛竹（Moso） · HTTP 分块合并",
+            "description": "合并 local_path.part* 分块为最终文件",
+            "timeout_ms": 600_000,
+            "parameters_schema": _tool_schema(
+                {
+                    "local_path": {**str_opt, "description": "合并输出路径"},
+                    "part_paths": {"type": "array", "items": {"type": "string"}},
+                    "delete_parts": bool_t,
+                    "session_id": int_opt,
+                },
+                ["local_path"],
+            ),
+        },
+        {
             "name": "edgeops_http_upload",
             "label": "毛竹（Moso） · HTTP 上传",
-            "description": "从用户 web/fs 上传文件到 HTTP/HTTPS URL（流式，显示进度）",
-            "timeout_ms": 600_000,
+            "description": "从用户 web/fs 上传文件到 HTTP/HTTPS URL（无体积上限，流式，显示进度）",
+            "timeout_ms": 3_600_000,
             "parameters_schema": _tool_schema(
                 {
                     "url": str_opt,
@@ -647,7 +667,7 @@ async def invoke_claw_ops_tool(
             limit=int(args.get("limit") or 50),
         )
 
-    if name in ("edgeops_http_request", "edgeops_http_download", "edgeops_http_upload"):
+    if name in ("edgeops_http_request", "edgeops_http_download", "edgeops_http_upload", "edgeops_http_download_merge"):
         internal_name = name.replace("edgeops_", "")
         sid = await _ensure_integration_runtime_session(db, user, args.pop("session_id", None))
         raw = await execute_tool(
