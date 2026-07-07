@@ -187,7 +187,7 @@
 MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_upload`。默认禁止内网 SSRF；明文 HTTP 需 `EDGEOPS_HTTP_TOOL_ALLOW_INSECURE=true`。
 
 | fs_list | 列出 **web/fs/当前用户名** 下某目录的文件与子目录（作用范围 per-user） | path? |
-| fs_search | 在用户工作区内搜索文件；**各条件可选**，可单独或组合（AND） | path?、name_regex?、path_regex?、extensions?、min_bytes?、max_bytes?、min_mtime?、max_mtime?、modified_after?、modified_before?、recursive?、files_only?、limit? |
+| fs_search | 在用户工作区内搜索文件；**各条件可选**，可单独或组合（AND）；**每项含 id** 供后续引用 | path?、name_regex?、path_regex?、extensions?、min_bytes?、max_bytes?、min_mtime?、max_mtime?、modified_after?、modified_before?、recursive?、files_only?、limit? |
 | fs_read_file | 读取 **web/fs/当前用户名** 下文本文件内容 | path |
 | fs_write_file | 向 **web/fs/当前用户名** 写入文本文件 | path, content |
 | fs_mkdir | 在 **web/fs/当前用户名** 中创建目录 | path |

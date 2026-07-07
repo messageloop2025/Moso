@@ -2483,6 +2483,9 @@ TOOLS = [
                 "支持：文件名正则 name_regex、相对路径正则 path_regex、后缀 extensions、"
                 "文件大小 min_bytes/max_bytes、修改时间 min_mtime/max_mtime 或 modified_after/modified_before。"
                 "不传任何筛选条件时，返回 path 根目录下所有文件（受 limit 限制）。"
+                "**返回 items 每项含 id**（本次搜索内从 1 递增）。向用户展示结果时**必须保留 id**；"
+                "用户说「读 2 号」「处理 id=3」「删除第 1 项」时，根据 id 找到对应项的 **path**，"
+                "再调用 fs_read_file / fs_delete / fs_copy / http_upload 等工具。"
                 "path 为搜索根目录（相对工作区根，空表示根）；modified_after/modified_before 支持 Unix 秒或 ISO8601。"
             ),
             "parameters": {

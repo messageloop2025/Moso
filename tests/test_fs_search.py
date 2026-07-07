@@ -23,6 +23,14 @@ def test_fs_search_by_name_regex(user_base: Path):
     paths = {item["path"] for item in out["items"]}
     assert out["success"] is True
     assert paths == {"logs/app.log"}
+    assert out["items"][0]["id"] == 1
+    assert "usage" in out
+
+
+def test_fs_search_item_ids_sequential(user_base: Path):
+    out = fs_search_files("", user_base, limit=10)
+    ids = [item["id"] for item in out["items"]]
+    assert ids == list(range(1, len(out["items"]) + 1))
 
 
 def test_fs_search_by_extension_and_size(user_base: Path):

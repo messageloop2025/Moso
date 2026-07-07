@@ -374,6 +374,7 @@ def fs_search_files(
             continue
         hits.append(
             {
+                "id": len(hits) + 1,
                 "name": candidate.name,
                 "path": rel,
                 "dir": candidate.is_dir(),
@@ -395,6 +396,11 @@ def fs_search_files(
         "limit": req_limit,
         "filters_applied": filters_applied,
         "filter_logic": "and",
+        "usage": (
+            "items[].id 为本次搜索内序号（从 1 递增，仅当次结果有效）。"
+            "向用户展示时请保留 id；用户指「2 号」「id=3」时，用对应项的 path 执行 fs_read_file、"
+            "fs_delete、fs_copy、http_upload 等后续操作。"
+        ),
     }
 
 
