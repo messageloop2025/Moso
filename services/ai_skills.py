@@ -873,6 +873,29 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "terminal_send_and_read",
+            "description": (
+                "向 **Web AI 控制台**发送命令并**在同一工具调用内等待后读取缓冲**（减少弱网下的 LLM 往返）。"
+                "等价于 send_to_terminal + 等待 wait_seconds + get_terminal_buffer。"
+                "适合 sudo 交互、短命令、安装脚本单步执行。**密码仍用 send_service_password**，勿在 text 里发明文。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "要发送的命令或输入"},
+                    "slot": {"type": "integer", "description": "控制台槽位"},
+                    "host_id": {"type": "integer", "description": "按主机 ID 选择 slot"},
+                    "wait_seconds": {"type": "integer", "description": "发送后等待秒数再读缓冲，默认 3，范围 0～30"},
+                    "max_lines": {"type": "integer", "description": "读取缓冲最大行数，默认 40"},
+                    "tail_only": {"type": "boolean", "description": "默认 true，仅返回末尾行"},
+                },
+                "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "connect_terminal",
             "description": (
                 "在 **Web 界面**打开/连接指定主机的 **SSH 控制台 tab**（用户能在「控制台」里看到）。"
@@ -8714,6 +8737,70 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                         else:
                             err_msg = "SSH 连接失败：请检查主机地址、端口、凭证与网络后重试。"
                 return json.dumps({"success": False, "error": err_msg}, ensure_ascii=False)
+
+        if name == "terminal_send_and_read":
+            text = arguments.get("text") or ""
+            if not text:
+                return json.dumps({"success": False, "error": "需要 text 参数"}, ensure_ascii=False)
+            try:
+                wait_seconds = max(0, min(30, int(arguments.get("wait_seconds") if arguments.get("wait_seconds") is not None else 3)))
+            except (TypeError, ValueError):
+                wait_seconds = 3
+            send_args: dict = {"text": text}
+            if arguments.get("slot") is not None:
+                send_args["slot"] = arguments.get("slot")
+            if arguments.get("host_id") is not None:
+                send_args["host_id"] = arguments.get("host_id")
+            send_raw = await execute_tool(
+                "send_to_terminal",
+                send_args,
+                user,
+                scope=scope,
+                terminal_scope_id=terminal_scope_id,
+                default_terminal_slot=default_terminal_slot,
+                session_id=session_id,
+                ui_locale=ui_locale,
+            )
+            if wait_seconds > 0:
+                await asyncio.sleep(wait_seconds)
+            read_args: dict = {}
+            if arguments.get("slot") is not None:
+                read_args["slot"] = arguments.get("slot")
+            if arguments.get("host_id") is not None:
+                read_args["host_id"] = arguments.get("host_id")
+            if arguments.get("max_lines") is not None:
+                read_args["max_lines"] = arguments.get("max_lines")
+            if arguments.get("tail_only") is not None:
+                read_args["tail_only"] = arguments.get("tail_only")
+            read_raw = await execute_tool(
+                "get_terminal_buffer",
+                read_args,
+                user,
+                scope=scope,
+                terminal_scope_id=terminal_scope_id,
+                default_terminal_slot=default_terminal_slot,
+                session_id=session_id,
+                ui_locale=ui_locale,
+            )
+            try:
+                send_obj = json.loads(send_raw)
+                read_obj = json.loads(read_raw)
+            except Exception:
+                return json.dumps(
+                    {"success": False, "error": "terminal_send_and_read 解析子步骤结果失败"},
+                    ensure_ascii=False,
+                )
+            ok = bool(send_obj.get("success")) and bool(read_obj.get("success", True))
+            out = {
+                "success": ok,
+                "wait_seconds": wait_seconds,
+                "send": send_obj,
+                "read": read_obj,
+                "message": "已发送并读取终端缓冲" if ok else "发送或读取未完全成功",
+            }
+            if read_obj.get("next_poll_in_seconds"):
+                out["next_poll_in_seconds"] = read_obj.get("next_poll_in_seconds")
+            return json.dumps(out, ensure_ascii=False)
 
         if name == "send_to_terminal":
             text = arguments.get("text") or ""

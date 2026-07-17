@@ -66,7 +66,7 @@
 | delete_service_credential | 删除 | credential_id |
 | send_service_password | 按 service/address/port/username 匹配并注入 | target, service?, address?, port?, service_username?, credential_id?, host_id?（terminal 注入目标）, slot?, channel_id? |
 
-**sudo 流程**：`send_to_terminal` 发 sudo → `get_terminal_buffer` 确认提示 → `send_service_password`。`ssh_execute` 非交互，不能注入。
+**sudo 流程**：`terminal_send_and_read` 发命令并读输出（弱网推荐）；或 `send_to_terminal` → `get_terminal_buffer` → `send_service_password`。`ssh_execute` 非交互，不能注入。
 
 ---
 

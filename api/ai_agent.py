@@ -58,6 +58,15 @@ from services.session_runtime import (
 )
 from services.ai_output_language import build_output_language_system_section, resolve_output_language
 from services.user_mcp_client import resolve_chat_tools
+from services.agent_optimize import (
+    agent_can_parallel_read_tools,
+    build_system_prompt_for_step,
+    compact_turn_tool_messages,
+    effective_llm_timeout_retries,
+    resolve_weak_network_mode,
+    should_enrich_tool_images,
+    should_skip_assistant_ai,
+)
 
 _USER_MCP_SYSTEM_HINT = (
     "\n\n**个人 MCP 服务器**：用户可在「MCP 配置」页或对话中请你代为配置第三方 MCP。"
@@ -1812,6 +1821,7 @@ async def _post_chat_with_vision_fallback(
     payload: dict,
     messages: list[dict],
     status_sink=None,
+    enable_vision_retries: bool = True,
 ):
     """单次聊天请求的通用封装：遇到 vision 相关错误时自适应压缩/剥离后重试。
 
@@ -1852,6 +1862,8 @@ async def _post_chat_with_vision_fallback(
         return resp
 
     if not _messages_have_image_url(messages):
+        return resp
+    if not enable_vision_retries:
         return resp
 
     try:
@@ -1925,6 +1937,7 @@ async def _stream_chat_with_vision_fallback(
     headers: dict,
     payload: dict,
     messages: list[dict],
+    enable_vision_retries: bool = True,
 ):
     """流式版的 `_post_chat_with_vision_fallback`：异步生成器，按 chunk 实时透出事件。
 
@@ -1965,7 +1978,7 @@ async def _stream_chat_with_vision_fallback(
     # 视觉降级状态机：先尝试原始一次；若首帧报错且消息里有图，则按压缩阶梯逐档
     # 重试，最后再尝试整体剥离图片。没图的请求则只跑 attempts[0]
     attempts: list[str] = ["original"]
-    if _messages_have_image_url(messages):
+    if enable_vision_retries and _messages_have_image_url(messages):
         for (_max_side, _q, _label) in _VISION_COMPRESS_STAGES:
             attempts.append(f"compress:{_label}")
         attempts.append("strip")
@@ -5901,6 +5914,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
 
     assistant_enabled = (settings.get("ai_assistant_enabled") or "").strip().lower() == "true"
     auto_approve_enabled = (settings.get("ai_auto_approve") or "").strip().lower() == "true"
+    weak_network = resolve_weak_network_mode(settings)
 
     session_prompt_block = ""
     if session_prompt:
@@ -5998,6 +6012,12 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
             "涉及删除、覆盖、重启、批量修改、写文件、创建/删除账号、凭证/权限变更等可能改变系统状态的操作，"
             "必须先用 ask_user_choice 明确征求用户确认；选项卡发出后本轮结束，等待用户点击或文字回复后才能继续。"
         )
+    if weak_network:
+        full_system += (
+            "\n\n**弱网优化模式**：已启用。请减少无谓的 get_terminal_buffer / get_terminal_status 往返；"
+            "发命令并需看输出时优先 **terminal_send_and_read**（一次完成发送+等待+读缓冲）。"
+            "大结果用 read_chat_data 按需分页，勿要求模型复述全文。\n"
+        )
     full_system += _USER_MCP_SYSTEM_HINT
     try:
         from services.user_skills_runtime import build_user_skills_system_section
@@ -6035,6 +6055,8 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         logger.debug("注入 session_runtime 失败 sid=%s: %s", session_id, _rtc_exc)
 
     messages = [{"role": "system", "content": full_system}]
+    full_system_base = full_system
+    _session_host_id_opt = int(session_row.get("host_id")) if session_row and session_row.get("host_id") else None
     for m in conversation:
         if m.get("role") in ("user", "assistant"):
             messages.append({"role": m["role"], "content": m.get("content", "")})
@@ -6129,6 +6151,8 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         pending_tool_trace: list[dict] = []
         run_started_mono = time.monotonic()
         context_budget_for_stats = int(context_size or 0)
+        turn_messages_start = len(messages)
+        cached_round_tools: list | None = None
 
         def _make_run_stats() -> dict:
             return {
@@ -6253,16 +6277,26 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                     image_blind_tool_retry_used = False
                     spill_read_retry_used = False
                     for round_idx in range(agent_max_steps):
-                        round_tools = await resolve_chat_tools(
-                            get_tools_for_scope(session_scope, user),
-                            session_scope,
-                            user,
-                            session_host_id,
-                        )
+                        if cached_round_tools is None:
+                            cached_round_tools = await resolve_chat_tools(
+                                get_tools_for_scope(session_scope, user),
+                                session_scope,
+                                user,
+                                session_host_id,
+                            )
+                        round_tools = cached_round_tools
+                        compact_turn_tool_messages(messages, turn_messages_start)
+                        if messages and (messages[0].get("role") or "") == "system":
+                            messages[0]["content"] = build_system_prompt_for_step(
+                                full_system_base,
+                                round_idx,
+                                session_host_id=_session_host_id_opt,
+                                weak_network=weak_network,
+                            )
                         # 视觉降级：provider 报 "input length 超限 / 图片过大" 等错时，
                         # 自动按阶梯压缩 image_url 段并重试；多次仍失败则剥离全部图片再试
                         # 一次，并在 user 消息里追加提示让 AI 改走 read_chat_attachment。
-                        _retry_n = max(0, int(getattr(_config, "AI_CHAT_LLM_TIMEOUT_RETRIES", 3)))
+                        _retry_n = effective_llm_timeout_retries(weak_network)
                         _max_llm_tries = 1 + _retry_n
                         _read_sec = float(getattr(_config, "AI_CHAT_HTTP_READ_TIMEOUT_SEC", 240))
                         # 真流式：边接收 token 边推到前端，避免"等模型整段生成完才显示"
@@ -6308,6 +6342,10 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                             "max_tokens": _resolve_request_max_tokens(settings),
                                         },
                                         messages=messages,
+                                        enable_vision_retries=not (
+                                            weak_network
+                                            and getattr(_config, "AI_WEAK_NETWORK_SKIP_VISION_RETRIES", True)
+                                        ),
                                     ):
                                         await _q.put(("ev", ev))
                                 except BaseException as _e:
@@ -6639,10 +6677,55 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                     )
                             except Exception:
                                 pass
-                            for tc, fn_args, fn_args_preview in prepared_tool_calls:
+                            _parallel_tool_names = [
+                                tc["function"]["name"] for tc, _, _ in prepared_tool_calls
+                            ]
+                            _parallel_prefetch: list | None = None
+                            if (
+                                agent_can_parallel_read_tools(_parallel_tool_names)
+                                and runtime_injected_user_message is None
+                            ):
+                                for tc, _, fn_args_preview in prepared_tool_calls:
+                                    yield _sse({
+                                        "action": "executing",
+                                        "tool": tc["function"]["name"],
+                                        "args": fn_args_preview,
+                                    })
+
+                                async def _parallel_exec(_tc, _args):
+                                    try:
+                                        return await execute_tool(
+                                            _tc["function"]["name"],
+                                            _args,
+                                            user,
+                                            scope=session_scope,
+                                            terminal_scope_id=terminal_scope_id,
+                                            default_terminal_slot=preferred_terminal_slot,
+                                            session_id=session_id,
+                                            ui_locale=_ui_raw,
+                                        )
+                                    except Exception as _pe:
+                                        return json.dumps(
+                                            {
+                                                "success": False,
+                                                "error": f"{type(_pe).__name__}: {_pe}",
+                                            },
+                                            ensure_ascii=False,
+                                        )
+
+                                _parallel_prefetch = list(
+                                    await asyncio.gather(
+                                        *[
+                                            _parallel_exec(tc, fn_args)
+                                            for tc, fn_args, _ in prepared_tool_calls
+                                        ]
+                                    )
+                                )
+                            for _pidx, (tc, fn_args, fn_args_preview) in enumerate(prepared_tool_calls):
                                 fn_name = tc["function"]["name"]
                                 fn_id = tc["id"]
-                                yield _sse({"action": "executing", "tool": fn_name, "args": fn_args_preview})
+                                if _parallel_prefetch is None:
+                                    yield _sse({"action": "executing", "tool": fn_name, "args": fn_args_preview})
                                 try:
                                     pending_tool_trace.append(
                                         {
@@ -6730,40 +6813,118 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                         ensure_ascii=False,
                                     )
                                 elif fn_name in _streaming_tools:
-                                    _stream_q: asyncio.Queue = asyncio.Queue()
-                                    _stream_done = object()
+                                    if _parallel_prefetch is not None:
+                                        tool_result = _parallel_prefetch[_pidx]
+                                    else:
+                                        _stream_q: asyncio.Queue = asyncio.Queue()
+                                        _stream_done = object()
 
-                                    async def _sc(ev: dict, _q=_stream_q) -> None:
-                                        try:
-                                            _q.put_nowait(ev)
-                                        except Exception:
-                                            pass
+                                        async def _sc(ev: dict, _q=_stream_q) -> None:
+                                            try:
+                                                _q.put_nowait(ev)
+                                            except Exception:
+                                                pass
 
-                                    async def _run_tool():
-                                        try:
-                                            return await execute_tool(
-                                                fn_name, fn_args, user,
+                                        async def _run_tool():
+                                            try:
+                                                return await execute_tool(
+                                                    fn_name, fn_args, user,
+                                                    scope=session_scope,
+                                                    terminal_scope_id=terminal_scope_id,
+                                                    default_terminal_slot=preferred_terminal_slot,
+                                                    stream_callback=_sc,
+                                                    session_id=session_id,
+                                                    ui_locale=_ui_raw,
+                                                    transfer_cancel_event=_transfer_cancel,
+                                                )
+                                            finally:
+                                                _stream_q.put_nowait(_stream_done)
+
+                                        _tool_task = asyncio.create_task(_run_tool())
+                                        _stream_idle_ticks = 0
+                                        while True:
+                                            try:
+                                                _ev = await asyncio.wait_for(_stream_q.get(), timeout=0.35)
+                                            except asyncio.TimeoutError:
+                                                _ctrl = await _consume_runtime_control()
+                                                if _ctrl and _ctrl["action"] in ("stop", "pause", "supplement"):
+                                                    if _transfer_cancel is not None:
+                                                        _transfer_cancel.set()
+                                                    _tool_task.cancel()
+                                                    try:
+                                                        await _tool_task
+                                                    except asyncio.CancelledError:
+                                                        pass
+                                                    except Exception:
+                                                        pass
+                                                    _a = _ctrl["action"]
+                                                    _m = _ctrl["message"]
+                                                    yield _sse({"runtime_control": {"action": _a, "accepted": True, "during_tool": fn_name}})
+                                                    if _a == "stop":
+                                                        yield "data: [DONE]\n\n"
+                                                        return
+                                                    runtime_injected_user_message = _m or "用户要求暂停当前任务，请先回答用户的新问题。"
+                                                    break
+                                                _stream_idle_ticks += 1
+                                                if _stream_idle_ticks % 5 == 0:
+                                                    yield _sse_keepalive()
+                                                continue
+                                            _stream_idle_ticks = 0
+                                            if _ev is _stream_done:
+                                                break
+                                            yield _sse({"tool_stream": _ev, "tool": fn_name})
+                                        if runtime_injected_user_message is not None:
+                                            tool_result = json.dumps(
+                                                {"success": False, "interrupted": True, "reason": "runtime_control"},
+                                                ensure_ascii=False,
+                                            )
+                                        else:
+                                            try:
+                                                tool_result = await _tool_task
+                                            except Exception as _stream_tool_exc:
+                                                logger.exception(
+                                                    "Agent 流式工具任务异常 tool=%s session_id=%s",
+                                                    fn_name,
+                                                    session_id,
+                                                )
+                                                tool_result = json.dumps(
+                                                    {
+                                                        "success": False,
+                                                        "error": f"工具执行失败: {type(_stream_tool_exc).__name__}: {_stream_tool_exc}",
+                                                    },
+                                                    ensure_ascii=False,
+                                                )
+                                else:
+                                    if _parallel_prefetch is not None:
+                                        tool_result = _parallel_prefetch[_pidx]
+                                    else:
+                                        _tool_task = asyncio.create_task(
+                                            execute_tool(
+                                                fn_name,
+                                                fn_args,
+                                                user,
                                                 scope=session_scope,
                                                 terminal_scope_id=terminal_scope_id,
                                                 default_terminal_slot=preferred_terminal_slot,
-                                                stream_callback=_sc,
                                                 session_id=session_id,
                                                 ui_locale=_ui_raw,
-                                                transfer_cancel_event=_transfer_cancel,
                                             )
-                                        finally:
-                                            _stream_q.put_nowait(_stream_done)
-
-                                    _tool_task = asyncio.create_task(_run_tool())
-                                    _stream_idle_ticks = 0
-                                    while True:
-                                        try:
-                                            _ev = await asyncio.wait_for(_stream_q.get(), timeout=0.35)
-                                        except asyncio.TimeoutError:
-                                            _ctrl = await _consume_runtime_control()
-                                            if _ctrl and _ctrl["action"] in ("stop", "pause", "supplement"):
-                                                if _transfer_cancel is not None:
-                                                    _transfer_cancel.set()
+                                        )
+                                        _tool_idle_ticks = 0
+                                        while True:
+                                            try:
+                                                # wait_for 会在超时时取消底层 task；用 shield 只给等待本身加超时，
+                                                # 避免 IQS search_web 等慢工具在第一轮 0.35s 轮询时被误取消。
+                                                tool_result = await asyncio.wait_for(asyncio.shield(_tool_task), timeout=0.35)
+                                                break
+                                            except asyncio.TimeoutError:
+                                                _ctrl = await _consume_runtime_control()
+                                                if not _ctrl or _ctrl["action"] not in ("stop", "pause", "supplement"):
+                                                    _tool_idle_ticks += 1
+                                                    # 约每 1.75s 一次心跳（0.35 * 5），慢于部分代理/浏览器的空闲判定
+                                                    if _tool_idle_ticks % 5 == 0:
+                                                        yield _sse_keepalive()
+                                                    continue
                                                 _tool_task.cancel()
                                                 try:
                                                     await _tool_task
@@ -6778,98 +6939,26 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                                     yield "data: [DONE]\n\n"
                                                     return
                                                 runtime_injected_user_message = _m or "用户要求暂停当前任务，请先回答用户的新问题。"
+                                                tool_result = json.dumps(
+                                                    {"success": False, "interrupted": True, "reason": "runtime_control"},
+                                                    ensure_ascii=False,
+                                                )
                                                 break
-                                            _stream_idle_ticks += 1
-                                            if _stream_idle_ticks % 5 == 0:
-                                                yield _sse_keepalive()
-                                            continue
-                                        _stream_idle_ticks = 0
-                                        if _ev is _stream_done:
-                                            break
-                                        yield _sse({"tool_stream": _ev, "tool": fn_name})
-                                    if runtime_injected_user_message is not None:
-                                        tool_result = json.dumps(
-                                            {"success": False, "interrupted": True, "reason": "runtime_control"},
-                                            ensure_ascii=False,
-                                        )
-                                    else:
-                                        try:
-                                            tool_result = await _tool_task
-                                        except Exception as _stream_tool_exc:
-                                            logger.exception(
-                                                "Agent 流式工具任务异常 tool=%s session_id=%s",
-                                                fn_name,
-                                                session_id,
-                                            )
-                                            tool_result = json.dumps(
-                                                {
-                                                    "success": False,
-                                                    "error": f"工具执行失败: {type(_stream_tool_exc).__name__}: {_stream_tool_exc}",
-                                                },
-                                                ensure_ascii=False,
-                                            )
-                                else:
-                                    _tool_task = asyncio.create_task(
-                                        execute_tool(
-                                            fn_name,
-                                            fn_args,
-                                            user,
-                                            scope=session_scope,
-                                            terminal_scope_id=terminal_scope_id,
-                                            default_terminal_slot=preferred_terminal_slot,
-                                            session_id=session_id,
-                                            ui_locale=_ui_raw,
-                                        )
-                                    )
-                                    _tool_idle_ticks = 0
-                                    while True:
-                                        try:
-                                            # wait_for 会在超时时取消底层 task；用 shield 只给等待本身加超时，
-                                            # 避免 IQS search_web 等慢工具在第一轮 0.35s 轮询时被误取消。
-                                            tool_result = await asyncio.wait_for(asyncio.shield(_tool_task), timeout=0.35)
-                                            break
-                                        except asyncio.TimeoutError:
-                                            _ctrl = await _consume_runtime_control()
-                                            if not _ctrl or _ctrl["action"] not in ("stop", "pause", "supplement"):
-                                                _tool_idle_ticks += 1
-                                                # 约每 1.75s 一次心跳（0.35 * 5），慢于部分代理/浏览器的空闲判定
-                                                if _tool_idle_ticks % 5 == 0:
-                                                    yield _sse_keepalive()
-                                                continue
-                                            _tool_task.cancel()
-                                            try:
-                                                await _tool_task
-                                            except asyncio.CancelledError:
-                                                pass
-                                            except Exception:
-                                                pass
-                                            _a = _ctrl["action"]
-                                            _m = _ctrl["message"]
-                                            yield _sse({"runtime_control": {"action": _a, "accepted": True, "during_tool": fn_name}})
-                                            if _a == "stop":
-                                                yield "data: [DONE]\n\n"
-                                                return
-                                            runtime_injected_user_message = _m or "用户要求暂停当前任务，请先回答用户的新问题。"
-                                            tool_result = json.dumps(
-                                                {"success": False, "interrupted": True, "reason": "runtime_control"},
-                                                ensure_ascii=False,
-                                            )
-                                            break
-                                        except Exception as _tool_wait_exc:
-                                            # wait_for 在子任务抛错时会直接上抛（非 TimeoutError），必须接住以免 ASGI 流异常截断
-                                            logger.exception(
-                                                "Agent 非流式工具任务异常 tool=%s session_id=%s",
-                                                fn_name,
-                                                session_id,
-                                            )
-                                            tool_result = json.dumps(
-                                                {
-                                                    "success": False,
-                                                    "error": f"工具执行失败: {type(_tool_wait_exc).__name__}: {_tool_wait_exc}",
-                                                },
-                                                ensure_ascii=False,
-                                            )
-                                            break
+                                            except Exception as _tool_wait_exc:
+                                                # wait_for 在子任务抛错时会直接上抛（非 TimeoutError），必须接住以免 ASGI 流异常截断
+                                                logger.exception(
+                                                    "Agent 非流式工具任务异常 tool=%s session_id=%s",
+                                                    fn_name,
+                                                    session_id,
+                                                )
+                                                tool_result = json.dumps(
+                                                    {
+                                                        "success": False,
+                                                        "error": f"工具执行失败: {type(_tool_wait_exc).__name__}: {_tool_wait_exc}",
+                                                    },
+                                                    ensure_ascii=False,
+                                                )
+                                                break
                                 try:
                                     result_obj = json.loads(tool_result)
                                     is_success = result_obj.get("success", not result_obj.get("error"))
@@ -6890,22 +6979,23 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                     result_obj = {}
                                     is_success = False
                                 else:
-                                    try:
-                                        from services.mcp_result_fetch import enrich_tool_result_json_string
+                                    if should_enrich_tool_images(weak_network):
+                                        try:
+                                            from services.mcp_result_fetch import enrich_tool_result_json_string
 
-                                        tool_result = await enrich_tool_result_json_string(
-                                            tool_result, user, session_id=session_id
-                                        )
-                                        result_obj = json.loads(tool_result)
-                                        is_success = result_obj.get(
-                                            "success", not result_obj.get("error")
-                                        )
-                                    except Exception as _enrich_exc:
-                                        logger.debug(
-                                            "tool result image enrich skipped tool=%s: %s",
-                                            fn_name,
-                                            _enrich_exc,
-                                        )
+                                            tool_result = await enrich_tool_result_json_string(
+                                                tool_result, user, session_id=session_id
+                                            )
+                                            result_obj = json.loads(tool_result)
+                                            is_success = result_obj.get(
+                                                "success", not result_obj.get("error")
+                                            )
+                                        except Exception as _enrich_exc:
+                                            logger.debug(
+                                                "tool result image enrich skipped tool=%s: %s",
+                                                fn_name,
+                                                _enrich_exc,
+                                            )
                                 if fn_name in _AGENT_IRREVERSIBLE_TOOL_NAMES and is_success:
                                     batch_had_irreversible_success = True
                                 result_cache_id = None
@@ -7339,6 +7429,10 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                         continue
 
                     assistant_rounds += 1
+                    if should_skip_assistant_ai(weak_network, assistant_enabled):
+                        yield _sse({"stream_status": {"phase": "completed"}})
+                        yield "data: [DONE]\n\n"
+                        return
                     _asst_lang = build_output_language_system_section(
                         last_user_message or "",
                         user_output_locale=_user_ol,
@@ -7919,6 +8013,8 @@ async def run_ops_integration_chat_complete(
         logger.debug("集成注入 session_runtime 失败 sid=%s: %s", sid, _irt_exc)
 
     messages: list[dict] = [{"role": "system", "content": full_system}]
+    full_system_base_integ = full_system
+    weak_network_integ = resolve_weak_network_mode(settings)
     for m in conversation:
         if m.get("role") in ("user", "assistant"):
             messages.append({"role": m["role"], "content": m.get("content", "")})
@@ -7949,23 +8045,31 @@ async def run_ops_integration_chat_complete(
     headers = prepare_headers(provider, api_key, base_url)
     last_user_message = msg_in
     assistant_rounds = 0
+    turn_messages_start_integ = len(messages)
+    cached_round_tools_integ: list | None = None
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             while assistant_rounds < assistant_max_rounds:
                 content: str | None = None
-                # 同 agent_stream：拦截「用户上一条来自选择卡作答 + 本轮无 tool_call」
-                # 的纯文字 ack 终态，避免辅助 AI 误追问导致同一问题被问两遍。
                 round_had_tool_call = False
                 for _round_idx in range(agent_max_steps):
-                    round_tools = await resolve_chat_tools(
-                        get_tools_for_scope(tool_scope, user),
-                        tool_scope,
-                        user,
-                        session_host_id,
-                    )
-                    # 视觉降级：同 agent_stream，上游报 input_too_long / 图过大 / 不支持图像
-                    # 时自动压缩或剥离 image_url 后重试，避免直接把错误冒泡给用户。
+                    if cached_round_tools_integ is None:
+                        cached_round_tools_integ = await resolve_chat_tools(
+                            get_tools_for_scope(tool_scope, user),
+                            tool_scope,
+                            user,
+                            session_host_id,
+                        )
+                    round_tools = cached_round_tools_integ
+                    compact_turn_tool_messages(messages, turn_messages_start_integ)
+                    if messages and (messages[0].get("role") or "") == "system":
+                        messages[0]["content"] = build_system_prompt_for_step(
+                            full_system_base_integ,
+                            _round_idx,
+                            session_host_id=session_host_id,
+                            weak_network=weak_network_integ,
+                        )
                     await _reconcile_open_tool_call_messages(
                         messages,
                         user=user,
@@ -7986,6 +8090,10 @@ async def run_ops_integration_chat_complete(
                             "stream": False,
                         },
                         messages=messages,
+                        enable_vision_retries=not (
+                            weak_network_integ
+                            and getattr(_config, "AI_WEAK_NETWORK_SKIP_VISION_RETRIES", True)
+                        ),
                     )
                     if resp.status_code != 200:
                         err_msg = resp.text[:500]

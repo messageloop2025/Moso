@@ -9,7 +9,7 @@ PRODUCT_NAME_ZH = "毛竹"
 PRODUCT_NAME_EN = "Moso"
 PRODUCT_DISPLAY = f"{PRODUCT_NAME_ZH}（{PRODUCT_NAME_EN}）"  # AI 提示词中的产品指称
 
-VERSION = os.getenv("EDGEOPS_VERSION", "1.7.5-sp1")
+VERSION = os.getenv("EDGEOPS_VERSION", "1.7.5-sp2")
 
 # 数据库 / Database
 DATABASE_PATH = os.getenv("EDGEOPS_DB", str(BASE_DIR / "edgeops.db"))
@@ -58,9 +58,21 @@ AGENT_MAX_STEPS_CAP = int(os.getenv("EDGEOPS_AGENT_MAX_STEPS_CAP", "100000"))
 AGENT_POLL_WAIT_CHUNK_SEC = max(1, min(5, int(os.getenv("EDGEOPS_AGENT_POLL_WAIT_CHUNK_SEC", "1"))))
 # 模型未传 next_poll 时：sudo/输出稳定后再读、长命令默认等待、buffer 出现进度条时的等待（秒）
 AGENT_TERMINAL_POLL_SHORT = max(1, min(30, int(os.getenv("EDGEOPS_AGENT_TERMINAL_POLL_SHORT", "3"))))
-AGENT_TERMINAL_POLL_DEFAULT = max(1, min(600, int(os.getenv("EDGEOPS_AGENT_TERMINAL_POLL_DEFAULT", "12"))))
-AGENT_TERMINAL_POLL_PROGRESS = max(1, min(600, int(os.getenv("EDGEOPS_AGENT_TERMINAL_POLL_PROGRESS", "15"))))
-AGENT_TERMINAL_POLL_MAX = max(1, min(3600, int(os.getenv("EDGEOPS_AGENT_TERMINAL_POLL_MAX", "120"))))
+AGENT_TERMINAL_POLL_DEFAULT = max(1, min(600, int(os.getenv("EDGEOPS_AGENT_TERMINAL_POLL_DEFAULT", "5"))))
+AGENT_TERMINAL_POLL_PROGRESS = max(1, min(600, int(os.getenv("EDGEOPS_AGENT_TERMINAL_POLL_PROGRESS", "8"))))
+AGENT_TERMINAL_POLL_MAX = max(1, min(3600, int(os.getenv("EDGEOPS_AGENT_TERMINAL_POLL_MAX", "30"))))
+# 弱网模式：全局开关；用户 settings.ai_weak_network=true 亦可启用
+AI_WEAK_NETWORK_MODE = os.getenv("EDGEOPS_AI_WEAK_NETWORK_MODE", "false").strip().lower() in ("1", "true", "yes")
+AI_WEAK_NETWORK_SKIP_ASSISTANT = os.getenv("EDGEOPS_AI_WEAK_NETWORK_SKIP_ASSISTANT", "true").strip().lower() in ("1", "true", "yes")
+AI_WEAK_NETWORK_SKIP_TOOL_IMAGE_ENRICH = os.getenv("EDGEOPS_AI_WEAK_NETWORK_SKIP_TOOL_IMAGE_ENRICH", "true").strip().lower() in ("1", "true", "yes")
+AI_WEAK_NETWORK_SKIP_VISION_RETRIES = os.getenv("EDGEOPS_AI_WEAK_NETWORK_SKIP_VISION_RETRIES", "true").strip().lower() in ("1", "true", "yes")
+AI_CHAT_LLM_TIMEOUT_RETRIES_WEAK = max(0, int(os.getenv("EDGEOPS_AI_CHAT_LLM_TIMEOUT_RETRIES_WEAK", "1")))
+# 单 turn 内保留最近 N 条 tool 消息全文，更早的折叠为引用
+AGENT_TURN_TOOL_KEEP_PAIRS = max(1, int(os.getenv("EDGEOPS_AGENT_TURN_TOOL_KEEP_PAIRS", "2")))
+# 从第 N 个 agent step 起裁剪 system 中的终端缓冲/分组等大块（0=不裁剪）
+AGENT_SYSTEM_STRIP_AFTER_STEP = max(0, int(os.getenv("EDGEOPS_AGENT_SYSTEM_STRIP_AFTER_STEP", "1")))
+# 只读工具同批并行（无依赖时）
+AGENT_PARALLEL_READ_TOOLS = os.getenv("EDGEOPS_AGENT_PARALLEL_READ_TOOLS", "true").strip().lower() in ("1", "true", "yes")
 # 会话 session_runtime_json：已完成 ssh 后台任务在库中保留给 AI 参考的时长（秒）
 SESSION_RUNTIME_FINISHED_TTL_SEC = int(os.getenv("EDGEOPS_SESSION_RUNTIME_FINISHED_TTL_SEC", "3600"))
 SESSION_RUNTIME_MAX_ITEMS = int(os.getenv("EDGEOPS_SESSION_RUNTIME_MAX_ITEMS", "20"))
@@ -190,7 +202,7 @@ CHAT_TOOL_SPILL_READ_DEFAULT_TAIL_CHARS = int(os.getenv("EDGEOPS_CHAT_TOOL_SPILL
 CHAT_TOOL_SPILL_READ_DEFAULT_RANGE_CHARS = int(os.getenv("EDGEOPS_CHAT_TOOL_SPILL_READ_DEFAULT_RANGE_CHARS", "64000"))
 # read_chat_data 写入 Agent 上下文时的最大字符数（豁免 JSON 字段压缩，避免 content 被压到 ~1400）
 CHAT_TOOL_SPILL_READ_MESSAGE_MAX_CHARS = int(
-    os.getenv("EDGEOPS_CHAT_TOOL_SPILL_READ_MESSAGE_MAX_CHARS", "128000")
+    os.getenv("EDGEOPS_CHAT_TOOL_SPILL_READ_MESSAGE_MAX_CHARS", "32000")
 )
 # 历史消息按字符预算裁剪时，单条配额低于此值则 tool 消息中的溢出块可收缩为仅哨兵行（引导 read_chat_data）。
 CHAT_HISTORY_TOOL_SPILL_SHRINK_THRESHOLD = int(os.getenv("EDGEOPS_CHAT_HISTORY_TOOL_SPILL_SHRINK_THRESHOLD", "900"))

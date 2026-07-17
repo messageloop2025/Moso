@@ -36,8 +36,12 @@ from services.llm_adapter import (
     detect_provider,
     ensure_chat_completions_url,
     extract_message_content,
+    extract_stream_delta,
+    finalize_tool_calls,
+    merge_tool_call_deltas,
     normalize_model,
     parse_chat_response,
+    parse_stream_line,
     prepare_headers,
 )
 from services.ai_output_language import build_output_language_system_section
@@ -225,6 +229,7 @@ async def run_sub_ai(
         {"role": "system", "content": final_system},
         {"role": "user", "content": task},
     ]
+    from services.agent_optimize import compact_turn_tool_messages
 
     t0 = time.time()
     steps = 0
@@ -247,30 +252,55 @@ async def run_sub_ai(
                     "model": model,
                     "messages": messages,
                     "max_tokens": DEFAULT_MAX_TOKENS,
+                    "stream": True,
                 }
                 if tools_for_subai:
                     payload["tools"] = tools_for_subai
                     payload["tool_choice"] = "auto"
                 try:
-                    resp = await client.post(api_url, headers=headers, json=payload)
+                    async with client.stream("POST", api_url, headers=headers, json=payload) as resp:
+                        if resp.status_code != 200:
+                            err_body = (await resp.aread())[:300].decode("utf-8", errors="replace")
+                            try:
+                                j = json.loads(err_body)
+                                err_detail = (
+                                    j.get("error", {}).get("message", err_body)
+                                    if isinstance(j.get("error"), dict)
+                                    else j.get("message", err_body)
+                                )
+                            except Exception:
+                                err_detail = err_body
+                            err = f"LLM 返回 HTTP {resp.status_code}：{err_detail}"
+                            break
+                        tool_acc: list[dict] = []
+                        content_parts: list[str] = []
+                        async for line in resp.aiter_lines():
+                            chunk = parse_stream_line(line)
+                            if not chunk:
+                                continue
+                            c_delta, _r_delta, tc_delta, _finish = extract_stream_delta(chunk)
+                            if c_delta:
+                                content_parts.append(c_delta)
+                                if on_step:
+                                    try:
+                                        await on_step({
+                                            "kind": "sub_ai_token",
+                                            "step": steps,
+                                            "text": c_delta,
+                                        })
+                                    except Exception:
+                                        pass
+                            if tc_delta:
+                                merge_tool_call_deltas(tool_acc, tc_delta)
+                        final_content = "".join(content_parts)
+                        tool_calls = finalize_tool_calls(tool_acc) if tool_acc else []
+                        msg = {"content": final_content}
                 except Exception as e:
                     err = f"LLM 请求异常：{type(e).__name__}: {e}"
                     break
-                if resp.status_code != 200:
-                    err_detail = resp.text[:300]
-                    try:
-                        j = resp.json()
-                        err_detail = j.get("error", {}).get("message", err_detail) if isinstance(j.get("error"), dict) else j.get("message", err_detail)
-                    except Exception:
-                        pass
-                    err = f"LLM 返回 HTTP {resp.status_code}：{err_detail}"
+
+                if err:
                     break
-                try:
-                    result = resp.json()
-                except Exception:
-                    err = "LLM 返回非 JSON"
-                    break
-                msg, tool_calls = parse_chat_response(result)
 
                 if tool_calls:
                     messages.append({
@@ -331,6 +361,7 @@ async def run_sub_ai(
                             "tool_call_id": fn_id,
                             "content": _body,
                         })
+                    compact_turn_tool_messages(messages, turn_start=1)
                     continue
 
                 final_text = (extract_message_content(msg) or "").strip()
