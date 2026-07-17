@@ -27,6 +27,7 @@ class SftpTransferResult:
     files_transferred: int = 0
     duration_sec: float = 0.0
     interrupted: bool = False
+    resolved_remote_path: Optional[str] = None
 
 
 @dataclass
@@ -103,6 +104,38 @@ def _sftp_mkdir_p(sftp, remote_dir: str) -> None:
             sftp.mkdir(cur)
         except OSError:
             pass
+
+
+def expand_sftp_tilde(sftp, remote_path: str) -> str:
+    """将 ~/path 展开为 SFTP 会话 home 下的绝对路径（paramiko 不自动展开 ~）。"""
+    p = (remote_path or "").replace("\\", "/").strip()
+    if not p or p == "/":
+        return p or "/"
+    if p == "~":
+        return sftp.normalize(".").replace("\\", "/")
+    if p.startswith("~/"):
+        home = sftp.normalize(".").replace("\\", "/").rstrip("/")
+        suffix = p[2:].lstrip("/")
+        return f"{home}/{suffix}" if suffix else home
+    return p
+
+
+def resolve_remote_push_target(
+    sftp,
+    remote_path: str,
+    local_name: str,
+) -> str:
+    """解析单文件上传目标：展开 ~；remote 以 / 结尾或已存在为目录时追加 local 文件名。"""
+    remote = expand_sftp_tilde(sftp, remote_path).replace("\\", "/")
+    if remote.endswith("/"):
+        return posixpath.join(remote.rstrip("/"), local_name)
+    try:
+        st = sftp.stat(remote)
+        if _is_dir_mode(st.st_mode):
+            return posixpath.join(remote.rstrip("/"), local_name)
+    except OSError:
+        pass
+    return remote
 
 
 def _local_tree_plan(local_root: Path) -> tuple[list[tuple[Path, str]], int]:
@@ -260,6 +293,11 @@ def sftp_push_path_sync(
             if state.check_cancel():
                 return SftpTransferResult(False, error="传输已取消", interrupted=True, duration_sec=time.time() - started)
 
+            remote_file = resolve_remote_push_target(sftp, remote_path, local_p.name)
+            parent = posixpath.dirname(remote_file)
+            if parent and parent not in ("", "/"):
+                _sftp_mkdir_p(sftp, parent)
+
             file_base = transferred = [0]
 
             def _cb(tx: int, total: int) -> None:
@@ -267,9 +305,10 @@ def sftp_push_path_sync(
                 state.transferred_bytes = bytes_done + tx
                 state.emit_progress()
 
-            sftp.put(str(local_p), remote_path.replace("\\", "/"), callback=_cb)
+            sftp.put(str(local_p), remote_file, callback=_cb)
             bytes_done += local_p.stat().st_size
             files_done = 1
+            resolved_remote = remote_file
         elif local_p.is_dir():
             if not recursive:
                 return SftpTransferResult(False, error="本地路径为目录，请设置 recursive=true")
@@ -279,9 +318,10 @@ def sftp_push_path_sync(
                 return SftpTransferResult(False, error=f"本地目录文件数超过上限 {max_files}")
             state.files_total = len(plan)
             state.total_bytes = total
-            remote_base = remote_path.replace("\\", "/").rstrip("/")
+            remote_base = expand_sftp_tilde(sftp, remote_path).replace("\\", "/").rstrip("/")
             _sftp_mkdir_p(sftp, remote_base)
             state.emit_progress(force=True, phase="start")
+            resolved_remote = remote_base
 
             for idx, (abs_f, rel) in enumerate(plan, start=1):
                 if state.check_cancel():
@@ -317,6 +357,15 @@ def sftp_push_path_sync(
         state.emit_progress(force=True, phase="done")
         return SftpTransferResult(
             True,
+            bytes_transferred=bytes_done,
+            files_transferred=files_done,
+            duration_sec=round(time.time() - started, 2),
+            resolved_remote_path=resolved_remote,
+        )
+    except FileNotFoundError as e:
+        return SftpTransferResult(
+            False,
+            error=f"远程路径不存在或无法访问（SFTP 不识别 ~，请用绝对路径或目录末尾加 /）：{e}",
             bytes_transferred=bytes_done,
             files_transferred=files_done,
             duration_sec=round(time.time() - started, 2),

@@ -9,8 +9,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import python_minifier
-
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_PLATFORM = "linux.x86_64"
@@ -353,6 +351,12 @@ def validate_python_code(code: str, path: Path) -> None:
 
 
 def minify_python_file(src: Path, dst: Path) -> None:
+    try:
+        import python_minifier
+    except ImportError as exc:
+        raise RuntimeError(
+            "未安装 python-minifier，minify 模式需要：python -m pip install python-minifier"
+        ) from exc
     code = src.read_text(encoding="utf-8")
     try:
         minified = python_minifier.minify(

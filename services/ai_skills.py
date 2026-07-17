@@ -2209,13 +2209,18 @@ TOOLS = [
             "description": (
                 "通过 **SFTP** 将文件或目录推送到主机（流式传输，支持大文件与目录树，调用卡会显示进度）。"
                 "二选一：1) **content** 文本字符串（适合小脚本）；2) **local_path** **相对工作区根**的路径（文件或目录，支持二进制）。"
-                "目录上传需 **recursive=true**。大文件/安装包优先 local_path，勿用 content。**禁止** OS 绝对路径。"
+                "目录上传需 **recursive=true**。大文件/安装包优先 local_path，勿用 content。**禁止** OS 绝对路径。\n"
+                "**remote_path**：可为完整远程文件路径（如 `/tmp/moss.tgz`），或**目录**（如 `/tmp/`、`~/moss/`，"
+                "会自动追加 local 文件名并创建父目录）。`~/…` 会展开为远端 home。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "host_id": {"type": "integer", "description": "主机 ID"},
-                    "remote_path": {"type": "string", "description": "远程路径，如 /tmp/script.sh 或 /tmp/mydir/"},
+                    "remote_path": {
+                        "type": "string",
+                        "description": "远程路径：完整文件路径，或目录（末尾 / 或已存在目录，自动追加文件名），如 ~/moss/ 或 /tmp/pkg.tgz",
+                    },
                     "content": {"type": "string", "description": "文本内容（与 local_path 二选一，仅适合小文本）"},
                     "local_path": {"type": "string", "description": "相对工作区根的路径（文件或目录），与 content 二选一；例 scripts/deploy.sh"},
                     "recursive": {"type": "boolean", "description": "local_path 为目录时必须 true"},
@@ -12129,8 +12134,8 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 return json.dumps(
                     {
                         "success": True,
-                        "message": f"已上传至 {remote_path}",
-                        "remote_path": remote_path,
+                        "message": f"已上传至 {result.resolved_remote_path or remote_path}",
+                        "remote_path": result.resolved_remote_path or remote_path,
                         "local_path": local_path,
                         "bytes_transferred": result.bytes_transferred,
                         "files_transferred": result.files_transferred,
