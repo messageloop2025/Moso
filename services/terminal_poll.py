@@ -9,10 +9,10 @@ import config as _config
 # 模型显式传入时优先；否则按命令 / buffer 启发式
 _POLL_MIN = 1
 _POLL_MAX = 3600
-_POLL_SHORT = max(1, min(30, int(getattr(_config, "AGENT_TERMINAL_POLL_SHORT", 3))))
-_POLL_DEFAULT = max(_POLL_SHORT, min(600, int(getattr(_config, "AGENT_TERMINAL_POLL_DEFAULT", 12))))
-_POLL_PROGRESS = max(_POLL_DEFAULT, min(600, int(getattr(_config, "AGENT_TERMINAL_POLL_PROGRESS", 15))))
-_POLL_MAX_AUTO = max(_POLL_PROGRESS, min(_POLL_MAX, int(getattr(_config, "AGENT_TERMINAL_POLL_MAX", 120))))
+_POLL_SHORT = max(1, min(30, int(getattr(_config, "AGENT_TERMINAL_POLL_SHORT", 1))))
+_POLL_DEFAULT = max(_POLL_SHORT, min(600, int(getattr(_config, "AGENT_TERMINAL_POLL_DEFAULT", 2))))
+_POLL_PROGRESS = max(_POLL_DEFAULT, min(600, int(getattr(_config, "AGENT_TERMINAL_POLL_PROGRESS", 3))))
+_POLL_MAX_AUTO = max(_POLL_PROGRESS, min(_POLL_MAX, int(getattr(_config, "AGENT_TERMINAL_POLL_MAX", 8))))
 
 # 发命令后常见长耗时关键词（一行或多行命令）
 _LONG_CMD_RE = re.compile(
@@ -120,7 +120,8 @@ def resolve_terminal_poll_seconds(
 ) -> int:
     """
     合并模型显式值、发命令启发式、buffer 启发式。
-    显式 > 0 时与启发式取 max（模型可拉长，不建议缩短到 0 除非 buffer 已完成）。
+    buffer 已回到提示符/完成态时强制 0（忽略模型显式 next_poll，避免空等）。
+    未完成时：显式 > 0 与启发式取 max（模型可拉长）。
     """
     exp = 0
     if explicit is not None:
@@ -131,14 +132,15 @@ def resolve_terminal_poll_seconds(
 
     buf_poll = infer_poll_from_buffer(buffer)
     send_poll = max(0, int(send_hint or 0))
+    tail = (buffer or "")[-2000:]
 
-    if buf_poll == 0 and _COMPLETE_TAIL_RE.search((buffer or "")[-2000:]):
-        # 输出已稳定：仅当模型明确要求等待时才等
-        return exp
+    if buf_poll == 0 and _COMPLETE_TAIL_RE.search(tail):
+        # 输出已稳定：强制 0，不再被模型显式 N 拉长
+        return 0
 
     auto = max(send_poll, buf_poll)
     if exp > 0:
-        return max(exp, auto)
+        return min(_POLL_MAX_AUTO, max(exp, auto))
     return min(auto, _POLL_MAX_AUTO) if auto > 0 else 0
 
 
@@ -194,7 +196,8 @@ class TerminalPollBatchState:
         """本批只有 send、没有 get_terminal_buffer 时，在批次末尾补等待。"""
         if self.had_get_buffer_after_send or self.send_hint <= 0:
             return 0
-        return self.send_hint
+        # 长命令 hint 上限压到 DEFAULT，避免只 send 就空等过久
+        return min(self.send_hint, _POLL_DEFAULT)
 
 
 def infer_poll_from_ssh_result(result_obj: dict) -> int:

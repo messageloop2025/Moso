@@ -9,7 +9,7 @@ PRODUCT_NAME_ZH = "毛竹"
 PRODUCT_NAME_EN = "Moso"
 PRODUCT_DISPLAY = f"{PRODUCT_NAME_ZH}（{PRODUCT_NAME_EN}）"  # AI 提示词中的产品指称
 
-VERSION = os.getenv("EDGEOPS_VERSION", "1.7.5-sp2")
+VERSION = os.getenv("EDGEOPS_VERSION", "1.7.6")
 
 # 数据库 / Database
 DATABASE_PATH = os.getenv("EDGEOPS_DB", str(BASE_DIR / "edgeops.db"))
@@ -57,11 +57,11 @@ AGENT_MAX_STEPS_CAP = int(os.getenv("EDGEOPS_AGENT_MAX_STEPS_CAP", "100000"))
 # Agent 轮询等待（get_terminal_buffer next_poll_in_seconds）分片间隔（秒），便于 SSE 心跳与用户中断
 AGENT_POLL_WAIT_CHUNK_SEC = max(1, min(5, int(os.getenv("EDGEOPS_AGENT_POLL_WAIT_CHUNK_SEC", "1"))))
 # 模型未传 next_poll 时：sudo/输出稳定后再读、长命令默认等待、buffer 出现进度条时的等待（秒）
-AGENT_TERMINAL_POLL_SHORT = max(1, min(30, int(os.getenv("EDGEOPS_AGENT_TERMINAL_POLL_SHORT", "3"))))
-AGENT_TERMINAL_POLL_DEFAULT = max(1, min(600, int(os.getenv("EDGEOPS_AGENT_TERMINAL_POLL_DEFAULT", "5"))))
-AGENT_TERMINAL_POLL_PROGRESS = max(1, min(600, int(os.getenv("EDGEOPS_AGENT_TERMINAL_POLL_PROGRESS", "8"))))
-AGENT_TERMINAL_POLL_MAX = max(1, min(3600, int(os.getenv("EDGEOPS_AGENT_TERMINAL_POLL_MAX", "30"))))
-# 弱网模式：全局开关；用户 settings.ai_weak_network=true 亦可启用
+AGENT_TERMINAL_POLL_SHORT = max(1, min(30, int(os.getenv("EDGEOPS_AGENT_TERMINAL_POLL_SHORT", "1"))))
+AGENT_TERMINAL_POLL_DEFAULT = max(1, min(600, int(os.getenv("EDGEOPS_AGENT_TERMINAL_POLL_DEFAULT", "2"))))
+AGENT_TERMINAL_POLL_PROGRESS = max(1, min(600, int(os.getenv("EDGEOPS_AGENT_TERMINAL_POLL_PROGRESS", "3"))))
+AGENT_TERMINAL_POLL_MAX = max(1, min(3600, int(os.getenv("EDGEOPS_AGENT_TERMINAL_POLL_MAX", "8"))))
+# 弱网模式：仅附加提示词等轻量差异；减负策略默认开启，不再依赖本开关
 AI_WEAK_NETWORK_MODE = os.getenv("EDGEOPS_AI_WEAK_NETWORK_MODE", "false").strip().lower() in ("1", "true", "yes")
 AI_WEAK_NETWORK_SKIP_ASSISTANT = os.getenv("EDGEOPS_AI_WEAK_NETWORK_SKIP_ASSISTANT", "true").strip().lower() in ("1", "true", "yes")
 AI_WEAK_NETWORK_SKIP_TOOL_IMAGE_ENRICH = os.getenv("EDGEOPS_AI_WEAK_NETWORK_SKIP_TOOL_IMAGE_ENRICH", "true").strip().lower() in ("1", "true", "yes")
@@ -73,6 +73,14 @@ AGENT_TURN_TOOL_KEEP_PAIRS = max(1, int(os.getenv("EDGEOPS_AGENT_TURN_TOOL_KEEP_
 AGENT_SYSTEM_STRIP_AFTER_STEP = max(0, int(os.getenv("EDGEOPS_AGENT_SYSTEM_STRIP_AFTER_STEP", "1")))
 # 只读工具同批并行（无依赖时）
 AGENT_PARALLEL_READ_TOOLS = os.getenv("EDGEOPS_AGENT_PARALLEL_READ_TOOLS", "true").strip().lower() in ("1", "true", "yes")
+# 轻量对话快路径：问候/闲聊不注入主机列表与全量 tools（显著降低 TTFT）
+AGENT_LIGHTWEIGHT_CHAT = os.getenv("EDGEOPS_AGENT_LIGHTWEIGHT_CHAT", "true").strip().lower() in ("1", "true", "yes")
+# 轻量对话不传 tools（tool_choice 等效 none）；false 时仍传极小工具集
+AGENT_LIGHTWEIGHT_NO_TOOLS = os.getenv("EDGEOPS_AGENT_LIGHTWEIGHT_NO_TOOLS", "true").strip().lower() in ("1", "true", "yes")
+# 无 tool_call 的闲聊回复后跳过辅助 AI（避免「在吗」打两轮 LLM）
+AGENT_SKIP_ASSISTANT_ON_CHAT = os.getenv("EDGEOPS_AGENT_SKIP_ASSISTANT_ON_CHAT", "true").strip().lower() in ("1", "true", "yes")
+# 运维工具分层：按意图只传 core/terminal/fs/http 子集（false=始终全量）
+AGENT_TOOL_TIERING = os.getenv("EDGEOPS_AGENT_TOOL_TIERING", "true").strip().lower() in ("1", "true", "yes")
 # 会话 session_runtime_json：已完成 ssh 后台任务在库中保留给 AI 参考的时长（秒）
 SESSION_RUNTIME_FINISHED_TTL_SEC = int(os.getenv("EDGEOPS_SESSION_RUNTIME_FINISHED_TTL_SEC", "3600"))
 SESSION_RUNTIME_MAX_ITEMS = int(os.getenv("EDGEOPS_SESSION_RUNTIME_MAX_ITEMS", "20"))
@@ -114,7 +122,7 @@ USER_SEND_EMAIL_ATTACHMENT_MAX_FILES = int(os.getenv("EDGEOPS_USER_SEND_EMAIL_AT
 AI_CHAT_HTTP_READ_TIMEOUT_SEC = float(os.getenv("EDGEOPS_AI_CHAT_HTTP_READ_TIMEOUT_SEC", "240"))
 # LLM 单次请求遇 httpx 超时后的**额外**重试次数（不含首次）。例如 3 表示最多共 4 次尝试。
 # Extra attempts after a timeout (not counting the first request). 3 => up to 4 tries total.
-AI_CHAT_LLM_TIMEOUT_RETRIES = max(0, int(os.getenv("EDGEOPS_AI_CHAT_LLM_TIMEOUT_RETRIES", "3")))
+AI_CHAT_LLM_TIMEOUT_RETRIES = max(0, int(os.getenv("EDGEOPS_AI_CHAT_LLM_TIMEOUT_RETRIES", "1")))
 # 单条 ai_chat_messages.content 保存上限（字符）；长任务工具轨迹会嵌入同条 assistant 消息
 AI_MESSAGE_SAVE_MAX = int(os.getenv("EDGEOPS_AI_MESSAGE_SAVE_MAX", "2000000"))
 # 工具调用轨迹（TOOL_TRACE 哨兵）持久化：最多步数、单块 JSON 体积、最多块数、预览截断

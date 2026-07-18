@@ -31,6 +31,65 @@ _TOOL_NAME_RE = re.compile(r"^user_mcp_(\d+)__(.+)$")
 _TOOLS_CACHE: dict[tuple[int, int], tuple[float, str, list[dict]]] = {}
 _CACHE_TTL_SEC = 300.0
 
+# 会话内 MCP 熔断：某 server 连接/调用失败后，本会话不再探测，直到用户要求重试
+_SESSION_MCP_SKIP: dict[int, set[int]] = {}
+_MCP_LIST_CONNECT_TIMEOUT_SEC = 5.0
+_MCP_RETRY_USER_RE = re.compile(
+    r"(mcp\s*恢复|恢复\s*mcp|重试\s*mcp|mcp\s*重试|重新\s*连接\s*mcp|mcp\s*重连|"
+    r"retry\s*mcp|mcp\s*retry|reconnect\s*mcp)",
+    re.IGNORECASE,
+)
+
+
+def user_requests_mcp_retry(message: str | None) -> bool:
+    return bool(_MCP_RETRY_USER_RE.search((message or "").strip()))
+
+
+def clear_session_mcp_skip(session_id: int | None, *, server_id: int | None = None) -> None:
+    if session_id is None:
+        return
+    sid = int(session_id)
+    if server_id is None:
+        _SESSION_MCP_SKIP.pop(sid, None)
+        return
+    skipped = _SESSION_MCP_SKIP.get(sid)
+    if not skipped:
+        return
+    skipped.discard(int(server_id))
+    if not skipped:
+        _SESSION_MCP_SKIP.pop(sid, None)
+
+
+def mark_session_mcp_skip(session_id: int | None, server_id: int, *, reason: str = "") -> None:
+    if session_id is None:
+        return
+    sid = int(session_id)
+    bucket = _SESSION_MCP_SKIP.setdefault(sid, set())
+    bucket.add(int(server_id))
+    logger.info(
+        "MCP session circuit open session_id=%s server_id=%s reason=%s",
+        sid,
+        server_id,
+        (reason or "")[:200],
+    )
+
+
+def is_session_mcp_skipped(session_id: int | None, server_id: int) -> bool:
+    if session_id is None:
+        return False
+    return int(server_id) in _SESSION_MCP_SKIP.get(int(session_id), set())
+
+
+def _server_known_failed(row: dict) -> bool:
+    """配置页「连接失败」后，聊天热路径不再反复连（除非用户要求重试）。"""
+    ok = row.get("last_test_ok")
+    if ok is None:
+        return False
+    try:
+        return int(ok) == 0
+    except (TypeError, ValueError):
+        return False
+
 
 def _format_mcp_error(exc: BaseException) -> str:
     """展开 TaskGroup / ExceptionGroup，避免 UI 只显示泛化错误。"""
@@ -83,9 +142,15 @@ def invalidate_user_mcp_cache(user_id: int | None = None, server_id: int | None 
 
 
 @asynccontextmanager
-async def open_mcp_session(row: dict) -> AsyncIterator[ClientSession]:
+async def open_mcp_session(
+    row: dict,
+    *,
+    connect_timeout: float | None = None,
+) -> AsyncIterator[ClientSession]:
     transport = (row.get("transport") or "stdio").strip().lower()
     cfg = parse_config_json(row.get("config_json"))
+    timeout = float(connect_timeout) if connect_timeout is not None else 30.0
+    timeout = max(1.0, min(120.0, timeout))
     if transport == "stdio":
         params = StdioServerParameters(
             command=cfg["command"],
@@ -98,7 +163,9 @@ async def open_mcp_session(row: dict) -> AsyncIterator[ClientSession]:
                 yield session
     elif transport == "sse":
         headers = {k: v for k, v in (cfg.get("headers") or {}).items() if v}
-        async with sse_client(cfg["url"], headers=headers or None, timeout=30, sse_read_timeout=120) as (
+        async with sse_client(
+            cfg["url"], headers=headers or None, timeout=timeout, sse_read_timeout=120
+        ) as (
             read,
             write,
         ):
@@ -107,7 +174,9 @@ async def open_mcp_session(row: dict) -> AsyncIterator[ClientSession]:
                 yield session
     elif transport == "streamable_http":
         headers = {k: v for k, v in (cfg.get("headers") or {}).items() if v}
-        async with streamablehttp_client(cfg["url"], headers=headers or None, timeout=30, sse_read_timeout=120) as (
+        async with streamablehttp_client(
+            cfg["url"], headers=headers or None, timeout=timeout, sse_read_timeout=120
+        ) as (
             read,
             write,
             _get_session_id,
@@ -140,7 +209,12 @@ def _mcp_tool_to_openai(row: dict, tool) -> dict:
     }
 
 
-async def _list_server_openai_tools(row: dict, *, use_cache: bool = True) -> list[dict]:
+async def _list_server_openai_tools(
+    row: dict,
+    *,
+    use_cache: bool = True,
+    connect_timeout: float | None = None,
+) -> list[dict]:
     user_id = int(row["user_id"])
     server_id = int(row["id"])
     cache_key = (user_id, server_id)
@@ -150,7 +224,7 @@ async def _list_server_openai_tools(row: dict, *, use_cache: bool = True) -> lis
         cached = _TOOLS_CACHE.get(cache_key)
         if cached and cached[0] > now and cached[1] == version:
             return list(cached[2])
-    async with open_mcp_session(row) as session:
+    async with open_mcp_session(row, connect_timeout=connect_timeout) as session:
         result = await session.list_tools()
         tools = getattr(result, "tools", None) or []
     openai_tools = [_mcp_tool_to_openai(row, t) for t in tools]
@@ -167,6 +241,8 @@ async def test_user_mcp_server(db, user_id: int, row: dict) -> dict:
         names = [getattr(t, "name", None) or t.get("name") for t in tools]  # type: ignore[union-attr]
         await update_server_test_result(db, server_id, ok=True, tool_count=len(names), error="")
         invalidate_user_mcp_cache(user_id=user_id, server_id=server_id)
+        for sid in list(_SESSION_MCP_SKIP):
+            clear_session_mcp_skip(sid, server_id=server_id)
         return {
             "success": True,
             "tool_count": len(names),
@@ -219,27 +295,66 @@ async def load_user_mcp_tools_for_llm(
     user_id: int,
     session_scope: str | None = None,
     session_host_id: int | None = None,
+    *,
+    session_id: int | None = None,
+    force_retry: bool = False,
 ) -> list[dict]:
+    if force_retry and session_id is not None:
+        clear_session_mcp_skip(session_id)
+        invalidate_user_mcp_cache(user_id=user_id)
+
     db = await get_db()
     servers = await list_chat_enabled_servers_for_context(
         db, user_id, session_scope, session_host_id
     )
     out: list[dict] = []
     for row in servers:
+        server_id = int(row.get("id") or 0)
+        if not server_id:
+            continue
+        if not force_retry and is_session_mcp_skipped(session_id, server_id):
+            continue
+        if not force_retry and _server_known_failed(row):
+            # 配置页已标记连接失败：本会话直接跳过，避免每次聊天卡在 TCP 超时
+            mark_session_mcp_skip(
+                session_id,
+                server_id,
+                reason=(row.get("last_error") or "last_test_ok=0")[:200],
+            )
+            logger.info(
+                "Skip known-failed MCP server id=%s name=%s session_id=%s",
+                server_id,
+                row.get("name"),
+                session_id,
+            )
+            continue
         try:
-            tools = await _list_server_openai_tools(row, use_cache=True)
+            tools = await _list_server_openai_tools(
+                row,
+                use_cache=not force_retry,
+                connect_timeout=_MCP_LIST_CONNECT_TIMEOUT_SEC,
+            )
             for t in tools:
                 fn = dict(t.get("function") or {})
                 fn.pop("_mcp_server_id", None)
                 fn.pop("_mcp_tool_name", None)
                 out.append({"type": "function", "function": fn})
         except Exception as e:
+            msg = _format_mcp_error(e)
             logger.warning(
-                "Skip MCP server id=%s for user=%s: %s",
-                row.get("id"),
+                "Skip MCP server id=%s for user=%s session_id=%s: %s",
+                server_id,
                 user_id,
-                e,
+                session_id,
+                msg,
             )
+            mark_session_mcp_skip(session_id, server_id, reason=msg)
+            try:
+                await update_server_test_result(
+                    db, server_id, ok=False, tool_count=0, error=msg
+                )
+            except Exception:
+                pass
     return out
 
 
@@ -263,6 +378,20 @@ async def invoke_user_mcp_tool(
         return json.dumps({"success": False, "error": "MCP 服务器不存在或未启用"}, ensure_ascii=False)
     row = dict(rows[0])
     args = dict(arguments or {})
+    if is_session_mcp_skipped(session_id, server_id):
+        return json.dumps(
+            {
+                "success": False,
+                "error": (
+                    f"MCP 服务器「{row.get('name') or server_id}」本会话已熔断（此前连接失败）。"
+                    "若已恢复，请发送「重试 MCP」或「MCP 恢复」后再用。"
+                ),
+                "tool": original_tool,
+                "server_id": server_id,
+                "circuit_open": True,
+            },
+            ensure_ascii=False,
+        )
     try:
         async with open_mcp_session(row) as session:
             result = await session.call_tool(original_tool, args)
@@ -289,7 +418,21 @@ async def invoke_user_mcp_tool(
     except Exception as e:
         msg = _format_mcp_error(e)
         logger.warning("MCP call_tool failed %s: %s", prefixed_name, msg)
-        return json.dumps({"success": False, "error": msg, "tool": original_tool}, ensure_ascii=False)
+        mark_session_mcp_skip(session_id, server_id, reason=msg)
+        try:
+            await update_server_test_result(db, server_id, ok=False, tool_count=0, error=msg)
+        except Exception:
+            pass
+        return json.dumps(
+            {
+                "success": False,
+                "error": msg,
+                "tool": original_tool,
+                "circuit_open": True,
+                "hint": "本会话已暂时禁用该 MCP；恢复后请发送「重试 MCP」。",
+            },
+            ensure_ascii=False,
+        )
 
 
 async def resolve_chat_tools(
@@ -297,6 +440,9 @@ async def resolve_chat_tools(
     session_scope: str | None,
     user: dict,
     session_host_id: int | None = None,
+    *,
+    session_id: int | None = None,
+    user_message: str | None = None,
 ) -> list:
     from services.credential_vault import filter_credential_vault_tools
 
@@ -304,9 +450,14 @@ async def resolve_chat_tools(
     scope_val = (session_scope or "default").strip().lower() or "default"
     if scope_val == "task":
         return base_tools
+    force_retry = user_requests_mcp_retry(user_message)
     try:
         extra = await load_user_mcp_tools_for_llm(
-            int(user["id"]), session_scope, session_host_id
+            int(user["id"]),
+            session_scope,
+            session_host_id,
+            session_id=session_id,
+            force_retry=force_retry,
         )
     except Exception as e:
         logger.warning("load_user_mcp_tools_for_llm failed user=%s: %s", user.get("id"), e)

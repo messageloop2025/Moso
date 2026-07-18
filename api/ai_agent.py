@@ -60,12 +60,20 @@ from services.ai_output_language import build_output_language_system_section, re
 from services.user_mcp_client import resolve_chat_tools
 from services.agent_optimize import (
     agent_can_parallel_read_tools,
+    build_lightweight_system_prompt,
     build_system_prompt_for_step,
     compact_turn_tool_messages,
     effective_llm_timeout_retries,
+    filter_tools_for_message,
+    is_lightweight_chat_message,
+    message_needs_html_artifact,
+    message_needs_ssh_terminal_rules,
+    resolve_tools_tier,
     resolve_weak_network_mode,
     should_enrich_tool_images,
+    should_skip_assistant_after_chat,
     should_skip_assistant_ai,
+    slim_context_for_lightweight,
 )
 
 _USER_MCP_SYSTEM_HINT = (
@@ -73,6 +81,8 @@ _USER_MCP_SYSTEM_HINT = (
     "可用工具：list_user_mcp_servers、configure_user_mcp_server、import_user_mcp_config、export_user_mcp_config、"
     "test_user_mcp_server、refresh_user_mcp_tools、delete_user_mcp_server。"
     "配置并启用且勾选场景开关后，MCP 工具会自动并入对应 AI 聊天。"
+    "若某 MCP 连接失败，**本会话会自动熔断跳过**该服务器（避免反复超时拖慢对话）；"
+    "用户说「重试 MCP」「MCP 恢复」后会重新探测。"
     "生图等 MCP 若返回 OSS/临时签名 URL，系统会自动拉取为 `/api/ai/attachments/<uuid>`；"
     "向用户展示图片须用 `fetched_assets[].local_url` 或 `markdown_image`（形如 `![描述](/api/ai/attachments/<uuid>)`）；前端会自动加鉴权并内联显示，勿直接贴 OSS source_url。"
 )
@@ -1965,20 +1975,23 @@ async def _stream_chat_with_vision_fallback(
     # 提升为标准 image_url user 段，模型才能看到并据此自检修正标注。
     if _promote_recent_tool_image_to_user_message(messages):
         logger.info("vision(stream): 已把最近工具产出图提升为可见 image_url 段")
-    # 与非流式版保持一致：发送前把历史轮次里重复出现的 base64 占位化，避免
-    # 同一张图反复塞进上下文导致 provider 算 token 时打爆窗口
-    _dedup = _deduplicate_vision_base64_in_messages(messages)
-    if _dedup.get("placeholders"):
-        logger.info(
-            "vision-dedupe(stream): 历史 base64 占位化 count=%d bytes_saved=%d",
-            _dedup["placeholders"], _dedup["bytes_saved"],
-        )
-    _shrink_messages_vision_inline(messages)
+    has_images = _messages_have_image_url(messages)
+    # 无图 fast-path：跳过 dedupe/shrink 与视觉重试阶梯，降低每步固定开销
+    if has_images:
+        # 与非流式版保持一致：发送前把历史轮次里重复出现的 base64 占位化，避免
+        # 同一张图反复塞进上下文导致 provider 算 token 时打爆窗口
+        _dedup = _deduplicate_vision_base64_in_messages(messages)
+        if _dedup.get("placeholders"):
+            logger.info(
+                "vision-dedupe(stream): 历史 base64 占位化 count=%d bytes_saved=%d",
+                _dedup["placeholders"], _dedup["bytes_saved"],
+            )
+        _shrink_messages_vision_inline(messages)
 
     # 视觉降级状态机：先尝试原始一次；若首帧报错且消息里有图，则按压缩阶梯逐档
     # 重试，最后再尝试整体剥离图片。没图的请求则只跑 attempts[0]
     attempts: list[str] = ["original"]
-    if enable_vision_retries and _messages_have_image_url(messages):
+    if enable_vision_retries and has_images:
         for (_max_side, _q, _label) in _VISION_COMPRESS_STAGES:
             attempts.append(f"compress:{_label}")
         attempts.append("strip")
@@ -2746,6 +2759,8 @@ def _compact_system_prompt_for_request(system_prompt: str, user_message: str) ->
     need_graph = any(k in q for k in ("流程图", "时序图", "网络图", "拓扑", "mermaid", "markmap", "echarts", "svg", "图表", "思维导图", "矢量图", "图标"))
     need_mail = any(k in q for k in ("邮件", "smtp", "发信", "邮箱"))
     need_time = any(k in q for k in ("时间", "时区", "timezone", "几点"))
+    need_html = message_needs_html_artifact(user_message)
+    need_ssh = message_needs_ssh_terminal_rules(user_message)
 
     def strip_block(src: str, title: str) -> str:
         marker = f"\n{title}\n"
@@ -2770,12 +2785,43 @@ def _compact_system_prompt_for_request(system_prompt: str, user_message: str) ->
             pos = cand
         return src[:start] + src[end:]
 
+    def replace_between(src: str, start_marker: str, end_marker: str, stub: str) -> str:
+        start = src.find(start_marker)
+        if start < 0:
+            return src
+        end = src.find(end_marker, start + len(start_marker))
+        if end < 0:
+            return src
+        return src[:start] + stub + src[end:]
+
     if not need_graph:
         text = strip_block(text, "图形输出规范：当用户要求“流程图”“时序图”“网络关系图”“拓扑图”“依赖关系图”等图形化关系展示时，优先直接输出 ` ```mermaid ` 代码块；当用户要求“思维导图”“脑图”时，优先直接输出 ` ```markmap ` 代码块；当用户要求“图表”“柱状图”“折线图”“饼图”“趋势图”时，优先直接输出 ` ```echarts-option ` 代码块；当用户要求“SVG”“矢量图”“图标”“简单几何示意图”且 Mermaid 不合适时，优先直接输出 ` ```svg ` 代码块（完整 `<svg>...</svg>` 片段，含 xmlns）。不要把这些图形源码放进普通代码块，也不要只返回普通列表文本。")
     if not need_mail:
         text = strip_block(text, "个人发信（用户 SMTP，与管理员全局 SMTP 独立）：")
     if not need_time:
         text = strip_block(text, "系统时间与显示时区：")
+    if not need_ssh:
+        text = replace_between(
+            text,
+            "**【远程 SSH 执行方式 · 必读】**",
+            "\n通用数据处理工具：",
+            "**【远程 SSH 执行】** 需要时用工具列表中的 `ssh_execute` / `ssh_channel_*` / Web 控制台"
+            "（`send_to_terminal` / `get_terminal_buffer` / `terminal_send_and_read`）；细则见各工具描述。\n",
+        )
+        text = replace_between(
+            text,
+            "5.1 **长耗时任务",
+            "5.2 **长耗时且非交互的任务**",
+            "5.1 **长耗时任务**：用 `get_terminal_buffer` / `ssh_channel_read_lines` 按需轮询；"
+            "输出已回提示符则勿再空等。\n",
+        )
+    if not need_html:
+        text = replace_between(
+            text,
+            "- 何时用：用户要求导出 csv/markdown/json/html/pdf",
+            "\n敏感信息不得泄露",
+            "- 交付文件/HTML 报告：需要时用 `create_chat_artifact` / `fs_write_file`（详见工具描述）。\n",
+        )
     return text
 
 
@@ -5672,10 +5718,6 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
     if session_scope == "local" and not _is_admin_role(user.get("role")):
         raise HTTPException(status_code=403, detail="本机管理仅管理员可用")
 
-    system_prompt = (settings.get("ai_system_prompt") or "").strip() or _build_system_prompt()
-    system_prompt = _sanitize_system_prompt_local_scope(system_prompt, session_scope=session_scope, user=user)
-    system_prompt = _compact_system_prompt_for_request(system_prompt, req.message)
-
     # 附件注入：把用户在聊天框中已上传的附件绑定到本会话，并在用户消息末尾追加一份 📎 附件清单，
     # 让 AI 明确知道可调用 read_chat_attachment(uuid) 获取内容；历史上下文中也保留清单。
     # 同时保存 image 附件行，后面将其内联为 OpenAI 视觉多模态格式，让视觉模型直接「看到」图。
@@ -5707,6 +5749,15 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                 ]
         except Exception as _attach_exc:  # 附件注入失败不应阻断聊天主流程
             logger.warning("附件注入失败 session_id=%s err=%s", session_id, _attach_exc)
+
+    # 尽早判定轻量对话：闲聊用短 system，避免拼巨型默认提示词
+    lightweight_chat = is_lightweight_chat_message(req.message or "")
+    if lightweight_chat:
+        system_prompt = (settings.get("ai_system_prompt") or "").strip()
+    else:
+        system_prompt = (settings.get("ai_system_prompt") or "").strip() or _build_system_prompt()
+        system_prompt = _sanitize_system_prompt_local_scope(system_prompt, session_scope=session_scope, user=user)
+        system_prompt = _compact_system_prompt_for_request(system_prompt, req.message)
 
     # 只取最近若干条消息，减少大会话时的 DB 与请求体体积（_apply_context_limits 会再截断条数与长度）
     msg_rows = await db.execute_fetchall(
@@ -5897,10 +5948,27 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         has_terminal=terminal_connected,
         context_size=context_size,
     )
+    if lightweight_chat:
+        # 闲聊/问候：大幅压缩资产上下文，避免「在吗」仍携带 70K+ 主机/终端
+        ctx_profile = {
+            "ratios": {
+                "hosts": 0.02,
+                "groups": 0.01,
+                "knowledge": 0.02,
+                "terminal": 0.05,
+                "history": 0.90,
+            },
+            "history_max_messages": 6,
+            "history_recent_full": 2,
+        }
     # 按配置/自动估算的上下文大小分段截断，防止溢出
     hosts_ctx, groups_ctx, host_knowledge_ctx, terminal_ctx, conversation = _apply_context_limits(
         context_size, hosts_ctx, groups_ctx, host_knowledge_ctx, terminal_ctx, conversation, ctx_profile
     )
+    if lightweight_chat:
+        hosts_ctx, groups_ctx, host_knowledge_ctx, terminal_ctx = slim_context_for_lightweight(
+            hosts_ctx, groups_ctx, host_knowledge_ctx, terminal_ctx
+        )
     logger.debug(
         "chat context budget=%s hosts=%s groups=%s knowledge=%s terminal=%s history_msgs=%s ratios=%s",
         context_size,
@@ -5956,14 +6024,28 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         trial_info=trial_info,
     )
     _user_fs_ctx = _build_user_fs_workspace_block(user)
-    full_system = f"""{system_prompt}
+    if lightweight_chat:
+        full_system = build_lightweight_system_prompt(
+            product_display=getattr(_config, "PRODUCT_DISPLAY", "毛竹"),
+            session_id=session_id,
+            model_runtime_ctx=_model_runtime_ctx,
+            output_lang_block=output_lang_block,
+            system_prompt_head=system_prompt or "",
+        )
+        logger.info(
+            "lightweight chat fast-path session_id=%s msg_len=%s",
+            session_id,
+            len(req.message or ""),
+        )
+    else:
+        full_system = f"""{system_prompt}
 
 {_PROMPT_ENTITY_RESOLUTION_RULES}
 {output_lang_block}
 {_model_runtime_ctx}
 
 {_build_chat_output_format_rules()}
-{_build_html_libs_prompt_section()}
+{_build_html_libs_prompt_section() if message_needs_html_artifact(req.message or "") else ""}
 
 ## 当前会话 ID
 当前会话 ID 为 {session_id}。当用户要求「更新会话提示词」「补充会话级约束」「把上述要求记到会话里」等时，请调用 update_session_prompt(session_id={session_id}, content="...", append=True/False) 来更新或追加本会话的会话级提示词。注意：content 只应归纳用户的要求和你的执行意图（要做什么、怎么做），不要包含终端输出、命令输出或任何程序日志的原文。
@@ -5984,75 +6066,76 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
 ## 当前用户控制台最近输出（仅供内部参考，切勿在回复中引用或泄露密码；**本段为滚动缓冲的末尾片段，排障与 sudo 判断以最后几行为准**；仅当末尾出现 [sudo] password for / Password: 等提示时才 send_to_terminal 发密码；操作前请对照上方映射确认 slot 与 host_id）
 {terminal_ctx}
 """
-    if not assistant_enabled:
+    if not assistant_enabled and not lightweight_chat:
         full_system += "\n\n**说明**：当前未开启辅助 AI，本轮你的回复结束后对话即暂停；用户可输入「继续」或补充说明以发起下一轮。请在本轮内尽量完成可执行步骤并给出简短总结。\n"
 
     # 识图开关（用户在 AI 配置里勾选）：关闭时前端/后端都不内联 image_url，
     # 给 system prompt 挂一条覆盖式说明，避免 AI 依赖"图已内联"的默认引导而答不上图。
     # （`_vision_on` 已在 context_size 解析处统一计算，此处直接复用）
-    if not _vision_on:
+    if (not lightweight_chat) and (not _vision_on):
         full_system += (
             "\n\n**【覆盖说明 · 识图开关关闭】**："
             "用户已在 AI 配置中关闭「支持图像识别」。本轮 user 消息里不会再内联多模态 `image_url` 段，"
             "只会以 📎 附件清单的形式给出图片 uuid。**你必须**主动调用 `read_chat_attachment(uuid=...)` 获取图片的 `data_url`"
             "（默认就会返回 base64 data URL）再作答；**严禁**仅凭元信息（mime/size）就回答「看不清」。\n"
         )
-    if low_interaction_pref:
-        full_system += (
-            "\n\n**协作偏好（来自用户近期指令）**：用户希望减少交互、尽量自动完成。"
-            "在不违反安全门禁的前提下，请连续执行可执行步骤；仅在缺少必要条件、执行失败、达到轮次上限、"
-            "或用户明确要求停下时再暂停并反馈。若你已经调用 ask_user_choice 并生成选项卡，本轮必须等待用户选择，"
-            "不要在同一轮继续调用其它工具或代用户选择。"
-            "**例外**：需要用户在**多条互斥方案**中择一才能继续时（见上文「网页会话硬性要求」），"
-            "仍必须调用 `ask_user_choice`，不要用纯 Markdown「方案 A/B」代替按钮。\n"
-        )
-    if not auto_approve_enabled:
-        full_system += (
-            "\n\n**工具确认策略（高优先级）**：当前用户未启用「AI 调用工具无需用户确认」。"
-            "涉及删除、覆盖、重启、批量修改、写文件、创建/删除账号、凭证/权限变更等可能改变系统状态的操作，"
-            "必须先用 ask_user_choice 明确征求用户确认；选项卡发出后本轮结束，等待用户点击或文字回复后才能继续。"
-        )
-    if weak_network:
-        full_system += (
-            "\n\n**弱网优化模式**：已启用。请减少无谓的 get_terminal_buffer / get_terminal_status 往返；"
-            "发命令并需看输出时优先 **terminal_send_and_read**（一次完成发送+等待+读缓冲）。"
-            "大结果用 read_chat_data 按需分页，勿要求模型复述全文。\n"
-        )
-    full_system += _USER_MCP_SYSTEM_HINT
-    try:
-        from services.user_skills_runtime import build_user_skills_system_section
+    if not lightweight_chat:
+        if low_interaction_pref:
+            full_system += (
+                "\n\n**协作偏好（来自用户近期指令）**：用户希望减少交互、尽量自动完成。"
+                "在不违反安全门禁的前提下，请连续执行可执行步骤；仅在缺少必要条件、执行失败、达到轮次上限、"
+                "或用户明确要求停下时再暂停并反馈。若你已经调用 ask_user_choice 并生成选项卡，本轮必须等待用户选择，"
+                "不要在同一轮继续调用其它工具或代用户选择。"
+                "**例外**：需要用户在**多条互斥方案**中择一才能继续时（见上文「网页会话硬性要求」），"
+                "仍必须调用 `ask_user_choice`，不要用纯 Markdown「方案 A/B」代替按钮。\n"
+            )
+        if not auto_approve_enabled:
+            full_system += (
+                "\n\n**工具确认策略（高优先级）**：当前用户未启用「AI 调用工具无需用户确认」。"
+                "涉及删除、覆盖、重启、批量修改、写文件、创建/删除账号、凭证/权限变更等可能改变系统状态的操作，"
+                "必须先用 ask_user_choice 明确征求用户确认；选项卡发出后本轮结束，等待用户点击或文字回复后才能继续。"
+            )
+        if weak_network:
+            full_system += (
+                "\n\n**弱网优化模式**：已启用。请减少无谓的 get_terminal_buffer / get_terminal_status 往返；"
+                "发命令并需看输出时优先 **terminal_send_and_read**（一次完成发送+等待+读缓冲）。"
+                "大结果用 read_chat_data 按需分页，勿要求模型复述全文。\n"
+            )
+        full_system += _USER_MCP_SYSTEM_HINT
+        try:
+            from services.user_skills_runtime import build_user_skills_system_section
 
-        _skills_sec = await build_user_skills_system_section(
-            user,
-            session_scope,
-            int(session_row.get("host_id")) if session_row and session_row.get("host_id") else None,
-        )
-        if _skills_sec:
-            full_system += _skills_sec
-    except Exception as _usk_exc:
-        logger.debug("注入 user skills 失败 sid=%s: %s", session_id, _usk_exc)
+            _skills_sec = await build_user_skills_system_section(
+                user,
+                session_scope,
+                int(session_row.get("host_id")) if session_row and session_row.get("host_id") else None,
+            )
+            if _skills_sec:
+                full_system += _skills_sec
+        except Exception as _usk_exc:
+            logger.debug("注入 user skills 失败 sid=%s: %s", session_id, _usk_exc)
 
-    try:
-        from services.credential_vault import build_credential_vault_system_section
+        try:
+            from services.credential_vault import build_credential_vault_system_section
 
-        _vault_sec = await build_credential_vault_system_section()
-        if _vault_sec:
-            full_system += _vault_sec
-    except Exception as _vault_exc:
-        logger.debug("注入 credential vault 失败 sid=%s: %s", session_id, _vault_exc)
+            _vault_sec = await build_credential_vault_system_section()
+            if _vault_sec:
+                full_system += _vault_sec
+        except Exception as _vault_exc:
+            logger.debug("注入 credential vault 失败 sid=%s: %s", session_id, _vault_exc)
 
-    _focus_hid = session_row.get("host_id") if session_row else None
-    try:
-        _runtime_ctx = await get_runtime_context_for_session(
-            db,
-            session_id,
-            focus_host_id=int(_focus_hid) if _focus_hid else None,
-            output_locale=_output_locale,
-        )
-        if _runtime_ctx:
-            full_system += "\n\n" + _runtime_ctx
-    except Exception as _rtc_exc:
-        logger.debug("注入 session_runtime 失败 sid=%s: %s", session_id, _rtc_exc)
+        _focus_hid = session_row.get("host_id") if session_row else None
+        try:
+            _runtime_ctx = await get_runtime_context_for_session(
+                db,
+                session_id,
+                focus_host_id=int(_focus_hid) if _focus_hid else None,
+                output_locale=_output_locale,
+            )
+            if _runtime_ctx:
+                full_system += "\n\n" + _runtime_ctx
+        except Exception as _rtc_exc:
+            logger.debug("注入 session_runtime 失败 sid=%s: %s", session_id, _rtc_exc)
 
     messages = [{"role": "system", "content": full_system}]
     full_system_base = full_system
@@ -6069,10 +6152,11 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
     messages.append({"role": "user", "content": _user_content})
     # 跨轮视觉记忆：把最近几条 user 历史消息里出现过的 image 附件也内联，让「比较上一张和这张」
     # 这类多轮图像对比能够工作；失败时静默跳过，不阻断主流程。
-    try:
-        await _inject_history_image_memory(messages, db, user, vision_enabled=_vision_on)
-    except Exception as _vision_hist_exc:  # pragma: no cover - 防御性
-        logger.warning("vision: 历史图片记忆注入失败 session_id=%s err=%s", session_id, _vision_hist_exc)
+    if not lightweight_chat:
+        try:
+            await _inject_history_image_memory(messages, db, user, vision_enabled=_vision_on)
+        except Exception as _vision_hist_exc:  # pragma: no cover - 防御性
+            logger.warning("vision: 历史图片记忆注入失败 session_id=%s err=%s", session_id, _vision_hist_exc)
 
     api_url = ensure_chat_completions_url(base_url)
     model = normalize_model(provider, settings.get("ai_model") or "")
@@ -6153,12 +6237,26 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         context_budget_for_stats = int(context_size or 0)
         turn_messages_start = len(messages)
         cached_round_tools: list | None = None
+        force_tools_full = False
+        tools_tier_for_stats = "full" if not lightweight_chat else "lightweight"
+        last_poll_wait_seconds = 0
+        llm_ms_total = 0
 
         def _make_run_stats() -> dict:
+            _tc = 0
+            try:
+                _tc = len(cached_round_tools or [])
+            except Exception:
+                _tc = 0
             return {
                 "context_chars": estimate_messages_context_chars(messages),
                 "context_budget": context_budget_for_stats,
                 "elapsed_ms": int((time.monotonic() - run_started_mono) * 1000),
+                "llm_ms": int(llm_ms_total or 0),
+                "tools_count": _tc,
+                "tools_tier": tools_tier_for_stats,
+                "poll_wait_seconds": int(last_poll_wait_seconds or 0),
+                "lightweight": bool(lightweight_chat),
             }
 
         # 新一轮普通聊天开始时，丢弃上一轮结束后误入队列的运行时控制指令。
@@ -6278,12 +6376,46 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                     spill_read_retry_used = False
                     for round_idx in range(agent_max_steps):
                         if cached_round_tools is None:
-                            cached_round_tools = await resolve_chat_tools(
-                                get_tools_for_scope(session_scope, user),
-                                session_scope,
-                                user,
-                                session_host_id,
-                            )
+                            if lightweight_chat and not force_tools_full:
+                                # 闲聊：不装载 tools（含 MCP），避免「在吗」也去探测离线 MCP
+                                tools_tier_for_stats = "lightweight"
+                                cached_round_tools = []
+                                logger.info(
+                                    "lightweight skip resolve_chat_tools session_id=%s",
+                                    session_id,
+                                )
+                            else:
+                                _base_tools = await resolve_chat_tools(
+                                    get_tools_for_scope(session_scope, user),
+                                    session_scope,
+                                    user,
+                                    session_host_id,
+                                    session_id=session_id,
+                                    user_message=last_user_message or req.message or "",
+                                )
+                                tools_tier_for_stats = resolve_tools_tier(
+                                    last_user_message or req.message or "",
+                                    lightweight=False,
+                                    force_full=force_tools_full,
+                                    session_scope=session_scope,
+                                )
+                                cached_round_tools = filter_tools_for_message(
+                                    _base_tools,
+                                    last_user_message or req.message or "",
+                                    lightweight=False,
+                                    tier=tools_tier_for_stats,
+                                    force_full=force_tools_full,
+                                    session_scope=session_scope,
+                                )
+                                if tools_tier_for_stats != "full":
+                                    logger.info(
+                                        "tools tier session_id=%s tier=%s tools=%s (from %s) force_full=%s",
+                                        session_id,
+                                        tools_tier_for_stats,
+                                        len(cached_round_tools),
+                                        len(_base_tools),
+                                        force_tools_full,
+                                    )
                         round_tools = cached_round_tools
                         compact_turn_tool_messages(messages, turn_messages_start)
                         if messages and (messages[0].get("role") or "") == "system":
@@ -6319,6 +6451,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                         )
                         yield _sse({"run_stats": _make_run_stats()})
                         for _llm_try in range(_max_llm_tries):
+                            _llm_t0 = time.monotonic()
                             # 单次重试前重置流式累积器；只有「上一轮重试连一个 token 都没收到」时
                             # 才会真正复用此分支，复用后继续重试
                             if not stream_partial_yielded:
@@ -6331,20 +6464,27 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                 """把 _stream_chat_with_vision_fallback 的事件 push 到 queue，
                                 外层在主协程里一边消费 + yield 一边轮询运行时控制 / 心跳。"""
                                 try:
+                                    _llm_payload = {
+                                        "model": model,
+                                        "max_tokens": _resolve_request_max_tokens(settings),
+                                    }
+                                    if round_tools:
+                                        _llm_payload["tools"] = round_tools
+                                        _llm_payload["tool_choice"] = "auto"
                                     async for ev in _stream_chat_with_vision_fallback(
                                         client,
                                         api_url=api_url,
                                         headers=headers,
-                                        payload={
-                                            "model": model,
-                                            "tools": round_tools,
-                                            "tool_choice": "auto",
-                                            "max_tokens": _resolve_request_max_tokens(settings),
-                                        },
+                                        payload=_llm_payload,
                                         messages=messages,
+                                        # 无图时内部 fast-path；有图时才走压缩重试阶梯
+                                        # （弱网/轻量仍可整关重试）
                                         enable_vision_retries=not (
-                                            weak_network
-                                            and getattr(_config, "AI_WEAK_NETWORK_SKIP_VISION_RETRIES", True)
+                                            lightweight_chat
+                                            or (
+                                                weak_network
+                                                and getattr(_config, "AI_WEAK_NETWORK_SKIP_VISION_RETRIES", True)
+                                            )
                                         ),
                                     ):
                                         await _q.put(("ev", ev))
@@ -6472,6 +6612,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                         await stream_task
                                     except (asyncio.CancelledError, Exception):
                                         pass
+                                llm_ms_total += max(0, int((time.monotonic() - _llm_t0) * 1000))
 
                             if llm_runtime_pause_injected is not None:
                                 break
@@ -6979,7 +7120,11 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                     result_obj = {}
                                     is_success = False
                                 else:
-                                    if should_enrich_tool_images(weak_network):
+                                    if should_enrich_tool_images(
+                                        weak_network,
+                                        tool_name=fn_name,
+                                        tool_result=tool_result,
+                                    ):
                                         try:
                                             from services.mcp_result_fetch import enrich_tool_result_json_string
 
@@ -7166,6 +7311,8 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                 messages.append({"role": "user", "content": runtime_injected_user_message})
                                 continue
                             if max_next_poll_seconds > 0:
+                                last_poll_wait_seconds = int(max_next_poll_seconds)
+                                yield _sse({"run_stats": _make_run_stats()})
                                 _wait_out: list[str] = ["continue", ""]
                                 async for _wait_line in _poll_wait_sse(
                                     max_next_poll_seconds,
@@ -7416,6 +7563,11 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                         and not _looks_like_reason_or_newinfo(last_user_message)
                     ):
                         force_tool_retries += 1
+                        # 分层工具可能漏了所需能力：升到 full 再逼一次 tool_call
+                        if not force_tools_full and not lightweight_chat:
+                            force_tools_full = True
+                            cached_round_tools = None
+                            tools_tier_for_stats = "full"
                         yield _sse({"stream_status": {"phase": "auto_continuing"}})
                         notice = _format_force_tool_notice(_output_locale)
                         if notice.strip():
@@ -7429,7 +7581,17 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                         continue
 
                     assistant_rounds += 1
-                    if should_skip_assistant_ai(weak_network, assistant_enabled):
+                    if should_skip_assistant_after_chat(
+                        assistant_enabled=assistant_enabled,
+                        weak_network=weak_network,
+                        round_had_tool_call=round_had_tool_call,
+                        user_message=last_user_message or req.message or "",
+                        actionable_user_request=_looks_like_actionable_user_request(
+                            last_user_message or req.message or ""
+                        ),
+                        tool_trace=pending_tool_trace,
+                        assistant_content=content or "",
+                    ):
                         yield _sse({"stream_status": {"phase": "completed"}})
                         yield "data: [DONE]\n\n"
                         return
@@ -7934,7 +8096,7 @@ async def run_ops_integration_chat_complete(
 {_integ_model_runtime_ctx}
 
 {_OPS_INTEGRATION_MODE_RULES}
-{_build_html_libs_prompt_section()}
+{_build_html_libs_prompt_section() if message_needs_html_artifact(msg_in or "") else ""}
 ## 当前会话 ID
 当前会话 ID 为 {sid}。需要更新会话级约束时可调用 update_session_prompt(session_id={sid}, ...)。
 后续注入的历史对话中，每条消息开头会有 `[历史时间: YYYY-MM-DD HH:MM:SS]`。请结合该时间判断信息时效性，越新的内容优先作为当前依据。
@@ -8047,6 +8209,7 @@ async def run_ops_integration_chat_complete(
     assistant_rounds = 0
     turn_messages_start_integ = len(messages)
     cached_round_tools_integ: list | None = None
+    force_tools_full_integ = False
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -8055,11 +8218,27 @@ async def run_ops_integration_chat_complete(
                 round_had_tool_call = False
                 for _round_idx in range(agent_max_steps):
                     if cached_round_tools_integ is None:
-                        cached_round_tools_integ = await resolve_chat_tools(
+                        _base_tools_integ = await resolve_chat_tools(
                             get_tools_for_scope(tool_scope, user),
                             tool_scope,
                             user,
                             session_host_id,
+                            session_id=sid,
+                            user_message=last_user_message or msg_in or "",
+                        )
+                        _tier_integ = resolve_tools_tier(
+                            last_user_message or msg_in or "",
+                            lightweight=False,
+                            force_full=force_tools_full_integ,
+                            session_scope=session_scope,
+                        )
+                        cached_round_tools_integ = filter_tools_for_message(
+                            _base_tools_integ,
+                            last_user_message or msg_in or "",
+                            lightweight=False,
+                            tier=_tier_integ,
+                            force_full=force_tools_full_integ,
+                            session_scope=session_scope,
                         )
                     round_tools = cached_round_tools_integ
                     compact_turn_tool_messages(messages, turn_messages_start_integ)

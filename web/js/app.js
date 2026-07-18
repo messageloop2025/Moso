@@ -762,6 +762,10 @@ function edgeopsEnsureMessageFooterEl(messageContentEl) {
 function edgeopsGetRunStatsElapsedMs(messageEl) {
     var rs = messageEl && messageEl._edgeopsRunStats;
     if (!rs) return 0;
+    // 已冻结（流结束）：只显示服务端 elapsed
+    if (rs.elapsed_base_at == null && rs.elapsed_ms != null) {
+        return parseInt(rs.elapsed_ms, 10) || 0;
+    }
     if (rs.elapsed_base_at != null && rs.elapsed_base_ms != null) {
         return rs.elapsed_base_ms + (Date.now() - rs.elapsed_base_at);
     }
@@ -797,9 +801,17 @@ function edgeopsUpdateRunStats(messageEl, stats) {
 }
 
 function edgeopsStopRunStatsTracking(messageEl) {
-    if (!messageEl || !messageEl._edgeopsRunStatsTimerId) return;
-    clearInterval(messageEl._edgeopsRunStatsTimerId);
-    messageEl._edgeopsRunStatsTimerId = null;
+    if (!messageEl) return;
+    if (messageEl._edgeopsRunStatsTimerId) {
+        clearInterval(messageEl._edgeopsRunStatsTimerId);
+        messageEl._edgeopsRunStatsTimerId = null;
+    }
+    // 冻结为服务端上报的最终耗时，避免「最后一次 run_stats 之后到 DONE」继续累加墙钟
+    var rs = messageEl._edgeopsRunStats;
+    if (rs && rs.elapsed_base_ms != null) {
+        rs.elapsed_ms = parseInt(rs.elapsed_base_ms, 10) || 0;
+        rs.elapsed_base_at = null;
+    }
     edgeopsRefreshRunStatsDisplay(messageEl);
 }
 

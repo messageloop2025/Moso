@@ -885,7 +885,7 @@ TOOLS = [
                     "text": {"type": "string", "description": "要发送的命令或输入"},
                     "slot": {"type": "integer", "description": "控制台槽位"},
                     "host_id": {"type": "integer", "description": "按主机 ID 选择 slot"},
-                    "wait_seconds": {"type": "integer", "description": "发送后等待秒数再读缓冲，默认 3，范围 0～30"},
+                    "wait_seconds": {"type": "integer", "description": "发送后等待秒数再读缓冲，默认 1，范围 0～30"},
                     "max_lines": {"type": "integer", "description": "读取缓冲最大行数，默认 40"},
                     "tail_only": {"type": "boolean", "description": "默认 true，仅返回末尾行"},
                 },
@@ -8743,9 +8743,9 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             if not text:
                 return json.dumps({"success": False, "error": "需要 text 参数"}, ensure_ascii=False)
             try:
-                wait_seconds = max(0, min(30, int(arguments.get("wait_seconds") if arguments.get("wait_seconds") is not None else 3)))
+                wait_seconds = max(0, min(30, int(arguments.get("wait_seconds") if arguments.get("wait_seconds") is not None else 1)))
             except (TypeError, ValueError):
-                wait_seconds = 3
+                wait_seconds = 1
             send_args: dict = {"text": text}
             if arguments.get("slot") is not None:
                 send_args["slot"] = arguments.get("slot")
