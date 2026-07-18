@@ -6,6 +6,7 @@ from services.agent_optimize import (
     filter_tools_for_message,
     fold_tool_content_to_ref,
     is_lightweight_chat_message,
+    should_force_full_chat_prompts,
     message_needs_html_artifact,
     message_needs_ssh_terminal_rules,
     resolve_tools_tier,
@@ -194,3 +195,11 @@ def test_message_intent_helpers():
     assert message_needs_html_artifact("列出主机") is False
     assert message_needs_ssh_terminal_rules("在终端执行 ls") is True
 
+
+
+def test_should_force_full_chat_prompts():
+    assert should_force_full_chat_prompts(session_host_id=40) is True
+    assert should_force_full_chat_prompts(session_scope="local") is True
+    assert should_force_full_chat_prompts(session_prompt="只做巡检") is True
+    assert should_force_full_chat_prompts(context_host_id=3) is True
+    assert should_force_full_chat_prompts() is False

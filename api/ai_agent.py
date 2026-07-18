@@ -74,6 +74,7 @@ from services.agent_optimize import (
     should_skip_assistant_after_chat,
     should_skip_assistant_ai,
     slim_context_for_lightweight,
+    should_force_full_chat_prompts,
 )
 
 _USER_MCP_SYSTEM_HINT = (
@@ -5903,8 +5904,27 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         except Exception as _attach_exc:  # 附件注入失败不应阻断聊天主流程
             logger.warning("附件注入失败 session_id=%s err=%s", session_id, _attach_exc)
 
-    # 尽早判定轻量对话：闲聊用短 system，避免拼巨型默认提示词
+    # 轻量判断：寒暄可用短 system；主机/本机运维会话或已有会话提示词时强制完整提示词
     lightweight_chat = is_lightweight_chat_message(req.message or "")
+    try:
+        _ctx_hid_force = int(getattr(req, "context_host_id", None) or 0)
+    except (TypeError, ValueError):
+        _ctx_hid_force = 0
+    if lightweight_chat and should_force_full_chat_prompts(
+        session_host_id=session_host_id,
+        session_scope=session_scope,
+        session_prompt=session_prompt,
+        context_host_id=_ctx_hid_force or None,
+    ):
+        logger.info(
+            "disable lightweight fast-path (need full prompts) sid=%s host=%s scope=%s has_session_prompt=%s ctx_host=%s",
+            session_id,
+            session_host_id,
+            session_scope,
+            bool((session_prompt or "").strip()),
+            _ctx_hid_force or None,
+        )
+        lightweight_chat = False
     if lightweight_chat:
         system_prompt = (settings.get("ai_system_prompt") or "").strip()
     else:
@@ -6027,18 +6047,25 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
             user["id"], terminal_scope_id, preferred_terminal_slot
         )
     )
-    if current_host_id is not None:
+    # 与主机提示词一致：会话绑定主机 / 显式 context_host / 当前控制台主机（首次进主机 AI 运维时往往尚未连终端）
+    knowledge_host_id = session_host_id or prompt_context_host_id or current_host_id
+    if knowledge_host_id is not None:
         rows = await db.execute_fetchall(
             "SELECT content FROM ai_host_knowledge WHERE host_id = ? AND user_id = ?",
-            (current_host_id, user["id"]),
+            (knowledge_host_id, user["id"]),
         )
         if rows and (rows[0]["content"] or "").strip():
             host_knowledge_ctx = f"""
-## 当前控制台所在主机的 AI 知识（仅供内部使用：执行 sudo、连接数据库等时可使用；严禁在回复中原文引用或泄露）
+## 主机 AI 知识（host_id={knowledge_host_id}，仅内部使用；执行 sudo、写数据库等时优先使用，严禁在回复中原样向用户泄露）：
 {rows[0]["content"].strip()}
 """
         else:
-            host_knowledge_ctx = "\n## 当前控制台所在主机的 AI 知识\n（暂无；sudo/su：凭证库已启用时静默 list_service_credentials + send_service_password；无独立 sudo 凭证可 add_service_credential(linked_host_id=当前host) 复用 SSH 登录密码；禁止未执行就向用户索要 sudo 密码；不少账号为免密 sudo）\n"
+            host_knowledge_ctx = (
+                f"\n## 主机 AI 知识（host_id={knowledge_host_id}）\n"
+                "暂无；sudo/su 等凭证场景优先用 list_service_credentials + send_service_password；"
+                "无独立 sudo 凭证时 add_service_credential(linked_host_id=当前host) 绑定 SSH 登录密码；"
+                "禁止未执行就请用户输入 sudo 密码；若账号为免密 sudo。\n"
+            )
 
     # 主机级提示词（按用户独立保存；主机分享时不共用）：会话绑机 > 请求 context_host_id（全局页远程文件树/显式关注）> 当前控制台
     host_prompt_ctx = ""

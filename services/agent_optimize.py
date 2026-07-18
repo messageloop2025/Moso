@@ -450,6 +450,28 @@ LIGHTWEIGHT_FALLBACK_TOOLS: frozenset[str] = frozenset({
 })
 
 
+def should_force_full_chat_prompts(
+    *,
+    session_host_id: int | None = None,
+    session_scope: str | None = None,
+    session_prompt: str | None = None,
+    context_host_id: int | None = None,
+) -> bool:
+    """主机/本机运维会话、已有会话提示词、或显式 context_host 时禁用轻量快路径。"""
+    if session_host_id:
+        return True
+    if (session_scope or "").strip().lower() == "local":
+        return True
+    if (session_prompt or "").strip():
+        return True
+    try:
+        if context_host_id is not None and int(context_host_id) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
 def is_lightweight_chat_message(user_message: str) -> bool:
     """判断是否为问候/闲聊，可走轻量快路径（不注入全量主机/tools）。"""
     if not getattr(config, "AGENT_LIGHTWEIGHT_CHAT", True):
