@@ -363,9 +363,9 @@ MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_up
 
 须管理员开启 `skills_enabled`。文件：`web/fs/<用户名>/skills/<name>/SKILL.md`（**Cursor Agent Skills** 格式：YAML frontmatter + Markdown）。**渐进式披露**（默认）：system 仅注入各 Skill 的 `name` + `description` 目录；AI 匹配后须 `get_user_skill` 加载正文；附属文件用 `read_user_skill_file`。`disable-model-invocation: false` 或 `always-apply: true` 时内联正文。
 
-**斜杠 Command**：聊天以 `/skill-name`（或管理页 `slash_name`）开头时，服务端强制加载该 Skill 全文并标注「用户显式唤起」（绕过仅目录披露）。空格后参数写入 `args_raw`，并替换正文中的 `{{arg}}` / `$ARGUMENTS` / `{{argN}}`。技能目录 `commands/<alias>.md` 会注册额外斜杠别名 `/alias`（菜单与 resolve 一致，加载该命令文件）。输入框 `/` 弹出斜杠菜单（展示 `params_hint`、来源）。
+**斜杠 Command**：聊天输入 `/` 弹出命令菜单（↑↓ / Enter 选命令，再引导填参）。消息以 `/skill-name [args]`（或 `slash_name` / `commands/<alias>.md` / 组织 Skill）开头时，服务端强制加载并标注「用户显式唤起」。参数替换 `{{arg}}` / `$ARGUMENTS` / `{{argN}}`。菜单按场景 `scope=web|host` 过滤（与聊天页一致）；Skill 保存/扫描/导入后菜单缓存立即失效。
 
-**Hooks**：Skill 可启用 Hook；管理页可编辑 `hooks.json`，事件含 `preToolUse` / `postToolUse` / `postToolUseFailure` / `sessionStart` / `sessionEnd` / `beforeMCPExecution`（decision=`allow`/`deny`/`ask`）。亦可用 DB `pre_tool_use_matcher` + `pre_tool_use_decision`（默认 ask；无 hooks.json 规则时生效）。另支持 Skill 级 `allowed_tools` 白名单。失败默认 **fail-open**。`ask` 走与严格模式相同的独立确认模态。`run_skill_script` 仅执行该 Skill `scripts/` 下脚本。
+**Hooks**：Skill 可启用 Hook；管理页可编辑 `hooks.json`（仅磁盘有该文件也会进入门控），事件含 `preToolUse` / `postToolUse` / `postToolUseFailure` / `sessionStart` / `sessionEnd` / `beforeMCPExecution`（decision=`allow`/`deny`/`ask`）。亦可用 DB `pre_tool_use_matcher` + `pre_tool_use_decision`（默认 ask；无 hooks.json 规则时生效）。**`allowed_tools` 仅在本轮斜杠显式唤起该 Skill 时强制**。`postToolUse`/`postToolUseFailure` 若 `deny`：工具结果标为失败并省略正文，模型不得继续采信。失败默认 **fail-open**。`ask` 走独立确认模态。`run_skill_script` 仅执行该 Skill `scripts/` 下脚本。
 
 **会话聊天模式门禁**（与 TOOLS 正交，见 `services/chat_mode_gate.py` / `chat_mode_runtime.py` / `chat_mode_enforce.py`）：`qa` 禁止写类工具并返回待执行命令卡；`strict` 写类工具由平台独立弹窗确认（允许/总是=本会话同工具名/拒绝；创建打开终端豁免），模型系统提示与 `normal` 相同、不注入「严格」说明，确认结果以 `user_decision` 写入 tool 返回；`normal` 默认行为仍走 Hook 骨架。
 
@@ -379,11 +379,71 @@ MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_up
 | assign_user_skills_to_group | 批量移入分组 | group_id/group_name, skill_names?/skill_ids?, all_ungrouped? |
 | get_user_skill | 按需加载 SKILL.md 正文（含 resources 列表） | name 或 skill_id |
 | read_user_skill_file | 读取 reference.md 等附属文件 | name, path |
-| save_user_skill | 按 name upsert（Cursor 格式）；可设 group_name/group_id | name, content?, body?, description?, chat_scope_*?, group_name? |
+| save_user_skill | 按 name upsert；可设 slash/Hook/`allowed_tools`/`hooks_json`/分组 | name, content?/body?, description?, slash_name?, hooks_enabled?, pre_tool_use_matcher?, pre_tool_use_decision?, allowed_tools?, hooks_json?, chat_scope_*?, group_name? |
 | delete_user_skill | 删除 | name 或 skill_id, remove_files? |
 | scan_user_skills | 扫描磁盘与库**双向同步**：导入/更新 SKILL.md 元数据；磁盘已删除或改名的 Skill 从库移除（改名=删旧行+新增行，分组/启停不继承） | — |
 | export_user_skills_config | 导出 JSON 包 | include_disabled? |
 | import_user_skills_config | 导入 JSON 包 | data, overwrite? |
+
+
+### AI 如何创建带 Hook / Command 的 Skill
+
+当用户要求「做一个 Skill / 加斜杠命令 / 执行前确认」时，**必须调用工具落地**，勿只口头描述。
+
+**1）斜杠 Command + 参数占位**
+
+```text
+save_user_skill(
+  name="check-disk",
+  description="Checks remote disk usage. Use when user asks disk/df for a host.",
+  slash_name="check-disk",
+  body="# Check disk\n\n目标主机：`{{arg}}`\n\n1. list_hosts / 确认主机\n2. ssh_execute 运行 df -h\n"
+)
+```
+
+用户聊天输入：`/check-disk web-01` → 平台注入 Skill，并将 `{{arg}}` 换成 `web-01`。
+
+**子命令**（同一 Skill 多个入口）：
+
+```text
+write_user_skill_file(
+  name="check-disk",
+  path="commands/inode.md",
+  content="检查 inode：`{{arg}}`\n\n运行 `df -i`\n"
+)
+```
+
+用户可用 `/inode web-01` 唤起。
+
+**2）Hook：SSH 执行前确认**
+
+```text
+save_user_skill(
+  name="safe-ssh",
+  description="SSH with confirm. Use when user wants guarded remote commands.",
+  slash_name="safe-ssh",
+  hooks_enabled=true,
+  pre_tool_use_matcher="ssh_execute,send_to_terminal",
+  pre_tool_use_decision="ask",
+  allowed_tools="ssh_execute,send_to_terminal,get_terminal_buffer,list_hosts",
+  body="# Safe SSH\n\n主机：`{{arg}}`\n\n仅在用户确认后执行写操作。\n"
+)
+```
+
+或细规则：
+
+```text
+write_user_skill_file(
+  name="safe-ssh",
+  path="hooks.json",
+  content='{"preToolUse":[{"matcher":"ssh_execute","decision":"ask","reason":"远端命令需确认"},{"matcher":"scp_*","decision":"deny","reason":"禁止推文件"}]}'
+)
+```
+
+写入 `hooks.json` 时平台会自动将 `hooks_enabled` 设为 true。
+
+**决策语义**：`ask`=独立确认框；`deny`=拒绝；`allow`=放行。`postToolUse`/`postToolUseFailure` 的 `deny` 表示拒绝采纳工具结果（模型不得继续采信）。`allowed_tools` **仅**在用户本轮斜杠唤起该 Skill 时强制。
+
 
 **场景**：同 §14；新建 Skill 时 `chat_scope_integration` 默认 **false**。
 

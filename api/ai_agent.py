@@ -4174,7 +4174,11 @@ async def create_session(
         )
         _hook_skills = []
         for _r in _sk_rows:
-            if not (_r.get("hooks_enabled") or (_r.get("allowed_tools") or "").strip()):
+            if not (
+                _r.get("hooks_enabled")
+                or (_r.get("pre_tool_use_matcher") or "").strip()
+                or _r.get("has_hooks_json")
+            ):
                 continue
             _p = skill_md_path(user, _r["name"])
             _hook_skills.append(
@@ -6269,6 +6273,8 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
             logger.debug("注入 user skills 失败 sid=%s: %s", session_id, _usk_exc)
 
         full_system += _chat_mode_system_section(session_chat_mode)
+        _slash_info: dict | None = None
+        _slash_force_allowed_tools: str | None = None
         try:
             from services.chat_mode_runtime import (
                 format_slash_skill_injection,
@@ -6283,6 +6289,9 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
             )
             if _slash_info:
                 full_system += format_slash_skill_injection(_slash_info)
+                _raw_at = (_slash_info.get("allowed_tools") or "").strip()
+                if _raw_at:
+                    _slash_force_allowed_tools = _raw_at
         except Exception as _slash_exc:
             logger.debug("斜杠 Skill 注入失败 sid=%s: %s", session_id, _slash_exc)
 
@@ -6421,13 +6430,18 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                 int(session_host_id) if session_host_id else None,
             )
             for _hr in _hook_rows or []:
-                if not (_hr.get("hooks_enabled") or _hr.get("pre_tool_use_matcher")):
-                    continue
                 _nm = _hr.get("name") or ""
+                _has_hooks_file = bool(_hr.get("has_hooks_json"))
+                if not (
+                    _hr.get("hooks_enabled")
+                    or (_hr.get("pre_tool_use_matcher") or "").strip()
+                    or _has_hooks_file
+                ):
+                    continue
                 hook_skills_for_gate.append(
                     {
                         "name": _nm,
-                        "hooks_enabled": bool(_hr.get("hooks_enabled")),
+                        "hooks_enabled": bool(_hr.get("hooks_enabled")) or _has_hooks_file,
                         "pre_tool_use_matcher": _hr.get("pre_tool_use_matcher") or "",
                         "pre_tool_use_decision": _hr.get("pre_tool_use_decision") or "ask",
                         "allowed_tools": _hr.get("allowed_tools") or "",
@@ -7195,6 +7209,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                             hook_skills=hook_skills_for_gate,
                                             assistant_note=(pre_tool_text_streamed or "")[:500],
                                             strict_allow_glob=session_strict_allow_glob,
+                                            force_skill_allowed_tools=_slash_force_allowed_tools,
                                         )
                                     except Exception as _gate_exc:
                                         _gate_eval_exc = _gate_exc
@@ -7697,9 +7712,12 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                             )
                                 if fn_name in _AGENT_IRREVERSIBLE_TOOL_NAMES and is_success:
                                     batch_had_irreversible_success = True
-                                # Skills postToolUse / postToolUseFailure（fail-open，仅记日志/拒绝信息附加）
+                                # Skills postToolUse / postToolUseFailure（fail-open；deny 则拒绝采纳结果）
                                 try:
-                                    from services.user_skills_hooks import run_hooks_for_skills
+                                    from services.user_skills_hooks import (
+                                        apply_post_tool_hook_decision,
+                                        run_hooks_for_skills,
+                                    )
 
                                     _post_ev = "postToolUse" if is_success else "postToolUseFailure"
                                     _post_dec = run_hooks_for_skills(
@@ -7709,8 +7727,10 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                         args=fn_args if isinstance(fn_args, dict) else {},
                                         chat_mode=session_chat_mode,
                                     )
-                                    if _post_dec.get("decision") == "deny" and isinstance(result_obj, dict):
-                                        result_obj["hook_post"] = _post_dec
+                                    if isinstance(result_obj, dict) and _post_dec:
+                                        result_obj, is_success = apply_post_tool_hook_decision(
+                                            result_obj, _post_dec
+                                        )
                                         tool_result = json.dumps(result_obj, ensure_ascii=False)
                                 except Exception as _post_exc:
                                     logger.debug("postToolUse hook skip: %s", _post_exc)

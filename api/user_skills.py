@@ -29,8 +29,6 @@ from services.user_skills_registry import (
     list_user_skill_groups_summary,
     list_user_skills,
     normalize_skill_name,
-    read_skill_command_file,
-    read_skill_content,
     read_skill_resource_file,
     require_user_skills_access,
     scan_user_skills_from_disk,
@@ -211,20 +209,46 @@ async def list_my_skills(
 
 
 @router.get("/slash-commands")
-async def list_slash_commands(user=Depends(get_current_user)):
-    """输入框 `/` 菜单：用户 Skills + 组织 Skills + skills/*/commands 映射。"""
+async def list_slash_commands(
+    scope: str = "web",
+    user=Depends(get_current_user),
+):
+    """输入框 `/` 菜单：已启用且 chat_enabled 的用户 Skills + commands/ + 组织 Skills。
+
+    query ``scope``：``web`` | ``host`` | ``integration`` | ``all``，按 Skill 场景开关过滤，与 resolve 对齐。
+    """
     await _guard_skills(user)
+    from pathlib import Path
+
+    from services.user_skills_registry import skill_md_path
+
+    scope_val = (scope or "web").strip().lower() or "web"
+    if scope_val not in ("web", "host", "integration", "all", "default", "local"):
+        scope_val = "web"
+    if scope_val in ("default", "local"):
+        scope_val = "web"
+
     db = await get_db()
     items: list[dict] = []
     rows = await list_user_skills(db, int(user["id"]), user, enabled=True)
     for s in rows:
+        if s.get("chat_enabled") is False:
+            continue
+        if scope_val == "host" and not s.get("chat_scope_host", True):
+            continue
+        if scope_val == "integration" and not s.get("chat_scope_integration", False):
+            continue
+        if scope_val == "web" and not s.get("chat_scope_web", True):
+            continue
         slash = (s.get("slash_name") or s.get("name") or "").strip().lstrip("/")
         if not slash:
             continue
         params_hint = ""
         try:
-            content = await read_skill_content(user, s["name"])
-            params_hint = detect_slash_params_hint(content)
+            # 轻量读盘（避免再走 async read_skill_content 全量二次加载）
+            p = skill_md_path(user, s["name"])
+            if p.is_file():
+                params_hint = detect_slash_params_hint(p.read_text(encoding="utf-8")[:12000])
         except Exception:
             params_hint = ""
         items.append(
@@ -237,12 +261,13 @@ async def list_slash_commands(user=Depends(get_current_user)):
                 "params_hint": params_hint,
             }
         )
-        # commands/ 目录：额外 slash 别名（文件名）
         try:
             for cmd in iter_skill_command_files(user, s["name"]):
                 cmd_text = ""
                 try:
-                    cmd_text = read_skill_command_file(user, s["name"], cmd["alias"]) or ""
+                    cmd_path = Path(cmd["path"])
+                    if cmd_path.is_file():
+                        cmd_text = cmd_path.read_text(encoding="utf-8")[:12000]
                 except Exception:
                     cmd_text = ""
                 items.append(
@@ -259,7 +284,8 @@ async def list_slash_commands(user=Depends(get_current_user)):
             pass
     try:
         org_rows = await db.execute_fetchall(
-            "SELECT name, display_name, description, slash_name FROM org_skills WHERE enabled=1 ORDER BY name"
+            "SELECT name, display_name, description, slash_name, content "
+            "FROM org_skills WHERE enabled=1 ORDER BY name"
         )
         for r in org_rows:
             slash = (r["slash_name"] or r["name"] or "").strip().lstrip("/")
@@ -272,12 +298,11 @@ async def list_slash_commands(user=Depends(get_current_user)):
                     "display_name": r["display_name"] or r["name"],
                     "description": (r["description"] or "")[:200],
                     "source": "org",
-                    "params_hint": "{{arg}}",
+                    "params_hint": detect_slash_params_hint((r["content"] or "")[:12000]),
                 }
             )
     except Exception:
         pass
-    # 去重（同 slash 保留先出现的）
     seen: set[str] = set()
     out = []
     for it in items:

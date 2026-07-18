@@ -375,6 +375,8 @@ function edgeopsBindChatSubmit(textarea, submit) {
     textarea.addEventListener('keydown', function(e) {
         if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
         if (e.isComposing || e.keyCode === 229 || textarea._edgeopsComposing) return;
+        // 斜杠菜单选命令时由 slash 菜单优先处理，避免半成品被直接发送
+        if (e.defaultPrevented || textarea._edgeopsSlashPicking) return;
         e.preventDefault();
         submit();
     });
@@ -1002,24 +1004,54 @@ function edgeopsRenderPendingCommandCard(ua) {
     return card;
 }
 
-/** 输入框 `/` Skill 斜杠菜单：选命令 + 引导填参 */
-function edgeopsBindSlashSkillMenu(inputEl) {
+/** 斜杠命令全局缓存（按 scope）；Skill 增删改后调用 edgeopsInvalidateSlashCommandsCache */
+var _edgeopsSlashCmdCacheStore = {};
+var _EDGEOPS_SLASH_CACHE_TTL_MS = 60000;
+
+function edgeopsInvalidateSlashCommandsCache() {
+    _edgeopsSlashCmdCacheStore = {};
+}
+
+function edgeopsFetchSlashCommands(scope, cb) {
+    var key = (scope || 'web').toLowerCase();
+    var entry = _edgeopsSlashCmdCacheStore[key];
+    var now = Date.now();
+    if (entry && entry.commands && (now - entry.at) < _EDGEOPS_SLASH_CACHE_TTL_MS) {
+        cb(entry.commands);
+        return;
+    }
+    API.listSlashCommands({ scope: key }).then(function(r) {
+        var list = r.commands || [];
+        _edgeopsSlashCmdCacheStore[key] = { at: Date.now(), commands: list };
+        cb(list);
+    }).catch(function() { cb(null); });
+}
+
+/** 输入框 `/` Skill 斜杠菜单：选命令 + 引导填参
+ *  opts.scope: 'web' | 'host' | 'integration'（与 Skill 场景开关对齐）
+ */
+function edgeopsBindSlashSkillMenu(inputEl, opts) {
     if (!inputEl || inputEl._edgeopsSlashBound) return;
     inputEl._edgeopsSlashBound = true;
+    opts = opts || {};
+    var slashScope = (opts.scope || 'web').toLowerCase();
     var menu = document.createElement('div');
     menu.className = 'edgeops-slash-menu';
     menu.setAttribute('role', 'listbox');
     menu.style.cssText = 'display:none;position:fixed;z-index:1200;max-height:280px;overflow:auto;min-width:280px;max-width:min(440px,92vw);background:var(--bg-secondary,#1e1e24);border:1px solid var(--border,#333);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.4);padding:0;color:var(--text,#e8e8ec)';
     document.body.appendChild(menu);
-    var cache = null;
     var activeIdx = 0;
     var visibleItems = [];
     var mode = ''; // 'pick' | 'params' | ''
 
+    function setPicking(on) {
+        inputEl._edgeopsSlashPicking = !!on;
+    }
     function hide() {
         mode = '';
         visibleItems = [];
         activeIdx = 0;
+        setPicking(false);
         menu.style.display = 'none';
         menu.innerHTML = '';
     }
@@ -1127,6 +1159,7 @@ function edgeopsBindSlashSkillMenu(inputEl) {
             + '<div style="margin-top:8px;font-size:11px;opacity:.55">' + esc(t('skills.slashParamsSendHint')) + '</div>'
             + '</div>';
         menu.innerHTML = body;
+        setPicking(false); // 填参阶段允许 Enter 发送
         menu.style.display = 'block';
         place();
     }
@@ -1177,17 +1210,17 @@ function edgeopsBindSlashSkillMenu(inputEl) {
                 applyCommand(it, st);
             };
         });
+        setPicking(true);
         menu.style.display = 'block';
         place();
         paintActive();
     }
     function ensureCommands(cb) {
-        if (cache) { cb(cache); return; }
         if (!userSkillsEnabled()) { hide(); return; }
-        API.listSlashCommands().then(function(r) {
-            cache = r.commands || [];
-            cb(cache);
-        }).catch(function() { hide(); });
+        edgeopsFetchSlashCommands(slashScope, function(list) {
+            if (list == null) { hide(); return; }
+            cb(list);
+        });
     }
     function refreshFromValue() {
         if (!userSkillsEnabled()) { hide(); return; }
@@ -1215,43 +1248,48 @@ function edgeopsBindSlashSkillMenu(inputEl) {
         if (st) refreshFromValue();
     });
     inputEl.addEventListener('blur', function() { setTimeout(hide, 200); });
+    // capture：先于 edgeopsBindChatSubmit，避免 Enter 把半成品 /cmd 直接发出
     inputEl.addEventListener('keydown', function(ev) {
         if (menu.style.display === 'none') {
-            // 空输入按 / 时由 input 事件打开；此处不拦
+            setPicking(false);
             return;
         }
         if (ev.key === 'Escape') {
             ev.preventDefault();
+            ev.stopPropagation();
             hide();
             return;
         }
         if (mode === 'pick' && visibleItems.length) {
             if (ev.key === 'ArrowDown') {
                 ev.preventDefault();
+                ev.stopPropagation();
                 activeIdx = (activeIdx + 1) % visibleItems.length;
                 paintActive();
                 return;
             }
             if (ev.key === 'ArrowUp') {
                 ev.preventDefault();
+                ev.stopPropagation();
                 activeIdx = (activeIdx - 1 + visibleItems.length) % visibleItems.length;
                 paintActive();
                 return;
             }
             if (ev.key === 'Enter' || ev.key === 'Tab') {
-                // Tab 选命令；Enter 在仍匹配多个时也选中当前项（避免误发送半成品）
                 var cur = visibleItems[activeIdx];
                 if (!cur) return;
                 var st = parseSlashState(inputEl.value || '');
                 var exact = st && findCommand(st.token, visibleItems);
-                // 唯一精确匹配且 Enter：仍应用命令并引导参数（不直接发送）
-                if (ev.key === 'Enter' || ev.key === 'Tab') {
-                    ev.preventDefault();
-                    applyCommand(exact && (exact.slash || '').toLowerCase() === (st.token || '').toLowerCase() ? exact : cur, st);
-                }
+                ev.preventDefault();
+                ev.stopPropagation();
+                if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
+                applyCommand(
+                    exact && (exact.slash || '').toLowerCase() === (st.token || '').toLowerCase() ? exact : cur,
+                    st
+                );
             }
         }
-    });
+    }, true);
 }
 
 function edgeopsRenderChoiceCard(ua, submitFn) {
@@ -9692,8 +9730,8 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
     document.getElementById('hostAiSend').onclick = doSend;
     var hostAiInput = document.getElementById('hostAiInput');
     edgeopsInitChatTextarea(hostAiInput);
+    edgeopsBindSlashSkillMenu(hostAiInput, { scope: 'host' });
     edgeopsBindChatSubmit(hostAiInput, doSend);
-    edgeopsBindSlashSkillMenu(hostAiInput);
     edgeopsRegisterActiveTermProvider(function() {
         try {
             var slot = typeof hostAiActiveConsoleSlot !== 'undefined' ? hostAiActiveConsoleSlot : null;
@@ -12011,8 +12049,8 @@ function renderAIPage() {
     document.getElementById('aiExportMd').onclick = function() { exportChatToMarkdown(sessionId); };
     var aiInput = document.getElementById('aiInput');
     edgeopsInitChatTextarea(aiInput);
+    edgeopsBindSlashSkillMenu(aiInput, { scope: 'web' });
     edgeopsBindChatSubmit(aiInput, doSend);
-    edgeopsBindSlashSkillMenu(aiInput);
     edgeopsRegisterActiveTermProvider(function() {
         try {
             return aiConsoles.filter(function(c) { return c.slot === aiActiveConsoleSlot; })[0] || aiConsoles[0] || null;
@@ -14764,6 +14802,7 @@ function _bindUserSkillsTableEvents(wrap) {
             var rm = confirm(t('skills.confirmDelete', { name: name }) + '\n' + t('skills.confirmDeleteFiles', { name: name }));
             API.deleteUserSkill(id, rm).then(function() {
                 showToast(t('toast.deleted'));
+                edgeopsInvalidateSlashCommandsCache();
                 loadUserSkillsPage();
             }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
         };
@@ -14774,6 +14813,7 @@ function _bindUserSkillsTableEvents(wrap) {
             var en = btn.getAttribute('data-enabled') === '1';
             API.updateUserSkill(id, { enabled: en }).then(function() {
                 showToast(t('toast.saved'));
+                edgeopsInvalidateSlashCommandsCache();
                 loadUserSkillsPage();
             }).catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); });
         };
@@ -15076,6 +15116,7 @@ function _showUserSkillForm(skill) {
                 msg += ' — ' + res.warnings.join('；');
             }
             showToast(msg);
+            edgeopsInvalidateSlashCommandsCache();
             loadUserSkillsPage();
         }).catch(function(err) {
             showToast(err.message || t('toast.saveFailed'), 'error');
@@ -15096,6 +15137,7 @@ function loadUserSkillsPage(opts) {
     var wrap = document.getElementById('userSkillsTableWrap');
     var filterHost = document.getElementById('userSkillsFilterHost');
     if (!wrap) return;
+    if (opts.autoSync || opts.invalidateSlash) edgeopsInvalidateSlashCommandsCache();
     wrap.textContent = t('common.loading');
     var listOpts = {};
     if (_userSkillsFilter.enabled && _userSkillsFilter.enabled !== 'all') listOpts.enabled = _userSkillsFilter.enabled;
@@ -15193,6 +15235,7 @@ function renderUserSkillsPage() {
                             skipped: (res.skipped || []).length
                         });
                         showToast(msg);
+                        edgeopsInvalidateSlashCommandsCache();
                         loadUserSkillsPage();
                     }).catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); });
                 } catch (e) {
@@ -15214,6 +15257,7 @@ function renderUserSkillsPage() {
             if (res.invalid) msg += '；' + t('skills.scanInvalid', { count: res.invalid });
             if (res.warnings && res.warnings.length) msg += ' — ' + res.warnings.slice(0, 3).join('；');
             showToast(msg);
+            edgeopsInvalidateSlashCommandsCache();
             loadUserSkillsPage();
         }).catch(function(err) { showToast(err.message || t('toast.loadFailed'), 'error'); });
     };
@@ -16748,8 +16792,8 @@ function renderLocalPage() {
     (function() {
         var localInput = document.getElementById('localInput');
         edgeopsInitChatTextarea(localInput);
+        edgeopsBindSlashSkillMenu(localInput, { scope: 'web' });
         edgeopsBindChatSubmit(localInput, doLocalSend);
-        edgeopsBindSlashSkillMenu(localInput);
         edgeopsRegisterActiveTermProvider(function() {
             try {
                 return localConsoles.filter(function(c) { return c.slot === localActiveSlot; })[0] || localConsoles[0] || null;

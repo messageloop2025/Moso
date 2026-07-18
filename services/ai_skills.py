@@ -5070,11 +5070,12 @@ TOOLS = [
             "name": "save_user_skill",
             "description": (
                 "新增或更新 Agent Skill（同名 upsert，Cursor Agent Skills 格式）。"
-                "磁盘路径固定为 web/fs/<用户>/skills/<name>/SKILL.md（**不是** chats/ 日期目录）。"
-                "当用户说「创建/编写/定制 Skill」等时须调用。"
-                "frontmatter 须含 name、description（第三人称，WHAT+WHEN）；默认 disable-model-invocation: true（按需 get_user_skill）。"
-                "正文宜简洁；详细内容用 write_user_skill_file 写 reference.md 并在 SKILL.md 链接。"
-                "可传完整 content，或 name+description+body（系统组装 frontmatter）。"
+                "路径：web/fs/<用户>/skills/<name>/SKILL.md（不是 chats/）。"
+                "用户说「创建/编写 Skill」「加斜杠命令」「加 Hook 确认」时必须调用本工具落地。"
+                "frontmatter：name、description（第三人称 WHAT+WHEN）；默认 disable-model-invocation: true。"
+                "可同时配置斜杠名、Hook（matcher/decision 或 hooks_json）、allowed_tools。"
+                "正文可用 {{arg}}/$ARGUMENTS 供用户 `/name 参数` 替换；子命令用 write_user_skill_file 写 commands/<alias>.md。"
+                "可传完整 content，或 name+description+body。"
             ),
             "parameters": {
                 "type": "object",
@@ -5085,7 +5086,7 @@ TOOLS = [
                     "content": {"type": "string", "description": "完整 SKILL.md 内容（与 body 二选一）"},
                     "body": {
                         "type": "string",
-                        "description": "Markdown 正文（不含 frontmatter）；与 content 二选一，系统会自动加 YAML 头",
+                        "description": "Markdown 正文（不含 frontmatter）；可含 {{arg}}/{{arg1}}/$ARGUMENTS 占位",
                     },
                     "enabled": {"type": "boolean", "description": "是否启用"},
                     "chat_enabled": {"type": "boolean", "description": "是否参与 AI 聊天注入"},
@@ -5094,6 +5095,33 @@ TOOLS = [
                     "chat_scope_integration": {"type": "boolean"},
                     "group_id": {"type": "integer", "description": "所属分组 id；null 表示未分组"},
                     "group_name": {"type": "string", "description": "所属分组名（与 group_id 二选一）"},
+                    "slash_name": {
+                        "type": "string",
+                        "description": "斜杠命令名（不含 /）；用户输入 /slash_name 强制加载；默认等于 name",
+                    },
+                    "hooks_enabled": {
+                        "type": "boolean",
+                        "description": "是否启用 Hook；写了 hooks_json 或 matcher 时建议 true",
+                    },
+                    "pre_tool_use_matcher": {
+                        "type": "string",
+                        "description": "preToolUse 工具 glob，逗号分隔，如 ssh_execute,send_to_terminal,*channel*",
+                    },
+                    "pre_tool_use_decision": {
+                        "type": "string",
+                        "description": "matcher 命中且 hooks.json 未覆盖时的决策：ask（确认）/ deny（拒绝）/ allow（放行），默认 ask",
+                        "enum": ["ask", "deny", "allow"],
+                    },
+                    "allowed_tools": {
+                        "type": "string",
+                        "description": "工具白名单 glob（逗号分隔）；仅用户本轮斜杠唤起本 Skill 时强制",
+                    },
+                    "hooks_json": {
+                        "description": (
+                            "hooks.json 内容：JSON 字符串或对象。"
+                            "例：{\"preToolUse\":{\"matcher\":\"ssh_*\",\"decision\":\"ask\",\"reason\":\"需确认\"}}"
+                        ),
+                    },
                 },
                 "required": ["name"],
             },
@@ -5174,14 +5202,20 @@ TOOLS = [
         "function": {
             "name": "write_user_skill_file",
             "description": (
-                "写入或追加 Skill 目录 skills/<name>/ 下的附属文件（reference.md、examples.md、scripts/*.py 等）。"
+                "写入或追加 Skill 目录 skills/<name>/ 下的附属文件。"
+                "常用：reference.md、examples.md、scripts/*.py；"
+                "**Hook**：path=`hooks.json`（须合法 JSON；建议同时 save_user_skill hooks_enabled=true）；"
+                "**斜杠子命令**：path=`commands/<alias>.md`（用户可用 /alias 唤起，正文支持 {{arg}}）。"
                 "禁止写 SKILL.md（须 save_user_skill）。勿用 fs_write_file。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "name": {"type": "string", "description": "Skill 标识名"},
-                    "path": {"type": "string", "description": "相对 skills/<name>/ 的路径，如 reference.md"},
+                    "path": {
+                        "type": "string",
+                        "description": "相对路径，如 reference.md、hooks.json、commands/check-disk.md",
+                    },
                     "content": {"type": "string", "description": "文件内容（UTF-8 文本）"},
                     "append": {"type": "boolean", "description": "true 时在已有内容后追加，默认 false（覆盖）"},
                 },
@@ -16598,6 +16632,20 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     body=(arguments.get("body") or ""),
                     existing_content=existing_md,
                 )
+                hooks_json_arg = arguments.get("hooks_json")
+                if isinstance(hooks_json_arg, dict):
+                    hooks_json_arg = json.dumps(hooks_json_arg, ensure_ascii=False, indent=2)
+                elif hooks_json_arg is not None:
+                    hooks_json_arg = str(hooks_json_arg)
+                matcher_arg = arguments.get("pre_tool_use_matcher")
+                decision_arg = arguments.get("pre_tool_use_decision")
+                hooks_enabled_arg = arguments.get("hooks_enabled")
+                # 写了 hooks_json / matcher 且未显式关 Hook 时默认开启
+                if hooks_enabled_arg is None and (
+                    (isinstance(hooks_json_arg, str) and hooks_json_arg.strip())
+                    or (isinstance(matcher_arg, str) and matcher_arg.strip())
+                ):
+                    hooks_enabled_arg = True
                 try:
                     group_kw: dict = {}
                     if "group_id" in arguments or "group_name" in arguments:
@@ -16609,20 +16657,36 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                         )
                         group_kw["group_id"] = gid_val
                     if existing:
+                        upd_kw: dict = {
+                            "display_name": arguments.get("display_name"),
+                            "description": arguments.get("description"),
+                            "content": resolved_content,
+                            "enabled": arguments.get("enabled"),
+                            "chat_enabled": arguments.get("chat_enabled"),
+                            "chat_scope_web": arguments.get("chat_scope_web"),
+                            "chat_scope_host": arguments.get("chat_scope_host"),
+                            "chat_scope_integration": arguments.get("chat_scope_integration"),
+                        }
+                        if "slash_name" in arguments:
+                            upd_kw["slash_name"] = arguments.get("slash_name")
+                        if hooks_enabled_arg is not None:
+                            upd_kw["hooks_enabled"] = bool(hooks_enabled_arg)
+                        if "pre_tool_use_matcher" in arguments:
+                            upd_kw["pre_tool_use_matcher"] = matcher_arg
+                        if "pre_tool_use_decision" in arguments:
+                            upd_kw["pre_tool_use_decision"] = decision_arg
+                        if "allowed_tools" in arguments:
+                            upd_kw["allowed_tools"] = arguments.get("allowed_tools")
+                        if "hooks_json" in arguments:
+                            upd_kw["hooks_json"] = hooks_json_arg
+                        if "group_id" in group_kw:
+                            upd_kw["group_id"] = group_kw["group_id"]
                         row = await update_user_skill(
                             db,
                             user["id"],
                             user,
                             int(existing["id"]),
-                            display_name=arguments.get("display_name"),
-                            description=arguments.get("description"),
-                            content=resolved_content,
-                            enabled=arguments.get("enabled"),
-                            chat_enabled=arguments.get("chat_enabled"),
-                            chat_scope_web=arguments.get("chat_scope_web"),
-                            chat_scope_host=arguments.get("chat_scope_host"),
-                            chat_scope_integration=arguments.get("chat_scope_integration"),
-                            **({"group_id": group_kw["group_id"]} if "group_id" in group_kw else {}),
+                            **upd_kw,
                         )
                     else:
                         row = await create_user_skill(
@@ -16639,6 +16703,14 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                             chat_scope_host=bool(arguments.get("chat_scope_host", True)),
                             chat_scope_integration=bool(arguments.get("chat_scope_integration", False)),
                             group_id=group_kw.get("group_id"),
+                            slash_name=(arguments.get("slash_name") or ""),
+                            hooks_enabled=bool(hooks_enabled_arg) if hooks_enabled_arg is not None else False,
+                            pre_tool_use_matcher=(matcher_arg or "") if matcher_arg is not None else "",
+                            pre_tool_use_decision=(decision_arg or "ask") if decision_arg is not None else "ask",
+                            allowed_tools=(arguments.get("allowed_tools") or "")
+                            if "allowed_tools" in arguments
+                            else "",
+                            hooks_json=hooks_json_arg if "hooks_json" in arguments else None,
                         )
                 except (ValueError, LookupError) as e:
                     return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
@@ -16738,6 +16810,17 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     )
                 except ValueError as e:
                     return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+                # 写入 hooks.json 时自动开启 hooks_enabled，便于 AI 一步落地 Hook
+                if rel.replace("\\", "/").strip("/").lower() == "hooks.json":
+                    try:
+                        raw = await get_user_skill_raw_by_name(db, user["id"], slug)
+                        if raw and not bool(raw.get("hooks_enabled")):
+                            await update_user_skill(
+                                db, user["id"], user, int(raw["id"]), hooks_enabled=True
+                            )
+                            out = {**out, "hooks_enabled": True, "hooks_enabled_auto": True}
+                    except Exception:
+                        pass
                 return json.dumps(out, ensure_ascii=False)
 
             if name == "delete_user_skill_file":

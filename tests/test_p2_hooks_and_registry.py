@@ -6,7 +6,12 @@ import tempfile
 from pathlib import Path
 
 from services.tools_registry import list_extra_tools, merge_tools, register_tool
-from services.user_skills_hooks import check_allowed_tools, run_hooks_for_skills, tool_matches
+from services.user_skills_hooks import (
+    apply_post_tool_hook_decision,
+    check_allowed_tools,
+    run_hooks_for_skills,
+    tool_matches,
+)
 
 
 def test_tool_matches_glob():
@@ -53,6 +58,28 @@ def test_db_matcher_decision_from_skill_row():
     dec = run_hooks_for_skills(skills, "preToolUse", tool_name="ssh_execute", args={})
     assert dec.get("decision") == "deny"
     assert dec.get("source") == "db_matcher"
+
+
+def test_apply_post_tool_hook_deny_redacts_output():
+    out, ok = apply_post_tool_hook_decision(
+        {"success": True, "output": "secret-data", "error": ""},
+        {"decision": "deny", "reason": "unsafe", "skill_name": "guard"},
+    )
+    assert ok is False
+    assert out.get("success") is False
+    assert out.get("hook_post_denied") is True
+    assert "secret-data" not in (out.get("output") or "")
+    assert "拒绝采纳" in (out.get("error") or "")
+    assert "unsafe" in (out.get("error") or "")
+
+
+def test_apply_post_tool_hook_allow_passthrough():
+    out, ok = apply_post_tool_hook_decision(
+        {"success": True, "output": "ok"},
+        {"decision": "allow"},
+    )
+    assert ok is True
+    assert out.get("output") == "ok"
 
 
 def test_tools_registry_merge():

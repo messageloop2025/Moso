@@ -266,7 +266,7 @@ async def evaluate_pre_tool_gate(
         blocked = qa_blocked_tool_result(name, a, assistant_note=assistant_note)
         return {"action": "block", "tool_result": blocked, "decision": "qa_block"}
 
-    # Skill 级 allowed_tools（显式唤起 / 配置了白名单时）
+    # Skill 级 allowed_tools：仅本轮斜杠显式唤起的 Skill（避免「开了 Hook 的 Skill」锁死整会话工具面）
     if force_skill_allowed_tools:
         at = check_allowed_tools(force_skill_allowed_tools, name)
         if not at.get("allowed"):
@@ -275,23 +275,6 @@ async def evaluate_pre_tool_gate(
                 "tool_result": {
                     "success": False,
                     "error": at.get("reason") or "allowed_tools 拒绝",
-                    "mode": mode,
-                },
-                "decision": "allowed_tools_deny",
-                "source": "allowed_tools",
-            }
-    for sk in hook_skills or []:
-        raw_at = sk.get("allowed_tools") or ""
-        if not raw_at:
-            continue
-        # 仅对 hooks_enabled 或 slash 显式 skill 强制；有白名单即生效
-        at = check_allowed_tools(raw_at, name)
-        if not at.get("allowed"):
-            return {
-                "action": "block",
-                "tool_result": {
-                    "success": False,
-                    "error": f"Skill `{sk.get('name')}`: {at.get('reason')}",
                     "mode": mode,
                 },
                 "decision": "allowed_tools_deny",
@@ -475,7 +458,32 @@ async def resolve_slash_skill_force_load(
         "args_list": list(inv.get("args_list") or []),
     }
     if not hit:
-        # 也允许按磁盘名强制（即使 chat_enabled 关？计划说强制加载 — 仍要求存在）
+        # 组织 Skills（与 slash-commands 菜单中 source=org 对齐）
+        try:
+            org_rows = await db.execute_fetchall(
+                "SELECT name, display_name, description, content, slash_name, allowed_tools "
+                "FROM org_skills WHERE enabled=1"
+            )
+            for orow in org_rows or []:
+                oname = (orow["name"] or "").strip().lower()
+                oslash = (orow["slash_name"] or "").strip().lower().lstrip("/")
+                if oname == want or oslash == want:
+                    content = (orow["content"] or "").strip()
+                    meta, body = parse_skill_markdown(content)
+                    if not meta.get("description") and orow["description"]:
+                        meta = {**meta, "description": orow["description"]}
+                    return {
+                        **base_info,
+                        "name": orow["name"],
+                        "meta": meta,
+                        "body": body or content,
+                        "content": content,
+                        "source": "org",
+                        "allowed_tools": (orow["allowed_tools"] or "").strip(),
+                    }
+        except Exception as e:
+            logger.debug("斜杠 resolve org_skills 跳过: %s", e)
+        # 也允许按磁盘名强制（即使 chat_enabled 关 — 仍要求存在）
         try:
             content = await read_skill_content(user, want)
         except Exception:

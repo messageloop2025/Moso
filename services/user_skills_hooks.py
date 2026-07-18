@@ -86,10 +86,6 @@ def resolve_hook_event(
             "fail_open": True,
             "event": ev,
         }
-    if not hooks_enabled and ev == "preToolUse":
-        # 其它事件：若 hooks.json 存在仍可评估
-        pass
-
     hj = hooks_json or {}
     block = hj.get(ev) or hj.get(
         {
@@ -116,14 +112,13 @@ def resolve_hook_event(
             if not isinstance(rule, dict):
                 continue
             m = rule.get("matcher") or rule.get("tools") or matcher or "*"
-            if tool_name and not tool_matches(m if isinstance(m, str) else ",".join(m), tool_name):
-                continue
-            if not tool_name and ev in ("sessionStart", "sessionEnd"):
-                pass  # 会话级无 tool
-            elif tool_name or ev not in ("sessionStart", "sessionEnd"):
-                if tool_name and not tool_matches(
-                    m if isinstance(m, str) else ",".join(m or []), tool_name
-                ):
+            m_raw = m if isinstance(m, str) else ",".join(m or [])
+            # 会话级事件无 tool_name：直接命中规则；有 tool 则按 matcher
+            if tool_name:
+                if not tool_matches(m_raw, tool_name):
+                    continue
+            elif ev not in ("sessionStart", "sessionEnd"):
+                if m_raw and m_raw != "*" and not tool_matches(m_raw, tool_name):
                     continue
             return {
                 "decision": _normalize_decision(rule.get("decision") or rule.get("action"), default_decision),
@@ -293,3 +288,40 @@ def check_allowed_tools(
         "reason": f"tool `{name}` 不在本 Skill allowed_tools 白名单内",
         "patterns": patterns,
     }
+
+
+def apply_post_tool_hook_decision(
+    result_obj: dict[str, Any] | None,
+    hook_dec: dict[str, Any] | None,
+    *,
+    redact_keys: tuple[str, ...] = ("output", "stdout", "result", "data", "content"),
+) -> tuple[dict[str, Any], bool]:
+    """将 postToolUse / postToolUseFailure 决策应用到工具结果。
+
+    deny：标记失败、附原因，并省略大段输出，避免模型继续采信已拒绝结果。
+    返回 (result_obj, is_success)。
+    """
+    obj = dict(result_obj or {})
+    dec = hook_dec or {}
+    decision = str(dec.get("decision") or "allow").strip().lower()
+    if decision != "deny":
+        if dec and dec.get("decision") not in (None, "", "allow"):
+            obj["hook_post"] = dec
+        return obj, bool(obj.get("success", not obj.get("error")))
+
+    reason = str(dec.get("reason") or "").strip()
+    skill = str(dec.get("skill_name") or "").strip()
+    note = "Skill Hook postToolUse 拒绝采纳本次工具结果"
+    if skill:
+        note += f"（Skill `{skill}`）"
+    if reason:
+        note += f"：{reason}"
+    obj["hook_post"] = dec
+    obj["hook_post_denied"] = True
+    obj["success"] = False
+    prev_err = str(obj.get("error") or "").strip()
+    obj["error"] = f"{prev_err} [{note}]".strip() if prev_err else note
+    for k in redact_keys:
+        if k in obj and obj[k] not in (None, "", {}, []):
+            obj[k] = "[已由 Skill Hook postToolUse 拒绝采纳，正文已省略]"
+    return obj, False

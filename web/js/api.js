@@ -491,7 +491,13 @@ var API = {
         return this.post('/user-skills/groups/bulk-assign', data || {});
     },
     createUserSkill: function(data) { return this.post('/user-skills', data); },
-    listSlashCommands: function() { return this.get('/user-skills/slash-commands'); },
+    listSlashCommands: function(opts) {
+        opts = opts || {};
+        var q = [];
+        if (opts.scope) q.push('scope=' + encodeURIComponent(opts.scope));
+        var qs = q.length ? '?' + q.join('&') : '';
+        return this.get('/user-skills/slash-commands' + qs);
+    },
     listOrgSkills: function() { return this.get('/org-skills'); },
     createOrgSkill: function(data) { return this.post('/org-skills', data); },
     updateOrgSkill: function(id, data) { return this.put('/org-skills/' + id, data); },

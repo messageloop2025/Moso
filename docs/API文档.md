@@ -413,7 +413,7 @@ token 来自解锁邮件链接。
 | POST | /ai/sessions | 新建会话（query: title?、**chat_mode?**=`qa`\|`strict`\|`normal`；body 可选 **host_id**，用于主机详情页 AI 运维） |
 | GET | /ai/sessions/{session_id} | 会话详情（含 `low_interaction_mode`、`chat_mode`） |
 | PATCH | /ai/sessions/{session_id} | 更新会话（标题、`low_interaction_mode`、**`chat_mode`**；切出 strict 时保留 `strict_allow_cache_json`（按**工具名**的「总是」缓存）但不使用，切回仍有效） |
-| GET | /user-skills/slash-commands | 斜杠菜单：用户 Skills + 组织 Skills + `commands/` 别名 |
+| GET | /user-skills/slash-commands | 斜杠菜单：用户 Skills + 组织 Skills + `commands/` 别名；query **`scope`**=`web`\|`host`\|`integration`\|`all`（按场景开关过滤） |
 | GET/POST/PUT/DELETE | /org-skills | 组织 Skills（管理员写；用户只读列表） |
 | GET | /security-audit | 安全审计日志（管理员；筛 `chat_mode:*` / Hook 等） |
 | POST | /ai/sessions/{session_id}/runtime-control | 运行中注入控制（`supplement`/`pause`/`resume`/`stop`/`wake`/`choice`），用于 AI 流式执行或工具调用期间补充上下文、暂停/恢复、停止，或在终端轮询等待时唤醒 |
@@ -1005,7 +1005,7 @@ body：`tool`（edgeops_* 名）、`arguments`（对象）
 | PUT | `/user-skills/{id}` | 更新元数据或正文（含 slash/hook 字段） |
 | DELETE | `/user-skills/{id}` | 删除；query `remove_files=true` 时同时删磁盘目录 |
 
-场景开关含义同 §20（`chat_enabled` + `chat_scope_web/host/integration`）。**渐进式披露**（默认，`EDGEOPS_USER_SKILLS_PROGRESSIVE_DISCLOSURE=true`）：system 仅注入各 Skill 的 `name`+`description` 目录；AI 按需 `get_user_skill` / `read_user_skill_file`；`always-apply: true` 或 `disable-model-invocation: false` 时内联正文。**斜杠 Command**：用户消息以 `/slash_name [args]` 开头时强制加载全文，并替换 `{{arg}}`/`$ARGUMENTS`/`{{argN}}`；`skills/*/commands/*.md` 别名与 `GET /user-skills/slash-commands` 一致。详情含 `hooks_json`、`command_files`。**Hook**：`hooks.json` 或 DB `pre_tool_use_matcher` + `pre_tool_use_decision`；决策 `allow`/`deny`/`ask`；`ask` 走独立确认；默认 fail-open。
+场景开关含义同 §20（`chat_enabled` + `chat_scope_web/host/integration`）。**渐进式披露**（默认，`EDGEOPS_USER_SKILLS_PROGRESSIVE_DISCLOSURE=true`）：system 仅注入各 Skill 的 `name`+`description` 目录；AI 按需 `get_user_skill` / `read_user_skill_file`；`always-apply: true` 或 `disable-model-invocation: false` 时内联正文。**斜杠 Command**：`/slash_name [args]` 强制加载并替换 `{{arg}}`/`$ARGUMENTS`/`{{argN}}`；`commands/*.md` 与组织 Skill 的菜单/resolve 对齐；详情含 `hooks_json`、`command_files`。AI 工具 `save_user_skill` 可直接传 `slash_name` / `hooks_enabled` / `pre_tool_use_matcher` / `pre_tool_use_decision` / `allowed_tools` / `hooks_json`；`write_user_skill_file` 可写 `hooks.json` 与 `commands/<alias>.md`（写 hooks.json 自动开 hooks_enabled）。**Hook**：`hooks.json`（或 DB matcher + `pre_tool_use_decision`）；`ask`/`deny`/`allow`；`ask` 独立确认；**`allowed_tools` 仅斜杠唤起当轮强制**；fail-open。
 
 AI 工具：`list_user_skills`、`get_user_skill`、`read_user_skill_file`、`save_user_skill`、`delete_user_skill`、`scan_user_skills`、`export_user_skills_config`、`import_user_skills_config`（须 `skills_enabled`）。
 
