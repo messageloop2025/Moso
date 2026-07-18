@@ -1002,78 +1002,255 @@ function edgeopsRenderPendingCommandCard(ua) {
     return card;
 }
 
-/** 输入框 `/` Skill 斜杠菜单（P2-3） */
+/** 输入框 `/` Skill 斜杠菜单：选命令 + 引导填参 */
 function edgeopsBindSlashSkillMenu(inputEl) {
     if (!inputEl || inputEl._edgeopsSlashBound) return;
     inputEl._edgeopsSlashBound = true;
     var menu = document.createElement('div');
     menu.className = 'edgeops-slash-menu';
-    menu.style.cssText = 'display:none;position:absolute;z-index:40;max-height:220px;overflow:auto;min-width:220px;background:var(--bg-secondary,#1e1e24);border:1px solid var(--border,#333);border-radius:6px;box-shadow:0 6px 20px rgba(0,0,0,.35);padding:4px 0';
+    menu.setAttribute('role', 'listbox');
+    menu.style.cssText = 'display:none;position:fixed;z-index:1200;max-height:280px;overflow:auto;min-width:280px;max-width:min(440px,92vw);background:var(--bg-secondary,#1e1e24);border:1px solid var(--border,#333);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.4);padding:0;color:var(--text,#e8e8ec)';
     document.body.appendChild(menu);
     var cache = null;
-    function hide() { menu.style.display = 'none'; menu.innerHTML = ''; }
+    var activeIdx = 0;
+    var visibleItems = [];
+    var mode = ''; // 'pick' | 'params' | ''
+
+    function hide() {
+        mode = '';
+        visibleItems = [];
+        activeIdx = 0;
+        menu.style.display = 'none';
+        menu.innerHTML = '';
+    }
     function place() {
         var r = inputEl.getBoundingClientRect();
-        menu.style.left = Math.max(8, r.left) + 'px';
-        menu.style.bottom = (window.innerHeight - r.top + 4) + 'px';
+        var w = Math.max(280, Math.min(440, r.width || 280));
+        menu.style.width = w + 'px';
+        menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + 'px';
+        menu.style.bottom = (window.innerHeight - r.top + 6) + 'px';
         menu.style.top = 'auto';
     }
-    function render(list, filter) {
+    function findCommand(slashTok, list) {
+        var want = (slashTok || '').toLowerCase();
+        if (!want) return null;
+        if (want.charAt(0) !== '/') want = '/' + want;
+        var exact = null;
+        var prefix = null;
+        (list || []).forEach(function(c) {
+            var s = (c.slash || '').toLowerCase();
+            if (s === want) exact = c;
+            else if (!prefix && s.indexOf(want) === 0) prefix = c;
+        });
+        return exact || prefix;
+    }
+    /** 解析：选命令中 / 已选定命令在填参 */
+    function parseSlashState(value) {
+        var v = value || '';
+        // 整段以 /cmd 开头（聊天框常见）
+        var head = v.match(/^(\/[a-z][a-z0-9_-]*)(?:(\s+)([\s\S]*))?$/i);
+        if (head) {
+            return {
+                kind: head[2] != null ? 'params' : 'pick',
+                prefix: '',
+                token: head[1],
+                filter: (head[1] || '/').slice(1),
+                argsRaw: head[3] != null ? head[3] : '',
+                hasSpace: !!head[2]
+            };
+        }
+        // 行内末尾仍在敲 /xxx（尚无空格）
+        var m = v.match(/^(.*?)(\/[a-z][a-z0-9_-]*)$/i);
+        if (m) {
+            return {
+                kind: 'pick',
+                prefix: m[1],
+                token: m[2],
+                filter: (m[2] || '/').slice(1),
+                argsRaw: '',
+                hasSpace: false
+            };
+        }
+        return null;
+    }
+    function paintActive() {
+        Array.prototype.forEach.call(menu.querySelectorAll('.edgeops-slash-item'), function(btn, i) {
+            var on = i === activeIdx;
+            btn.style.background = on ? 'rgba(255,255,255,.1)' : 'transparent';
+            btn.setAttribute('aria-selected', on ? 'true' : 'false');
+            if (on) {
+                try { btn.scrollIntoView({ block: 'nearest' }); } catch (_e) {}
+            }
+        });
+    }
+    function applyCommand(it, st) {
+        if (!it) return;
+        var prefix = (st && st.prefix != null) ? st.prefix : '';
+        var next = prefix + it.slash + ' ';
+        inputEl.value = next;
+        hide();
+        inputEl.focus();
+        try {
+            var pos = next.length;
+            if (typeof inputEl.setSelectionRange === 'function') {
+                inputEl.setSelectionRange(pos, pos);
+            }
+        } catch (_e) {}
+        try { inputEl.dispatchEvent(new Event('input', { bubbles: true })); } catch (_e2) {}
+        // 选完后立刻进入参数引导
+        ensureCommands(function(list) {
+            showParamsGuide(it, { argsRaw: '' });
+        });
+    }
+    function showParamsGuide(cmd, st) {
+        if (!cmd) { hide(); return; }
+        mode = 'params';
+        visibleItems = [];
+        var hint = cmd.params_hint || '{{arg}}';
+        var example = (cmd.slash || '') + ' host1';
+        var argsShown = (st && st.argsRaw) ? String(st.argsRaw) : '';
+        var body = ''
+            + '<div style="padding:10px 12px 8px;border-bottom:1px solid var(--border,#333)">'
+            + '<div style="font-size:12px;opacity:.75;margin-bottom:4px">' + esc(t('skills.slashParamsTitle')) + '</div>'
+            + '<div><strong style="font-size:14px">' + esc(cmd.slash || '') + '</strong>'
+            + (cmd.display_name ? ' <span style="opacity:.7;font-size:12px">' + esc(cmd.display_name) + '</span>' : '')
+            + '</div>'
+            + (cmd.description ? '<div style="font-size:11px;opacity:.65;margin-top:4px">' + esc(cmd.description) + '</div>' : '')
+            + '</div>'
+            + '<div style="padding:10px 12px;font-size:12px;line-height:1.45">'
+            + '<div>' + esc(t('skills.slashParamsGuide').replace(/\{\{slash\}\}/g, cmd.slash || '').replace(/\{\{hint\}\}/g, hint)) + '</div>'
+            + '<div style="margin-top:6px;opacity:.8">' + esc(t('skills.slashParamsExample').replace(/\{\{example\}\}/g, example)) + '</div>'
+            + '<div style="margin-top:6px;font-family:ui-monospace,Consolas,monospace;font-size:12px;padding:6px 8px;border-radius:4px;background:rgba(255,255,255,.04);border:1px dashed var(--border,#444)">'
+            + esc(cmd.slash || '') + ' <span style="opacity:' + (argsShown ? '1' : '.45') + '">'
+            + esc(argsShown || hint)
+            + '</span></div>'
+            + '<div style="margin-top:8px;font-size:11px;opacity:.55">' + esc(t('skills.slashParamsSendHint')) + '</div>'
+            + '</div>';
+        menu.innerHTML = body;
+        menu.style.display = 'block';
+        place();
+    }
+    function renderPick(list, filter, st) {
+        mode = 'pick';
         var f = (filter || '').toLowerCase();
-        var items = (list || []).filter(function(c) {
+        visibleItems = (list || []).filter(function(c) {
             if (!f) return true;
-            return (c.slash || '').toLowerCase().indexOf('/' + f) === 0
-                || (c.slash || '').toLowerCase().indexOf(f) >= 0
-                || (c.display_name || '').toLowerCase().indexOf(f) >= 0;
-        }).slice(0, 12);
-        if (!items.length) {
-            menu.innerHTML = '<div style="padding:8px 12px;color:var(--text-muted);font-size:12px">' + esc(t('skills.slashMenuEmpty')) + '</div>';
+            var slash = (c.slash || '').toLowerCase();
+            var dn = (c.display_name || '').toLowerCase();
+            var desc = (c.description || '').toLowerCase();
+            return slash.indexOf('/' + f) === 0
+                || slash.indexOf(f) >= 0
+                || dn.indexOf(f) >= 0
+                || desc.indexOf(f) >= 0;
+        }).slice(0, 14);
+        activeIdx = 0;
+        if (!visibleItems.length) {
+            menu.innerHTML = '<div style="padding:10px 12px;color:var(--text-muted);font-size:12px">' + esc(t('skills.slashMenuEmpty')) + '</div>';
             menu.style.display = 'block';
             place();
             return;
         }
-        menu.innerHTML = items.map(function(c, idx) {
-            return '<button type="button" class="edgeops-slash-item" data-idx="' + idx + '" style="display:block;width:100%;text-align:left;border:0;background:transparent;color:inherit;padding:6px 12px;cursor:pointer">'
-                + '<strong>' + esc(c.slash) + '</strong> <span style="opacity:.75;font-size:12px">' + esc(c.display_name || '') + '</span>'
-                + (c.description ? '<div style="font-size:11px;opacity:.65;margin-top:2px">' + esc(c.description) + '</div>' : '')
+        var head = '<div style="padding:8px 12px 6px;font-size:11px;opacity:.65;border-bottom:1px solid var(--border,#333)">'
+            + esc(t('skills.slashMenuHint')) + '<br><span style="opacity:.85">' + esc(t('skills.slashMenuNavHint')) + '</span></div>';
+        var rows = visibleItems.map(function(c, idx) {
+            var src = c.source === 'commands' ? 'cmd' : (c.source === 'org' ? 'org' : 'skill');
+            var ph = c.params_hint
+                ? ('<span style="margin-left:6px;font-size:11px;opacity:.75;font-family:ui-monospace,Consolas,monospace">' + esc(c.params_hint) + '</span>')
+                : ('<span style="margin-left:6px;font-size:11px;opacity:.45">' + esc(t('skills.slashParamsOptionalShort')) + '</span>');
+            return '<button type="button" class="edgeops-slash-item" role="option" data-idx="' + idx + '" style="display:block;width:100%;text-align:left;border:0;background:transparent;color:inherit;padding:8px 12px;cursor:pointer">'
+                + '<div><strong>' + esc(c.slash) + '</strong>'
+                + ' <span style="opacity:.75;font-size:12px">' + esc(c.display_name || '') + '</span>'
+                + ' <span style="font-size:10px;opacity:.5">[' + esc(src) + ']</span>'
+                + ph + '</div>'
+                + (c.description ? '<div style="font-size:11px;opacity:.65;margin-top:3px">' + esc(c.description) + '</div>' : '')
                 + '</button>';
         }).join('');
+        menu.innerHTML = head + rows;
         Array.prototype.forEach.call(menu.querySelectorAll('.edgeops-slash-item'), function(btn) {
-            btn.onmouseenter = function() { btn.style.background = 'rgba(255,255,255,.06)'; };
-            btn.onmouseleave = function() { btn.style.background = 'transparent'; };
+            btn.onmouseenter = function() {
+                activeIdx = parseInt(btn.getAttribute('data-idx'), 10) || 0;
+                paintActive();
+            };
+            btn.onmousedown = function(ev) { ev.preventDefault(); };
             btn.onclick = function() {
-                var it = items[parseInt(btn.getAttribute('data-idx'), 10)];
-                if (!it) return;
-                var v = inputEl.value || '';
-                var m = v.match(/^(.*)(\/[^\s]*)$/);
-                var prefix = m ? m[1] : '';
-                inputEl.value = prefix + it.slash + ' ';
-                hide();
-                inputEl.focus();
-                try { inputEl.dispatchEvent(new Event('input', { bubbles: true })); } catch (_e) {}
+                var it = visibleItems[parseInt(btn.getAttribute('data-idx'), 10)];
+                applyCommand(it, st);
             };
         });
         menu.style.display = 'block';
         place();
+        paintActive();
     }
-    function ensureAndShow(filter) {
-        function go(list) { render(list, filter); }
-        if (cache) { go(cache); return; }
+    function ensureCommands(cb) {
+        if (cache) { cb(cache); return; }
         if (!userSkillsEnabled()) { hide(); return; }
         API.listSlashCommands().then(function(r) {
             cache = r.commands || [];
-            go(cache);
+            cb(cache);
         }).catch(function() { hide(); });
     }
-    inputEl.addEventListener('input', function() {
-        var v = inputEl.value || '';
-        var m = v.match(/(?:^|\s)(\/[^\s]*)$/);
-        if (!m) { hide(); return; }
-        ensureAndShow((m[1] || '/').slice(1));
+    function refreshFromValue() {
+        if (!userSkillsEnabled()) { hide(); return; }
+        var st = parseSlashState(inputEl.value || '');
+        if (!st) { hide(); return; }
+        ensureCommands(function(list) {
+            if (st.kind === 'params' || st.hasSpace) {
+                var cmd = findCommand(st.token, list);
+                if (cmd) {
+                    showParamsGuide(cmd, st);
+                    return;
+                }
+                // 未知命令但仍在填参：收起
+                hide();
+                return;
+            }
+            // 若已完整匹配某个命令且用户刚敲完名（无空格），仍显示列表以便确认；Enter 可选中
+            renderPick(list, st.filter, st);
+        });
+    }
+
+    inputEl.addEventListener('input', refreshFromValue);
+    inputEl.addEventListener('focus', function() {
+        var st = parseSlashState(inputEl.value || '');
+        if (st) refreshFromValue();
     });
-    inputEl.addEventListener('blur', function() { setTimeout(hide, 180); });
+    inputEl.addEventListener('blur', function() { setTimeout(hide, 200); });
     inputEl.addEventListener('keydown', function(ev) {
-        if (ev.key === 'Escape') hide();
+        if (menu.style.display === 'none') {
+            // 空输入按 / 时由 input 事件打开；此处不拦
+            return;
+        }
+        if (ev.key === 'Escape') {
+            ev.preventDefault();
+            hide();
+            return;
+        }
+        if (mode === 'pick' && visibleItems.length) {
+            if (ev.key === 'ArrowDown') {
+                ev.preventDefault();
+                activeIdx = (activeIdx + 1) % visibleItems.length;
+                paintActive();
+                return;
+            }
+            if (ev.key === 'ArrowUp') {
+                ev.preventDefault();
+                activeIdx = (activeIdx - 1 + visibleItems.length) % visibleItems.length;
+                paintActive();
+                return;
+            }
+            if (ev.key === 'Enter' || ev.key === 'Tab') {
+                // Tab 选命令；Enter 在仍匹配多个时也选中当前项（避免误发送半成品）
+                var cur = visibleItems[activeIdx];
+                if (!cur) return;
+                var st = parseSlashState(inputEl.value || '');
+                var exact = st && findCommand(st.token, visibleItems);
+                // 唯一精确匹配且 Enter：仍应用命令并引导参数（不直接发送）
+                if (ev.key === 'Enter' || ev.key === 'Tab') {
+                    ev.preventDefault();
+                    applyCommand(exact && (exact.slash || '').toLowerCase() === (st.token || '').toLowerCase() ? exact : cur, st);
+                }
+            }
+        }
     });
 }
 
@@ -14791,11 +14968,24 @@ function _showUserSkillForm(skill) {
         + '<div class="field-hint">' + esc(t('skills.slashHint')) + '</div></div>'
         + '<div class="form-group"><label>' + esc(t('skills.fieldContent')) + '</label><textarea id="skillFormContent" class="form-control" rows="14" style="font-family:monospace;font-size:12px"></textarea>'
         + '<div class="field-hint">' + esc(t('skills.contentHint')) + '</div></div>'
+        + '<div class="form-group"><label>' + esc(t('skills.fieldCommands')) + '</label>'
+        + '<div id="skillFormCommandsList" class="field-hint" style="margin-bottom:4px"></div>'
+        + '<div class="field-hint">' + esc(t('skills.commandsHint')) + '</div></div>'
         + '<div class="form-group"><label><input type="checkbox" id="skillFormEnabled"> ' + esc(t('skills.enabled')) + '</label></div>'
         + '<div class="form-group"><label><input type="checkbox" id="skillFormHooks"> ' + esc(t('skills.hooksEnabled')) + '</label>'
         + '<div class="field-hint">' + esc(t('skills.hooksHint')) + '</div></div>'
         + '<div class="form-group"><label>' + esc(t('skills.fieldPreToolUseMatcher')) + '</label><input id="skillFormPreToolUse" class="form-control" placeholder="ssh_execute,send_to_terminal,*">'
         + '<div class="field-hint">' + esc(t('skills.preToolUseHint')) + '</div></div>'
+        + '<div class="form-group"><label>' + esc(t('skills.fieldPreToolUseDecision')) + '</label>'
+        + '<select id="skillFormPreToolUseDecision" class="form-control form-control-sm">'
+        + '<option value="ask">' + esc(t('skills.decisionAsk')) + '</option>'
+        + '<option value="deny">' + esc(t('skills.decisionDeny')) + '</option>'
+        + '<option value="allow">' + esc(t('skills.decisionAllow')) + '</option>'
+        + '</select>'
+        + '<div class="field-hint">' + esc(t('skills.preToolUseDecisionHint')) + '</div></div>'
+        + '<div class="form-group"><label>' + esc(t('skills.fieldHooksJson')) + '</label>'
+        + '<textarea id="skillFormHooksJson" class="form-control" rows="8" style="font-family:monospace;font-size:12px" placeholder=\'{"preToolUse":{"matcher":"ssh_*","decision":"deny","reason":"..."}}\'></textarea>'
+        + '<div class="field-hint">' + esc(t('skills.hooksJsonHint')) + '</div></div>'
         + '<div class="form-group"><label>' + esc(t('skills.fieldAllowedTools')) + '</label><input id="skillFormAllowedTools" class="form-control" placeholder="ssh_execute,list_hosts,*">'
         + '<div class="field-hint">' + esc(t('skills.allowedToolsHint')) + '</div></div>'
         + '<div class="form-group"><label><input type="checkbox" id="skillFormChat"> ' + esc(t('skills.chatEnabled')) + '</label></div>'
@@ -14820,7 +15010,21 @@ function _showUserSkillForm(skill) {
     document.getElementById('skillFormEnabled').checked = s.enabled !== false;
     document.getElementById('skillFormHooks').checked = !!s.hooks_enabled;
     document.getElementById('skillFormPreToolUse').value = s.pre_tool_use_matcher || '';
+    var decSel = document.getElementById('skillFormPreToolUseDecision');
+    if (decSel) decSel.value = (s.pre_tool_use_decision || 'ask');
+    document.getElementById('skillFormHooksJson').value = s.hooks_json || '';
     document.getElementById('skillFormAllowedTools').value = s.allowed_tools || '';
+    var cmdList = document.getElementById('skillFormCommandsList');
+    if (cmdList) {
+        var cmds = s.command_files || [];
+        if (cmds.length) {
+            cmdList.innerHTML = cmds.map(function(c) {
+                return '<code>' + esc(c.slash || ('/' + c.alias)) + '</code> <span style="opacity:.7">' + esc(c.rel || '') + '</span>';
+            }).join('<br>');
+        } else {
+            cmdList.textContent = t('skills.commandsEmpty');
+        }
+    }
     document.getElementById('skillFormChat').checked = s.chat_enabled !== false;
     document.getElementById('skillFormScopeWeb').checked = s.chat_scope_web !== false;
     document.getElementById('skillFormScopeHost').checked = s.chat_scope_host !== false;
@@ -14851,9 +15055,19 @@ function _showUserSkillForm(skill) {
             slash_name: (document.getElementById('skillFormSlash').value || '').trim(),
             hooks_enabled: document.getElementById('skillFormHooks').checked,
             pre_tool_use_matcher: (document.getElementById('skillFormPreToolUse').value || '').trim(),
+            pre_tool_use_decision: (document.getElementById('skillFormPreToolUseDecision') || {}).value || 'ask',
+            hooks_json: (document.getElementById('skillFormHooksJson').value || ''),
             allowed_tools: (document.getElementById('skillFormAllowedTools').value || '').trim(),
             group_id: grpVal ? parseInt(grpVal, 10) : null
         };
+        var hjRaw = payload.hooks_json;
+        if (hjRaw && hjRaw.trim()) {
+            try { JSON.parse(hjRaw); }
+            catch (je) {
+                showToast(t('skills.hooksJsonInvalid'), 'error');
+                return;
+            }
+        }
         var p = isEdit ? API.updateUserSkill(s.id, payload) : API.createUserSkill(payload);
         p.then(function(res) {
             modal.style.display = 'none';

@@ -23,10 +23,14 @@ from services.user_skills_registry import (
     default_skill_template_content,
     delete_user_skill,
     delete_user_skill_group,
+    detect_slash_params_hint,
     get_user_skill,
+    iter_skill_command_files,
     list_user_skill_groups_summary,
     list_user_skills,
     normalize_skill_name,
+    read_skill_command_file,
+    read_skill_content,
     read_skill_resource_file,
     require_user_skills_access,
     scan_user_skills_from_disk,
@@ -52,7 +56,9 @@ class SkillCreateBody(BaseModel):
     slash_name: str = ""
     hooks_enabled: bool = False
     pre_tool_use_matcher: str = ""
+    pre_tool_use_decision: str = "ask"
     allowed_tools: str = ""
+    hooks_json: str | None = None
 
 
 class SkillUpdateBody(BaseModel):
@@ -68,7 +74,9 @@ class SkillUpdateBody(BaseModel):
     slash_name: str | None = None
     hooks_enabled: bool | None = None
     pre_tool_use_matcher: str | None = None
+    pre_tool_use_decision: str | None = None
     allowed_tools: str | None = None
+    hooks_json: str | None = None
 
 
 class SkillGroupCreateBody(BaseModel):
@@ -213,6 +221,12 @@ async def list_slash_commands(user=Depends(get_current_user)):
         slash = (s.get("slash_name") or s.get("name") or "").strip().lstrip("/")
         if not slash:
             continue
+        params_hint = ""
+        try:
+            content = await read_skill_content(user, s["name"])
+            params_hint = detect_slash_params_hint(content)
+        except Exception:
+            params_hint = ""
         items.append(
             {
                 "slash": "/" + slash,
@@ -220,30 +234,27 @@ async def list_slash_commands(user=Depends(get_current_user)):
                 "display_name": s.get("display_name") or s.get("name"),
                 "description": (s.get("description") or "")[:200],
                 "source": "user",
-                "params_hint": "{{arg}}",
+                "params_hint": params_hint,
             }
         )
         # commands/ 目录：额外 slash 别名（文件名）
         try:
-            from pathlib import Path
-            from services.user_skills_registry import skill_md_path
-
-            cmd_dir = skill_md_path(user, s["name"]).parent / "commands"
-            if cmd_dir.is_dir():
-                for p in sorted(cmd_dir.iterdir()):
-                    if p.is_file() and p.suffix.lower() in (".md", ".txt", ""):
-                        alias = p.stem.strip().lstrip("/")
-                        if alias:
-                            items.append(
-                                {
-                                    "slash": "/" + alias,
-                                    "name": s.get("name"),
-                                    "display_name": alias,
-                                    "description": f"commands/{p.name} → {s.get('name')}",
-                                    "source": "commands",
-                                    "params_hint": "{{arg}}",
-                                }
-                            )
+            for cmd in iter_skill_command_files(user, s["name"]):
+                cmd_text = ""
+                try:
+                    cmd_text = read_skill_command_file(user, s["name"], cmd["alias"]) or ""
+                except Exception:
+                    cmd_text = ""
+                items.append(
+                    {
+                        "slash": cmd["slash"],
+                        "name": s.get("name"),
+                        "display_name": cmd["alias"],
+                        "description": f"{cmd['rel']} → {s.get('name')}",
+                        "source": "commands",
+                        "params_hint": detect_slash_params_hint(cmd_text),
+                    }
+                )
         except Exception:
             pass
     try:
@@ -410,7 +421,9 @@ async def create_my_skill(body: SkillCreateBody, user=Depends(get_current_user))
             slash_name=body.slash_name,
             hooks_enabled=body.hooks_enabled,
             pre_tool_use_matcher=body.pre_tool_use_matcher,
+            pre_tool_use_decision=body.pre_tool_use_decision,
             allowed_tools=body.allowed_tools,
+            hooks_json=body.hooks_json,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -510,7 +523,9 @@ async def update_my_skill(skill_id: int, body: SkillUpdateBody, user=Depends(get
             slash_name=fields.get("slash_name"),
             hooks_enabled=fields.get("hooks_enabled"),
             pre_tool_use_matcher=fields.get("pre_tool_use_matcher"),
+            pre_tool_use_decision=fields.get("pre_tool_use_decision"),
             allowed_tools=fields.get("allowed_tools"),
+            hooks_json=fields["hooks_json"] if "hooks_json" in fields else ...,
         )
     except LookupError:
         raise HTTPException(status_code=404, detail="Skill 不存在") from None

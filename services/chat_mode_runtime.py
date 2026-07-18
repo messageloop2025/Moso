@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from database import get_db
@@ -24,6 +25,8 @@ from services.user_skills_hooks import (
 )
 
 logger = logging.getLogger("edgeops.chat_mode_runtime")
+
+_SLASH_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
 
 def build_strict_confirm_ui_action(
@@ -353,24 +356,65 @@ async def evaluate_pre_tool_gate(
     return {"action": "execute", "decision": "allow"}
 
 
-def slash_skill_token(message: str) -> str | None:
-    """解析消息开头的 /skill-name（或首个斜杠 token）。"""
+def parse_slash_invocation(message: str) -> dict[str, Any] | None:
+    """解析消息开头的 `/name [args…]`。
+
+    返回 `{name, slash, args_raw, args_list}`；不符合斜杠命令则 None。
+    `args_raw` 为命令名后的全部剩余文本（含换行）；`args_list` 为空白分词。
+    """
     s = (message or "").lstrip()
     if not s.startswith("/"):
         return None
-    # 取第一行第一个 token
-    first = s.splitlines()[0].strip()
-    tok = first.split()[0] if first else ""
-    if len(tok) < 2:
+    lines = s.splitlines()
+    first = (lines[0] or "").strip()
+    if not first.startswith("/") or len(first) < 2:
         return None
+    parts = first.split(None, 1)
+    tok = parts[0]
     name = tok[1:].strip()
-    if not name or name != name.lower():
+    if not name or not _SLASH_NAME_RE.match(name):
         return None
-    if not all(c.isalnum() or c in "-_" for c in name):
-        return None
-    if not name[0].isalpha():
-        return None
-    return name
+    rest_first = parts[1].strip() if len(parts) > 1 else ""
+    rest_lines = "\n".join(lines[1:]).strip()
+    if rest_first and rest_lines:
+        args_raw = rest_first + "\n" + rest_lines
+    else:
+        args_raw = rest_first or rest_lines
+    args_list = args_raw.split() if args_raw else []
+    return {
+        "name": name,
+        "slash": f"/{name}",
+        "args_raw": args_raw,
+        "args_list": args_list,
+    }
+
+
+def slash_skill_token(message: str) -> str | None:
+    """解析消息开头的 /skill-name（兼容旧调用）。"""
+    inv = parse_slash_invocation(message)
+    return inv["name"] if inv else None
+
+
+def apply_slash_arg_placeholders(
+    text: str,
+    args_raw: str = "",
+    args_list: list[str] | None = None,
+) -> str:
+    """替换 `{{arg}}` / `$ARGUMENTS` / `{{argN}}` / `$ARGN` 占位。"""
+    out = text or ""
+    raw = args_raw or ""
+    alist = list(args_list or [])
+    if not alist and raw:
+        alist = raw.split()
+    out = out.replace("{{arg}}", raw)
+    out = out.replace("{{args}}", raw)
+    out = out.replace("$ARGUMENTS", raw)
+    out = out.replace("${ARGUMENTS}", raw)
+    for i, a in enumerate(alist, 1):
+        out = out.replace(f"{{{{arg{i}}}}}", a)
+        out = out.replace(f"$ARG{i}", a)
+        out = out.replace(f"${{ARG{i}}}", a)
+    return out
 
 
 async def resolve_slash_skill_force_load(
@@ -379,19 +423,22 @@ async def resolve_slash_skill_force_load(
     session_scope: str | None = None,
     session_host_id: int | None = None,
 ) -> dict[str, Any] | None:
-    """若用户以 /name 唤起 Skill，返回强制加载的正文块信息。"""
+    """若用户以 /name 唤起 Skill（或 commands/ 别名），返回强制加载的正文块信息。"""
     from services.user_skills_registry import (
         get_user_skills_root,
+        iter_skill_command_files,
         list_chat_enabled_skills_for_context,
         normalize_skill_name,
         parse_skill_markdown,
+        read_skill_command_file,
         read_skill_content,
         user_skills_feature_enabled,
     )
 
-    token = slash_skill_token(message)
-    if not token:
+    inv = parse_slash_invocation(message)
+    if not inv:
         return None
+    token = inv["name"]
     db = await get_db()
     uid = int(user.get("id") or 0)
     if not await user_skills_feature_enabled(db, uid):
@@ -400,16 +447,33 @@ async def resolve_slash_skill_force_load(
         db, uid, user, session_scope, session_host_id
     )
     hit = None
+    command_hit: dict[str, Any] | None = None
     try:
         want = normalize_skill_name(token)
     except ValueError:
         want = token
     for r in rows:
         name = (r.get("name") or "").strip().lower()
-        slash = (r.get("slash_name") or "").strip().lower()
-        if name == want or slash == want or slash == f"/{want}":
+        slash = (r.get("slash_name") or "").strip().lower().lstrip("/")
+        if name == want or slash == want:
             hit = r
             break
+    if not hit:
+        # skills/<name>/commands/<alias>.md 别名（与 slash-commands 菜单一致）
+        for r in rows:
+            for cmd in iter_skill_command_files(user, r.get("name") or ""):
+                if cmd.get("alias") == want:
+                    hit = r
+                    command_hit = cmd
+                    break
+            if hit:
+                break
+    base_info = {
+        "explicit_invoke": True,
+        "slash": inv.get("slash") or f"/{want}",
+        "args_raw": inv.get("args_raw") or "",
+        "args_list": list(inv.get("args_list") or []),
+    }
     if not hit:
         # 也允许按磁盘名强制（即使 chat_enabled 关？计划说强制加载 — 仍要求存在）
         try:
@@ -418,12 +482,12 @@ async def resolve_slash_skill_force_load(
             return None
         meta, body = parse_skill_markdown(content)
         return {
+            **base_info,
             "name": want,
             "meta": meta,
             "body": body,
             "content": content,
-            "explicit_invoke": True,
-            "slash": f"/{want}",
+            "source": "skill",
         }
     try:
         content = await read_skill_content(user, hit["name"])
@@ -431,31 +495,62 @@ async def resolve_slash_skill_force_load(
         return None
     meta, body = parse_skill_markdown(content)
     root = get_user_skills_root(user) / hit["name"]
-    return {
+    info: dict[str, Any] = {
+        **base_info,
         "name": hit["name"],
         "meta": meta,
         "body": body,
         "content": content,
-        "explicit_invoke": True,
-        "slash": f"/{want}",
         "skill_dir": str(root),
         "hooks_enabled": bool(hit.get("hooks_enabled")),
         "pre_tool_use_matcher": hit.get("pre_tool_use_matcher") or "",
+        "pre_tool_use_decision": hit.get("pre_tool_use_decision") or "ask",
+        "allowed_tools": hit.get("allowed_tools") or "",
+        "source": "skill",
     }
+    if command_hit:
+        cmd_text = read_skill_command_file(user, hit["name"], want) or ""
+        cmd_meta, cmd_body = parse_skill_markdown(cmd_text)
+        info["source"] = "commands"
+        info["command_file"] = command_hit.get("rel") or ""
+        info["command_alias"] = want
+        info["body"] = (cmd_body or cmd_text).strip()
+        info["content"] = cmd_text
+        if isinstance(cmd_meta, dict) and cmd_meta.get("description"):
+            info["meta"] = {**(meta if isinstance(meta, dict) else {}), **cmd_meta}
+        elif isinstance(meta, dict):
+            # 保留父 Skill 描述作补充
+            info["parent_description"] = str(meta.get("description") or "").strip()
+    return info
 
 
 def format_slash_skill_injection(info: dict[str, Any]) -> str:
     name = info.get("name") or ""
-    body = (info.get("body") or "").strip()
+    args_raw = str(info.get("args_raw") or "")
+    args_list = list(info.get("args_list") or [])
+    body = apply_slash_arg_placeholders(
+        (info.get("body") or "").strip(), args_raw, args_list
+    )
     desc = ""
     meta = info.get("meta") or {}
     if isinstance(meta, dict):
         desc = str(meta.get("description") or "").strip()
+    slash = info.get("slash") or ("/" + name)
+    source = info.get("source") or "skill"
     parts = [
         "\n\n**【用户显式斜杠唤起 Skill】**",
-        f"用户通过 `{info.get('slash') or ('/' + name)}` 强制加载下列 Skill 全文（绕过仅目录披露）。",
-        f"\n### Skill: `{name}`（显式唤起）",
+        f"用户通过 `{slash}` 强制加载下列内容（绕过仅目录披露）。",
     ]
+    if args_raw:
+        parts.append(f"\n用户参数（已替换 `{{{{arg}}}}` / `$ARGUMENTS` 等占位）：`{args_raw[:2000]}`")
+    if source == "commands":
+        rel = info.get("command_file") or f"commands/{info.get('command_alias') or ''}"
+        parts.append(f"\n### Command: `{slash}` → Skill `{name}`（`{rel}`）")
+        parent_desc = str(info.get("parent_description") or "").strip()
+        if parent_desc and parent_desc != desc:
+            parts.append(f"\n> 所属 Skill：{parent_desc}")
+    else:
+        parts.append(f"\n### Skill: `{name}`（显式唤起）")
     if desc:
         parts.append(f"\n> {desc}")
     if body:

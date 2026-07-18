@@ -363,9 +363,9 @@ MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_up
 
 须管理员开启 `skills_enabled`。文件：`web/fs/<用户名>/skills/<name>/SKILL.md`（**Cursor Agent Skills** 格式：YAML frontmatter + Markdown）。**渐进式披露**（默认）：system 仅注入各 Skill 的 `name` + `description` 目录；AI 匹配后须 `get_user_skill` 加载正文；附属文件用 `read_user_skill_file`。`disable-model-invocation: false` 或 `always-apply: true` 时内联正文。
 
-**斜杠 Command**：聊天以 `/skill-name`（或管理页配置的 `slash_name`）开头时，服务端强制加载该 Skill 全文并标注「用户显式唤起」（绕过仅目录披露）。
+**斜杠 Command**：聊天以 `/skill-name`（或管理页 `slash_name`）开头时，服务端强制加载该 Skill 全文并标注「用户显式唤起」（绕过仅目录披露）。空格后参数写入 `args_raw`，并替换正文中的 `{{arg}}` / `$ARGUMENTS` / `{{argN}}`。技能目录 `commands/<alias>.md` 会注册额外斜杠别名 `/alias`（菜单与 resolve 一致，加载该命令文件）。输入框 `/` 弹出斜杠菜单（展示 `params_hint`、来源）。
 
-**Hooks**：Skill 可启用 Hook；目录内可选 `hooks.json`，事件含 `preToolUse` / `postToolUse` / `postToolUseFailure` / `sessionStart` / `sessionEnd` / `beforeMCPExecution`（decision=`allow`/`deny`/`ask`）。另支持 Skill 级 `allowed_tools` 白名单。失败默认 **fail-open**。输入框 `/` 弹出斜杠菜单；`run_skill_script` 仅执行该 Skill `scripts/` 下脚本。
+**Hooks**：Skill 可启用 Hook；管理页可编辑 `hooks.json`，事件含 `preToolUse` / `postToolUse` / `postToolUseFailure` / `sessionStart` / `sessionEnd` / `beforeMCPExecution`（decision=`allow`/`deny`/`ask`）。亦可用 DB `pre_tool_use_matcher` + `pre_tool_use_decision`（默认 ask；无 hooks.json 规则时生效）。另支持 Skill 级 `allowed_tools` 白名单。失败默认 **fail-open**。`ask` 走与严格模式相同的独立确认模态。`run_skill_script` 仅执行该 Skill `scripts/` 下脚本。
 
 **会话聊天模式门禁**（与 TOOLS 正交，见 `services/chat_mode_gate.py` / `chat_mode_runtime.py` / `chat_mode_enforce.py`）：`qa` 禁止写类工具并返回待执行命令卡；`strict` 写类工具由平台独立弹窗确认（允许/总是=本会话同工具名/拒绝；创建打开终端豁免），模型系统提示与 `normal` 相同、不注入「严格」说明，确认结果以 `user_decision` 写入 tool 返回；`normal` 默认行为仍走 Hook 骨架。
 

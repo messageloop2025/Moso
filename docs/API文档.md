@@ -1000,12 +1000,12 @@ body：`tool`（edgeops_* 名）、`arguments`（对象）
 | GET | `/user-skills/status` | 当前用户是否已开启 Skills（`skills_enabled`、`can_use`） |
 | GET | `/user-skills` | 列出 Skill 元数据（不含正文时可另 GET 详情） |
 | POST | `/user-skills/scan` | 扫描磁盘 `skills/` 目录，同步 `SKILL.md` 到库 |
-| POST | `/user-skills` | 新建；body：`name`、`display_name?`、`description?`、`content?`、场景开关、**`slash_name?`**、**`hooks_enabled?`**、**`pre_tool_use_matcher?`** 等 |
+| POST | `/user-skills` | 新建；body：`name`、`display_name?`、`description?`、`content?`、场景开关、**`slash_name?`**、**`hooks_enabled?`**、**`pre_tool_use_matcher?`**、**`pre_tool_use_decision?`**=`ask`\|`deny`\|`allow`、**`hooks_json?`**、**`allowed_tools?`** 等 |
 | GET | `/user-skills/{id}` | 详情（含 `content` 正文；列表项另含 `slash_command`、`has_hooks_json`、`slash_only`） |
 | PUT | `/user-skills/{id}` | 更新元数据或正文（含 slash/hook 字段） |
 | DELETE | `/user-skills/{id}` | 删除；query `remove_files=true` 时同时删磁盘目录 |
 
-场景开关含义同 §20（`chat_enabled` + `chat_scope_web/host/integration`）。**渐进式披露**（默认，`EDGEOPS_USER_SKILLS_PROGRESSIVE_DISCLOSURE=true`）：system 仅注入各 Skill 的 `name`+`description` 目录；AI 按需 `get_user_skill` / `read_user_skill_file`；`always-apply: true` 或 `disable-model-invocation: false` 时内联正文。**斜杠 Command**：用户消息以 `/slash_name` 开头时强制加载该 Skill 全文。**Hook**：可选 `hooks.json` 的 `preToolUse`（或 DB matcher）；决策 `allow`/`deny`/`ask`，默认 fail-open。
+场景开关含义同 §20（`chat_enabled` + `chat_scope_web/host/integration`）。**渐进式披露**（默认，`EDGEOPS_USER_SKILLS_PROGRESSIVE_DISCLOSURE=true`）：system 仅注入各 Skill 的 `name`+`description` 目录；AI 按需 `get_user_skill` / `read_user_skill_file`；`always-apply: true` 或 `disable-model-invocation: false` 时内联正文。**斜杠 Command**：用户消息以 `/slash_name [args]` 开头时强制加载全文，并替换 `{{arg}}`/`$ARGUMENTS`/`{{argN}}`；`skills/*/commands/*.md` 别名与 `GET /user-skills/slash-commands` 一致。详情含 `hooks_json`、`command_files`。**Hook**：`hooks.json` 或 DB `pre_tool_use_matcher` + `pre_tool_use_decision`；决策 `allow`/`deny`/`ask`；`ask` 走独立确认；默认 fail-open。
 
 AI 工具：`list_user_skills`、`get_user_skill`、`read_user_skill_file`、`save_user_skill`、`delete_user_skill`、`scan_user_skills`、`export_user_skills_config`、`import_user_skills_config`（须 `skills_enabled`）。
 

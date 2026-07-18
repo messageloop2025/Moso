@@ -17,7 +17,10 @@ from services.chat_mode_gate import (
 )
 from services.chat_mode_runtime import (
     annotate_tool_result_with_strict_decision,
+    apply_slash_arg_placeholders,
     build_strict_confirm_ui_action,
+    format_slash_skill_injection,
+    parse_slash_invocation,
     parse_strict_choice,
     slash_skill_token,
 )
@@ -200,3 +203,48 @@ def test_hook_matcher_and_deny():
         tool_name="ssh_execute",
     )
     assert d2["decision"] == "ask"
+    d3 = resolve_pre_tool_use_decision(
+        hooks_enabled=True,
+        matcher="ssh_*",
+        hooks_json={},
+        tool_name="ssh_execute",
+        db_matcher_decision="deny",
+    )
+    assert d3["decision"] == "deny"
+    assert d3["source"] == "db_matcher"
+    d4 = resolve_pre_tool_use_decision(
+        hooks_enabled=True,
+        matcher="ssh_*",
+        hooks_json={},
+        tool_name="ssh_execute",
+        db_matcher_decision="allow",
+    )
+    assert d4["decision"] == "allow"
+
+
+def test_parse_slash_invocation_and_placeholders():
+    assert slash_skill_token("/my-skill host1") == "my-skill"
+    inv = parse_slash_invocation("/my-skill host1 foo\nbar")
+    assert inv is not None
+    assert inv["name"] == "my-skill"
+    assert inv["args_raw"].startswith("host1 foo")
+    assert "bar" in inv["args_raw"]
+    assert inv["args_list"][0] == "host1"
+    text = "Run on {{arg1}} full={{arg}} n=$ARGUMENTS"
+    out = apply_slash_arg_placeholders(text, "host1 x", ["host1", "x"])
+    assert "Run on host1" in out
+    assert "full=host1 x" in out
+    assert "n=host1 x" in out
+    inj = format_slash_skill_injection(
+        {
+            "name": "demo",
+            "slash": "/demo",
+            "body": "Target: {{arg}}",
+            "args_raw": "web1",
+            "args_list": ["web1"],
+            "meta": {"description": "d"},
+            "source": "skill",
+        }
+    )
+    assert "Target: web1" in inj
+    assert "用户参数" in inj

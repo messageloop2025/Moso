@@ -69,10 +69,12 @@ def resolve_hook_event(
     args: dict | None = None,
     chat_mode: str = "normal",
     default_decision: str = "allow",
+    db_matcher_decision: str = "ask",
 ) -> dict[str, Any]:
     """
     通用 Hook 解析。返回 {decision, reason, source, fail_open, event}.
     未知/失败 → fail-open allow。
+    DB matcher（无 hooks.json 规则）命中时使用 db_matcher_decision（allow/deny/ask）。
     """
     _ = (args, chat_mode)
     ev = (event or "").strip()
@@ -161,9 +163,10 @@ def resolve_hook_event(
 
     # DB matcher 仅对 preToolUse
     if ev == "preToolUse" and hooks_enabled and matcher and tool_matches(matcher, tool_name):
+        dec = _normalize_decision(db_matcher_decision, "ask")
         return {
-            "decision": "ask",
-            "reason": "preToolUse matcher hit (no hooks.json decision)",
+            "decision": dec,
+            "reason": f"preToolUse matcher hit (db decision={dec})",
             "source": "db_matcher",
             "fail_open": True,
             "event": ev,
@@ -186,6 +189,7 @@ def resolve_pre_tool_use_decision(
     tool_name: str,
     args: dict | None = None,
     chat_mode: str = "normal",
+    db_matcher_decision: str = "ask",
 ) -> dict[str, Any]:
     return resolve_hook_event(
         event="preToolUse",
@@ -195,6 +199,7 @@ def resolve_pre_tool_use_decision(
         tool_name=tool_name,
         args=args,
         chat_mode=chat_mode,
+        db_matcher_decision=db_matcher_decision,
     )
 
 
@@ -212,6 +217,12 @@ def run_hooks_for_skills(
         try:
             enabled = bool(sk.get("hooks_enabled"))
             matcher = sk.get("pre_tool_use_matcher") or sk.get("preToolUseMatcher") or ""
+            db_dec = (
+                sk.get("pre_tool_use_decision")
+                or sk.get("preToolUseDecision")
+                or sk.get("db_matcher_decision")
+                or "ask"
+            )
             skill_dir_raw = sk.get("skill_dir") or sk.get("dir") or sk.get("path") or ""
             hj: dict[str, Any] = {}
             if skill_dir_raw:
@@ -219,8 +230,8 @@ def run_hooks_for_skills(
             fm_hooks = sk.get("hooks") if isinstance(sk.get("hooks"), dict) else None
             if fm_hooks and not hj:
                 hj = fm_hooks
-            # 有 hooks.json 任意事件时视为可评估
-            has_any = bool(hj) or enabled
+            # hooks.json / 开关 / DB matcher 任一即可评估
+            has_any = bool(hj) or enabled or bool(str(matcher or "").strip())
             dec = resolve_hook_event(
                 event=event,
                 hooks_enabled=has_any,
@@ -229,6 +240,7 @@ def run_hooks_for_skills(
                 tool_name=tool_name,
                 args=args,
                 chat_mode=chat_mode,
+                db_matcher_decision=str(db_dec),
             )
             if dec.get("decision") == "deny":
                 return {**dec, "skill_name": sk.get("name") or sk.get("skill_name") or ""}

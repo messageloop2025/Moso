@@ -107,6 +107,101 @@ def skill_md_path(user: dict, name: str) -> Path:
     return get_user_skills_root(user) / slug / "SKILL.md"
 
 
+def normalize_pre_tool_use_decision(raw: str | None, default: str = "ask") -> str:
+    d = str(raw or default).strip().lower()
+    if d not in ("allow", "deny", "ask"):
+        return default
+    return d
+
+
+def iter_skill_command_files(user: dict, skill_name: str) -> list[dict[str, Any]]:
+    """列出 skills/<name>/commands/*.{md,txt}，供斜杠菜单与 resolve 共用。"""
+    try:
+        cmd_dir = skill_md_path(user, skill_name).parent / "commands"
+    except Exception:
+        return []
+    if not cmd_dir.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for p in sorted(cmd_dir.iterdir()):
+        if not p.is_file() or p.suffix.lower() not in (".md", ".txt", ""):
+            continue
+        alias = p.stem.strip().lstrip("/").lower()
+        if not alias or not _NAME_RE.match(alias):
+            continue
+        out.append(
+            {
+                "alias": alias,
+                "slash": f"/{alias}",
+                "path": p,
+                "rel": f"commands/{p.name}",
+                "filename": p.name,
+            }
+        )
+    return out
+
+
+def read_skill_command_file(user: dict, skill_name: str, alias: str) -> str | None:
+    want = (alias or "").strip().lstrip("/").lower()
+    if not want:
+        return None
+    for item in iter_skill_command_files(user, skill_name):
+        if item.get("alias") == want:
+            try:
+                return Path(item["path"]).read_text(encoding="utf-8")
+            except Exception as e:
+                logger.warning("读取 command 文件失败 %s: %s", item.get("path"), e)
+                return None
+    return None
+
+
+def detect_slash_params_hint(text: str) -> str:
+    """从正文检测参数占位提示（用于斜杠菜单）。"""
+    s = text or ""
+    for token in ("{{arg}}", "$ARGUMENTS", "${ARGUMENTS}", "{{args}}", "{{arg1}}"):
+        if token in s:
+            return "{{arg}}" if token in ("{{arg}}", "{{args}}", "$ARGUMENTS", "${ARGUMENTS}") else token
+    if re.search(r"\{\{arg\d+\}\}", s) or re.search(r"\$ARG\d+\b", s):
+        return "{{arg1}} …"
+    return ""
+
+
+def hooks_json_path(user: dict, skill_name: str) -> Path:
+    return skill_dir_path(user, skill_name) / "hooks.json"
+
+
+def read_hooks_json_text(user: dict, skill_name: str) -> str:
+    p = hooks_json_path(user, skill_name)
+    if not p.is_file():
+        return ""
+    try:
+        return p.read_text(encoding="utf-8")
+    except Exception as e:
+        logger.warning("读取 hooks.json 失败 %s: %s", p, e)
+        return ""
+
+
+def write_hooks_json_text(user: dict, skill_name: str, raw: str | None) -> None:
+    """写入或删除 hooks.json。raw 为空字符串则删除文件。"""
+    import json
+
+    slug = normalize_skill_name(skill_name)
+    p = hooks_json_path(user, slug)
+    text = "" if raw is None else str(raw).strip()
+    if not text:
+        if p.is_file():
+            p.unlink(missing_ok=True)
+        return
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"hooks.json 不是合法 JSON：{e}") from e
+    if not isinstance(data, dict):
+        raise ValueError("hooks.json 根节点必须是对象")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def parse_skill_markdown(content: str) -> tuple[dict[str, Any], str]:
     text = content or ""
     meta: dict[str, Any] = {}
@@ -425,6 +520,9 @@ def public_skill_row(row: dict, *, fs_exists: bool | None = None, group_name: st
         "slash_command": f"/{slash}" if slash else "",
         "hooks_enabled": bool(row.get("hooks_enabled", 0)),
         "pre_tool_use_matcher": row.get("pre_tool_use_matcher") or "",
+        "pre_tool_use_decision": normalize_pre_tool_use_decision(
+            row.get("pre_tool_use_decision"), "ask"
+        ),
         "allowed_tools": row.get("allowed_tools") or "",
         "group_id": int(gid) if gid is not None else None,
         "group_name": (group_name or "").strip(),
@@ -823,6 +921,11 @@ async def get_user_skill(db, user_id: int, skill_id: int, user: dict | None = No
             gname = gmap.get(int(row["group_id"]), "")
         pub = await enrich_skill_list_item(db, user_id, user, row, group_name=gname)
         pub["content"] = await read_skill_content(user, row["name"])
+        pub["hooks_json"] = read_hooks_json_text(user, row["name"])
+        pub["command_files"] = [
+            {"alias": c["alias"], "slash": c["slash"], "rel": c["rel"]}
+            for c in iter_skill_command_files(user, row["name"])
+        ]
         return pub
     return public_skill_row(row, fs_exists=None)
 
@@ -987,7 +1090,9 @@ async def create_user_skill(
     slash_name: str = "",
     hooks_enabled: bool = False,
     pre_tool_use_matcher: str = "",
+    pre_tool_use_decision: str = "ask",
     allowed_tools: str = "",
+    hooks_json: str | None = None,
 ) -> dict:
     slug = normalize_skill_name(name)
     existing = await get_user_skill_raw_by_name(db, user_id, slug)
@@ -1022,12 +1127,13 @@ async def create_user_skill(
         slash = normalize_skill_name(slash)
     except ValueError:
         slash = slug
+    decision = normalize_pre_tool_use_decision(pre_tool_use_decision, "ask")
     cur = await db.execute(
         """INSERT INTO user_skills
            (user_id, name, display_name, description, skill_path, enabled, chat_enabled,
             chat_scope_web, chat_scope_host, chat_scope_integration, file_mtime, group_id,
-            slash_name, hooks_enabled, pre_tool_use_matcher, allowed_tools)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            slash_name, hooks_enabled, pre_tool_use_matcher, pre_tool_use_decision, allowed_tools)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             user_id,
             slug,
@@ -1044,10 +1150,13 @@ async def create_user_skill(
             slash,
             1 if hooks_enabled else 0,
             (pre_tool_use_matcher or "").strip()[:500],
+            decision,
             (allowed_tools or "").strip()[:2000],
         ),
     )
     await db.commit()
+    if hooks_json is not None:
+        write_hooks_json_text(user, slug, hooks_json)
     row = await get_user_skill(db, user_id, int(cur.lastrowid), user)
     return row or {}
 
@@ -1070,7 +1179,9 @@ async def update_user_skill(
     slash_name: str | None = None,
     hooks_enabled: bool | None = None,
     pre_tool_use_matcher: str | None = None,
+    pre_tool_use_decision: str | None = None,
     allowed_tools: str | None = None,
+    hooks_json: str | None = ...,
 ) -> dict:
     raw = await get_user_skill_raw(db, user_id, skill_id)
     if not raw:
@@ -1099,6 +1210,9 @@ async def update_user_skill(
             slash_val = normalize_skill_name(s)
         except ValueError:
             slash_val = slug
+    decision_val = None
+    if pre_tool_use_decision is not None:
+        decision_val = normalize_pre_tool_use_decision(pre_tool_use_decision, "ask")
     await db.execute(
         """UPDATE user_skills SET
            display_name=COALESCE(?, display_name),
@@ -1111,6 +1225,7 @@ async def update_user_skill(
            slash_name=COALESCE(?, slash_name),
            hooks_enabled=COALESCE(?, hooks_enabled),
            pre_tool_use_matcher=COALESCE(?, pre_tool_use_matcher),
+           pre_tool_use_decision=COALESCE(?, pre_tool_use_decision),
            allowed_tools=COALESCE(?, allowed_tools),
            group_id=CASE WHEN ? THEN group_id ELSE ? END,
            file_mtime=COALESCE(?, file_mtime),
@@ -1127,6 +1242,7 @@ async def update_user_skill(
             slash_val,
             None if hooks_enabled is None else (1 if hooks_enabled else 0),
             None if pre_tool_use_matcher is None else (pre_tool_use_matcher or "").strip()[:500],
+            decision_val,
             None if allowed_tools is None else (allowed_tools or "").strip()[:2000],
             group_id is ...,
             gid_sql,
@@ -1136,6 +1252,8 @@ async def update_user_skill(
         ),
     )
     await db.commit()
+    if hooks_json is not ...:
+        write_hooks_json_text(user, slug, hooks_json)
     row = await get_user_skill(db, user_id, skill_id, user)
     return row or {}
 

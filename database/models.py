@@ -1518,6 +1518,8 @@ async def _migrate_legacy_added_columns(db: aiosqlite.Connection) -> None:
         ("user_skills", "slash_name", "ALTER TABLE user_skills ADD COLUMN slash_name TEXT NOT NULL DEFAULT ''"),
         ("user_skills", "hooks_enabled", "ALTER TABLE user_skills ADD COLUMN hooks_enabled INTEGER NOT NULL DEFAULT 0"),
         ("user_skills", "pre_tool_use_matcher", "ALTER TABLE user_skills ADD COLUMN pre_tool_use_matcher TEXT NOT NULL DEFAULT ''"),
+        ("user_skills", "pre_tool_use_decision", "ALTER TABLE user_skills ADD COLUMN pre_tool_use_decision TEXT NOT NULL DEFAULT 'ask'"),
+        ("user_skills", "allowed_tools", "ALTER TABLE user_skills ADD COLUMN allowed_tools TEXT NOT NULL DEFAULT ''"),
         ("ai_chat_sessions", "chat_mode", "ALTER TABLE ai_chat_sessions ADD COLUMN chat_mode TEXT NOT NULL DEFAULT 'normal'"),
         ("ai_chat_sessions", "strict_allow_cache_json", "ALTER TABLE ai_chat_sessions ADD COLUMN strict_allow_cache_json TEXT NOT NULL DEFAULT ''"),
     ]

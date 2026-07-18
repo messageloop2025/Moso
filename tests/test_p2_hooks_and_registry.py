@@ -40,6 +40,21 @@ def test_session_start_allow_default():
     assert dec.get("decision") == "allow"
 
 
+def test_db_matcher_decision_from_skill_row():
+    skills = [
+        {
+            "name": "s1",
+            "hooks_enabled": True,
+            "pre_tool_use_matcher": "ssh_*",
+            "pre_tool_use_decision": "deny",
+            "skill_dir": "",
+        }
+    ]
+    dec = run_hooks_for_skills(skills, "preToolUse", tool_name="ssh_execute", args={})
+    assert dec.get("decision") == "deny"
+    assert dec.get("source") == "db_matcher"
+
+
 def test_tools_registry_merge():
     register_tool(
         {

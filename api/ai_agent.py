@@ -6429,6 +6429,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                         "name": _nm,
                         "hooks_enabled": bool(_hr.get("hooks_enabled")),
                         "pre_tool_use_matcher": _hr.get("pre_tool_use_matcher") or "",
+                        "pre_tool_use_decision": _hr.get("pre_tool_use_decision") or "ask",
                         "allowed_tools": _hr.get("allowed_tools") or "",
                         "skill_dir": str(_usk_root(user) / _nm) if _nm else "",
                     }
