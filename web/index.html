@@ -48,7 +48,7 @@
             if (span) span.textContent = (typeof t === "function" && t("meta.initLoading")) || "…";
             try { document.title = t("meta.htmlTitle"); } catch (e) {}
             var s = document.createElement("script");
-            s.src = "/static/js/app.js?v=58";
+            s.src = "/static/js/app.js?v=59";
             document.body.appendChild(s);
         }).catch(function() {
             var span = document.querySelector("#app .init-loading span");

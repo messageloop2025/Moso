@@ -5075,6 +5075,8 @@ TOOLS = [
                 "frontmatter：name、description（第三人称 WHAT+WHEN）；默认 disable-model-invocation: true。"
                 "可同时配置斜杠名、Hook（matcher/decision 或 hooks_json）、allowed_tools。"
                 "正文可用 {{arg}}/$ARGUMENTS 供用户 `/name 参数` 替换；子命令用 write_user_skill_file 写 commands/<alias>.md。"
+                "若有固定子命令/常用参数：frontmatter 必写 slash-args 列表（或正文「## 斜杠参数」列表 / `/name xxx` 示例），"
+                "以便聊天填参浮层显示可点选建议；勿只写 {{arg}} 而不声明建议值。"
                 "可传完整 content，或 name+description+body。"
             ),
             "parameters": {
@@ -5083,10 +5085,20 @@ TOOLS = [
                     "name": {"type": "string", "description": "唯一标识（小写字母开头，a-z、0-9、-、_）"},
                     "display_name": {"type": "string", "description": "显示名称"},
                     "description": {"type": "string", "description": "简短描述（写入 frontmatter，供 AI 判断是否遵循）"},
-                    "content": {"type": "string", "description": "完整 SKILL.md 内容（与 body 二选一）"},
+                    "content": {
+                        "type": "string",
+                        "description": (
+                            "完整 SKILL.md（与 body 二选一，可含 frontmatter）。"
+                            "创建斜杠 Command 且有固定参数时，在 frontmatter 加 slash-args: [a, b]，"
+                            "或正文写 ## 斜杠参数 列表"
+                        ),
+                    },
                     "body": {
                         "type": "string",
-                        "description": "Markdown 正文（不含 frontmatter）；可含 {{arg}}/{{arg1}}/$ARGUMENTS 占位",
+                        "description": (
+                            "Markdown 正文（不含 frontmatter）；可含 {{arg}}/{{arg1}}/$ARGUMENTS。"
+                            "有固定参数时写 ## 斜杠参数 列表；需要 frontmatter slash-args 时请用 content"
+                        ),
                     },
                     "enabled": {"type": "boolean", "description": "是否启用"},
                     "chat_enabled": {"type": "boolean", "description": "是否参与 AI 聊天注入"},
@@ -5205,7 +5217,8 @@ TOOLS = [
                 "写入或追加 Skill 目录 skills/<name>/ 下的附属文件。"
                 "常用：reference.md、examples.md、scripts/*.py；"
                 "**Hook**：path=`hooks.json`（须合法 JSON；建议同时 save_user_skill hooks_enabled=true）；"
-                "**斜杠子命令**：path=`commands/<alias>.md`（用户可用 /alias 唤起，正文支持 {{arg}}）。"
+                "**斜杠子命令**：path=`commands/<alias>.md`（用户可用 /alias 唤起，正文支持 {{arg}}；"
+                "有固定参数时同样写 slash-args 或 ## 斜杠参数，供填参浮层提示）。"
                 "禁止写 SKILL.md（须 save_user_skill）。勿用 fs_write_file。"
             ),
             "parameters": {

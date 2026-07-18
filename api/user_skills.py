@@ -24,6 +24,7 @@ from services.user_skills_registry import (
     delete_user_skill,
     delete_user_skill_group,
     detect_slash_params_hint,
+    extract_slash_arg_meta,
     get_user_skill,
     iter_skill_command_files,
     list_user_skill_groups_summary,
@@ -243,14 +244,25 @@ async def list_slash_commands(
         slash = (s.get("slash_name") or s.get("name") or "").strip().lstrip("/")
         if not slash:
             continue
-        params_hint = ""
+        skill_text = ""
         try:
-            # 轻量读盘（避免再走 async read_skill_content 全量二次加载）
             p = skill_md_path(user, s["name"])
             if p.is_file():
-                params_hint = detect_slash_params_hint(p.read_text(encoding="utf-8")[:12000])
+                skill_text = p.read_text(encoding="utf-8")[:16000]
         except Exception:
-            params_hint = ""
+            skill_text = ""
+        meta = extract_slash_arg_meta(skill_text, slash)
+        # commands/ 子命令名也作为父斜杠的参数建议
+        cmd_aliases: list[str] = []
+        try:
+            for cmd in iter_skill_command_files(user, s["name"]):
+                cmd_aliases.append(cmd["alias"])
+        except Exception:
+            cmd_aliases = []
+        parent_suggestions = list(meta.get("arg_suggestions") or [])
+        for a in cmd_aliases:
+            if a and a not in parent_suggestions:
+                parent_suggestions.append(a)
         items.append(
             {
                 "slash": "/" + slash,
@@ -258,7 +270,9 @@ async def list_slash_commands(
                 "display_name": s.get("display_name") or s.get("name"),
                 "description": (s.get("description") or "")[:200],
                 "source": "user",
-                "params_hint": params_hint,
+                "params_hint": meta.get("params_hint") or "",
+                "arg_suggestions": parent_suggestions[:16],
+                "usage_examples": meta.get("usage_examples") or [],
             }
         )
         try:
@@ -267,9 +281,10 @@ async def list_slash_commands(
                 try:
                     cmd_path = Path(cmd["path"])
                     if cmd_path.is_file():
-                        cmd_text = cmd_path.read_text(encoding="utf-8")[:12000]
+                        cmd_text = cmd_path.read_text(encoding="utf-8")[:16000]
                 except Exception:
                     cmd_text = ""
+                cmeta = extract_slash_arg_meta(cmd_text, cmd["alias"])
                 items.append(
                     {
                         "slash": cmd["slash"],
@@ -277,7 +292,9 @@ async def list_slash_commands(
                         "display_name": cmd["alias"],
                         "description": f"{cmd['rel']} → {s.get('name')}",
                         "source": "commands",
-                        "params_hint": detect_slash_params_hint(cmd_text),
+                        "params_hint": cmeta.get("params_hint") or "",
+                        "arg_suggestions": cmeta.get("arg_suggestions") or [],
+                        "usage_examples": cmeta.get("usage_examples") or [],
                     }
                 )
         except Exception:
@@ -291,6 +308,7 @@ async def list_slash_commands(
             slash = (r["slash_name"] or r["name"] or "").strip().lstrip("/")
             if not slash:
                 continue
+            ometa = extract_slash_arg_meta((r["content"] or "")[:16000], slash)
             items.append(
                 {
                     "slash": "/" + slash,
@@ -298,7 +316,9 @@ async def list_slash_commands(
                     "display_name": r["display_name"] or r["name"],
                     "description": (r["description"] or "")[:200],
                     "source": "org",
-                    "params_hint": detect_slash_params_hint((r["content"] or "")[:12000]),
+                    "params_hint": ometa.get("params_hint") or "",
+                    "arg_suggestions": ometa.get("arg_suggestions") or [],
+                    "usage_examples": ometa.get("usage_examples") or [],
                 }
             )
     except Exception:

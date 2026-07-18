@@ -68,7 +68,7 @@
 - **会话级提示词**：可为当前会话设定专用约束（如只做部署、用简洁风格、禁止重启等），高优先级约束 AI 行为；支持 Markdown 格式与弹窗内「编辑/预览」；可由 AI 根据对话总结并替换或追加。详见下文「会话级提示词」。
 - **聊天操作序列与详情**：AI 生成会话提示词或归纳最佳实践/经验时，会先获取「仅用户要求与助手指令」的操作序列（不含程序输出）；需要分析具体报错或引用终端/命令输出时，可获取含完整输出的聊天详情。详见下文「聊天操作序列与详情」。
 - **聊天模式与低交互**：顶部工具条可选 **问答 / 严格 / 普通**（按会话保存，紧挨模型下拉，无「模式」字样标签），另有「低交互」开关。**问答模式**只做分析与推荐：不能代为执行；AI 应说明限制并给出 bash/Python 等可复制命令；若需 tool call 则只说明「需要调用工具但当前模式无法执行」，不展示调用参数。**严格模式**由平台在写操作前弹出独立确认框，模型侧与普通模式一样直接调工具，无需感知「严格」。详见下文「聊天模式」。
-- **斜杠唤起 Skill**：若管理员已为你开启 Skills，在输入框输入 `/`，用 ↑↓ / Enter 选命令，再按提示填参数后发送；也可用 `/skill-name 参数`（`{{arg}}` 占位；`commands/别名.md` 用 `/别名`）。Skill 上配置的 Hook 会在工具执行前拦截（确认/拒绝）。也可对 AI 说「帮我创建一个带确认的 SSH Skill」或「给这个 Skill 加斜杠命令」，AI 会用 `save_user_skill` / `write_user_skill_file` 写入 `hooks.json` 与 `commands/`。
+- **斜杠唤起 Skill**：若管理员已为你开启 Skills，在输入框输入 `/`，用 ↑↓ / Enter 选命令，再按提示填参数后发送；也可用 `/skill-name 参数`（`{{arg}}` 占位；`commands/别名.md` 用 `/别名`）。填参浮层的参数建议来自 Skill 的 `slash-args` /「斜杠参数」列表（详见下文约定）。Skill 上配置的 Hook 会在工具执行前拦截（确认/拒绝）。也可对 AI 说「帮我创建一个带确认的 SSH Skill」或「给这个 Skill 加斜杠命令」，AI 会用 `save_user_skill` / `write_user_skill_file` 写入 `hooks.json`、`commands/` 与参数建议。
 - **内置 Markdown / 公式渲染**：聊天消息本地渲染标题、列表、表格、安全链接、代码高亮、diff/log/tree/http 块、Callout、Mermaid/Markmap/ECharts 与 LaTeX 公式；系统会压缩无意义空行。流式输出时对**已闭合**的段落/表格/代码块即时渲染，尾部未完成部分仍以纯文本或增量表格显示，减少闪动。详见下文「聊天输出格式」。
 
 ---
@@ -82,12 +82,35 @@
 | 能力 | 你怎么用 | AI 怎么落地 |
 |------|----------|-------------|
 | 斜杠 Command | 聊天输入 `/` 选命令，或 `/name 参数` | `save_user_skill(slash_name=...)`；正文写 `{{arg}}`；子命令 `write_user_skill_file(path=commands/别名.md)` |
+| 填参建议 | 选命令后浮层出现可点选参数 chips | frontmatter `slash-args: [...]`，或正文 `## 斜杠参数` 列表 / `/name xxx` 示例 |
 | Hook 确认/拒绝 | 配置后，AI 调匹配工具前弹确认或直接拒绝 | `save_user_skill(hooks_enabled=true, pre_tool_use_matcher=..., pre_tool_use_decision=ask/deny/allow)` 或写 `hooks.json` |
 | 工具白名单 | 斜杠唤起该 Skill 的当轮才限制可用工具 | `allowed_tools="ssh_execute,list_hosts"` |
 
+#### 斜杠参数建议约定（写 Skill 时遵守）
+
+平台从 SKILL.md / `commands/*.md` **静态抽取**建议值，不会猜测。有固定子命令时请声明其一：
+
+```markdown
+---
+name: my-ops
+slash-args:
+  - balance
+  - ecs list
+---
+
+操作：`{{arg}}`
+
+## 斜杠参数
+- `balance` — 查余额
+- `ecs list` — 列 ECS
+```
+
+也可用 `<!-- slash-args: a, b -->` 或正文示例行 `` `/my-ops balance` ``。未声明时浮层显示「暂无内置参数建议」。完整说明见《Skills文档》「斜杠参数建议约定」。
+
 推荐说法：
 
-- 「创建一个 `/check-disk` Skill，参数是主机名，步骤用 df -h。」
+- 「创建一个 `/check-disk` Skill，参数是主机名，步骤用 df -h，并写上参数建议。」
+- 「做一个 `/aliyun-ops`，子命令 balance / ecs list，要能在填参时提示。」
 - 「做一个 safe-ssh Skill：执行 ssh_execute 前必须让我确认。」
 - 「给现有 Skill 加 hooks.json：禁止 scp，SSH 要确认。」
 

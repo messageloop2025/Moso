@@ -189,7 +189,7 @@ Windows 加载配置：
 
 **渐进式披露（默认）**：聊天 system 仅注入各 Skill 的 **name + description** 目录；任务匹配时 AI 先 `get_user_skill` 加载 `SKILL.md`，详细参考用 `read_user_skill_file` 读 `reference.md` 等。若 frontmatter 设 `always-apply: true` 或 `disable-model-invocation: false`，则正文直接内联。
 
-**斜杠 Command / Hook**：网页聊天以 `/skill-name [args]` 开头可强制加载 Skill 全文（`{{arg}}` 占位；`commands/*.md` / 组织 Skill）。AI 可用 `save_user_skill` / `write_user_skill_file` 创建带 Hook/Command 的 Skill（`hooks.json`、matcher、`pre_tool_use_decision`、`allowed_tools`）。`allowed_tools` 仅斜杠唤起当轮强制。集成通道无确认弹窗时，Hook/`strict` 要求确认的操作会被拒绝。
+**斜杠 Command / Hook**：网页聊天以 `/skill-name [args]` 开头可强制加载 Skill 全文（`{{arg}}` 占位；`commands/*.md` / 组织 Skill）。填参浮层的参数建议来自 frontmatter `slash-args` 或正文「斜杠参数 / Commands」列表（详见《Skills文档》约定）。AI 可用 `save_user_skill` / `write_user_skill_file` 创建带 Hook/Command 的 Skill（`hooks.json`、matcher、`pre_tool_use_decision`、`allowed_tools`、`slash-args`）。`allowed_tools` 仅斜杠唤起当轮强制。集成通道无确认弹窗时，Hook/`strict` 要求确认的操作会被拒绝。
 
 **对话中创建**：在 AI 助手或主机对话里直接说「帮我创建一个 Skill…」，助手会按 Cursor 格式调用 `save_user_skill`（默认 `disable-model-invocation: true`）。
 

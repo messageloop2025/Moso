@@ -1137,10 +1137,37 @@ function edgeopsBindSlashSkillMenu(inputEl, opts) {
     function showParamsGuide(cmd, st) {
         if (!cmd) { hide(); return; }
         mode = 'params';
-        visibleItems = [];
+        inputEl._edgeopsSlashParamsCmd = cmd;
         var hint = cmd.params_hint || '{{arg}}';
-        var example = (cmd.slash || '') + ' host1';
         var argsShown = (st && st.argsRaw) ? String(st.argsRaw) : '';
+        var suggestions = Array.isArray(cmd.arg_suggestions) ? cmd.arg_suggestions.slice() : [];
+        var examples = Array.isArray(cmd.usage_examples) ? cmd.usage_examples.slice() : [];
+        var filterPrefix = argsShown.trim().toLowerCase();
+        var filtered = suggestions.filter(function(s) {
+            if (!filterPrefix) return true;
+            return String(s).toLowerCase().indexOf(filterPrefix) === 0
+                || String(s).toLowerCase().indexOf(filterPrefix) >= 0;
+        }).slice(0, 12);
+        visibleItems = filtered.map(function(s) {
+            return { slash: (cmd.slash || '') + ' ' + s, suggestion: s, display_name: s };
+        });
+        activeIdx = 0;
+        var example = examples[0] || ((cmd.slash || '') + (suggestions[0] ? (' ' + suggestions[0]) : ' host1'));
+        var chips = filtered.length
+            ? ('<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px">'
+                + filtered.map(function(s, idx) {
+                    return '<button type="button" class="edgeops-slash-arg" data-idx="' + idx + '" style="border:1px solid var(--border,#444);background:rgba(255,255,255,.04);color:inherit;border-radius:4px;padding:3px 8px;font-size:12px;cursor:pointer;font-family:ui-monospace,Consolas,monospace">'
+                        + esc(s) + '</button>';
+                }).join('')
+                + '</div>')
+            : ('<div style="margin-top:8px;font-size:11px;opacity:.55">' + esc(t('skills.slashParamsNoSuggestions')) + '</div>');
+        var exList = examples.length
+            ? ('<div style="margin-top:6px;opacity:.8">' + esc(t('skills.slashParamsExample').replace(/\{\{example\}\}/g, example))
+                + (examples.length > 1
+                    ? ('<div style="margin-top:4px;font-size:11px;opacity:.65">' + examples.slice(0, 4).map(function(e) { return esc(e); }).join(' · ') + '</div>')
+                    : '')
+                + '</div>')
+            : ('<div style="margin-top:6px;opacity:.8">' + esc(t('skills.slashParamsExample').replace(/\{\{example\}\}/g, example)) + '</div>');
         var body = ''
             + '<div style="padding:10px 12px 8px;border-bottom:1px solid var(--border,#333)">'
             + '<div style="font-size:12px;opacity:.75;margin-bottom:4px">' + esc(t('skills.slashParamsTitle')) + '</div>'
@@ -1150,19 +1177,54 @@ function edgeopsBindSlashSkillMenu(inputEl, opts) {
             + (cmd.description ? '<div style="font-size:11px;opacity:.65;margin-top:4px">' + esc(cmd.description) + '</div>' : '')
             + '</div>'
             + '<div style="padding:10px 12px;font-size:12px;line-height:1.45">'
-            + '<div>' + esc(t('skills.slashParamsGuide').replace(/\{\{slash\}\}/g, cmd.slash || '').replace(/\{\{hint\}\}/g, hint)) + '</div>'
-            + '<div style="margin-top:6px;opacity:.8">' + esc(t('skills.slashParamsExample').replace(/\{\{example\}\}/g, example)) + '</div>'
-            + '<div style="margin-top:6px;font-family:ui-monospace,Consolas,monospace;font-size:12px;padding:6px 8px;border-radius:4px;background:rgba(255,255,255,.04);border:1px dashed var(--border,#444)">'
+            + '<div>' + esc(t('skills.slashParamsGuide').replace(/\{\{slash\}\}/g, cmd.slash || '').replace(/\{\{hint\}\}/g, hint || '{{arg}}')) + '</div>'
+            + exList
+            + '<div style="margin-top:6px;font-size:11px;opacity:.75">' + esc(t('skills.slashParamsPickHint')) + '</div>'
+            + chips
+            + '<div style="margin-top:8px;font-family:ui-monospace,Consolas,monospace;font-size:12px;padding:6px 8px;border-radius:4px;background:rgba(255,255,255,.04);border:1px dashed var(--border,#444)">'
             + esc(cmd.slash || '') + ' <span style="opacity:' + (argsShown ? '1' : '.45') + '">'
-            + esc(argsShown || hint)
+            + esc(argsShown || hint || '…')
             + '</span></div>'
             + '<div style="margin-top:8px;font-size:11px;opacity:.55">' + esc(t('skills.slashParamsSendHint')) + '</div>'
             + '</div>';
         menu.innerHTML = body;
-        setPicking(false); // 填参阶段允许 Enter 发送
+        Array.prototype.forEach.call(menu.querySelectorAll('.edgeops-slash-arg'), function(btn) {
+            btn.onmousedown = function(ev) { ev.preventDefault(); };
+            btn.onmouseenter = function() {
+                activeIdx = parseInt(btn.getAttribute('data-idx'), 10) || 0;
+                paintArgActive();
+            };
+            btn.onclick = function() {
+                var idx = parseInt(btn.getAttribute('data-idx'), 10);
+                var sug = filtered[idx];
+                if (!sug) return;
+                applyArgSuggestion(cmd, sug);
+            };
+        });
+        setPicking(false); // 填参阶段默认允许发送；建议用 ↑↓/点击/Tab 填入
         menu.style.display = 'block';
         place();
+        paintArgActive();
     }
+    function paintArgActive() {
+        Array.prototype.forEach.call(menu.querySelectorAll('.edgeops-slash-arg'), function(btn, i) {
+            var on = i === activeIdx;
+            btn.style.background = on ? 'rgba(255,255,255,.12)' : 'rgba(255,255,255,.04)';
+            btn.style.borderColor = on ? 'var(--accent,#6af)' : 'var(--border,#444)';
+        });
+    }
+    function applyArgSuggestion(cmd, sug) {
+        var next = (cmd.slash || '') + ' ' + sug + ' ';
+        inputEl.value = next;
+        inputEl.focus();
+        try {
+            if (typeof inputEl.setSelectionRange === 'function') {
+                inputEl.setSelectionRange(next.length, next.length);
+            }
+        } catch (_e) {}
+        try { inputEl.dispatchEvent(new Event('input', { bubbles: true })); } catch (_e2) {}
+    }
+
     function renderPick(list, filter, st) {
         mode = 'pick';
         var f = (filter || '').toLowerCase();
@@ -1260,29 +1322,49 @@ function edgeopsBindSlashSkillMenu(inputEl, opts) {
             hide();
             return;
         }
-        if (mode === 'pick' && visibleItems.length) {
+        if ((mode === 'pick' || mode === 'params') && visibleItems.length) {
             if (ev.key === 'ArrowDown') {
                 ev.preventDefault();
                 ev.stopPropagation();
                 activeIdx = (activeIdx + 1) % visibleItems.length;
-                paintActive();
+                if (mode === 'params') paintArgActive(); else paintActive();
                 return;
             }
             if (ev.key === 'ArrowUp') {
                 ev.preventDefault();
                 ev.stopPropagation();
                 activeIdx = (activeIdx - 1 + visibleItems.length) % visibleItems.length;
-                paintActive();
+                if (mode === 'params') paintArgActive(); else paintActive();
                 return;
             }
             if (ev.key === 'Enter' || ev.key === 'Tab') {
                 var cur = visibleItems[activeIdx];
                 if (!cur) return;
-                var st = parseSlashState(inputEl.value || '');
-                var exact = st && findCommand(st.token, visibleItems);
+                if (mode === 'params') {
+                    var sug = cur.suggestion || cur.display_name;
+                    var cmdP = inputEl._edgeopsSlashParamsCmd;
+                    var stP = parseSlashState(inputEl.value || '');
+                    var argsNow = ((stP && stP.argsRaw) || '').trim();
+                    var shouldFill = !!sug && !!cmdP && (
+                        ev.key === 'Tab'
+                        || !argsNow
+                        || (String(sug).toLowerCase().indexOf(argsNow.toLowerCase()) === 0
+                            && String(sug).toLowerCase() !== argsNow.toLowerCase())
+                    );
+                    if (shouldFill) {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
+                        applyArgSuggestion(cmdP, sug);
+                    }
+                    // 否则不拦截，让 edgeopsBindChatSubmit 发送
+                    return;
+                }
                 ev.preventDefault();
                 ev.stopPropagation();
                 if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
+                var st = parseSlashState(inputEl.value || '');
+                var exact = st && findCommand(st.token, visibleItems);
                 applyCommand(
                     exact && (exact.slash || '').toLowerCase() === (st.token || '').toLowerCase() ? exact : cur,
                     st

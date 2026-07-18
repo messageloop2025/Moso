@@ -166,6 +166,114 @@ def detect_slash_params_hint(text: str) -> str:
     return ""
 
 
+
+def extract_slash_arg_meta(text: str, slash_name: str = "") -> dict[str, Any]:
+    """从 Skill/Command 正文提取参数占位提示、建议参数与用法示例。
+
+    支持：
+    - frontmatter ``slash-args`` / ``slash_args``（列表或逗号分隔）
+    - 注释 ``<!-- slash-args: a, b | c -->``
+    - 正文中的 ``/slash-name xxx`` 示例
+    - 「斜杠参数 / 用法 / 子命令 / Commands」小节下的 ``- item`` / ``- `item``` 列表
+    """
+    raw = text or ""
+    slash = (slash_name or "").strip().lstrip("/").lower()
+    params_hint = detect_slash_params_hint(raw)
+    suggestions: list[str] = []
+    examples: list[str] = []
+    seen: set[str] = set()
+
+    def _add_sug(s: str) -> None:
+        s = re.sub(r"\s+", " ", (s or "").strip())
+        if not s or len(s) > 80:
+            return
+        key = s.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        suggestions.append(s)
+
+    def _add_ex(s: str) -> None:
+        s = re.sub(r"\s+", " ", (s or "").strip())
+        if not s or len(s) > 120:
+            return
+        if s not in examples:
+            examples.append(s)
+
+    meta, body = parse_skill_markdown(raw)
+    for key in ("slash-args", "slash_args", "slashArgs", "args"):
+        val = meta.get(key) if isinstance(meta, dict) else None
+        if val is None:
+            continue
+        if isinstance(val, str):
+            parts = re.split(r"[,|，、\n]+", val)
+            for p in parts:
+                _add_sug(p.strip().strip("`"))
+        elif isinstance(val, (list, tuple)):
+            for p in val:
+                _add_sug(str(p).strip().strip("`"))
+
+    for m in re.finditer(
+        r"<!--\s*slash-args?\s*:\s*([^>]+?)-->",
+        raw,
+        flags=re.I,
+    ):
+        for p in re.split(r"[,|，、]+", m.group(1)):
+            _add_sug(p.strip().strip("`"))
+
+    if slash:
+        for m in re.finditer(
+            rf"(?mi)^[ \t]*(?:[-*]\s+)?`?/{re.escape(slash)}((?:\s+[^\s`]+)+)`?",
+            raw,
+        ):
+            args = m.group(1).strip()
+            if args:
+                _add_sug(args)
+                _add_ex(f"/{slash} {args}")
+
+    # 小节列表：斜杠参数 / 用法 / 子命令 / Commands / Examples
+    section_re = re.compile(
+        r"(?ims)^#{1,4}\s*[^\n]*(?:斜杠参数|参数示例|用法|子命令|常用参数|Commands?|Examples?|Usage)\s*\n(.*?)(?=^#{1,4}\s|\Z)"
+    )
+    for sm in section_re.finditer(body or raw):
+        block = sm.group(1) or ""
+        for lm in re.finditer(
+            r"(?m)^[ \t]*[-*]\s+(?:`([^`]+)`|([^\n：:]{1,60}))",
+            block,
+        ):
+            item = (lm.group(1) or lm.group(2) or "").strip()
+            item = re.split(r"[—–\-:：|]", item, maxsplit=1)[0].strip()
+            if item.startswith("/"):
+                # /cmd args → 只取 args
+                parts = item.split(None, 1)
+                if len(parts) > 1 and parts[0].lstrip("/").lower() == slash:
+                    _add_sug(parts[1])
+                    _add_ex(item if item.startswith("/") else f"/{slash} {parts[1]}")
+                continue
+            if item and not item.startswith("http") and " " not in item[:1]:
+                _add_sug(item)
+
+    # 行内「参数：a / b / c」
+    for m in re.finditer(
+        r"(?:参数|子命令|args?)\s*[:：]\s*([^\n]{2,120})",
+        body or raw,
+        flags=re.I,
+    ):
+        for p in re.split(r"[,|/，、]+", m.group(1)):
+            p = p.strip().strip("`")
+            if 1 <= len(p) <= 40 and not p.startswith("http"):
+                _add_sug(p)
+
+    if not examples and suggestions:
+        for s in suggestions[:4]:
+            _add_ex(f"/{slash} {s}" if slash else s)
+
+    return {
+        "params_hint": params_hint or ("{{arg}}" if suggestions else ""),
+        "arg_suggestions": suggestions[:16],
+        "usage_examples": examples[:8],
+    }
+
 def hooks_json_path(user: dict, skill_name: str) -> Path:
     return skill_dir_path(user, skill_name) / "hooks.json"
 

@@ -248,3 +248,25 @@ def test_parse_slash_invocation_and_placeholders():
     )
     assert "Target: web1" in inj
     assert "用户参数" in inj
+
+
+def test_extract_slash_arg_meta_from_body():
+    from services.user_skills_registry import extract_slash_arg_meta
+
+    md = """---
+name: aliyun-ops
+slash-args:
+  - balance
+  - ecs list
+---
+
+## 斜杠参数
+- `oss ls` — 列存储桶
+- region — 指定区域
+
+示例：`/aliyun-ops balance`
+"""
+    meta = extract_slash_arg_meta(md, "aliyun-ops")
+    assert "balance" in meta["arg_suggestions"]
+    assert any("ecs" in x for x in meta["arg_suggestions"])
+    assert meta["usage_examples"]

@@ -365,6 +365,8 @@ MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_up
 
 **斜杠 Command**：聊天输入 `/` 弹出命令菜单（↑↓ / Enter 选命令，再引导填参）。消息以 `/skill-name [args]`（或 `slash_name` / `commands/<alias>.md` / 组织 Skill）开头时，服务端强制加载并标注「用户显式唤起」。参数替换 `{{arg}}` / `$ARGUMENTS` / `{{argN}}`。菜单按场景 `scope=web|host` 过滤（与聊天页一致）；Skill 保存/扫描/导入后菜单缓存立即失效。
 
+**填参自动补全（slash-args 约定）**：选中命令后，浮层会展示可点选的参数建议（并按已输入前缀过滤）。建议值由平台从 SKILL.md / `commands/*.md` 抽取，**不会**由模型临时猜测。编写 Skill 时若有固定子命令或常用参数，须按下方约定声明，否则用户只会看到「暂无内置参数建议」。详见本节「斜杠参数建议约定」。
+
 **Hooks**：Skill 可启用 Hook；管理页可编辑 `hooks.json`（仅磁盘有该文件也会进入门控），事件含 `preToolUse` / `postToolUse` / `postToolUseFailure` / `sessionStart` / `sessionEnd` / `beforeMCPExecution`（decision=`allow`/`deny`/`ask`）。亦可用 DB `pre_tool_use_matcher` + `pre_tool_use_decision`（默认 ask；无 hooks.json 规则时生效）。**`allowed_tools` 仅在本轮斜杠显式唤起该 Skill 时强制**。`postToolUse`/`postToolUseFailure` 若 `deny`：工具结果标为失败并省略正文，模型不得继续采信。失败默认 **fail-open**。`ask` 走独立确认模态。`run_skill_script` 仅执行该 Skill `scripts/` 下脚本。
 
 **会话聊天模式门禁**（与 TOOLS 正交，见 `services/chat_mode_gate.py` / `chat_mode_runtime.py` / `chat_mode_enforce.py`）：`qa` 禁止写类工具并返回待执行命令卡；`strict` 写类工具由平台独立弹窗确认（允许/总是=本会话同工具名/拒绝；创建打开终端豁免），模型系统提示与 `normal` 相同、不注入「严格」说明，确认结果以 `user_decision` 写入 tool 返回；`normal` 默认行为仍走 Hook 骨架。
@@ -386,22 +388,66 @@ MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_up
 | import_user_skills_config | 导入 JSON 包 | data, overwrite? |
 
 
+### 斜杠参数建议约定（编写 Skill / Command 必读）
+
+聊天输入 `/` → 选命令 → **填参浮层**会显示参数 chips。平台用 `extract_slash_arg_meta` 从正文抽取，优先级与写法如下（任选其一或组合；推荐 frontmatter）。
+
+| 写法 | 位置 | 示例 |
+|------|------|------|
+| `slash-args` / `slash_args` | YAML frontmatter | `slash-args: [balance, ecs list, oss ls]` |
+| HTML 注释 | 任意处 | `<!-- slash-args: balance, ecs list -->` |
+| 小节列表 | 标题含「斜杠参数 / 用法 / 子命令 / Commands / Usage / Examples」 | 见下方模板 |
+| 示例命令行 | 正文 | `` `/aliyun-ops balance` `` |
+
+**完整模板（推荐）**：
+
+```markdown
+---
+name: aliyun-ops
+description: Manages Alibaba Cloud resources. Use when user asks ECS/SLB/RDS/OSS ops.
+slash-args:
+  - balance
+  - ecs list
+  - oss ls
+---
+
+# 阿里云运维
+
+操作目标：`{{arg}}`
+
+## 斜杠参数
+
+- `balance` — 查询账户余额
+- `ecs list` — 列出 ECS
+- `oss ls` — 列出 OSS Bucket
+
+示例：`/aliyun-ops balance`
+```
+
+约定要点：
+
+1. **有固定子命令/常用参数时必须声明**（AI 创建 Command 时同样必须写入），否则填参浮层无 chips。
+2. 列表项取「破折号/冒号前」为建议值；可带简短说明。
+3. `{{arg}}` / `$ARGUMENTS` / `{{argN}}` 负责**替换**；`slash-args` 负责**提示**，两者互补。
+4. `commands/<alias>.md` 可单独写 `slash-args` 或「斜杠参数」小节，供 `/alias` 填参。
+5. 自由文本参数（任意主机名）可不写完整枚举；仍建议给 1～2 个示例值或示例行。
+
 ### AI 如何创建带 Hook / Command 的 Skill
 
-当用户要求「做一个 Skill / 加斜杠命令 / 执行前确认」时，**必须调用工具落地**，勿只口头描述。
+当用户要求「做一个 Skill / 加斜杠命令 / 执行前确认」时，**必须调用工具落地**，勿只口头描述。创建斜杠 Command 时须同时写入 **slash-args 或「斜杠参数」列表**（见上节约定）。
 
-**1）斜杠 Command + 参数占位**
+**1）斜杠 Command + 参数占位 + 参数建议**
 
 ```text
 save_user_skill(
   name="check-disk",
   description="Checks remote disk usage. Use when user asks disk/df for a host.",
   slash_name="check-disk",
-  body="# Check disk\n\n目标主机：`{{arg}}`\n\n1. list_hosts / 确认主机\n2. ssh_execute 运行 df -h\n"
+  content="---\nname: check-disk\ndescription: Checks remote disk usage.\nslash-args:\n  - web-01\n  - db-01\n---\n# Check disk\n\n目标主机：`{{arg}}`\n\n## 斜杠参数\n- `web-01` — 示例 Web 机\n- `db-01` — 示例 DB 机\n\n1. list_hosts / 确认主机\n2. ssh_execute 运行 df -h\n"
 )
 ```
 
-用户聊天输入：`/check-disk web-01` → 平台注入 Skill，并将 `{{arg}}` 换成 `web-01`。
+用户聊天输入：`/check-disk web-01` → 平台注入 Skill，并将 `{{arg}}` 换成 `web-01`；输入 `/check-disk we` 时填参浮层可提示 `web-01`。
 
 **子命令**（同一 Skill 多个入口）：
 
@@ -409,7 +455,7 @@ save_user_skill(
 write_user_skill_file(
   name="check-disk",
   path="commands/inode.md",
-  content="检查 inode：`{{arg}}`\n\n运行 `df -i`\n"
+  content="---\nslash-args:\n  - web-01\n---\n检查 inode：`{{arg}}`\n\n## 斜杠参数\n- `web-01`\n\n运行 `df -i`\n"
 )
 ```
 
