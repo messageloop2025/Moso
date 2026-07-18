@@ -306,10 +306,10 @@ MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_up
 | reset_user_password | 重置用户密码（需管理员） | user_id, password |
 | reset_user_system_ai_usage | 清零指定用户系统共享 Key 调用计数（需管理员） | user_id |
 | admin_unlock_user | 解除指定用户的登录锁定（清空失败计数与 locked_until），需管理员 | user_id |
-| list_ai_sessions | 列出当前用户 AI 聊天会话（返回会话级 `low_interaction_mode`，用于前端「低交互」/`Auto` 开关） | — |
+| list_ai_sessions | 列出当前用户 AI 聊天会话（返回 `low_interaction_mode`、`chat_mode`） | — |
 | get_ai_session | 获取某条会话详情及消息 | session_id |
 | create_ai_session | 新建 AI 聊天会话 | title? |
-| update_ai_session | 更新会话标题，或更新会话级低交互开关 `low_interaction_mode` | session_id, title?, low_interaction_mode? |
+| update_ai_session | 更新会话标题、低交互开关或聊天模式 `chat_mode`（`qa`/`strict`/`normal`） | session_id, title?, low_interaction_mode?, chat_mode? |
 | delete_ai_session | 删除会话及其消息 | session_id |
 | clear_ai_sessions | 清空当前用户所有 AI 会话 | — |
 | update_session_prompt | 更新或追加当前会话的会话级提示词（供「把上述要求记到会话里」等场景）。content 建议使用 Markdown 格式（## 标题、- 列表、\`代码\`）便于查看 | session_id, content, append? |
@@ -363,9 +363,15 @@ MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_up
 
 须管理员开启 `skills_enabled`。文件：`web/fs/<用户名>/skills/<name>/SKILL.md`（**Cursor Agent Skills** 格式：YAML frontmatter + Markdown）。**渐进式披露**（默认）：system 仅注入各 Skill 的 `name` + `description` 目录；AI 匹配后须 `get_user_skill` 加载正文；附属文件用 `read_user_skill_file`。`disable-model-invocation: false` 或 `always-apply: true` 时内联正文。
 
+**斜杠 Command**：聊天以 `/skill-name`（或管理页配置的 `slash_name`）开头时，服务端强制加载该 Skill 全文并标注「用户显式唤起」（绕过仅目录披露）。
+
+**Hooks**：Skill 可启用 Hook；目录内可选 `hooks.json`，事件含 `preToolUse` / `postToolUse` / `postToolUseFailure` / `sessionStart` / `sessionEnd` / `beforeMCPExecution`（decision=`allow`/`deny`/`ask`）。另支持 Skill 级 `allowed_tools` 白名单。失败默认 **fail-open**。输入框 `/` 弹出斜杠菜单；`run_skill_script` 仅执行该 Skill `scripts/` 下脚本。
+
+**会话聊天模式门禁**（与 TOOLS 正交，见 `services/chat_mode_gate.py` / `chat_mode_runtime.py` / `chat_mode_enforce.py`）：`qa` 禁止写类工具并返回待执行命令卡；`strict` 写类工具由平台独立弹窗确认（允许/总是=本会话同工具名/拒绝；创建打开终端豁免），模型系统提示与 `normal` 相同、不注入「严格」说明，确认结果以 `user_decision` 写入 tool 返回；`normal` 默认行为仍走 Hook 骨架。
+
 | 名称 | 说明 | 主要参数 |
 |------|------|----------|
-| list_user_skills | 列出 Skill 元数据（含 group_id/group_name） | — |
+| list_user_skills | 列出 Skill 元数据（含 group_id/group_name、slash_command、hooks_enabled） | — |
 | list_user_skill_groups | 列出 Skills 分组摘要 | — |
 | create_user_skill_group | 新建分组 | name |
 | update_user_skill_group | 重命名分组 | group_id 或 group_name, name |

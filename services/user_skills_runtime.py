@@ -33,7 +33,9 @@ _USER_SKILLS_HINT = (
     "**frontmatter 约定**（与 Cursor Agent Skills 对齐）：\n"
     "- `name`：小写标识；`description`：第三人称，含 **做什么 + 何时触发**（≤1024 字符）\n"
     "- `disable-model-invocation: true`（**默认**）：仅目录披露，匹配时先 `get_user_skill`\n"
-    "- `disable-model-invocation: false` 或 `always-apply: true`：正文内联进 system prompt\n\n"
+    "- `disable-model-invocation: false` 或 `always-apply: true`：正文内联进 system prompt\n"
+    "- **斜杠唤起**：用户输入 `/skill-name` 时强制加载该 Skill 全文（即使用户未开 always-apply）\n"
+    "- **Hook**：可选 `hooks.json` 的 `preToolUse`（或管理页 matcher）；可返回 allow/deny/ask\n\n"
     "**创建 Skill 时**：正文宜简洁（Quick start）；详细内容用 `write_user_skill_file` 写 `reference.md`，"
     "SKILL.md 中链接并注明用 `read_user_skill_file` 加载。\n"
     "**当用户要求创建/编写 Skill**：调用 `save_user_skill`；`description` 写清触发语；默认 `disable-model-invocation: true`；"
@@ -147,22 +149,46 @@ async def build_user_skills_system_section(
     user: dict,
     session_scope: str | None,
     session_host_id: int | None = None,
+    *,
+    inject_user_skills: bool = False,
 ) -> str:
     uid = int(user["id"])
     db = await get_db()
     if not await user_skills_feature_enabled(db, uid):
         return _USER_SKILLS_DISABLED_HINT
     rows = await list_chat_enabled_skills_for_context(
-        db, uid, user, session_scope, session_host_id
+        db,
+        uid,
+        user,
+        session_scope,
+        session_host_id,
+        inject_user_skills=inject_user_skills,
     )
+    org_extra = ""
+    try:
+        org_rows = await db.execute_fetchall(
+            "SELECT name, display_name, description, content FROM org_skills WHERE enabled=1 ORDER BY name ASC LIMIT 40"
+        )
+        if org_rows:
+            parts = ["\n\n## 组织 Skills（只读，须遵守）"]
+            for orow in org_rows:
+                title = (orow["display_name"] or orow["name"] or "").strip()
+                desc = (orow["description"] or "").strip()[:200]
+                body = (orow["content"] or "").strip()[:2000]
+                parts.append(f"\n### {title}\n{desc}\n{body}")
+            org_extra = "".join(parts)
+    except Exception:
+        org_extra = ""
     if not rows:
-        return _USER_SKILLS_HINT
+        return _USER_SKILLS_HINT + org_extra
     per_max = max(1000, int(config.USER_SKILLS_BODY_MAX_CHARS))
     total_max = max(per_max, int(config.USER_SKILLS_TOTAL_MAX_CHARS))
     if getattr(config, "USER_SKILLS_PROGRESSIVE_DISCLOSURE", True):
-        return await _build_progressive_section(
+        base = await _build_progressive_section(
             user, rows, per_max=per_max, total_max=total_max
         )
-    return await _build_eager_section(
-        user, rows, per_max=per_max, total_max=total_max
-    )
+    else:
+        base = await _build_eager_section(
+            user, rows, per_max=per_max, total_max=total_max
+        )
+    return base + org_extra

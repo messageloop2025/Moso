@@ -24,6 +24,7 @@ def _scheduled_task_api_dict(row: dict) -> dict:
     disp = effective_scheduled_task_notify_email_to(stored, content)
     d["notify_email_display"] = disp
     d["notify_email_inferred"] = bool(not (stored or "").strip() and disp)
+    d["inject_user_skills"] = bool(d.get("inject_user_skills"))
     return d
 
 
@@ -33,6 +34,7 @@ class ScheduledTaskCreate(BaseModel):
     cron_expr: Optional[str] = None
     enabled: bool = True
     notify_email_to: Optional[str] = None
+    inject_user_skills: bool = False
 
 
 class ScheduledTaskUpdate(BaseModel):
@@ -41,6 +43,7 @@ class ScheduledTaskUpdate(BaseModel):
     cron_expr: Optional[str] = None
     enabled: Optional[bool] = None
     notify_email_to: Optional[str] = None
+    inject_user_skills: Optional[bool] = None
 
 
 @router.get("")
@@ -48,11 +51,17 @@ async def list_scheduled_tasks(user=Depends(get_current_user)):
     """列出当前用户的定时任务。"""
     db = await get_db()
     rows = await db.execute_fetchall(
-        """SELECT id, name, content, cron_expr, next_run_at, created_at, updated_at, last_run_at, last_run_status, is_running, enabled, notify_email_to
+        """SELECT id, name, content, cron_expr, next_run_at, created_at, updated_at, last_run_at, last_run_status, is_running, enabled, notify_email_to,
+                  COALESCE(inject_user_skills, 0) AS inject_user_skills
            FROM scheduled_tasks WHERE user_id = ? ORDER BY updated_at DESC""",
         (user["id"],),
     )
-    return {"success": True, "tasks": [_scheduled_task_api_dict(dict(r)) for r in rows]}
+    out = []
+    for r in rows:
+        d = _scheduled_task_api_dict(dict(r))
+        d["inject_user_skills"] = bool(d.get("inject_user_skills"))
+        out.append(d)
+    return {"success": True, "tasks": out}
 
 
 @router.get("/triggered-list")
@@ -117,9 +126,18 @@ async def create_scheduled_task(body: ScheduledTaskCreate, user=Depends(get_curr
     en = 1 if body.enabled else 0
     notify_to = (body.notify_email_to or "").strip()
     await db.execute(
-        """INSERT INTO scheduled_tasks (user_id, name, content, cron_expr, next_run_at, enabled, notify_email_to)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (user["id"], body.name, body.content, cron or "", next_run_str, en, notify_to),
+        """INSERT INTO scheduled_tasks (user_id, name, content, cron_expr, next_run_at, enabled, notify_email_to, inject_user_skills)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            user["id"],
+            body.name,
+            body.content,
+            cron or "",
+            next_run_str,
+            en,
+            notify_to,
+            1 if body.inject_user_skills else 0,
+        ),
     )
     await db.commit()
     cur = await db.execute("SELECT last_insert_rowid()")
@@ -292,6 +310,9 @@ async def update_scheduled_task(task_id: int, body: ScheduledTaskUpdate, user=De
                 nr = _next_run_from_cron(ce) if ce else None
                 updates.append("next_run_at = ?")
                 params.append(nr.strftime("%Y-%m-%d %H:%M:%S") if nr else None)
+    if body.inject_user_skills is not None:
+        updates.append("inject_user_skills = ?")
+        params.append(1 if body.inject_user_skills else 0)
     if not updates:
         return {"success": True}
     params.extend([task_id, user["id"]])

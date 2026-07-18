@@ -409,10 +409,13 @@ token 来自解锁邮件链接。
 | POST | /ai/config/trial/reset | **仅管理员**：清零指定用户的系统共享 Key 调用计数。query: **user_id** |
 | POST | /ai/config/trial/unlock | **仅管理员**：将系统默认 AI 配置写入指定用户并清零共享 Key 计数；之后该用户按自有配置调用，不再受共享 Key 次数限制。query: **user_id** |
 | POST | /ai/config | 更新**当前激活** Profile 的字段（无激活项时创建「默认配置」）。**管理员可在请求体中传 user_id**。请求体可含 context_size（0=不限制）等 |
-| GET | /ai/sessions | 会话列表（query: **host_id?**；有 host_id 仅返回该主机会话，无则仅返回全局会话；每项含 `low_interaction_mode`） |
-| POST | /ai/sessions | 新建会话（query: title?；body 可选 **host_id**，用于主机详情页 AI 运维） |
-| GET | /ai/sessions/{session_id} | 会话详情（含 `low_interaction_mode`） |
-| PATCH | /ai/sessions/{session_id} | 更新会话（如标题、`low_interaction_mode`；低交互默认 false，前端显示为「低交互」/`Auto`） |
+| GET | /ai/sessions | 会话列表（query: **host_id?**；有 host_id 仅返回该主机会话，无则仅返回全局会话；每项含 `low_interaction_mode`、`chat_mode`） |
+| POST | /ai/sessions | 新建会话（query: title?、**chat_mode?**=`qa`\|`strict`\|`normal`；body 可选 **host_id**，用于主机详情页 AI 运维） |
+| GET | /ai/sessions/{session_id} | 会话详情（含 `low_interaction_mode`、`chat_mode`） |
+| PATCH | /ai/sessions/{session_id} | 更新会话（标题、`low_interaction_mode`、**`chat_mode`**；切出 strict 时保留 `strict_allow_cache_json`（按**工具名**的「总是」缓存）但不使用，切回仍有效） |
+| GET | /user-skills/slash-commands | 斜杠菜单：用户 Skills + 组织 Skills + `commands/` 别名 |
+| GET/POST/PUT/DELETE | /org-skills | 组织 Skills（管理员写；用户只读列表） |
+| GET | /security-audit | 安全审计日志（管理员；筛 `chat_mode:*` / Hook 等） |
 | POST | /ai/sessions/{session_id}/runtime-control | 运行中注入控制（`supplement`/`pause`/`resume`/`stop`/`wake`/`choice`），用于 AI 流式执行或工具调用期间补充上下文、暂停/恢复、停止，或在终端轮询等待时唤醒 |
 | PATCH | /ai/sessions/{session_id}/messages/{message_id} | 更新单条会话消息内容（当前用于将 Mermaid 自动修复后的助手消息写回持久化） |
 | DELETE | /ai/sessions/{session_id} | 删除会话 |
@@ -442,7 +445,10 @@ token 来自解锁邮件链接。
 | action | executing / completed / failed（工具执行状态）；或 **waiting** / **waiting_woken** / **waiting_aborted**（终端轮询倒计时；含 `wait_remaining`、`wait_tool` 等） |
 | tool, args, result_preview | 工具名、参数、结果摘要 |
 | wait_remaining, wait_tool, seconds | 仅 `action=waiting`：`next_poll_in_seconds` 倒计时剩余秒数及触发等待的工具名（如 `get_terminal_buffer`） |
-| ui_action | 前端动作：`connect_terminal`（host_id）、`switch_console`（slot, scope）、`ensure_local_console` / `create_local_console`（scope: local, created_by: ai）、`close_local_console`（scope: local, slot）、`ask_user_choice`（question, options[id,label,value,style,description], allow_multiple, allow_text, default_id — 由 AI 工具 `ask_user_choice` 触发，前端在对应 assistant 气泡下渲染可点击的选择卡片；OpenClaw/API 集成通道不会收到此 ui_action，改由工具返回 `ui_capable=false` 的纯文本回退） |
+| ui_action | 前端动作：`connect_terminal`（host_id）、`switch_console`（slot, scope）、`ensure_local_console` / `create_local_console`（scope: local, created_by: ai）、`close_local_console`（scope: local, slot）、`ask_user_choice`（模型发起的选择题）、`strict_command_confirm`（严格模式**独立确认模态**，与 ask_user_choice 分离；选项允许/总是/拒绝）、`pending_command`（问答模式待执行命令卡，`type`/`command`/`intent`）、以及其它终端 UI 动作 |
+| strict_confirm | 严格模式专用：与 `ui_action.action=strict_command_confirm` 同载荷；前端弹独立模态，不经模型文案 |
+| waiting_for_user | 等待用户：`kind=strict_command_confirm` 时配合严格确认；用户通过 `runtime-control` 的 `action=choice` 回传（如 `[allow] 允许`） |
+| （tool 结果字段） | 严格确认后工具 JSON 可含 `user_decision`（`allow`/`always_allow`/`deny`/`always_allow_cached`）与 `user_decision_note`，供模型继续或改问；集成通道无确认 UI 时需确认的操作直接拒绝 |
 | assistant_continue | 辅助 AI 的继续执行引导语 |
 | requires_user_confirm | 与 `assistant_continue` 配套；`true` 表示需用户确认是否继续旧任务 |
 | runtime_control | 运行时控制回执（例如 `{action, accepted, during_tool?}`） |
@@ -994,12 +1000,12 @@ body：`tool`（edgeops_* 名）、`arguments`（对象）
 | GET | `/user-skills/status` | 当前用户是否已开启 Skills（`skills_enabled`、`can_use`） |
 | GET | `/user-skills` | 列出 Skill 元数据（不含正文时可另 GET 详情） |
 | POST | `/user-skills/scan` | 扫描磁盘 `skills/` 目录，同步 `SKILL.md` 到库 |
-| POST | `/user-skills` | 新建；body：`name`、`display_name?`、`description?`、`content?`、场景开关等 |
-| GET | `/user-skills/{id}` | 详情（含 `content` 正文） |
-| PUT | `/user-skills/{id}` | 更新元数据或正文 |
+| POST | `/user-skills` | 新建；body：`name`、`display_name?`、`description?`、`content?`、场景开关、**`slash_name?`**、**`hooks_enabled?`**、**`pre_tool_use_matcher?`** 等 |
+| GET | `/user-skills/{id}` | 详情（含 `content` 正文；列表项另含 `slash_command`、`has_hooks_json`、`slash_only`） |
+| PUT | `/user-skills/{id}` | 更新元数据或正文（含 slash/hook 字段） |
 | DELETE | `/user-skills/{id}` | 删除；query `remove_files=true` 时同时删磁盘目录 |
 
-场景开关含义同 §20（`chat_enabled` + `chat_scope_web/host/integration`）。**渐进式披露**（默认，`EDGEOPS_USER_SKILLS_PROGRESSIVE_DISCLOSURE=true`）：system 仅注入各 Skill 的 `name`+`description` 目录；AI 按需 `get_user_skill` / `read_user_skill_file`；`always-apply: true` 或 `disable-model-invocation: false` 时内联正文。
+场景开关含义同 §20（`chat_enabled` + `chat_scope_web/host/integration`）。**渐进式披露**（默认，`EDGEOPS_USER_SKILLS_PROGRESSIVE_DISCLOSURE=true`）：system 仅注入各 Skill 的 `name`+`description` 目录；AI 按需 `get_user_skill` / `read_user_skill_file`；`always-apply: true` 或 `disable-model-invocation: false` 时内联正文。**斜杠 Command**：用户消息以 `/slash_name` 开头时强制加载该 Skill 全文。**Hook**：可选 `hooks.json` 的 `preToolUse`（或 DB matcher）；决策 `allow`/`deny`/`ask`，默认 fail-open。
 
 AI 工具：`list_user_skills`、`get_user_skill`、`read_user_skill_file`、`save_user_skill`、`delete_user_skill`、`scan_user_skills`、`export_user_skills_config`、`import_user_skills_config`（须 `skills_enabled`）。
 

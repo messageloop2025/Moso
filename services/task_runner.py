@@ -147,6 +147,7 @@ async def _run_agent_loop(
     run_type: str,
     run_id: int,
     db,
+    inject_user_skills: bool = False,
 ) -> tuple[str, list[dict]]:
     """执行一轮 Agent 循环（无流式），返回 (最终回复文本, 消息列表用于保存)。"""
     provider = (settings.get("ai_provider") or "").strip() or detect_provider(settings.get("ai_base_url") or "")
@@ -197,6 +198,20 @@ async def _run_agent_loop(
         context_budget_chars=_ctx_budget,
         trial_info=None,
     )
+    if inject_user_skills:
+        try:
+            from services.user_skills_runtime import build_user_skills_system_section
+
+            _skills_sec = await build_user_skills_system_section(
+                user,
+                "task",
+                None,
+                inject_user_skills=True,
+            )
+            if (_skills_sec or "").strip():
+                system_content += "\n\n" + _skills_sec
+        except Exception as e:
+            logger.warning("inject_user_skills failed: %s", e)
     user_content = f"## 任务内容\n{task_content}\n\n## 指令\n{instruction or '无'}\n\n请开始执行并汇报结果。"
     tools = get_tools_for_scope("task", user)
     api_url = ensure_chat_completions_url(base_url)
@@ -278,7 +293,8 @@ async def run_triggered_task(run_id: int) -> None:
     """执行一条触发任务 run：加载任务与用户，跑 Agent，更新 run 状态。"""
     db = await get_db()
     rows = await db.execute_fetchall(
-        """SELECT r.id, r.task_id, r.instruction, r.status, t.user_id, t.name, t.content
+        """SELECT r.id, r.task_id, r.instruction, r.status, t.user_id, t.name, t.content,
+                  COALESCE(t.inject_user_skills, 0) AS inject_user_skills
            FROM triggered_task_runs r
            JOIN triggered_tasks t ON t.id = r.task_id
            WHERE r.id = ?""",
@@ -307,6 +323,7 @@ async def run_triggered_task(run_id: int) -> None:
             run_type="triggered",
             run_id=run_id,
             db=db,
+            inject_user_skills=bool(r.get("inject_user_skills")),
         )
         status = "completed"
         log_summary = _task_run_log_summary(final_text)
@@ -337,7 +354,8 @@ async def run_scheduled_task(run_id: int) -> None:
     """执行一条定时任务 run：跑 Agent，写入 scheduled_task_run_messages，更新 run 状态。"""
     db = await get_db()
     rows = await db.execute_fetchall(
-        """SELECT r.id, r.task_id, t.user_id, t.name, t.content
+        """SELECT r.id, r.task_id, t.user_id, t.name, t.content,
+                  COALESCE(t.inject_user_skills, 0) AS inject_user_skills
            FROM scheduled_task_runs r
            JOIN scheduled_tasks t ON t.id = r.task_id
            WHERE r.id = ?""",
@@ -366,6 +384,7 @@ async def run_scheduled_task(run_id: int) -> None:
             run_type="scheduled",
             run_id=run_id,
             db=db,
+            inject_user_skills=bool(r.get("inject_user_skills")),
         )
         status = "completed"
         log_summary = _task_run_log_summary(final_text)

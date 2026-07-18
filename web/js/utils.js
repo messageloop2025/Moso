@@ -748,15 +748,95 @@ function edgeopsHighlightEscapedCode(escaped, lang) {
 
 function edgeopsRenderCodeBlockHtml(lang, code) {
     var normalized = edgeopsNormalizeCodeLang(lang);
-    var escaped = escapeHtmlForCode(code || '');
+    var raw = String(code || '');
+    var escaped = escapeHtmlForCode(raw);
     var highlighted = edgeopsHighlightEscapedCode(escaped, normalized);
     var label = normalized === 'text' ? 'text' : normalized;
     if (normalized === 'tree') label = 'tree';
+    var copyLabel = (typeof t === 'function') ? t('common.copy') : '复制';
+    // encodeURIComponent 保留原文，复制时不经高亮 DOM 二次提取
+    var dataCode = encodeURIComponent(raw);
     return ''
         + '<div class="chat-code-block-wrap" data-code-lang="' + escapeHtmlForCode(label) + '">'
-        + '<div class="chat-code-toolbar"><span>' + escapeHtmlForCode(label) + '</span></div>'
+        + '<div class="chat-code-toolbar">'
+        + '<span class="chat-code-lang">' + escapeHtmlForCode(label) + '</span>'
+        + '<button type="button" class="btn btn-xs chat-code-copy" data-code="' + dataCode + '" title="' + escapeHtmlForCode(copyLabel) + '">'
+        + '<span class="chat-code-copy-icon" aria-hidden="true">⧉</span> '
+        + '<span class="chat-code-copy-text">' + escapeHtmlForCode(copyLabel) + '</span>'
+        + '</button>'
+        + '</div>'
         + '<pre class="chat-code-block language-' + escapeHtmlForCode(normalized) + '"><code>' + highlighted + '</code></pre>'
         + '</div>';
+}
+
+function edgeopsCopyTextToClipboard(text, onOk) {
+    var txt = String(text || '');
+    function ok() {
+        if (typeof onOk === 'function') onOk();
+        else if (typeof showToast === 'function') {
+            showToast((typeof t === 'function' ? t('toast.copied') : '已复制'));
+        }
+    }
+    function fallback() {
+        try {
+            var ta = document.createElement('textarea');
+            ta.value = txt;
+            ta.setAttribute('readonly', 'readonly');
+            ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            ok();
+        } catch (e) {
+            if (typeof showToast === 'function') showToast((typeof t === 'function' ? t('toast.copyFailed') : '复制失败'), 'error');
+        }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(txt).then(ok).catch(fallback);
+    } else {
+        fallback();
+    }
+}
+
+/** 聊天代码块「复制」按钮（事件委托，覆盖流式与历史重渲） */
+function edgeopsBindChatCodeCopy() {
+    if (document.documentElement.getAttribute('data-edgeops-code-copy') === '1') return;
+    document.documentElement.setAttribute('data-edgeops-code-copy', '1');
+    document.addEventListener('click', function(ev) {
+        var btn = ev.target && ev.target.closest ? ev.target.closest('.chat-code-copy') : null;
+        if (!btn) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        var encoded = btn.getAttribute('data-code') || '';
+        var raw = '';
+        try { raw = decodeURIComponent(encoded); } catch (e1) { raw = encoded; }
+        if (!raw) {
+            var wrap = btn.closest('.chat-code-block-wrap');
+            var codeEl = wrap && wrap.querySelector('pre code');
+            raw = codeEl ? (codeEl.textContent || '') : '';
+        }
+        edgeopsCopyTextToClipboard(raw, function() {
+            var labelEl = btn.querySelector('.chat-code-copy-text');
+            var prev = labelEl ? labelEl.textContent : '';
+            if (labelEl) labelEl.textContent = (typeof t === 'function' ? t('common.copied') : '已复制');
+            btn.classList.add('is-copied');
+            if (typeof showToast === 'function') {
+                showToast((typeof t === 'function' ? t('toast.copied') : '已复制'));
+            }
+            setTimeout(function() {
+                if (labelEl) labelEl.textContent = prev || ((typeof t === 'function') ? t('common.copy') : '复制');
+                btn.classList.remove('is-copied');
+            }, 1400);
+        });
+    });
+}
+if (typeof document !== 'undefined') {
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', edgeopsBindChatCodeCopy);
+    } else {
+        edgeopsBindChatCodeCopy();
+    }
 }
 
 /**

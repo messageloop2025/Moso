@@ -22,6 +22,7 @@
     "modelConfig": "模型配置",
     "skills": "SKILLS配置",
     "logs": "操作日志",
+    "securityAudit": "安全审计",
     "productIntro": "产品介绍",
     "productIntroTitle": "产品介绍（新窗口打开，无需登录）",
     "sidebarToggle": "收起/展开菜单",

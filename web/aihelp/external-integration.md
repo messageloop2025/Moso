@@ -189,6 +189,8 @@ Windows 加载配置：
 
 **渐进式披露（默认）**：聊天 system 仅注入各 Skill 的 **name + description** 目录；任务匹配时 AI 先 `get_user_skill` 加载 `SKILL.md`，详细参考用 `read_user_skill_file` 读 `reference.md` 等。若 frontmatter 设 `always-apply: true` 或 `disable-model-invocation: false`，则正文直接内联。
 
+**斜杠 Command / Hook**：网页聊天以 `/skill-name` 开头可强制加载 Skill 全文；Skills 页可配置斜杠名、启用 `preToolUse`（`hooks.json` 或 matcher）。集成通道无确认弹窗时，Hook/`strict` 要求确认的操作会被拒绝。
+
 **对话中创建**：在 AI 助手或主机对话里直接说「帮我创建一个 Skill…」，助手会按 Cursor 格式调用 `save_user_skill`（默认 `disable-model-invocation: true`）。
 
 **导入 / 导出**：网页「Skills」页可导出/导入 JSON 包（含 SKILL.md 与附属文件）；AI 工具 `export_user_skills_config` / `import_user_skills_config`。

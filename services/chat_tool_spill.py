@@ -14,13 +14,18 @@ from pathlib import Path
 from typing import Any
 
 import config
-from api.chat_attachments import CHAT_SUBDIR, _get_user_chats_root, _sanitize_subdir
+from api.chat_attachments import (
+    CHAT_SUBDIR,
+    _get_user_chats_root,
+    _sanitize_subdir,
+    session_storage_subdir,
+)
 
 logger = logging.getLogger("edgeops.chat_tool_spill")
 
 _SPILL_SENTINEL_RE = re.compile(
     r"^\[\[EDGEOPS_CHAT_DATA ref=(?P<ref>[0-9a-fA-F-]{36}) "
-    r"subdir=(?P<subdir>[\d/]+) chars=(?P<chars>\d+) "
+    r"subdir=(?P<subdir>[\w./-]+) chars=(?P<chars>\d+) "
     r"tool=(?P<tool>\S+) session=(?P<session>\S+)\]\]\s*$",
     re.MULTILINE,
 )
@@ -63,7 +68,7 @@ def write_chat_tool_spill_sync(
     if len(raw) < CHAT_TOOL_SPILL_MIN_CHARS:
         return None
     spill_id = str(uuid.uuid4())
-    storage_subdir = _today_subdir_utc()
+    storage_subdir = session_storage_subdir(session_id)
     root = _get_user_chats_root(user)
     sdir = _spill_dir(root, storage_subdir)
     data_path = (sdir / f"{spill_id}.data").resolve()

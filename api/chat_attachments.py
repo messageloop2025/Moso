@@ -75,17 +75,64 @@ def _get_user_chats_root(user: dict) -> Path:
 
 
 _DATE_SUBDIR_RE = re.compile(r"^\d{4}(/\d{2}){0,2}$")
+# 会话布局：sessions/<id> 或 sessions/<id>/…（spill、artifact leaf 等）
+_SESSION_SUBDIR_RE = re.compile(r"^sessions/\d+(?:/[A-Za-z0-9._-]{1,64}){0,6}$")
 
 
 def _today_subdir() -> str:
     return datetime.utcnow().strftime("%Y/%m/%d")
 
 
+def session_storage_subdir(session_id: int | None, *, leaf: str = "") -> str:
+    """会话级 storage_subdir：sessions/<id>[/<leaf>]。无 session 时回退日期目录。"""
+    if session_id is None:
+        return _today_subdir()
+    try:
+        sid = int(session_id)
+    except (TypeError, ValueError):
+        return _today_subdir()
+    if sid <= 0:
+        return _today_subdir()
+    base = f"sessions/{sid}"
+    leaf_s = (leaf or "").strip().strip("/\\").replace("\\", "/")
+    if not leaf_s:
+        return base
+    # 仅允许安全 leaf 段
+    parts = [p for p in leaf_s.split("/") if p and p not in (".", "..")]
+    cleaned: list[str] = []
+    for p in parts[:6]:
+        seg = re.sub(r"[^A-Za-z0-9._-]+", "_", p).strip("._-")[:64]
+        if seg:
+            cleaned.append(seg)
+    return f"{base}/{'/'.join(cleaned)}" if cleaned else base
+
+
+def get_chats_workspace_dir(user: dict, session_id: int | None = None) -> dict:
+    """统一会话工作区：相对用户 fs 根的 chats/sessions/<id>/（无 session 则 chats/YYYY/MM/DD/）。"""
+    sub = session_storage_subdir(session_id)
+    root = _get_user_chats_root(user)
+    abs_dir = (root / sub).resolve()
+    abs_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        abs_dir.relative_to(root.resolve())
+    except ValueError as exc:
+        raise ValueError("chats workspace 路径越界") from exc
+    return {
+        "storage_subdir": sub,
+        "chats_workspace_relative_prefix": f"{CHAT_SUBDIR}/{sub}",
+        "absolute_dir": str(abs_dir),
+        "layout": "session" if sub.startswith("sessions/") else "date",
+    }
+
+
 def _sanitize_subdir(subdir: str) -> str:
+    """允许日期 YYYY/MM/DD（兼容旧）或 sessions/<id>/…。"""
     s = (subdir or "").strip().strip("/\\").replace("\\", "/")
     if not s:
         return ""
-    return s if _DATE_SUBDIR_RE.match(s) else ""
+    if _DATE_SUBDIR_RE.match(s) or _SESSION_SUBDIR_RE.match(s):
+        return s
+    return ""
 
 
 def _detect_kind(mime: str, ext: str, original_name: str = "") -> str:
@@ -143,7 +190,7 @@ def attachment_relative_path(row: dict) -> str:
 def _resolve_attachment_path(user: dict, uuid_str: str, ext: str, subdir: str = "") -> Path:
     """按 uuid + ext + 可选日期子目录组装落盘路径，并强制落在当前用户 chats 根下。
 
-    subdir 只允许 'YYYY/MM/DD' 样式；非法值会被当成空串，落回 chats/ 根，保证永远不越界。
+    subdir 允许 'YYYY/MM/DD'（兼容）或 'sessions/<id>/…'；非法值会被当成空串，落回 chats/ 根。
     """
     root = _get_user_chats_root(user)
     sub = _sanitize_subdir(subdir)
@@ -267,7 +314,7 @@ async def save_bytes_as_chat_attachment(
     kind = _detect_kind(mime_val, ext, name)
 
     uuid_str = _uuid.uuid4().hex
-    subdir = _today_subdir()
+    subdir = session_storage_subdir(sid)
     path = _resolve_attachment_path(user, uuid_str, ext, subdir=subdir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(raw)
@@ -380,7 +427,7 @@ async def upload_attachment(
     kind = _detect_kind(mime, ext, original_name)
 
     uuid_str = _uuid.uuid4().hex
-    subdir = _today_subdir()
+    subdir = session_storage_subdir(session_id)
     path = _resolve_attachment_path(user, uuid_str, ext, subdir=subdir)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

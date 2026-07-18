@@ -4933,6 +4933,30 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "run_skill_script",
+            "description": (
+                "在指定 User Skill 的 scripts/ 目录内执行脚本（仅该目录、超时、清除代理环境变量；非内核级禁网）。"
+                "skill_name 为 Skill 名；script 为 scripts/ 下单层文件名（如 check.py）。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill_name": {"type": "string", "description": "Skill 名称（slug）"},
+                    "script": {"type": "string", "description": "scripts/ 下文件名"},
+                    "args": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "可选命令行参数",
+                    },
+                    "timeout_sec": {"type": "integer", "description": "超时秒数，默认 30，最大 120"},
+                },
+                "required": ["skill_name", "script"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_user_skill_groups",
             "description": (
                 "列出当前用户的 Skills 分组（含虚拟「未分组」摘要：skill_count、enabled_count）。"
@@ -5422,11 +5446,14 @@ USER_SKILLS_AI_TOOLS = frozenset({
     "delete_user_skill_file",
     "export_user_skills_config",
     "import_user_skills_config",
+    "run_skill_script",
 })
 
 
 def get_tools_for_scope(scope: str | None, user: dict) -> list:
     """按会话范围与用户权限返回可用的工具列表。仅本机管理会话(session_scope=local)且管理员可见/可用本机工具；AI 助手与主机详情不包含本机工具。integration（OpenClaw/API 集成会话）与普通 default 使用同一套非本机工具。task 范围下移除交互型工具（如 ask_user_choice），避免后台任务阻塞等待用户回复。非管理员不暴露仅管理员工具，减少跨权误调。"""
+    from services.tools_registry import merge_tools
+
     scope_val = (scope or "default").strip().lower() or "default"
     is_task = scope_val == "task"
     if scope_val in ("integration", "mcp_orchestrate", "mcp_runtime"):
@@ -5443,7 +5470,7 @@ def get_tools_for_scope(scope: str | None, user: dict) -> list:
         base = [t for t in base if t["function"]["name"] not in USER_SKILLS_AI_TOOLS]
     if not user.get("skills_enabled"):
         base = [t for t in base if t["function"]["name"] not in USER_SKILLS_AI_TOOLS]
-    return base
+    return merge_tools(base)
 
 
 async def _get_host_row(host_id: int) -> dict | None:
@@ -6637,6 +6664,7 @@ _EXPLICIT_FS_TOPLEVEL_DIRS = frozenset({
     "dist", "release", "releases", "vendor", "vendors", "share", "shared",
 })
 _CHATS_DATE_PREFIX_RE = re.compile(r"^chats/\d{4}/\d{2}/\d{2}/", re.I)
+_CHATS_SESSION_PREFIX_RE = re.compile(r"^chats/sessions/\d+/", re.I)
 _LOCAL_DATE_PREFIX_RE = re.compile(r"^local/\d{4}/\d{2}/\d{2}/", re.I)
 
 
@@ -6649,14 +6677,18 @@ def _looks_like_explicit_workspace_path(path: str, *, base=None) -> bool:
     if not rel:
         return False
     low = rel.lower()
-    if _CHATS_DATE_PREFIX_RE.match(low) or _LOCAL_DATE_PREFIX_RE.match(low):
+    if (
+        _CHATS_DATE_PREFIX_RE.match(low)
+        or _CHATS_SESSION_PREFIX_RE.match(low)
+        or _LOCAL_DATE_PREFIX_RE.match(low)
+    ):
         return True
     first = low.split("/")[0]
     return first in _EXPLICIT_FS_TOPLEVEL_DIRS
 
 
 def _effective_session_managed(arguments: dict, path: str, *, base=None) -> bool:
-    """未传 session_managed 时：逻辑短路径 → 归位 chats/<UTC>/；完整/指定目录路径 → 精确读写。"""
+    """未传 session_managed 时：逻辑短路径 → 归位 chats/sessions/<id>/；完整/指定目录路径 → 精确读写。"""
     if arguments.get("session_managed") is not None:
         return _arg_session_managed(arguments)
     return not _looks_like_explicit_workspace_path(path, base=base)
@@ -6702,39 +6734,29 @@ def _chat_managed_relative_path(
     *,
     local_scope: bool = False,
     fallback_ext: str = ".txt",
+    session_id: int | None = None,
 ) -> str:
-    """会话相关落盘：普通会话 → chats/<UTC>/；本机 → local/<UTC>/；文件名加 UUID 前缀。"""
+    """会话相关落盘：普通会话 → chats/sessions/<id>/；本机 → local/<UTC>/；文件名加 UUID 前缀。"""
+    from api.chat_attachments import session_storage_subdir as _sess_sub
+
     date_dir = datetime.now(timezone.utc).strftime("%Y/%m/%d")
     if local_scope:
         prefix = f"local/{date_dir}"
+        strip_prefixes = [prefix, date_dir]
     else:
-        prefix = f"chats/{date_dir}"
+        sess_sub = _sess_sub(session_id)
+        prefix = f"chats/{sess_sub}"
+        strip_prefixes = [prefix, f"chats/{date_dir}", date_dir, sess_sub]
     rp = (requested_path or "").replace("\\", "/").strip().lstrip("/")
-    lp = f"local/{date_dir}"
-    low = rp.lower()
-    if local_scope:
-        if low.startswith(lp.lower() + "/"):
-            rp = rp[len(lp) + 1 :].lstrip("/")
-        elif low == lp.lower():
-            rp = ""
+    for pref in strip_prefixes:
         low = rp.lower()
-    else:
-        cp = f"chats/{date_dir}".lower()
-        if low.startswith(cp + "/"):
-            rp = rp[len(f"chats/{date_dir}") + 1 :].lstrip("/")
-        elif low == cp:
+        pl = pref.lower()
+        if low.startswith(pl + "/"):
+            rp = rp[len(pref) + 1 :].lstrip("/")
+            break
+        if low == pl:
             rp = ""
-        else:
-            low2 = (rp or "").lower()
-            if low2.startswith(date_dir.lower() + "/"):
-                rp = rp[len(date_dir) + 1 :].lstrip("/")
-            elif low2 == date_dir.lower():
-                rp = ""
-    low = rp.lower()
-    if low.startswith(date_dir.lower() + "/"):
-        rp = rp[len(date_dir) + 1 :].lstrip("/")
-    elif low == date_dir.lower():
-        rp = ""
+            break
     if local_scope:
         rp = re.sub(r"^local/", "", rp, count=1, flags=re.I).lstrip("/")
     if not rp:
@@ -6756,11 +6778,15 @@ def _resolve_fs_write_relative_path(
     local_scope: bool = False,
     fallback_ext: str = ".txt",
     base=None,
+    session_id: int | None = None,
 ) -> str:
-    """session_managed=True 归位 chats/local 日期目录；False 则按相对工作区根的精确路径读写。"""
+    """session_managed=True 归位 chats/sessions/<id>/ 或 local 日期目录；False 则精确路径。"""
     if session_managed:
         return _chat_managed_relative_path(
-            requested_path, local_scope=local_scope, fallback_ext=fallback_ext
+            requested_path,
+            local_scope=local_scope,
+            fallback_ext=fallback_ext,
+            session_id=session_id,
         )
     rel = coerce_fs_relative_path(requested_path or "", base)
     if not rel:
@@ -6774,18 +6800,21 @@ def _normalize_sftp_pull_local_path(
     *,
     as_directory: bool,
     session_managed: bool = True,
+    session_id: int | None = None,
 ) -> str:
-    """session_managed=True 时归位 chats/<UTC>/ 并补 UUID；False 时按 local_path 精确落盘。"""
+    """session_managed=True 时归位 chats/sessions/<id>/ 并补 UUID；False 时按 local_path 精确落盘。"""
     if not session_managed:
         norm = coerce_fs_relative_path(raw_local or "")
         if not norm:
             name = Path(remote_path.replace("\\", "/")).name or "pull.bin"
             norm = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._-")[:96] or "pull.bin"
         return norm
-    date_u = datetime.now(timezone.utc).strftime("%Y/%m/%d")
+    from api.chat_attachments import session_storage_subdir as _sess_sub
+
+    sess_prefix = f"chats/{_sess_sub(session_id)}"
     norm = (raw_local or "").replace("\\", "/").strip().lstrip("/")
     if not norm.lower().startswith("chats/"):
-        norm = f"chats/{date_u}/{norm}"
+        norm = f"{sess_prefix}/{norm}"
     p_part = Path(norm)
     stem = p_part.stem
     suf = p_part.suffix
@@ -7019,7 +7048,7 @@ def _profile_patch_from_tool_args(arguments: dict) -> dict:
     return patch
 
 
-async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None = None, terminal_scope_id: str | None = None, default_terminal_slot: int | None = None, task_id: int | None = None, ui_capable: bool = True, stream_callback=None, session_id: int | None = None, ui_locale: str | None = None, transfer_cancel_event=None) -> str:
+async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None = None, terminal_scope_id: str | None = None, default_terminal_slot: int | None = None, task_id: int | None = None, ui_capable: bool = True, stream_callback=None, session_id: int | None = None, ui_locale: str | None = None, transfer_cancel_event=None, chat_mode: str | None = None) -> str:
     """执行工具，返回 JSON 字符串。scope 由调用方传入：'local' 表示本机管理会话；'task' 表示后台任务（此时 task_id 为任务 ID，SSH 通道绑定到该任务）。
     ui_capable: 调用方是否带浏览器交互（False 表示 OpenClaw 集成 / 后台任务等无 UI 场景，
     `ask_user_choice` 等需要前端渲染的工具会改用纯文本回退）。task scope 自动视为 ui_capable=False。
@@ -7030,12 +7059,106 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
     （sub_agent_line / chain_step_start / sub_ai_step / sub_ai_tool / sub_ai_done /
     sub_ai_batch_start / sub_ai_batch_end / chain_step_line / chain_step_end / chain_step_skip）。
     ui_locale: 可选；浏览器/界面 BCP-47（如 zh-CN、en），传入时子技能（如 delegate_to_edgeops_ai）可将回复语言策略与界面一致。
+    chat_mode: 可选；会话聊天模式。问答模式下写类工具在本函数入口硬拒（含嵌套调用）；未传时按 session_id 读库。
     权限由本函数内程序逻辑强制校验，不依赖 AI 描述。本机类工具仅在本机管理会话中且仅管理员可调用。"""
     try:
+        # —— 问答 / 严格模式硬门禁（execute_tool 入口，不可被 agent 循环旁路）——
+        try:
+            from services.chat_mode_enforce import (
+                enforce_qa_tool_block,
+                enforce_strict_tool_block,
+            )
+
+            _qa_block = await enforce_qa_tool_block(
+                name,
+                arguments if isinstance(arguments, dict) else {},
+                session_id=session_id,
+                chat_mode=chat_mode,
+            )
+            if _qa_block is not None:
+                return _qa_block
+            _strict_block = await enforce_strict_tool_block(
+                name,
+                arguments if isinstance(arguments, dict) else {},
+                session_id=session_id,
+                chat_mode=chat_mode,
+            )
+            if _strict_block is not None:
+                return _strict_block
+        except Exception as _qa_enf_exc:
+            # 门禁自身异常时：对已知写类工具仍 fail-closed
+            from services.chat_mode_gate import (
+                is_qa_blocked,
+                needs_strict_confirm,
+                qa_blocked_tool_result,
+                normalize_chat_mode,
+            )
+
+            _mode_guess = normalize_chat_mode(chat_mode) if chat_mode else "qa"
+            if _mode_guess == "qa" and is_qa_blocked(name):
+                logger.warning(
+                    "QA enforce 异常仍硬拒 tool=%s: %s", name, _qa_enf_exc
+                )
+                return json.dumps(
+                    qa_blocked_tool_result(
+                        name, arguments if isinstance(arguments, dict) else {}
+                    ),
+                    ensure_ascii=False,
+                )
+            if _mode_guess == "strict" and needs_strict_confirm(name):
+                logger.warning(
+                    "Strict enforce 异常仍硬拒 tool=%s: %s", name, _qa_enf_exc
+                )
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": "工具调用未获用户批准或安全检查异常，已取消执行。",
+                        "mode": "strict",
+                        "enforced_at": "execute_tool",
+                        "user_decision": "deny",
+                    },
+                    ensure_ascii=False,
+                )
+
         if (name or "").startswith("user_mcp_"):
             from services.user_mcp_client import invoke_user_mcp_tool
 
             return await invoke_user_mcp_tool(user, name, arguments, session_id=session_id)
+        # 插件注册表 handler（P2-7）
+        try:
+            from services.tools_registry import get_extra_handler
+
+            _extra_fn = get_extra_handler(name)
+            if _extra_fn is not None:
+                if asyncio.iscoroutinefunction(_extra_fn):
+                    return await _extra_fn(
+                        arguments or {},
+                        user=user,
+                        scope=scope,
+                        session_id=session_id,
+                        task_id=task_id,
+                    )
+                return _extra_fn(
+                    arguments or {},
+                    user=user,
+                    scope=scope,
+                    session_id=session_id,
+                    task_id=task_id,
+                )
+        except Exception:
+            pass
+        if name == "run_skill_script":
+            from services.run_skill_script import run_skill_script as _run_skill_script
+
+            return await _run_skill_script(
+                user,
+                skill_name=str((arguments or {}).get("skill_name") or ""),
+                script=str((arguments or {}).get("script") or ""),
+                args=(arguments or {}).get("args")
+                if isinstance((arguments or {}).get("args"), list)
+                else None,
+                timeout_sec=int((arguments or {}).get("timeout_sec") or 30),
+            )
         def _safe_optional_subdir_only(s: str) -> str:
             """本机管理 local_chat_data_paths：仅子目录段净化，不含文件名。"""
             clean: list[str] = []
@@ -8760,6 +8883,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 default_terminal_slot=default_terminal_slot,
                 session_id=session_id,
                 ui_locale=ui_locale,
+                chat_mode=chat_mode,
             )
             if wait_seconds > 0:
                 await asyncio.sleep(wait_seconds)
@@ -8781,6 +8905,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 default_terminal_slot=default_terminal_slot,
                 session_id=session_id,
                 ui_locale=ui_locale,
+                chat_mode=chat_mode,
             )
             try:
                 send_obj = json.loads(send_raw)
@@ -12282,6 +12407,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 remote_path,
                 as_directory=recursive,
                 session_managed=_effective_session_managed(arguments, raw_local_requested),
+                session_id=session_id,
             )
             host_row = await _get_host_row(host_id)
             if not host_row:
@@ -12399,6 +12525,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 url,
                 as_directory=False,
                 session_managed=_effective_session_managed(arguments, raw_local_requested),
+                session_id=session_id,
             )
             try:
                 base = get_user_fs_root(user)
@@ -14524,18 +14651,23 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
 
         # ── 文件系统（web/fs）──
         if name == "get_chats_workspace_dir":
-            sub = datetime.now(timezone.utc).strftime("%Y/%m/%d")
+            from api.chat_attachments import get_chats_workspace_dir as _gcwd
+
+            info = _gcwd(user, session_id)
             return json.dumps(
                 {
                     "success": True,
-                    "utc_date_subdir": sub,
-                    "chats_workspace_relative_prefix": f"chats/{sub}",
+                    "storage_subdir": info["storage_subdir"],
+                    "utc_date_subdir": info["storage_subdir"],  # 兼容旧字段名
+                    "chats_workspace_relative_prefix": info["chats_workspace_relative_prefix"],
+                    "layout": info["layout"],
+                    "session_id": session_id,
                     "filename_format": "{UUID}-{kebab-or-safe-ascii-desc}.{ext}",
                     "notes": (
-                        "chats/<UTC>/ 为默认会话区：聊天附件、API 工具 spill、AI 临时生成文件（session_managed 默认）。"
-                        "读取工作区任意路径用 fs_read_* / fs_list；"
-                        "写入 scripts/、exchange/、完整 chats/日期/… 等指定路径时传完整相对 path（可省略 session_managed，系统自动识别）；"
-                        "强制归位 chats 可显式 session_managed=true。"
+                        "默认会话区为 chats/sessions/<session_id>/（附件、spill、session_managed 写入）。"
+                        "旧 chats/YYYY/MM/DD/ 仍可读取。"
+                        "写入 scripts/、exchange/ 等指定路径时传完整相对 path；"
+                        "强制归位会话区可显式 session_managed=true。"
                     ),
                 },
                 ensure_ascii=False,
@@ -14610,6 +14742,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     local_scope=is_local_scope,
                     fallback_ext=".txt",
                     base=base,
+                    session_id=session_id,
                 )
                 out = await fs_write_file_async(
                     managed_rel,
@@ -14666,6 +14799,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     local_scope=is_local_scope,
                     fallback_ext=".bin",
                     base=base,
+                    session_id=session_id,
                 )
                 out = await fs_write_binary_async(
                     managed_rel,

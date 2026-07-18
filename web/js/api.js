@@ -491,6 +491,15 @@ var API = {
         return this.post('/user-skills/groups/bulk-assign', data || {});
     },
     createUserSkill: function(data) { return this.post('/user-skills', data); },
+    listSlashCommands: function() { return this.get('/user-skills/slash-commands'); },
+    listOrgSkills: function() { return this.get('/org-skills'); },
+    createOrgSkill: function(data) { return this.post('/org-skills', data); },
+    updateOrgSkill: function(id, data) { return this.put('/org-skills/' + id, data); },
+    deleteOrgSkill: function(id) { return this.delete('/org-skills/' + id); },
+    listSecurityAudit: function(params) {
+        var q = params && Object.keys(params).length ? '?' + new URLSearchParams(params).toString() : '';
+        return this.get('/security-audit' + q);
+    },
     getUserSkill: function(id) { return this.get('/user-skills/' + id); },
     updateUserSkill: function(id, data) { return this.put('/user-skills/' + id, data); },
     deleteUserSkill: function(id, removeFiles) {
@@ -570,7 +579,13 @@ var API = {
     resetTrialUsage: function(userId) { return this.post('/ai/config/trial/reset?user_id=' + parseInt(userId, 10)); },
     unlockTrialMode: function(userId) { return this.post('/ai/config/trial/unlock?user_id=' + parseInt(userId, 10)); },
     listAISessions: function(hostId, scope) { var q = []; if (hostId != null) q.push('host_id=' + hostId); if (scope) q.push('scope=' + encodeURIComponent(scope)); return this.get('/ai/sessions' + (q.length ? '?' + q.join('&') : '')); },
-    createAISession: function(title, hostId, scope) { var q = 'title=' + encodeURIComponent(title || 'default'); if (hostId != null) q += '&host_id=' + hostId; if (scope) q += '&scope=' + encodeURIComponent(scope); return this.post('/ai/sessions?' + q); },
+    createAISession: function(title, hostId, scope, chatMode) {
+        var q = 'title=' + encodeURIComponent(title || 'default');
+        if (hostId != null) q += '&host_id=' + hostId;
+        if (scope) q += '&scope=' + encodeURIComponent(scope);
+        if (chatMode) q += '&chat_mode=' + encodeURIComponent(chatMode);
+        return this.post('/ai/sessions?' + q);
+    },
     getAISession: function(id) { return this.get('/ai/sessions/' + id); },
     updateAISession: function(id, data) { return this.request('PATCH', '/ai/sessions/' + id, data); },
     updateAISessionMessage: function(sessionId, messageId, data) { return this.request('PATCH', '/ai/sessions/' + sessionId + '/messages/' + messageId, data || {}); },
@@ -709,6 +724,7 @@ var API = {
             if (reqOpts.preferredTerminalSlot != null) body.preferred_terminal_slot = reqOpts.preferredTerminalSlot;
             if (reqOpts.contextHostId != null) body.context_host_id = reqOpts.contextHostId;
             if (reqOpts.attachmentUuids && reqOpts.attachmentUuids.length) body.attachment_uuids = reqOpts.attachmentUuids.slice();
+            if (reqOpts.chatMode) body.chat_mode = reqOpts.chatMode;
             if (typeof I18n !== 'undefined' && I18n.getEffectiveLocale) { var _ul2 = I18n.getEffectiveLocale(); if (_ul2) body.ui_locale = _ul2; }
             var fetchOpts = { method: 'POST', headers: headers, body: JSON.stringify(body) };
             if (reqOpts.signal) fetchOpts.signal = reqOpts.signal;

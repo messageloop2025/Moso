@@ -111,6 +111,8 @@ from api.user_mail import router as user_mail_router
 from api.search_config import router as search_config_router
 from api.user_mcp_servers import router as user_mcp_servers_router
 from api.user_skills import router as user_skills_router
+from api.org_skills import router as org_skills_router
+from api.security_audit import router as security_audit_router
 from api.aihelp import router as aihelp_router
 from api.login_board import public_router as login_board_public_router, admin_router as login_board_admin_router
 from api.feedback import user_router as feedback_user_router, admin_router as feedback_admin_router
@@ -120,6 +122,8 @@ app.include_router(user_mail_router)
 app.include_router(search_config_router)
 app.include_router(user_mcp_servers_router)
 app.include_router(user_skills_router)
+app.include_router(org_skills_router)
+app.include_router(security_audit_router)
 app.include_router(aihelp_router)
 app.include_router(login_board_public_router)
 app.include_router(login_board_admin_router)

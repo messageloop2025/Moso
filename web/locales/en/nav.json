@@ -22,6 +22,7 @@
     "modelConfig": "Model Config",
     "skills": "SKILLS Config",
     "logs": "Audit Log",
+    "securityAudit": "Security Audit",
     "productIntro": "Product Tour",
     "productIntroTitle": "Product tour (new window, no login required)",
     "sidebarToggle": "Collapse / expand menu",

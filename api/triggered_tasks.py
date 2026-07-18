@@ -19,6 +19,7 @@ class TriggeredTaskCreate(BaseModel):
     content: str
     intro: str = ""
     trigger_conditions: Optional[str] = None
+    inject_user_skills: bool = False
 
 
 class TriggeredTaskUpdate(BaseModel):
@@ -26,6 +27,7 @@ class TriggeredTaskUpdate(BaseModel):
     content: Optional[str] = None
     intro: Optional[str] = None
     trigger_conditions: Optional[str] = None
+    inject_user_skills: Optional[bool] = None
 
 
 class TriggerRequest(BaseModel):
@@ -47,11 +49,17 @@ async def list_triggered_tasks(user=Depends(get_current_user)):
     """列出当前用户的触发任务。"""
     db = await get_db()
     rows = await db.execute_fetchall(
-        """SELECT id, name, content, intro, trigger_conditions, created_at, updated_at, last_run_at, last_run_status, is_running
+        """SELECT id, name, content, intro, trigger_conditions, created_at, updated_at, last_run_at, last_run_status, is_running,
+                  COALESCE(inject_user_skills, 0) AS inject_user_skills
            FROM triggered_tasks WHERE user_id = ? ORDER BY updated_at DESC""",
         (user["id"],),
     )
-    return {"success": True, "tasks": [dict(r) for r in rows]}
+    tasks = []
+    for r in rows:
+        d = dict(r)
+        d["inject_user_skills"] = bool(d.get("inject_user_skills"))
+        tasks.append(d)
+    return {"success": True, "tasks": tasks}
 
 
 @router.post("")
@@ -59,9 +67,16 @@ async def create_triggered_task(body: TriggeredTaskCreate, user=Depends(get_curr
     """创建触发任务。"""
     db = await get_db()
     await db.execute(
-        """INSERT INTO triggered_tasks (user_id, name, content, intro, trigger_conditions)
-           VALUES (?, ?, ?, ?, ?)""",
-        (user["id"], body.name, body.content, body.intro or "", body.trigger_conditions or ""),
+        """INSERT INTO triggered_tasks (user_id, name, content, intro, trigger_conditions, inject_user_skills)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (
+            user["id"],
+            body.name,
+            body.content,
+            body.intro or "",
+            body.trigger_conditions or "",
+            1 if body.inject_user_skills else 0,
+        ),
     )
     await db.commit()
     cur = await db.execute("SELECT last_insert_rowid()")
@@ -311,7 +326,9 @@ async def get_triggered_task(task_id: int, user=Depends(get_current_user)):
     rows = await db.execute_fetchall("SELECT * FROM triggered_tasks WHERE id = ? AND user_id = ?", (task_id, user["id"]))
     if not rows:
         raise HTTPException(status_code=404, detail="任务不存在")
-    return {"success": True, "task": dict(rows[0])}
+    d = dict(rows[0])
+    d["inject_user_skills"] = bool(d.get("inject_user_skills"))
+    return {"success": True, "task": d}
 
 
 @router.patch("/{task_id}")
@@ -324,6 +341,9 @@ async def update_triggered_task(task_id: int, body: TriggeredTaskUpdate, user=De
     if body.content is not None: updates.append("content = ?"); params.append(body.content)
     if body.intro is not None: updates.append("intro = ?"); params.append(body.intro)
     if body.trigger_conditions is not None: updates.append("trigger_conditions = ?"); params.append(body.trigger_conditions)
+    if body.inject_user_skills is not None:
+        updates.append("inject_user_skills = ?")
+        params.append(1 if body.inject_user_skills else 0)
     if not updates:
         return {"success": True}
     params.extend([task_id, user["id"]])

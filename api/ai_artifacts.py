@@ -517,11 +517,13 @@ async def create_artifact(
 
     kind = "single_file" if len(plan) == 1 else "bundle"
 
-    # 生成 storage_subdir：YYYY/MM/DD/<slug>-<shortid>
+    # 生成 storage_subdir：sessions/<id>/<slug>-<shortid>（无 session 则日期兼容）
+    from api.chat_attachments import session_storage_subdir as _session_storage_subdir
+
     short = _short_id()
     slug = _slugify(title or "artifact")
     leaf = f"{slug}-{short}" if slug and slug != "artifact" else short
-    storage_subdir = f"{_today_subdir()}/{leaf}"
+    storage_subdir = _session_storage_subdir(session_id, leaf=leaf)
     root = _get_artifact_root(user)
     dest = (root / storage_subdir).resolve()
     try:

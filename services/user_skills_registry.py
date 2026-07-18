@@ -408,9 +408,11 @@ def resolve_skill_content_for_save(
 
 def public_skill_row(row: dict, *, fs_exists: bool | None = None, group_name: str = "") -> dict:
     gid = row.get("group_id")
+    name = row.get("name") or ""
+    slash = (row.get("slash_name") or "").strip().lstrip("/") or name
     return {
         "id": row["id"],
-        "name": row.get("name") or "",
+        "name": name,
         "display_name": row.get("display_name") or row.get("name") or "",
         "description": row.get("description") or "",
         "skill_path": row.get("skill_path") or "",
@@ -419,6 +421,11 @@ def public_skill_row(row: dict, *, fs_exists: bool | None = None, group_name: st
         "chat_scope_web": bool(row.get("chat_scope_web", 1)),
         "chat_scope_host": bool(row.get("chat_scope_host", 1)),
         "chat_scope_integration": bool(row.get("chat_scope_integration", 0)),
+        "slash_name": slash,
+        "slash_command": f"/{slash}" if slash else "",
+        "hooks_enabled": bool(row.get("hooks_enabled", 0)),
+        "pre_tool_use_matcher": row.get("pre_tool_use_matcher") or "",
+        "allowed_tools": row.get("allowed_tools") or "",
         "group_id": int(gid) if gid is not None else None,
         "group_name": (group_name or "").strip(),
         "file_exists": fs_exists if fs_exists is not None else True,
@@ -754,6 +761,8 @@ async def enrich_skill_list_item(_db, user_id: int, user: dict, row: dict, *, gr
     pub["resources_count"] = len(pub["resources"])
     pub["always_apply"] = False
     pub["disable_model_invocation"] = True
+    pub["has_hooks_json"] = False
+    pub["slash_only"] = False
     if fs_ok:
         try:
             content = await read_skill_content(user, slug)
@@ -761,6 +770,11 @@ async def enrich_skill_list_item(_db, user_id: int, user: dict, row: dict, *, gr
             pub["always_apply"] = skill_should_always_apply(meta)
             dmi = _yaml_bool(meta.get("disable-model-invocation"))
             pub["disable_model_invocation"] = dmi if dmi is not None else True
+            pub["slash_only"] = bool(pub["disable_model_invocation"]) and not pub["always_apply"]
+            hooks_path = get_user_skills_root(user) / slug / "hooks.json"
+            pub["has_hooks_json"] = hooks_path.is_file()
+            if pub.get("hooks_enabled") and not pub["has_hooks_json"] and not (pub.get("pre_tool_use_matcher") or "").strip():
+                pub["hooks_warning"] = "已启用 Hook 但缺少 hooks.json 且未配置 preToolUse matcher"
         except Exception:
             pass
     hints = collect_skill_name_warnings(slug)
@@ -970,6 +984,10 @@ async def create_user_skill(
     chat_scope_host: bool = True,
     chat_scope_integration: bool = False,
     group_id: int | None = None,
+    slash_name: str = "",
+    hooks_enabled: bool = False,
+    pre_tool_use_matcher: str = "",
+    allowed_tools: str = "",
 ) -> dict:
     slug = normalize_skill_name(name)
     existing = await get_user_skill_raw_by_name(db, user_id, slug)
@@ -999,11 +1017,17 @@ async def create_user_skill(
         )
         if not rows_g:
             raise ValueError("分组不存在")
+    slash = (slash_name or "").strip().lstrip("/") or slug
+    try:
+        slash = normalize_skill_name(slash)
+    except ValueError:
+        slash = slug
     cur = await db.execute(
         """INSERT INTO user_skills
            (user_id, name, display_name, description, skill_path, enabled, chat_enabled,
-            chat_scope_web, chat_scope_host, chat_scope_integration, file_mtime, group_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            chat_scope_web, chat_scope_host, chat_scope_integration, file_mtime, group_id,
+            slash_name, hooks_enabled, pre_tool_use_matcher, allowed_tools)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             user_id,
             slug,
@@ -1017,6 +1041,10 @@ async def create_user_skill(
             1 if chat_scope_integration else 0,
             mtime,
             group_id,
+            slash,
+            1 if hooks_enabled else 0,
+            (pre_tool_use_matcher or "").strip()[:500],
+            (allowed_tools or "").strip()[:2000],
         ),
     )
     await db.commit()
@@ -1039,6 +1067,10 @@ async def update_user_skill(
     chat_scope_host: bool | None = None,
     chat_scope_integration: bool | None = None,
     group_id: int | None | str = ...,
+    slash_name: str | None = None,
+    hooks_enabled: bool | None = None,
+    pre_tool_use_matcher: str | None = None,
+    allowed_tools: str | None = None,
 ) -> dict:
     raw = await get_user_skill_raw(db, user_id, skill_id)
     if not raw:
@@ -1060,6 +1092,13 @@ async def update_user_skill(
             gid_sql = None
         else:
             gid_sql = await resolve_skill_group_id(db, user_id, group_id)
+    slash_val = None
+    if slash_name is not None:
+        s = (slash_name or "").strip().lstrip("/") or slug
+        try:
+            slash_val = normalize_skill_name(s)
+        except ValueError:
+            slash_val = slug
     await db.execute(
         """UPDATE user_skills SET
            display_name=COALESCE(?, display_name),
@@ -1069,6 +1108,10 @@ async def update_user_skill(
            chat_scope_web=COALESCE(?, chat_scope_web),
            chat_scope_host=COALESCE(?, chat_scope_host),
            chat_scope_integration=COALESCE(?, chat_scope_integration),
+           slash_name=COALESCE(?, slash_name),
+           hooks_enabled=COALESCE(?, hooks_enabled),
+           pre_tool_use_matcher=COALESCE(?, pre_tool_use_matcher),
+           allowed_tools=COALESCE(?, allowed_tools),
            group_id=CASE WHEN ? THEN group_id ELSE ? END,
            file_mtime=COALESCE(?, file_mtime),
            updated_at=CURRENT_TIMESTAMP
@@ -1081,6 +1124,10 @@ async def update_user_skill(
             None if chat_scope_web is None else (1 if chat_scope_web else 0),
             None if chat_scope_host is None else (1 if chat_scope_host else 0),
             None if chat_scope_integration is None else (1 if chat_scope_integration else 0),
+            slash_val,
+            None if hooks_enabled is None else (1 if hooks_enabled else 0),
+            None if pre_tool_use_matcher is None else (pre_tool_use_matcher or "").strip()[:500],
+            None if allowed_tools is None else (allowed_tools or "").strip()[:2000],
             group_id is ...,
             gid_sql,
             mtime,
@@ -1114,11 +1161,14 @@ async def list_chat_enabled_skills_for_context(
     user: dict,
     session_scope: str | None,
     session_host_id: int | None = None,
+    *,
+    inject_user_skills: bool = False,
 ) -> list[dict]:
     if not await user_skills_feature_enabled(db, user_id):
         return []
     scope = (session_scope or "default").strip().lower() or "default"
-    if scope == "task":
+    # task 默认不注入；任务表 inject_user_skills=1 时允许注入 prompt（仍不暴露 CRUD 工具）
+    if scope == "task" and not inject_user_skills:
         return []
     rows = await db.execute_fetchall(
         """SELECT * FROM user_skills
@@ -1129,7 +1179,9 @@ async def list_chat_enabled_skills_for_context(
     out: list[dict] = []
     for r in rows:
         row = dict(r)
-        if scope in ("integration", "mcp_orchestrate", "mcp_runtime"):
+        if scope == "task":
+            pass  # task 注入时不做 web/host 场景过滤
+        elif scope in ("integration", "mcp_orchestrate", "mcp_runtime"):
             if not bool(row.get("chat_scope_integration", 0)):
                 continue
         elif session_host_id:

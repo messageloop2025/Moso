@@ -257,9 +257,46 @@ def _strip_run_stats_sentinels(content: str) -> str:
     return cleaned.rstrip() if cleaned else cleaned
 
 
+_STRICT_CONFIRM_SYS_NOTE_RE = None
+
+
+def _strip_strict_confirm_sys_notes(content: str) -> str:
+    """剥离平台/模型编造的严格确认话术，避免回灌后继续假执行。"""
+    global _STRICT_CONFIRM_SYS_NOTE_RE
+    s = content or ""
+    markers = (
+        "严格确认",
+        "STRICT_CONFIRM",
+        "严格模式",
+        "实际用户操作",
+        "允许一次",
+        "点一下确认",
+    )
+    if not any(m in s for m in markers):
+        return s
+    import re as _re
+
+    if _STRICT_CONFIRM_SYS_NOTE_RE is None:
+        _STRICT_CONFIRM_SYS_NOTE_RE = _re.compile(
+            r"(?:<!--\s*EDGEOPS:STRICT_CONFIRM_WAIT\s*-->|"
+            r"【系统[·・\-]?\s*严格确认】[^\n]*|"
+            r"(?:由于)?当前为严格模式[^\n]*|"
+            r"严格模式下?[^\n]*|"
+            r"实际用户操作[^\n]*|"
+            r"[（(]?假设[）)]?[^\n]*允许一次[^\n]*|"
+            r"需要您先点一下确认[^\n]*)\s*",
+            _re.IGNORECASE,
+        )
+    return _STRICT_CONFIRM_SYS_NOTE_RE.sub("", s)
+
+
 def _strip_assistant_embedded_sentinels(content: str) -> str:
     """剥离落库时嵌入的 UI_ACTION + TOOL_TRACE + RUN_STATS 哨兵（供历史上下文与展示清洗）。"""
-    return _strip_run_stats_sentinels(_strip_tool_trace_sentinels(_strip_ui_action_sentinels(content or "")))
+    return _strip_strict_confirm_sys_notes(
+        _strip_run_stats_sentinels(
+            _strip_tool_trace_sentinels(_strip_ui_action_sentinels(content or ""))
+        )
+    )
 
 
 _TOOL_MARKUP_BLOCK_RE = None
@@ -3281,6 +3318,8 @@ class ChatRequest(BaseModel):
     attachment_uuids: list[str] = []
     # 界面语言 / 浏览器语言（BCP-47 或 I18n 当前有效 locale），供回复语言策略在「用户/站点都未设默认」时回退
     ui_locale: str | None = None
+    # 前端当前模式下拉值；用于隐式建会话写入，并与库内 chat_mode 对齐（硬门禁以最终 session_chat_mode 为准）
+    chat_mode: str | None = None
 
 
 class SessionRuntimeControlRequest(BaseModel):
@@ -3291,6 +3330,7 @@ class SessionRuntimeControlRequest(BaseModel):
 class UpdateSessionRequest(BaseModel):
     title: str | None = None
     low_interaction_mode: bool | None = None
+    chat_mode: str | None = None  # qa | strict | normal
 
 
 class UpdateSessionMessageRequest(BaseModel):
@@ -4071,6 +4111,7 @@ async def list_sessions(
                     """SELECT id, title, created_at, updated_at, host_id,
                               COALESCE(session_scope, 'default') AS session_scope,
                               COALESCE(low_interaction_mode, 'false') AS low_interaction_mode,
+                              COALESCE(chat_mode, 'normal') AS chat_mode,
                               COALESCE(session_prompt, '') AS session_prompt
                    FROM ai_chat_sessions
                    WHERE user_id = ? AND host_id = ? AND COALESCE(session_scope, 'default') NOT IN ('integration', 'mcp_orchestrate', 'mcp_runtime')
@@ -4080,12 +4121,12 @@ async def list_sessions(
         else:
             if scope_val == "local":
                 rows = await db.execute_fetchall(
-                    "SELECT id, title, created_at, updated_at, host_id, COALESCE(session_scope, 'default') AS session_scope, COALESCE(low_interaction_mode, 'false') AS low_interaction_mode, COALESCE(session_prompt, '') AS session_prompt FROM ai_chat_sessions WHERE user_id = ? AND (host_id IS NULL OR host_id = 0) AND (session_scope = 'local') ORDER BY updated_at DESC",
+                    "SELECT id, title, created_at, updated_at, host_id, COALESCE(session_scope, 'default') AS session_scope, COALESCE(low_interaction_mode, 'false') AS low_interaction_mode, COALESCE(chat_mode, 'normal') AS chat_mode, COALESCE(session_prompt, '') AS session_prompt FROM ai_chat_sessions WHERE user_id = ? AND (host_id IS NULL OR host_id = 0) AND (session_scope = 'local') ORDER BY updated_at DESC",
                     (user["id"],),
                 )
             else:
                 rows = await db.execute_fetchall(
-                    "SELECT id, title, created_at, updated_at, host_id, COALESCE(session_scope, 'default') AS session_scope, COALESCE(low_interaction_mode, 'false') AS low_interaction_mode, COALESCE(session_prompt, '') AS session_prompt FROM ai_chat_sessions WHERE user_id = ? AND (host_id IS NULL OR host_id = 0) AND (COALESCE(session_scope, 'default') = 'default') ORDER BY updated_at DESC",
+                    "SELECT id, title, created_at, updated_at, host_id, COALESCE(session_scope, 'default') AS session_scope, COALESCE(low_interaction_mode, 'false') AS low_interaction_mode, COALESCE(chat_mode, 'normal') AS chat_mode, COALESCE(session_prompt, '') AS session_prompt FROM ai_chat_sessions WHERE user_id = ? AND (host_id IS NULL OR host_id = 0) AND (COALESCE(session_scope, 'default') = 'default') ORDER BY updated_at DESC",
                     (user["id"],),
                 )
         return {"success": True, "sessions": [dict(r) for r in rows]}
@@ -4100,8 +4141,11 @@ async def create_session(
     title: str = "default",
     host_id: int | None = None,
     scope: str = "default",
+    chat_mode: str = "normal",
 ):
     """host_id 为空时创建全局或本机管理会话；scope=local 为本机管理 AI 会话，仅管理员可创建。"""
+    from services.chat_mode_gate import normalize_chat_mode
+
     db = await get_db()
     raw = (title or "").strip()
     if not raw or raw in EDGEOPS_SESSION_TITLE_CLIENT_PLACEHOLDERS:
@@ -4111,14 +4155,38 @@ async def create_session(
         scope_val = "default"
     if scope_val == "local" and not _is_admin_role(user.get("role")):
         raise HTTPException(status_code=403, detail="本机管理仅管理员可用")
+    mode_val = normalize_chat_mode(chat_mode)
     await db.execute(
-        "INSERT INTO ai_chat_sessions (user_id, host_id, title, session_scope) VALUES (?, ?, ?, ?)",
-        (user["id"], host_id, raw[:200], scope_val),
+        "INSERT INTO ai_chat_sessions (user_id, host_id, title, session_scope, chat_mode) VALUES (?, ?, ?, ?, ?)",
+        (user["id"], host_id, raw[:200], scope_val, mode_val),
     )
     await db.commit()
     cur = await db.execute("SELECT last_insert_rowid()")
     row = await cur.fetchone()
-    return {"success": True, "session_id": row[0]}
+    new_sid = row[0]
+    # sessionStart hooks（fail-open）
+    try:
+        from services.user_skills_hooks import run_hooks_for_skills
+        from services.user_skills_registry import list_chat_enabled_skills_for_context, skill_md_path
+
+        _sk_rows = await list_chat_enabled_skills_for_context(
+            db, int(user["id"]), user, scope_val, host_id
+        )
+        _hook_skills = []
+        for _r in _sk_rows:
+            if not (_r.get("hooks_enabled") or (_r.get("allowed_tools") or "").strip()):
+                continue
+            _p = skill_md_path(user, _r["name"])
+            _hook_skills.append(
+                {
+                    **_r,
+                    "skill_dir": str(_p.parent) if _p else "",
+                }
+            )
+        run_hooks_for_skills(_hook_skills, "sessionStart", chat_mode=mode_val)
+    except Exception:
+        pass
+    return {"success": True, "session_id": new_sid}
 
 
 @router.post("/sessions/clear")
@@ -4147,7 +4215,7 @@ async def clear_sessions(
 async def get_session(session_id: int, user=Depends(get_current_user)):
     db = await get_db()
     rows = await db.execute_fetchall(
-        "SELECT id, title, created_at, updated_at, COALESCE(session_prompt, '') AS session_prompt, COALESCE(session_scope, 'default') AS session_scope, COALESCE(low_interaction_mode, 'false') AS low_interaction_mode FROM ai_chat_sessions WHERE id = ? AND user_id = ?",
+        "SELECT id, title, created_at, updated_at, COALESCE(session_prompt, '') AS session_prompt, COALESCE(session_scope, 'default') AS session_scope, COALESCE(low_interaction_mode, 'false') AS low_interaction_mode, COALESCE(chat_mode, 'normal') AS chat_mode FROM ai_chat_sessions WHERE id = ? AND user_id = ?",
         (session_id, user["id"]),
     )
     if not rows:
@@ -4299,8 +4367,10 @@ async def get_session_tool_result_cache(
 async def update_session(
     session_id: int, req: UpdateSessionRequest, user=Depends(get_current_user)
 ):
-    if req.title is None and req.low_interaction_mode is None:
+    if req.title is None and req.low_interaction_mode is None and req.chat_mode is None:
         return {"success": True}
+    from services.chat_mode_gate import normalize_chat_mode
+
     db = await get_db()
     if req.title is not None:
         await db.execute(
@@ -4311,6 +4381,12 @@ async def update_session(
         await db.execute(
             "UPDATE ai_chat_sessions SET low_interaction_mode = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
             ("true" if bool(req.low_interaction_mode) else "false", session_id, user["id"]),
+        )
+    if req.chat_mode is not None:
+        # 切出 strict 时保留 always-allow 缓存但不使用；切回仍有效
+        await db.execute(
+            "UPDATE ai_chat_sessions SET chat_mode = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
+            (normalize_chat_mode(req.chat_mode), session_id, user["id"]),
         )
     await db.commit()
     return {"success": True}
@@ -4802,6 +4878,31 @@ def _cot_fallback_tool_plan_text(tool_names: list[str], output_locale: str) -> s
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: int, user=Depends(get_current_user)):
     db = await get_db()
+    # sessionEnd hooks（删除前，fail-open）
+    try:
+        rows = await db.execute_fetchall(
+            "SELECT COALESCE(session_scope,'default') AS session_scope, host_id, "
+            "COALESCE(chat_mode,'normal') AS chat_mode FROM ai_chat_sessions "
+            "WHERE id = ? AND user_id = ?",
+            (session_id, user["id"]),
+        )
+        if rows:
+            from services.user_skills_hooks import run_hooks_for_skills
+            from services.user_skills_registry import list_chat_enabled_skills_for_context, skill_md_path
+
+            sr = dict(rows[0])
+            _sk_rows = await list_chat_enabled_skills_for_context(
+                db, int(user["id"]), user, sr.get("session_scope"), sr.get("host_id")
+            )
+            _hook_skills = []
+            for _r in _sk_rows:
+                _p = skill_md_path(user, _r["name"])
+                _hook_skills.append({**_r, "skill_dir": str(_p.parent) if _p else ""})
+            run_hooks_for_skills(
+                _hook_skills, "sessionEnd", chat_mode=str(sr.get("chat_mode") or "normal")
+            )
+    except Exception:
+        pass
     await db.execute(
         "DELETE FROM ai_chat_sessions WHERE id = ? AND user_id = ?",
         (session_id, user["id"]),
@@ -4811,7 +4912,8 @@ async def delete_session(session_id: int, user=Depends(get_current_user)):
 
 
 def _sse(data: dict) -> str:
-    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+    # default=str：避免 tool_args 等含不可序列化对象时整段 SSE 抛错
+    return f"data: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
 
 
 def _sse_keepalive() -> str:
@@ -5684,18 +5786,24 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         scope_val = "default"
     if scope_val == "local" and not _is_admin_role(user.get("role")):
         scope_val = "default"
+    from services.chat_mode_gate import normalize_chat_mode as _normalize_chat_mode
+    from services.chat_mode_gate import chat_mode_system_section as _chat_mode_system_section
+
+    _req_chat_mode = _normalize_chat_mode(getattr(req, "chat_mode", None) or "normal") if getattr(req, "chat_mode", None) else None
+
     if not session_id:
         temp_title = EDGEOPS_TEMP_SESSION_PREFIX + datetime.now().strftime("%Y%m%d%H%M%S")
+        _new_mode = _req_chat_mode or "normal"
         await db.execute(
-            "INSERT INTO ai_chat_sessions (user_id, host_id, title, session_scope) VALUES (?, ?, ?, ?)",
-            (user["id"], req.host_id, temp_title, scope_val),
+            "INSERT INTO ai_chat_sessions (user_id, host_id, title, session_scope, chat_mode) VALUES (?, ?, ?, ?, ?)",
+            (user["id"], req.host_id, temp_title, scope_val, _new_mode),
         )
         await db.commit()
         cur = await db.execute("SELECT last_insert_rowid()")
         session_id = (await cur.fetchone())[0]
 
     rows = await db.execute_fetchall(
-        "SELECT id, host_id, COALESCE(session_prompt, '') AS session_prompt, COALESCE(session_scope, 'default') AS session_scope, COALESCE(low_interaction_mode, 'false') AS low_interaction_mode FROM ai_chat_sessions WHERE id = ? AND user_id = ?",
+        "SELECT id, host_id, COALESCE(session_prompt, '') AS session_prompt, COALESCE(session_scope, 'default') AS session_scope, COALESCE(low_interaction_mode, 'false') AS low_interaction_mode, COALESCE(chat_mode, 'normal') AS chat_mode, COALESCE(strict_allow_cache_json, '') AS strict_allow_cache_json FROM ai_chat_sessions WHERE id = ? AND user_id = ?",
         (session_id, user["id"]),
     )
     if not rows:
@@ -5705,6 +5813,47 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
     session_prompt = (session_row.get("session_prompt") or "").strip()
     session_scope = (session_row.get("session_scope") or "default").strip().lower()
     session_low_interaction = (session_row.get("low_interaction_mode") or "false").strip().lower() == "true"
+
+    session_chat_mode = _normalize_chat_mode(session_row.get("chat_mode"))
+    # 前端下拉与库不一致时：以本次请求的 chat_mode 为准并写回（硬门禁依赖此值）
+    if _req_chat_mode and _req_chat_mode != session_chat_mode:
+        session_chat_mode = _req_chat_mode
+        try:
+            await db.execute(
+                "UPDATE ai_chat_sessions SET chat_mode = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
+                (session_chat_mode, session_id, user["id"]),
+            )
+            await db.commit()
+        except Exception as _cm_sync_exc:
+            logger.warning("同步 chat_mode 失败 session_id=%s: %s", session_id, _cm_sync_exc)
+    session_strict_allow_cache = (session_row.get("strict_allow_cache_json") or "").strip()
+    session_strict_allow_glob = False
+    try:
+        _force_rows = await db.execute_fetchall(
+            "SELECT value FROM settings WHERE key = ?",
+            ("chat_mode_force_strict",),
+        )
+        if _force_rows and str(_force_rows[0]["value"] or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            session_chat_mode = "strict"
+        _pol_rows = await db.execute_fetchall(
+            "SELECT value FROM settings WHERE key = ?",
+            ("chat_mode_strict_policy_json",),
+        )
+        if _pol_rows:
+            import json as _json_pol
+
+            _pol = _json_pol.loads(_pol_rows[0]["value"] or "{}")
+            if isinstance(_pol, dict) and (
+                _pol.get("allow_glob") or _pol.get("always_allow_mode") in ("glob", "substring")
+            ):
+                session_strict_allow_glob = True
+    except Exception:
+        pass
     if session_scope == "integration":
         raise HTTPException(
             status_code=400,
@@ -5766,16 +5915,20 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         (session_id,),
     )
     msg_rows = list(reversed(msg_rows))
-    conversation = [
-        {
-            "role": r["role"],
-            "content": _with_history_timestamp(
-                _strip_assistant_embedded_sentinels(r["content"] or "") if r["role"] == "assistant" else (r["content"] or ""),
-                r["created_at"],
-            ),
-        }
-        for r in msg_rows
-    ]
+    conversation = []
+    for r in msg_rows:
+        _raw = r["content"] or ""
+        if r["role"] == "assistant":
+            _raw = _strip_assistant_embedded_sentinels(_raw)
+            # 严格确认等待气泡在剥离后可能只剩空白，勿回灌以免模型学到空转/假确认
+            if not (_raw or "").strip():
+                continue
+        conversation.append(
+            {
+                "role": r["role"],
+                "content": _with_history_timestamp(_raw, r["created_at"]),
+            }
+        )
     low_interaction_pref = session_low_interaction or _infer_low_interaction_preference(conversation, req.message or "")
 
     # 主机列表与分组（供 system 注入；普通用户仅看自己的）
@@ -6115,6 +6268,24 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         except Exception as _usk_exc:
             logger.debug("注入 user skills 失败 sid=%s: %s", session_id, _usk_exc)
 
+        full_system += _chat_mode_system_section(session_chat_mode)
+        try:
+            from services.chat_mode_runtime import (
+                format_slash_skill_injection,
+                resolve_slash_skill_force_load,
+            )
+
+            _slash_info = await resolve_slash_skill_force_load(
+                user,
+                req.message or "",
+                session_scope,
+                int(session_host_id) if session_host_id else None,
+            )
+            if _slash_info:
+                full_system += format_slash_skill_injection(_slash_info)
+        except Exception as _slash_exc:
+            logger.debug("斜杠 Skill 注入失败 sid=%s: %s", session_id, _slash_exc)
+
         try:
             from services.credential_vault import build_credential_vault_system_section
 
@@ -6171,7 +6342,8 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         assistant_max_rounds = ASSISTANT_MAX_ROUNDS
 
     async def agent_stream():
-        nonlocal messages
+        # session_strict_allow_cache 在「总是」分支会写回；须 nonlocal，否则读取即 UnboundLocalError
+        nonlocal messages, session_strict_allow_cache
         yield _sse({"session_id": session_id})
         # 把配额状态告知前端，让 UI 可选地做个提示条（即使前端不处理也不会报错）
         if trial_info is not None:
@@ -6233,6 +6405,36 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         pending_ui_actions: list[dict] = []
         # 工具 / 推理步骤：落库进 TOOL_TRACE 哨兵，便于历史会话折叠查看调用流程。
         pending_tool_trace: list[dict] = []
+        # Skills preToolUse hooks（fail-open）
+        hook_skills_for_gate: list[dict] = []
+        try:
+            from services.user_skills_registry import (
+                get_user_skills_root as _usk_root,
+                list_chat_enabled_skills_for_context as _usk_list,
+            )
+
+            _hook_rows = await _usk_list(
+                db,
+                int(user["id"]),
+                user,
+                session_scope,
+                int(session_host_id) if session_host_id else None,
+            )
+            for _hr in _hook_rows or []:
+                if not (_hr.get("hooks_enabled") or _hr.get("pre_tool_use_matcher")):
+                    continue
+                _nm = _hr.get("name") or ""
+                hook_skills_for_gate.append(
+                    {
+                        "name": _nm,
+                        "hooks_enabled": bool(_hr.get("hooks_enabled")),
+                        "pre_tool_use_matcher": _hr.get("pre_tool_use_matcher") or "",
+                        "allowed_tools": _hr.get("allowed_tools") or "",
+                        "skill_dir": str(_usk_root(user) / _nm) if _nm else "",
+                    }
+                )
+        except Exception as _hk_exc:
+            logger.debug("加载 hook skills 失败 sid=%s: %s", session_id, _hk_exc)
         run_started_mono = time.monotonic()
         context_budget_for_stats = int(context_size or 0)
         turn_messages_start = len(messages)
@@ -6826,11 +7028,20 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                 agent_can_parallel_read_tools(_parallel_tool_names)
                                 and runtime_injected_user_message is None
                             ):
+                                from services.chat_mode_gate import (
+                                    is_qa_blocked as _is_qa_blocked_ui,
+                                    qa_redacted_args_for_ui as _qa_redact_args_ui,
+                                )
+
                                 for tc, _, fn_args_preview in prepared_tool_calls:
+                                    _tn = tc["function"]["name"]
+                                    _ap = fn_args_preview
+                                    if session_chat_mode == "qa" and _is_qa_blocked_ui(_tn):
+                                        _ap = _qa_redact_args_ui(_tn, fn_args_preview if isinstance(fn_args_preview, dict) else {})
                                     yield _sse({
                                         "action": "executing",
-                                        "tool": tc["function"]["name"],
-                                        "args": fn_args_preview,
+                                        "tool": _tn,
+                                        "args": _ap,
                                     })
 
                                 async def _parallel_exec(_tc, _args):
@@ -6844,6 +7055,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                             default_terminal_slot=preferred_terminal_slot,
                                             session_id=session_id,
                                             ui_locale=_ui_raw,
+                                            chat_mode=session_chat_mode,
                                         )
                                     except Exception as _pe:
                                         return json.dumps(
@@ -6862,18 +7074,29 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                         ]
                                     )
                                 )
+                            from services.chat_mode_gate import (
+                                is_qa_blocked as _is_qa_blocked_ui2,
+                                qa_redacted_args_for_ui as _qa_redact_args_ui2,
+                            )
+
                             for _pidx, (tc, fn_args, fn_args_preview) in enumerate(prepared_tool_calls):
                                 fn_name = tc["function"]["name"]
                                 fn_id = tc["id"]
+                                _ui_args = fn_args_preview
+                                if session_chat_mode == "qa" and _is_qa_blocked_ui2(fn_name):
+                                    _ui_args = _qa_redact_args_ui2(
+                                        fn_name,
+                                        fn_args_preview if isinstance(fn_args_preview, dict) else {},
+                                    )
                                 if _parallel_prefetch is None:
-                                    yield _sse({"action": "executing", "tool": fn_name, "args": fn_args_preview})
+                                    yield _sse({"action": "executing", "tool": fn_name, "args": _ui_args})
                                 try:
                                     pending_tool_trace.append(
                                         {
                                             "type": "tool",
                                             "event": "executing",
                                             "tool": fn_name,
-                                            "args": fn_args_preview,
+                                            "args": _ui_args,
                                         }
                                     )
                                 except Exception:
@@ -6940,7 +7163,311 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                     )
                                     else None
                                 )
-                                if skip_stale_ask_ui:
+                                # —— 聊天模式硬门禁 + Skills preToolUse（execute 前）——
+                                # 注意：confirm 的 yield/等待循环必须在 evaluate 的 try/except 之外，
+                                # 否则 yield/断流/取消会被误判为 gate_error（用户看到 fail-closed、无弹窗）。
+                                _chat_mode_gate_skip_exec = False
+                                _strict_user_decision: str | None = None
+                                if not skip_stale_ask_ui and fn_name != "ask_user_choice":
+                                    from services.chat_mode_runtime import (
+                                        annotate_tool_result_with_strict_decision,
+                                        audit_chat_mode_decision,
+                                        evaluate_pre_tool_gate,
+                                        parse_strict_choice,
+                                        persist_strict_allow_key,
+                                    )
+                                    from services.chat_mode_gate import (
+                                        is_qa_blocked as _qa_fc_blocked,
+                                        needs_strict_confirm as _strict_fc_needs,
+                                        qa_blocked_tool_result as _qa_fc_result,
+                                        strict_allow_cache_key,
+                                    )
+
+                                    _gate = None
+                                    _gate_eval_exc: Exception | None = None
+                                    try:
+                                        _gate = await evaluate_pre_tool_gate(
+                                            chat_mode=session_chat_mode,
+                                            tool_name=fn_name,
+                                            args=fn_args if isinstance(fn_args, dict) else {},
+                                            strict_allow_cache_json=session_strict_allow_cache,
+                                            hook_skills=hook_skills_for_gate,
+                                            assistant_note=(pre_tool_text_streamed or "")[:500],
+                                            strict_allow_glob=session_strict_allow_glob,
+                                        )
+                                    except Exception as _gate_exc:
+                                        _gate_eval_exc = _gate_exc
+                                        logger.exception(
+                                            "chat_mode evaluate_pre_tool_gate 异常 tool=%s mode=%s",
+                                            fn_name,
+                                            session_chat_mode,
+                                        )
+
+                                    if _gate_eval_exc is not None:
+                                        if session_chat_mode == "qa" and _qa_fc_blocked(fn_name):
+                                            tool_result = json.dumps(
+                                                _qa_fc_result(
+                                                    fn_name,
+                                                    fn_args if isinstance(fn_args, dict) else {},
+                                                    assistant_note=(pre_tool_text_streamed or "")[:500],
+                                                ),
+                                                ensure_ascii=False,
+                                            )
+                                            _chat_mode_gate_skip_exec = True
+                                        elif session_chat_mode == "strict" and _strict_fc_needs(
+                                            fn_name
+                                        ):
+                                            tool_result = json.dumps(
+                                                {
+                                                    "success": False,
+                                                    "error": (
+                                                        "工具调用前安全检查异常，已取消执行："
+                                                        f"{type(_gate_eval_exc).__name__}: {_gate_eval_exc}"
+                                                    ),
+                                                    "mode": "strict",
+                                                    "decision": "gate_error",
+                                                    "user_decision": "deny",
+                                                    "user_decision_note": "本次工具调用未获批准，操作未执行。",
+                                                },
+                                                ensure_ascii=False,
+                                            )
+                                            _chat_mode_gate_skip_exec = True
+                                        else:
+                                            logger.warning(
+                                                "chat_mode gate 异常（fail-open） tool=%s: %s",
+                                                fn_name,
+                                                _gate_eval_exc,
+                                            )
+                                    elif _gate and _gate.get("action") == "block":
+                                        tool_result = json.dumps(
+                                            _gate.get("tool_result")
+                                            or {"success": False, "error": "blocked"},
+                                            ensure_ascii=False,
+                                            default=str,
+                                        )
+                                        _chat_mode_gate_skip_exec = True
+                                        try:
+                                            await audit_chat_mode_decision(
+                                                user_id=user["id"],
+                                                session_id=session_id,
+                                                mode=session_chat_mode,
+                                                tool_name=fn_name,
+                                                args=fn_args if isinstance(fn_args, dict) else {},
+                                                decision=str(_gate.get("decision") or "block"),
+                                                intent=(
+                                                    (_gate.get("tool_result") or {}).get("intent")
+                                                    or ""
+                                                ),
+                                                source=str(_gate.get("source") or "chat_mode_gate"),
+                                            )
+                                        except Exception as _aud_exc:
+                                            logger.warning("audit block 失败: %s", _aud_exc)
+                                    elif _gate and _gate.get("action") == "execute":
+                                        if session_chat_mode == "strict":
+                                            from services.chat_mode_enforce import (
+                                                grant_strict_tool_approval,
+                                            )
+
+                                            if _strict_fc_needs(fn_name):
+                                                grant_strict_tool_approval(fn_name)
+                                                if _gate.get("decision") == "strict_cached_allow":
+                                                    _strict_user_decision = "always_allow_cached"
+                                    elif _gate and _gate.get("action") == "confirm":
+                                        _ua = _gate.get("ui_action") or {}
+                                        if not isinstance(_ua, dict):
+                                            _ua = {}
+                                        # 独立通知通路：strict_confirm（yield 不在 evaluate 的 except 内）
+                                        yield _sse(
+                                            {
+                                                "strict_confirm": _ua,
+                                                "ui_action": _ua,
+                                                "stream_status": {
+                                                    "phase": "awaiting_user_confirm"
+                                                },
+                                                "waiting_for_user": {
+                                                    "kind": "strict_command_confirm",
+                                                    "tool": _ua.get("tool"),
+                                                    "auto_decide_in_seconds": None,
+                                                },
+                                            }
+                                        )
+                                        try:
+                                            pending_ui_actions.append(_ua)
+                                        except Exception:
+                                            pass
+                                        # 勿写入「已弹出确认框」类文案：会回灌模型上下文，导致后续复读/编造而不发起 tool call
+                                        _sys_note = "<!-- EDGEOPS:STRICT_CONFIRM_WAIT -->"
+                                        try:
+                                            _content_to_save = _embed_run_stats_into_content(
+                                                _embed_tool_trace_into_content(
+                                                    _embed_ui_actions_into_content(
+                                                        _sys_note, pending_ui_actions
+                                                    ),
+                                                    pending_tool_trace,
+                                                ),
+                                                _make_run_stats(),
+                                            )
+                                            pending_ui_actions = []
+                                            pending_tool_trace = []
+                                            await db.execute(
+                                                "INSERT INTO ai_chat_messages (session_id, role, content) VALUES (?, 'assistant', ?)",
+                                                (session_id, _content_to_save[:AI_MESSAGE_SAVE_MAX]),
+                                            )
+                                            await db.execute(
+                                                "UPDATE ai_chat_sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                                                (session_id,),
+                                            )
+                                            await db.commit()
+                                        except Exception as _w_exc:
+                                            logger.warning("保存严格确认消息失败: %s", _w_exc)
+                                        _wait_ticks = 0
+                                        _choice_text = ""
+                                        while True:
+                                            _ctrl = await _consume_runtime_control()
+                                            if _ctrl:
+                                                _a = _ctrl["action"]
+                                                _m = _ctrl["message"]
+                                                if _a == "stop":
+                                                    yield _sse(
+                                                        {
+                                                            "runtime_control": {
+                                                                "action": "stop",
+                                                                "accepted": True,
+                                                                "during_wait": "strict_confirm",
+                                                            }
+                                                        }
+                                                    )
+                                                    yield "data: [DONE]\n\n"
+                                                    return
+                                                if _a in ("choice", "supplement") and _m:
+                                                    _choice_text = _m
+                                                    yield _sse(
+                                                        {
+                                                            "runtime_control": {
+                                                                "action": "choice",
+                                                                "accepted": True,
+                                                            }
+                                                        }
+                                                    )
+                                                    break
+                                                if _a == "pause":
+                                                    yield _sse(
+                                                        {
+                                                            "runtime_control": {
+                                                                "action": "pause",
+                                                                "accepted": True,
+                                                                "during_wait": "strict_confirm",
+                                                            }
+                                                        }
+                                                    )
+                                                    yield "data: [DONE]\n\n"
+                                                    return
+                                            await asyncio.sleep(1)
+                                            _wait_ticks += 1
+                                            if _wait_ticks % 5 == 0:
+                                                yield _sse_keepalive()
+                                        _decision = parse_strict_choice(_choice_text)
+                                        try:
+                                            await audit_chat_mode_decision(
+                                                user_id=user["id"],
+                                                session_id=session_id,
+                                                mode=session_chat_mode,
+                                                tool_name=fn_name,
+                                                args=fn_args if isinstance(fn_args, dict) else {},
+                                                decision=_decision,
+                                                intent=str(_gate.get("intent") or ""),
+                                                source=str(_gate.get("source") or "strict"),
+                                            )
+                                        except Exception as _aud2:
+                                            logger.warning("audit strict choice 失败: %s", _aud2)
+                                        if _decision == "deny":
+                                            _strict_user_decision = "deny"
+                                            tool_result = annotate_tool_result_with_strict_decision(
+                                                {
+                                                    "success": False,
+                                                    "error": "用户拒绝执行该操作（严格确认）",
+                                                },
+                                                "deny",
+                                                tool_name=fn_name,
+                                            )
+                                            _chat_mode_gate_skip_exec = True
+                                        elif _decision == "always_allow":
+                                            from services.chat_mode_gate import (
+                                                dump_strict_allow_cache,
+                                                parse_strict_allow_cache,
+                                            )
+
+                                            _ck = strict_allow_cache_key(fn_name)
+                                            try:
+                                                await persist_strict_allow_key(
+                                                    session_id, user["id"], _ck
+                                                )
+                                            except Exception as _p_exc:
+                                                logger.warning(
+                                                    "persist strict always_allow 失败: %s", _p_exc
+                                                )
+                                            _keys = parse_strict_allow_cache(
+                                                session_strict_allow_cache
+                                            )
+                                            if _ck not in _keys:
+                                                _keys.append(_ck)
+                                            session_strict_allow_cache = dump_strict_allow_cache(
+                                                _keys
+                                            )
+                                        if _decision in ("allow", "always_allow"):
+                                            from services.chat_mode_enforce import (
+                                                grant_strict_tool_approval,
+                                            )
+
+                                            _strict_user_decision = _decision
+                                            grant_strict_tool_approval(fn_name)
+                                        # allow / always_allow → 继续执行
+                                # P2-2：MCP 调用前 beforeMCPExecution（fail-open；deny 则跳过执行）
+                                if (
+                                    not _chat_mode_gate_skip_exec
+                                    and not skip_stale_ask_ui
+                                    and (fn_name or "").startswith("user_mcp_")
+                                ):
+                                    try:
+                                        from services.user_skills_hooks import run_hooks_for_skills
+                                        from services.chat_mode_runtime import audit_chat_mode_decision
+
+                                        _mcp_dec = run_hooks_for_skills(
+                                            hook_skills_for_gate,
+                                            "beforeMCPExecution",
+                                            tool_name=fn_name,
+                                            args=fn_args if isinstance(fn_args, dict) else {},
+                                            chat_mode=session_chat_mode,
+                                        )
+                                        if _mcp_dec.get("decision") == "deny":
+                                            tool_result = json.dumps(
+                                                {
+                                                    "success": False,
+                                                    "error": _mcp_dec.get("reason")
+                                                    or "beforeMCPExecution 拒绝",
+                                                    "decision": "deny",
+                                                    "source": "beforeMCPExecution",
+                                                },
+                                                ensure_ascii=False,
+                                            )
+                                            _chat_mode_gate_skip_exec = True
+                                            await audit_chat_mode_decision(
+                                                user_id=user["id"],
+                                                session_id=session_id,
+                                                mode=session_chat_mode,
+                                                tool_name=fn_name,
+                                                args=fn_args if isinstance(fn_args, dict) else {},
+                                                decision="hook_deny",
+                                                intent="",
+                                                source="beforeMCPExecution",
+                                            )
+                                    except Exception as _mcp_hook_exc:
+                                        logger.warning(
+                                            "beforeMCPExecution fail-open: %s", _mcp_hook_exc
+                                        )
+                                if _chat_mode_gate_skip_exec:
+                                    pass
+                                elif skip_stale_ask_ui:
                                     _skip_msg = _repeat_skip_reason or (
                                         "此确认题已由服务端跳过：删除等不可逆操作已在先执行或上下文显示已完成，"
                                         "请勿再向用户展示删除确认选项，直接简洁汇报结果即可。"
@@ -6977,6 +7504,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                                     session_id=session_id,
                                                     ui_locale=_ui_raw,
                                                     transfer_cancel_event=_transfer_cancel,
+                                                    chat_mode=session_chat_mode,
                                                 )
                                             finally:
                                                 _stream_q.put_nowait(_stream_done)
@@ -7049,6 +7577,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                                 default_terminal_slot=preferred_terminal_slot,
                                                 session_id=session_id,
                                                 ui_locale=_ui_raw,
+                                                chat_mode=session_chat_mode,
                                             )
                                         )
                                         _tool_idle_ticks = 0
@@ -7101,6 +7630,30 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                                 )
                                                 break
                                 try:
+                                    from services.chat_mode_enforce import clear_strict_tool_approval
+
+                                    clear_strict_tool_approval(fn_name)
+                                except Exception:
+                                    pass
+                                # 严格确认：把用户同意/拒绝写入 tool 返回，供模型继续或改问用户
+                                if _strict_user_decision and _strict_user_decision != "deny":
+                                    try:
+                                        from services.chat_mode_runtime import (
+                                            annotate_tool_result_with_strict_decision as _ann_strict,
+                                        )
+
+                                        tool_result = _ann_strict(
+                                            tool_result,
+                                            _strict_user_decision,
+                                            tool_name=fn_name,
+                                        )
+                                    except Exception as _ann_exc:
+                                        logger.warning(
+                                            "annotate strict decision 失败 tool=%s: %s",
+                                            fn_name,
+                                            _ann_exc,
+                                        )
+                                try:
                                     result_obj = json.loads(tool_result)
                                     is_success = result_obj.get("success", not result_obj.get("error"))
                                     _poll_s, result_obj = apply_terminal_poll_tool_result(
@@ -7143,6 +7696,23 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                             )
                                 if fn_name in _AGENT_IRREVERSIBLE_TOOL_NAMES and is_success:
                                     batch_had_irreversible_success = True
+                                # Skills postToolUse / postToolUseFailure（fail-open，仅记日志/拒绝信息附加）
+                                try:
+                                    from services.user_skills_hooks import run_hooks_for_skills
+
+                                    _post_ev = "postToolUse" if is_success else "postToolUseFailure"
+                                    _post_dec = run_hooks_for_skills(
+                                        hook_skills_for_gate,
+                                        _post_ev,
+                                        tool_name=fn_name,
+                                        args=fn_args if isinstance(fn_args, dict) else {},
+                                        chat_mode=session_chat_mode,
+                                    )
+                                    if _post_dec.get("decision") == "deny" and isinstance(result_obj, dict):
+                                        result_obj["hook_post"] = _post_dec
+                                        tool_result = json.dumps(result_obj, ensure_ascii=False)
+                                except Exception as _post_exc:
+                                    logger.debug("postToolUse hook skip: %s", _post_exc)
                                 result_cache_id = None
                                 try:
                                     result_cache_id = await _store_tool_result_cache(
@@ -7796,7 +8366,7 @@ async def run_ops_integration_chat_complete(
         sid = (await cur.fetchone())[0]
 
     rows = await db.execute_fetchall(
-        "SELECT id, host_id, COALESCE(session_prompt, '') AS session_prompt, COALESCE(session_scope, 'default') AS session_scope, COALESCE(low_interaction_mode, 'false') AS low_interaction_mode "
+        "SELECT id, host_id, COALESCE(session_prompt, '') AS session_prompt, COALESCE(session_scope, 'default') AS session_scope, COALESCE(low_interaction_mode, 'false') AS low_interaction_mode, COALESCE(chat_mode, 'normal') AS chat_mode, COALESCE(strict_allow_cache_json, '') AS strict_allow_cache_json "
         "FROM ai_chat_sessions WHERE id = ? AND user_id = ?",
         (sid, user["id"]),
     )
@@ -7807,6 +8377,10 @@ async def run_ops_integration_chat_complete(
     session_prompt = (session_row.get("session_prompt") or "").strip()
     session_scope = (session_row.get("session_scope") or "default").strip().lower()
     session_low_interaction = (session_row.get("low_interaction_mode") or "false").strip().lower() == "true"
+    from services.chat_mode_gate import normalize_chat_mode as _normalize_chat_mode_int
+
+    session_chat_mode = _normalize_chat_mode_int(session_row.get("chat_mode"))
+    session_strict_allow_cache = (session_row.get("strict_allow_cache_json") or "").strip()
     if session_scope != "integration":
         return {
             "success": False,
@@ -7851,16 +8425,19 @@ async def run_ops_integration_chat_complete(
         (sid,),
     )
     msg_rows = list(reversed(msg_rows))
-    conversation = [
-        {
-            "role": r["role"],
-            "content": _with_history_timestamp(
-                _strip_assistant_embedded_sentinels(r["content"] or "") if r["role"] == "assistant" else (r["content"] or ""),
-                r["created_at"],
-            ),
-        }
-        for r in msg_rows
-    ]
+    conversation = []
+    for r in msg_rows:
+        _raw = r["content"] or ""
+        if r["role"] == "assistant":
+            _raw = _strip_assistant_embedded_sentinels(_raw)
+            if not (_raw or "").strip():
+                continue
+        conversation.append(
+            {
+                "role": r["role"],
+                "content": _with_history_timestamp(_raw, r["created_at"]),
+            }
+        )
     low_interaction_pref = session_low_interaction or _infer_low_interaction_preference(conversation, msg_in or "")
 
     if _is_admin_role(user.get("role")):
@@ -8312,19 +8889,51 @@ async def run_ops_integration_chat_complete(
                                 fn_name,
                                 json.dumps(fn_args_preview, ensure_ascii=False),
                             )
-                            tool_result = await execute_tool(
-                                fn_name,
-                                fn_args,
-                                user,
-                                scope=exec_scope,
-                                terminal_scope_id=(
-                                    normalize_terminal_scope_id(f"integration:session:{sid}")
-                                    if sid is not None else None
-                                ),
-                                default_terminal_slot=None,
-                                ui_capable=False,
-                                session_id=sid,
-                            )
+                            _int_gate_blocked = False
+                            try:
+                                from services.chat_mode_runtime import evaluate_pre_tool_gate
+
+                                _ig = await evaluate_pre_tool_gate(
+                                    chat_mode=session_chat_mode,
+                                    tool_name=fn_name,
+                                    args=fn_args if isinstance(fn_args, dict) else {},
+                                    strict_allow_cache_json=session_strict_allow_cache,
+                                    hook_skills=[],
+                                )
+                                if _ig.get("action") == "block":
+                                    tool_result = json.dumps(
+                                        _ig.get("tool_result") or {"success": False, "error": "blocked"},
+                                        ensure_ascii=False,
+                                    )
+                                    _int_gate_blocked = True
+                                elif _ig.get("action") == "confirm":
+                                    # 无 UI 确认管线：严格/Hook ask 视为拒绝（可用 always-allow 缓存绕过）
+                                    tool_result = json.dumps(
+                                        {
+                                            "success": False,
+                                            "error": "集成通道无确认弹窗，严格/Hook 要求确认的操作已拒绝；请改用网页会话或切换为普通模式",
+                                            "mode": session_chat_mode,
+                                        },
+                                        ensure_ascii=False,
+                                    )
+                                    _int_gate_blocked = True
+                            except Exception as _ig_exc:
+                                logger.debug("integration chat_mode gate skip: %s", _ig_exc)
+                            if not _int_gate_blocked:
+                                tool_result = await execute_tool(
+                                    fn_name,
+                                    fn_args,
+                                    user,
+                                    scope=exec_scope,
+                                    terminal_scope_id=(
+                                        normalize_terminal_scope_id(f"integration:session:{sid}")
+                                        if sid is not None else None
+                                    ),
+                                    default_terminal_slot=None,
+                                    ui_capable=False,
+                                    session_id=sid,
+                                    chat_mode=session_chat_mode,
+                                )
                             try:
                                 result_obj = json.loads(tool_result)
                                 is_success = result_obj.get("success", not result_obj.get("error"))

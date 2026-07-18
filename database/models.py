@@ -155,6 +155,8 @@ CREATE TABLE IF NOT EXISTS ai_chat_sessions (
     session_prompt TEXT DEFAULT '',
     session_scope TEXT DEFAULT 'default',
     low_interaction_mode TEXT DEFAULT 'false',
+    chat_mode TEXT NOT NULL DEFAULT 'normal',
+    strict_allow_cache_json TEXT NOT NULL DEFAULT '',
     session_runtime_json TEXT NOT NULL DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -395,6 +397,26 @@ async def _migrate_add_columns(db: aiosqlite.Connection):
         try:
             await db.execute(
                 "ALTER TABLE ai_chat_sessions ADD COLUMN session_runtime_json TEXT NOT NULL DEFAULT ''"
+            )
+            await db.commit()
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+            await db.rollback()
+    if not await has_column("ai_chat_sessions", "chat_mode"):
+        try:
+            await db.execute(
+                "ALTER TABLE ai_chat_sessions ADD COLUMN chat_mode TEXT NOT NULL DEFAULT 'normal'"
+            )
+            await db.commit()
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+            await db.rollback()
+    if not await has_column("ai_chat_sessions", "strict_allow_cache_json"):
+        try:
+            await db.execute(
+                "ALTER TABLE ai_chat_sessions ADD COLUMN strict_allow_cache_json TEXT NOT NULL DEFAULT ''"
             )
             await db.commit()
         except Exception as e:
@@ -1493,6 +1515,11 @@ async def _migrate_legacy_added_columns(db: aiosqlite.Connection) -> None:
         ("hosts", "remark", "ALTER TABLE hosts ADD COLUMN remark TEXT DEFAULT ''"),
         ("users", "skills_enabled", "ALTER TABLE users ADD COLUMN skills_enabled INTEGER NOT NULL DEFAULT 0"),
         ("user_skills", "group_id", "ALTER TABLE user_skills ADD COLUMN group_id INTEGER REFERENCES user_skill_groups(id) ON DELETE SET NULL"),
+        ("user_skills", "slash_name", "ALTER TABLE user_skills ADD COLUMN slash_name TEXT NOT NULL DEFAULT ''"),
+        ("user_skills", "hooks_enabled", "ALTER TABLE user_skills ADD COLUMN hooks_enabled INTEGER NOT NULL DEFAULT 0"),
+        ("user_skills", "pre_tool_use_matcher", "ALTER TABLE user_skills ADD COLUMN pre_tool_use_matcher TEXT NOT NULL DEFAULT ''"),
+        ("ai_chat_sessions", "chat_mode", "ALTER TABLE ai_chat_sessions ADD COLUMN chat_mode TEXT NOT NULL DEFAULT 'normal'"),
+        ("ai_chat_sessions", "strict_allow_cache_json", "ALTER TABLE ai_chat_sessions ADD COLUMN strict_allow_cache_json TEXT NOT NULL DEFAULT ''"),
     ]
     for table, col, ddl in legacy_columns:
         # 父表都不在的话直接跳过；它们会被前面的 _migrate_ssh_channels_and_tasks 等先建出来
@@ -1717,6 +1744,8 @@ async def _check_db_schema(db: aiosqlite.Connection) -> None:
         ("ai_chat_sessions", "session_prompt"),
         ("ai_chat_sessions", "host_id"),
         ("ai_chat_sessions", "low_interaction_mode"),
+        ("ai_chat_sessions", "chat_mode"),
+        ("ai_chat_sessions", "strict_allow_cache_json"),
         ("ai_chat_sessions", "session_runtime_json"),
         ("hosts", "credential_id"),
         ("hosts", "host_type"),

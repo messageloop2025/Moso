@@ -49,6 +49,10 @@ class SkillCreateBody(BaseModel):
     chat_scope_host: bool = True
     chat_scope_integration: bool = False
     group_id: int | None = None
+    slash_name: str = ""
+    hooks_enabled: bool = False
+    pre_tool_use_matcher: str = ""
+    allowed_tools: str = ""
 
 
 class SkillUpdateBody(BaseModel):
@@ -61,6 +65,10 @@ class SkillUpdateBody(BaseModel):
     chat_scope_host: bool | None = None
     chat_scope_integration: bool | None = None
     group_id: int | None = None
+    slash_name: str | None = None
+    hooks_enabled: bool | None = None
+    pre_tool_use_matcher: str | None = None
+    allowed_tools: str | None = None
 
 
 class SkillGroupCreateBody(BaseModel):
@@ -194,6 +202,82 @@ async def list_my_skills(
     return {"success": True, "skills": items, "groups": groups}
 
 
+@router.get("/slash-commands")
+async def list_slash_commands(user=Depends(get_current_user)):
+    """输入框 `/` 菜单：用户 Skills + 组织 Skills + skills/*/commands 映射。"""
+    await _guard_skills(user)
+    db = await get_db()
+    items: list[dict] = []
+    rows = await list_user_skills(db, int(user["id"]), user, enabled=True)
+    for s in rows:
+        slash = (s.get("slash_name") or s.get("name") or "").strip().lstrip("/")
+        if not slash:
+            continue
+        items.append(
+            {
+                "slash": "/" + slash,
+                "name": s.get("name"),
+                "display_name": s.get("display_name") or s.get("name"),
+                "description": (s.get("description") or "")[:200],
+                "source": "user",
+                "params_hint": "{{arg}}",
+            }
+        )
+        # commands/ 目录：额外 slash 别名（文件名）
+        try:
+            from pathlib import Path
+            from services.user_skills_registry import skill_md_path
+
+            cmd_dir = skill_md_path(user, s["name"]).parent / "commands"
+            if cmd_dir.is_dir():
+                for p in sorted(cmd_dir.iterdir()):
+                    if p.is_file() and p.suffix.lower() in (".md", ".txt", ""):
+                        alias = p.stem.strip().lstrip("/")
+                        if alias:
+                            items.append(
+                                {
+                                    "slash": "/" + alias,
+                                    "name": s.get("name"),
+                                    "display_name": alias,
+                                    "description": f"commands/{p.name} → {s.get('name')}",
+                                    "source": "commands",
+                                    "params_hint": "{{arg}}",
+                                }
+                            )
+        except Exception:
+            pass
+    try:
+        org_rows = await db.execute_fetchall(
+            "SELECT name, display_name, description, slash_name FROM org_skills WHERE enabled=1 ORDER BY name"
+        )
+        for r in org_rows:
+            slash = (r["slash_name"] or r["name"] or "").strip().lstrip("/")
+            if not slash:
+                continue
+            items.append(
+                {
+                    "slash": "/" + slash,
+                    "name": r["name"],
+                    "display_name": r["display_name"] or r["name"],
+                    "description": (r["description"] or "")[:200],
+                    "source": "org",
+                    "params_hint": "{{arg}}",
+                }
+            )
+    except Exception:
+        pass
+    # 去重（同 slash 保留先出现的）
+    seen: set[str] = set()
+    out = []
+    for it in items:
+        k = it["slash"].lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(it)
+    return {"success": True, "commands": out}
+
+
 @router.get("/groups")
 async def list_my_skill_groups(user=Depends(get_current_user)):
     await _guard_skills(user)
@@ -323,6 +407,10 @@ async def create_my_skill(body: SkillCreateBody, user=Depends(get_current_user))
             chat_scope_host=body.chat_scope_host,
             chat_scope_integration=body.chat_scope_integration,
             group_id=body.group_id,
+            slash_name=body.slash_name,
+            hooks_enabled=body.hooks_enabled,
+            pre_tool_use_matcher=body.pre_tool_use_matcher,
+            allowed_tools=body.allowed_tools,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -419,6 +507,10 @@ async def update_my_skill(skill_id: int, body: SkillUpdateBody, user=Depends(get
             chat_scope_host=fields.get("chat_scope_host"),
             chat_scope_integration=fields.get("chat_scope_integration"),
             group_id=fields["group_id"] if "group_id" in fields else ...,
+            slash_name=fields.get("slash_name"),
+            hooks_enabled=fields.get("hooks_enabled"),
+            pre_tool_use_matcher=fields.get("pre_tool_use_matcher"),
+            allowed_tools=fields.get("allowed_tools"),
         )
     except LookupError:
         raise HTTPException(status_code=404, detail="Skill 不存在") from None
