@@ -80,6 +80,7 @@
     "noMessagesInSession": "This session has no messages yet",
     "exportedMd": "Exported Markdown",
     "renamed": "Renamed",
+    "nameNoPathSep": "Name cannot contain path separators",
     "generatingTitle": "Generating title…",
     "titleGenerated": "Title generated",
     "confirmDelete": "Delete this item?",

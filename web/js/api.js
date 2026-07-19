@@ -954,6 +954,9 @@ var API = {
     fsCopy: function(path, destDir, move) {
         return this.post('/fs/copy', { path: path, dest_dir: destDir || '', move: !!move });
     },
+    fsRename: function(path, newPath) {
+        return this.post('/fs/rename', { path: path || '', new_path: newPath || '' });
+    },
 
     /* SSH 通道（AI 后台 PTY） */
     listSshChannels: function(params) {

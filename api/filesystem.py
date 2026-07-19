@@ -1,4 +1,4 @@
-"""文件系统 API：web/fs 目录下列表、读写、上传下载、tgz 打包解压、复制/移动。路径均相对 fs 根，禁止 .. 逃逸。"""
+"""文件系统 API：web/fs 目录下列表、读写、上传下载、tgz 打包解压、复制/移动/重命名。路径均相对 fs 根，禁止 .. 逃逸。"""
 import asyncio
 import os
 import re
@@ -1047,6 +1047,55 @@ async def copy_or_move(body: CopyBody, username: Optional[str] = None, user=Depe
     base = _user_base(user, username)
     try:
         return await fs_copy_or_move_async(body.path, body.dest_dir, body.move, base)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class RenameBody(BaseModel):
+    path: str
+    new_path: str
+
+
+def _fs_rename(src_relative: str, new_relative: str, base: Optional[Path] = None) -> dict:
+    """重命名或移动文件/目录（同用户 fs 根内）。"""
+    base = base or FS_DIR
+    src = resolve_fs_path(src_relative, base)
+    dst = resolve_fs_path(new_relative, base)
+    if not src.exists():
+        raise ValueError("源不存在")
+    if dst.exists():
+        raise ValueError("目标已存在")
+    dst_parent = dst.parent
+    if not dst_parent.exists():
+        raise ValueError("目标父目录不存在")
+    # 禁止把目录移入自身子路径
+    try:
+        src_r = src.resolve()
+        dst_r = dst.resolve()
+        if src.is_dir() and (dst_r == src_r or str(dst_r).startswith(str(src_r) + os.sep)):
+            raise ValueError("不能移动到自身目录下")
+    except OSError:
+        pass
+    try:
+        dst_parent.mkdir(parents=True, exist_ok=True)
+        src.rename(dst)
+        dest_rel = str(dst.relative_to(base)).replace("\\", "/")
+        return {"success": True, "path": src_relative, "new_path": dest_rel}
+    except OSError as e:
+        raise ValueError(str(e))
+
+
+async def fs_rename_async(src_relative: str, new_relative: str, base: Optional[Path] = None) -> dict:
+    return await asyncio.to_thread(_fs_rename, src_relative, new_relative, base)
+
+
+@router.post("/rename")
+async def rename_path(body: RenameBody, username: Optional[str] = None, user=Depends(get_current_user)):
+    base = _user_base(user, username)
+    try:
+        return await fs_rename_async(body.path, body.new_path, base)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except OSError as e:

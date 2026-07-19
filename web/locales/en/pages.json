@@ -292,7 +292,9 @@
       "thModified": "Modified",
       "thAction": "Actions",
       "packTgz": "Pack .tgz",
-      "unpack": "Unpack"
+      "unpack": "Unpack",
+      "rename": "Rename",
+      "renamePrompt": "New name"
     },
     "maint": {
       "add": "Add entry",

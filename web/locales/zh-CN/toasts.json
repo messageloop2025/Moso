@@ -80,6 +80,7 @@
     "noMessagesInSession": "当前会话暂无消息",
     "exportedMd": "已导出 Markdown",
     "renamed": "已改名",
+    "nameNoPathSep": "名称不能包含路径分隔符",
     "generatingTitle": "正在生成名称…",
     "titleGenerated": "已生成名称",
     "confirmDelete": "确定删除？",

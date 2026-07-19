@@ -292,7 +292,9 @@
       "thModified": "修改时间",
       "thAction": "操作",
       "packTgz": "打包 tgz",
-      "unpack": "解压"
+      "unpack": "解压",
+      "rename": "重命名",
+      "renamePrompt": "新名称"
     },
     "maint": {
       "add": "添加记录",

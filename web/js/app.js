@@ -13751,6 +13751,7 @@ function renderFilesPage() {
                 var mtime = formatFsMtime(it.mtime);
                 var ops = '';
                 var pathEsc = (it.path || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+                ops += '<button type="button" class="btn btn-sm" onclick="event.stopPropagation(); window._fsRename(\'' + pathEsc + '\')">' + esc(t('pages.fs.rename')) + '</button> ';
                 if (it.dir) ops += '<button type="button" class="btn btn-sm" onclick="event.stopPropagation(); window._fsPack(\'' + pathEsc + '\')">' + esc(t('pages.fs.packTgz')) + '</button> ';
                 else if ((it.name || '').endsWith('.tgz') || (it.name || '').endsWith('.tar.gz')) ops += '<button type="button" class="btn btn-sm" onclick="event.stopPropagation(); window._fsUnpack(\'' + pathEsc + '\')">' + esc(t('pages.fs.unpack')) + '</button> ';
                 ops += '<button type="button" class="btn btn-sm btn-danger" onclick="event.stopPropagation(); window._fsDelete(\'' + pathEsc + '\', ' + (it.dir ? '1' : '0') + ')">' + esc(t('common.delete')) + '</button>';
@@ -14025,6 +14026,28 @@ function renderFilesPage() {
             API.fsDelete(path).then(function() { showToast(t('toast.deleted')); doFsTreeRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
         });
     };
+    window._fsRename = function(path) {
+        var oldName = (path || '').split('/').filter(Boolean).pop() || path || '';
+        edgeopsPrompt(t('pages.fs.renamePrompt'), oldName, t('pages.fs.rename')).then(function(newName) {
+            if (newName == null || !String(newName).trim()) return;
+            newName = String(newName).trim();
+            if (newName.indexOf('/') >= 0 || newName.indexOf('\\') >= 0) {
+                showToast(t('toast.nameNoPathSep'), 'error');
+                return;
+            }
+            var parent = pathNorm(path).split('/').slice(0, -1).join('/');
+            var newPath = parent ? (parent + '/' + newName) : newName;
+            if (pathNorm(newPath) === pathNorm(path)) return;
+            API.fsRename(path, newPath).then(function() {
+                showToast(t('toast.renamed'));
+                if (currentFile && pathNorm(currentFile) === pathNorm(path)) {
+                    currentFile = newPath;
+                    openFile(newPath);
+                }
+                doFsTreeRefresh();
+            }).catch(function(err) { showToast(err.message, 'error'); });
+        });
+    };
 
     function showFsTreeCtxMenu(e, path, isDir, name) {
         var menu = document.getElementById('fsTreeCtxMenu');
@@ -14099,6 +14122,7 @@ function renderFilesPage() {
                     }).catch(function(err) { showToast(err.message, 'error'); });
                 });
                 addItem('剪切', function() { fsClipboard = { path: path, cut: true }; showToast(t('toast.cut')); });
+                addItem(t('pages.fs.rename'), function() { window._fsRename(path); });
                 addItem('删除', function() { window._fsDelete(path, 1); });
                 addItem('打包 tgz', function() { window._fsPack(path); });
                 addItem('刷新', function() { doFsTreeRefresh(); });
@@ -14112,6 +14136,7 @@ function renderFilesPage() {
                     }).catch(function(err) { showToast(err.message, 'error'); });
                 });
                 addItem('剪切', function() { fsClipboard = { path: path, cut: true }; showToast(t('toast.cut')); });
+                addItem(t('pages.fs.rename'), function() { window._fsRename(path); });
                 addItem('删除', function() { window._fsDelete(path, 0); });
                 if ((name || '').endsWith('.tgz') || (name || '').endsWith('.tar.gz')) addItem('解压', function() { window._fsUnpack(path); });
                 addItem('刷新', function() { doFsTreeRefresh(); });
