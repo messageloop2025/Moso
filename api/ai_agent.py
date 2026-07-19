@@ -60,12 +60,10 @@ from services.ai_output_language import build_output_language_system_section, re
 from services.user_mcp_client import resolve_chat_tools
 from services.agent_optimize import (
     agent_can_parallel_read_tools,
-    build_lightweight_system_prompt,
     build_system_prompt_for_step,
     compact_turn_tool_messages,
     effective_llm_timeout_retries,
     filter_tools_for_message,
-    is_lightweight_chat_message,
     message_needs_html_artifact,
     message_needs_ssh_terminal_rules,
     resolve_tools_tier,
@@ -73,8 +71,6 @@ from services.agent_optimize import (
     should_enrich_tool_images,
     should_skip_assistant_after_chat,
     should_skip_assistant_ai,
-    slim_context_for_lightweight,
-    should_force_full_chat_prompts,
 )
 
 _USER_MCP_SYSTEM_HINT = (
@@ -418,6 +414,18 @@ _ACTIONABLE_USER_KWS = (
     "systemctl",
     "docker ",
     "kubectl",
+    "curl",
+    "wget",
+    "http",
+    "https",
+    "连通",
+    "探测",
+    "访问",
+    "toolcall",
+    "tool call",
+    "工具调用",
+    "自己执行",
+    "真实执行",
     "upload",
     "download",
     "extract",
@@ -483,6 +491,10 @@ _REPLY_PENDING_MARKERS = (
     "将要",
     "先去",
     "先去",
+    "真实 curl",
+    "发起真实",
+    "输出如下",
+    "结果如下",
     "i will ",
     "i'll ",
     "going to ",
@@ -5904,33 +5916,11 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         except Exception as _attach_exc:  # 附件注入失败不应阻断聊天主流程
             logger.warning("附件注入失败 session_id=%s err=%s", session_id, _attach_exc)
 
-    # 轻量判断：寒暄可用短 system；主机/本机运维会话或已有会话提示词时强制完整提示词
-    lightweight_chat = is_lightweight_chat_message(req.message or "")
-    try:
-        _ctx_hid_force = int(getattr(req, "context_host_id", None) or 0)
-    except (TypeError, ValueError):
-        _ctx_hid_force = 0
-    if lightweight_chat and should_force_full_chat_prompts(
-        session_host_id=session_host_id,
-        session_scope=session_scope,
-        session_prompt=session_prompt,
-        context_host_id=_ctx_hid_force or None,
-    ):
-        logger.info(
-            "disable lightweight fast-path (need full prompts) sid=%s host=%s scope=%s has_session_prompt=%s ctx_host=%s",
-            session_id,
-            session_host_id,
-            session_scope,
-            bool((session_prompt or "").strip()),
-            _ctx_hid_force or None,
-        )
-        lightweight_chat = False
-    if lightweight_chat:
-        system_prompt = (settings.get("ai_system_prompt") or "").strip()
-    else:
-        system_prompt = (settings.get("ai_system_prompt") or "").strip() or _build_system_prompt()
-        system_prompt = _sanitize_system_prompt_local_scope(system_prompt, session_scope=session_scope, user=user)
-        system_prompt = _compact_system_prompt_for_request(system_prompt, req.message)
+    # 轻量寒暄快路径已弃用：始终完整 system + 工具装载（避免误判短句清空 tools）
+    lightweight_chat = False
+    system_prompt = (settings.get("ai_system_prompt") or "").strip() or _build_system_prompt()
+    system_prompt = _sanitize_system_prompt_local_scope(system_prompt, session_scope=session_scope, user=user)
+    system_prompt = _compact_system_prompt_for_request(system_prompt, req.message)
 
     # 只取最近若干条消息，减少大会话时的 DB 与请求体体积（_apply_context_limits 会再截断条数与长度）
     msg_rows = await db.execute_fetchall(
@@ -6132,27 +6122,10 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         has_terminal=terminal_connected,
         context_size=context_size,
     )
-    if lightweight_chat:
-        # 闲聊/问候：大幅压缩资产上下文，避免「在吗」仍携带 70K+ 主机/终端
-        ctx_profile = {
-            "ratios": {
-                "hosts": 0.02,
-                "groups": 0.01,
-                "knowledge": 0.02,
-                "terminal": 0.05,
-                "history": 0.90,
-            },
-            "history_max_messages": 6,
-            "history_recent_full": 2,
-        }
     # 按配置/自动估算的上下文大小分段截断，防止溢出
     hosts_ctx, groups_ctx, host_knowledge_ctx, terminal_ctx, conversation = _apply_context_limits(
         context_size, hosts_ctx, groups_ctx, host_knowledge_ctx, terminal_ctx, conversation, ctx_profile
     )
-    if lightweight_chat:
-        hosts_ctx, groups_ctx, host_knowledge_ctx, terminal_ctx = slim_context_for_lightweight(
-            hosts_ctx, groups_ctx, host_knowledge_ctx, terminal_ctx
-        )
     logger.debug(
         "chat context budget=%s hosts=%s groups=%s knowledge=%s terminal=%s history_msgs=%s ratios=%s",
         context_size,
@@ -6208,21 +6181,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         trial_info=trial_info,
     )
     _user_fs_ctx = _build_user_fs_workspace_block(user)
-    if lightweight_chat:
-        full_system = build_lightweight_system_prompt(
-            product_display=getattr(_config, "PRODUCT_DISPLAY", "毛竹"),
-            session_id=session_id,
-            model_runtime_ctx=_model_runtime_ctx,
-            output_lang_block=output_lang_block,
-            system_prompt_head=system_prompt or "",
-        )
-        logger.info(
-            "lightweight chat fast-path session_id=%s msg_len=%s",
-            session_id,
-            len(req.message or ""),
-        )
-    else:
-        full_system = f"""{system_prompt}
+    full_system = f"""{system_prompt}
 
 {_PROMPT_ENTITY_RESOLUTION_RULES}
 {output_lang_block}
@@ -6250,99 +6209,98 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
 ## 当前用户控制台最近输出（仅供内部参考，切勿在回复中引用或泄露密码；**本段为滚动缓冲的末尾片段，排障与 sudo 判断以最后几行为准**；仅当末尾出现 [sudo] password for / Password: 等提示时才 send_to_terminal 发密码；操作前请对照上方映射确认 slot 与 host_id）
 {terminal_ctx}
 """
-    if not assistant_enabled and not lightweight_chat:
+    if not assistant_enabled:
         full_system += "\n\n**说明**：当前未开启辅助 AI，本轮你的回复结束后对话即暂停；用户可输入「继续」或补充说明以发起下一轮。请在本轮内尽量完成可执行步骤并给出简短总结。\n"
 
     # 识图开关（用户在 AI 配置里勾选）：关闭时前端/后端都不内联 image_url，
     # 给 system prompt 挂一条覆盖式说明，避免 AI 依赖"图已内联"的默认引导而答不上图。
     # （`_vision_on` 已在 context_size 解析处统一计算，此处直接复用）
-    if (not lightweight_chat) and (not _vision_on):
+    if not _vision_on:
         full_system += (
             "\n\n**【覆盖说明 · 识图开关关闭】**："
             "用户已在 AI 配置中关闭「支持图像识别」。本轮 user 消息里不会再内联多模态 `image_url` 段，"
             "只会以 📎 附件清单的形式给出图片 uuid。**你必须**主动调用 `read_chat_attachment(uuid=...)` 获取图片的 `data_url`"
             "（默认就会返回 base64 data URL）再作答；**严禁**仅凭元信息（mime/size）就回答「看不清」。\n"
         )
-    if not lightweight_chat:
-        if low_interaction_pref:
-            full_system += (
-                "\n\n**协作偏好（来自用户近期指令）**：用户希望减少交互、尽量自动完成。"
-                "在不违反安全门禁的前提下，请连续执行可执行步骤；仅在缺少必要条件、执行失败、达到轮次上限、"
-                "或用户明确要求停下时再暂停并反馈。若你已经调用 ask_user_choice 并生成选项卡，本轮必须等待用户选择，"
-                "不要在同一轮继续调用其它工具或代用户选择。"
-                "**例外**：需要用户在**多条互斥方案**中择一才能继续时（见上文「网页会话硬性要求」），"
-                "仍必须调用 `ask_user_choice`，不要用纯 Markdown「方案 A/B」代替按钮。\n"
-            )
-        if not auto_approve_enabled:
-            full_system += (
-                "\n\n**工具确认策略（高优先级）**：当前用户未启用「AI 调用工具无需用户确认」。"
-                "涉及删除、覆盖、重启、批量修改、写文件、创建/删除账号、凭证/权限变更等可能改变系统状态的操作，"
-                "必须先用 ask_user_choice 明确征求用户确认；选项卡发出后本轮结束，等待用户点击或文字回复后才能继续。"
-            )
-        if weak_network:
-            full_system += (
-                "\n\n**弱网优化模式**：已启用。请减少无谓的 get_terminal_buffer / get_terminal_status 往返；"
-                "发命令并需看输出时优先 **terminal_send_and_read**（一次完成发送+等待+读缓冲）。"
-                "大结果用 read_chat_data 按需分页，勿要求模型复述全文。\n"
-            )
-        full_system += _USER_MCP_SYSTEM_HINT
-        try:
-            from services.user_skills_runtime import build_user_skills_system_section
+    if low_interaction_pref:
+        full_system += (
+            "\n\n**协作偏好（来自用户近期指令）**：用户希望减少交互、尽量自动完成。"
+            "在不违反安全门禁的前提下，请连续执行可执行步骤；仅在缺少必要条件、执行失败、达到轮次上限、"
+            "或用户明确要求停下时再暂停并反馈。若你已经调用 ask_user_choice 并生成选项卡，本轮必须等待用户选择，"
+            "不要在同一轮继续调用其它工具或代用户选择。"
+            "**例外**：需要用户在**多条互斥方案**中择一才能继续时（见上文「网页会话硬性要求」），"
+            "仍必须调用 `ask_user_choice`，不要用纯 Markdown「方案 A/B」代替按钮。\n"
+        )
+    if not auto_approve_enabled:
+        full_system += (
+            "\n\n**工具确认策略（高优先级）**：当前用户未启用「AI 调用工具无需用户确认」。"
+            "涉及删除、覆盖、重启、批量修改、写文件、创建/删除账号、凭证/权限变更等可能改变系统状态的操作，"
+            "必须先用 ask_user_choice 明确征求用户确认；选项卡发出后本轮结束，等待用户点击或文字回复后才能继续。"
+        )
+    if weak_network:
+        full_system += (
+            "\n\n**弱网优化模式**：已启用。请减少无谓的 get_terminal_buffer / get_terminal_status 往返；"
+            "发命令并需看输出时优先 **terminal_send_and_read**（一次完成发送+等待+读缓冲）。"
+            "大结果用 read_chat_data 按需分页，勿要求模型复述全文。\n"
+        )
+    full_system += _USER_MCP_SYSTEM_HINT
+    try:
+        from services.user_skills_runtime import build_user_skills_system_section
 
-            _skills_sec = await build_user_skills_system_section(
-                user,
-                session_scope,
-                int(session_row.get("host_id")) if session_row and session_row.get("host_id") else None,
-            )
-            if _skills_sec:
-                full_system += _skills_sec
-        except Exception as _usk_exc:
-            logger.debug("注入 user skills 失败 sid=%s: %s", session_id, _usk_exc)
+        _skills_sec = await build_user_skills_system_section(
+            user,
+            session_scope,
+            int(session_row.get("host_id")) if session_row and session_row.get("host_id") else None,
+        )
+        if _skills_sec:
+            full_system += _skills_sec
+    except Exception as _usk_exc:
+        logger.debug("注入 user skills 失败 sid=%s: %s", session_id, _usk_exc)
 
-        full_system += _chat_mode_system_section(session_chat_mode)
-        _slash_info: dict | None = None
-        _slash_force_allowed_tools: str | None = None
-        try:
-            from services.chat_mode_runtime import (
-                format_slash_skill_injection,
-                resolve_slash_skill_force_load,
-            )
+    full_system += _chat_mode_system_section(session_chat_mode)
+    _slash_info: dict | None = None
+    _slash_force_allowed_tools: str | None = None
+    try:
+        from services.chat_mode_runtime import (
+            format_slash_skill_injection,
+            resolve_slash_skill_force_load,
+        )
 
-            _slash_info = await resolve_slash_skill_force_load(
-                user,
-                req.message or "",
-                session_scope,
-                int(session_host_id) if session_host_id else None,
-            )
-            if _slash_info:
-                full_system += format_slash_skill_injection(_slash_info)
-                _raw_at = (_slash_info.get("allowed_tools") or "").strip()
-                if _raw_at:
-                    _slash_force_allowed_tools = _raw_at
-        except Exception as _slash_exc:
-            logger.debug("斜杠 Skill 注入失败 sid=%s: %s", session_id, _slash_exc)
+        _slash_info = await resolve_slash_skill_force_load(
+            user,
+            req.message or "",
+            session_scope,
+            int(session_host_id) if session_host_id else None,
+        )
+        if _slash_info:
+            full_system += format_slash_skill_injection(_slash_info)
+            _raw_at = (_slash_info.get("allowed_tools") or "").strip()
+            if _raw_at:
+                _slash_force_allowed_tools = _raw_at
+    except Exception as _slash_exc:
+        logger.debug("斜杠 Skill 注入失败 sid=%s: %s", session_id, _slash_exc)
 
-        try:
-            from services.credential_vault import build_credential_vault_system_section
+    try:
+        from services.credential_vault import build_credential_vault_system_section
 
-            _vault_sec = await build_credential_vault_system_section()
-            if _vault_sec:
-                full_system += _vault_sec
-        except Exception as _vault_exc:
-            logger.debug("注入 credential vault 失败 sid=%s: %s", session_id, _vault_exc)
+        _vault_sec = await build_credential_vault_system_section()
+        if _vault_sec:
+            full_system += _vault_sec
+    except Exception as _vault_exc:
+        logger.debug("注入 credential vault 失败 sid=%s: %s", session_id, _vault_exc)
 
-        _focus_hid = session_row.get("host_id") if session_row else None
-        try:
-            _runtime_ctx = await get_runtime_context_for_session(
-                db,
-                session_id,
-                focus_host_id=int(_focus_hid) if _focus_hid else None,
-                output_locale=_output_locale,
-            )
-            if _runtime_ctx:
-                full_system += "\n\n" + _runtime_ctx
-        except Exception as _rtc_exc:
-            logger.debug("注入 session_runtime 失败 sid=%s: %s", session_id, _rtc_exc)
+    _focus_hid = session_row.get("host_id") if session_row else None
+    try:
+        _runtime_ctx = await get_runtime_context_for_session(
+            db,
+            session_id,
+            focus_host_id=int(_focus_hid) if _focus_hid else None,
+            output_locale=_output_locale,
+        )
+        if _runtime_ctx:
+            full_system += "\n\n" + _runtime_ctx
+    except Exception as _rtc_exc:
+        logger.debug("注入 session_runtime 失败 sid=%s: %s", session_id, _rtc_exc)
 
     messages = [{"role": "system", "content": full_system}]
     full_system_base = full_system
@@ -6359,11 +6317,10 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
     messages.append({"role": "user", "content": _user_content})
     # 跨轮视觉记忆：把最近几条 user 历史消息里出现过的 image 附件也内联，让「比较上一张和这张」
     # 这类多轮图像对比能够工作；失败时静默跳过，不阻断主流程。
-    if not lightweight_chat:
-        try:
-            await _inject_history_image_memory(messages, db, user, vision_enabled=_vision_on)
-        except Exception as _vision_hist_exc:  # pragma: no cover - 防御性
-            logger.warning("vision: 历史图片记忆注入失败 session_id=%s err=%s", session_id, _vision_hist_exc)
+    try:
+        await _inject_history_image_memory(messages, db, user, vision_enabled=_vision_on)
+    except Exception as _vision_hist_exc:  # pragma: no cover - 防御性
+        logger.warning("vision: 历史图片记忆注入失败 session_id=%s err=%s", session_id, _vision_hist_exc)
 
     api_url = ensure_chat_completions_url(base_url)
     model = normalize_model(provider, settings.get("ai_model") or "")
@@ -6379,7 +6336,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
 
     async def agent_stream():
         # session_strict_allow_cache 在「总是」分支会写回；须 nonlocal，否则读取即 UnboundLocalError
-        nonlocal messages, session_strict_allow_cache
+        nonlocal messages, session_strict_allow_cache, full_system_base
         yield _sse({"session_id": session_id})
         # 把配额状态告知前端，让 UI 可选地做个提示条（即使前端不处理也不会报错）
         if trial_info is not None:
@@ -6482,7 +6439,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         turn_messages_start = len(messages)
         cached_round_tools: list | None = None
         force_tools_full = False
-        tools_tier_for_stats = "full" if not lightweight_chat else "lightweight"
+        tools_tier_for_stats = "full"
         last_poll_wait_seconds = 0
         llm_ms_total = 0
 
@@ -6620,46 +6577,37 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                     spill_read_retry_used = False
                     for round_idx in range(agent_max_steps):
                         if cached_round_tools is None:
-                            if lightweight_chat and not force_tools_full:
-                                # 闲聊：不装载 tools（含 MCP），避免「在吗」也去探测离线 MCP
-                                tools_tier_for_stats = "lightweight"
-                                cached_round_tools = []
+                            _base_tools = await resolve_chat_tools(
+                                get_tools_for_scope(session_scope, user),
+                                session_scope,
+                                user,
+                                session_host_id,
+                                session_id=session_id,
+                                user_message=last_user_message or req.message or "",
+                            )
+                            tools_tier_for_stats = resolve_tools_tier(
+                                last_user_message or req.message or "",
+                                lightweight=False,
+                                force_full=force_tools_full,
+                                session_scope=session_scope,
+                            )
+                            cached_round_tools = filter_tools_for_message(
+                                _base_tools,
+                                last_user_message or req.message or "",
+                                lightweight=False,
+                                tier=tools_tier_for_stats,
+                                force_full=force_tools_full,
+                                session_scope=session_scope,
+                            )
+                            if tools_tier_for_stats != "full":
                                 logger.info(
-                                    "lightweight skip resolve_chat_tools session_id=%s",
+                                    "tools tier session_id=%s tier=%s tools=%s (from %s) force_full=%s",
                                     session_id,
+                                    tools_tier_for_stats,
+                                    len(cached_round_tools),
+                                    len(_base_tools),
+                                    force_tools_full,
                                 )
-                            else:
-                                _base_tools = await resolve_chat_tools(
-                                    get_tools_for_scope(session_scope, user),
-                                    session_scope,
-                                    user,
-                                    session_host_id,
-                                    session_id=session_id,
-                                    user_message=last_user_message or req.message or "",
-                                )
-                                tools_tier_for_stats = resolve_tools_tier(
-                                    last_user_message or req.message or "",
-                                    lightweight=False,
-                                    force_full=force_tools_full,
-                                    session_scope=session_scope,
-                                )
-                                cached_round_tools = filter_tools_for_message(
-                                    _base_tools,
-                                    last_user_message or req.message or "",
-                                    lightweight=False,
-                                    tier=tools_tier_for_stats,
-                                    force_full=force_tools_full,
-                                    session_scope=session_scope,
-                                )
-                                if tools_tier_for_stats != "full":
-                                    logger.info(
-                                        "tools tier session_id=%s tier=%s tools=%s (from %s) force_full=%s",
-                                        session_id,
-                                        tools_tier_for_stats,
-                                        len(cached_round_tools),
-                                        len(_base_tools),
-                                        force_tools_full,
-                                    )
                         round_tools = cached_round_tools
                         compact_turn_tool_messages(messages, turn_messages_start)
                         if messages and (messages[0].get("role") or "") == "system":
@@ -6724,11 +6672,8 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                         # 无图时内部 fast-path；有图时才走压缩重试阶梯
                                         # （弱网/轻量仍可整关重试）
                                         enable_vision_retries=not (
-                                            lightweight_chat
-                                            or (
-                                                weak_network
-                                                and getattr(_config, "AI_WEAK_NETWORK_SKIP_VISION_RETRIES", True)
-                                            )
+                                            weak_network
+                                            and getattr(_config, "AI_WEAK_NETWORK_SKIP_VISION_RETRIES", True)
                                         ),
                                     ):
                                         await _q.put(("ev", ev))
@@ -8182,7 +8127,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                     ):
                         force_tool_retries += 1
                         # 分层工具可能漏了所需能力：升到 full 再逼一次 tool_call
-                        if not force_tools_full and not lightweight_chat:
+                        if not force_tools_full:
                             force_tools_full = True
                             cached_round_tools = None
                             tools_tier_for_stats = "full"

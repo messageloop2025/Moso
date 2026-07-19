@@ -107,7 +107,7 @@
     "chatModeQa": "问答",
     "chatModeStrict": "严格",
     "strictConfirmTitle": "严格模式 · 执行确认",
-    "strictConfirmHint": "系统在工具执行前拦截了该操作，请确认后继续。此确认由平台发起，不经 AI 文案。",
+    "strictConfirmHint": "系统在工具执行前拦截了该操作，请确认后继续。此确认由平台发起，不经 AI 文案。快捷键：Enter 允许 · Esc 拒绝。",
     "strictConfirmTool": "工具",
     "strictConfirmTarget": "目标",
     "strictConfirmCommand": "命令",

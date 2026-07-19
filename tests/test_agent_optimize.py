@@ -72,20 +72,23 @@ def test_should_skip_assistant_when_weak():
     assert should_skip_assistant_ai(True, False) is True
 
 
-def test_lightweight_chat_detects_greeting():
-    assert is_lightweight_chat_message("在吗") is True
-    assert is_lightweight_chat_message("你好") is True
-    assert is_lightweight_chat_message("hello") is True
-    assert is_lightweight_chat_message("帮我连一下 55 号主机并执行 df -h") is False
-    assert is_lightweight_chat_message("上传 moss.tgz 到服务器") is False
+def test_lightweight_chat_disabled():
+    """轻量寒暄快路径已弃用：任何消息都不得清空 tools。"""
+    from services.agent_optimize import resolve_tools_tier
+
+    for msg in ("在吗", "你好", "hello", "你没发起 toolcall", "真实 curl", "访问一下 moss.pinglan.cc"):
+        assert is_lightweight_chat_message(msg) is False
+    assert "http" in resolve_tools_tier("访问一下 moss.pinglan.cc")
 
 
-def test_lightweight_filters_tools_to_empty():
+def test_lightweight_no_longer_empties_tools():
     tools = [
         {"type": "function", "function": {"name": "list_hosts", "parameters": {}}},
         {"type": "function", "function": {"name": "get_current_time", "parameters": {}}},
     ]
-    assert filter_tools_for_message(tools, "在吗", lightweight=True) == []
+    # 即使误传 lightweight=True，也不得返回空工具集
+    kept = filter_tools_for_message(tools, "在吗", lightweight=True)
+    assert {t["function"]["name"] for t in kept} >= {"list_hosts", "get_current_time"}
     filtered = filter_tools_for_message(tools, "列出主机", lightweight=False)
     names = {t["function"]["name"] for t in filtered}
     assert "list_hosts" in names

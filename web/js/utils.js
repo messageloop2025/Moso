@@ -209,6 +209,7 @@ function edgeopsPageIntroHtml(text, plain) {
 }
 
 var _modalKeyHandler = null;
+var _modalOnCancel = null;
 var EDGEOPS_SAFE_HTML_TAG_NAMES = 'strong|em|b|i|u|code|kbd|mark|span|a|sup|sub';
 var EDGEOPS_SAFE_HTML_TAG_RE = new RegExp('^(?:' + EDGEOPS_SAFE_HTML_TAG_NAMES + ')$', 'i');
 var EDGEOPS_DIAGRAM_LANG_MAP = {
@@ -222,62 +223,227 @@ var EDGEOPS_DIAGRAM_LANG_MAP = {
     xml: 'svg'
 };
 
-function showModal(title, content, footer) {
+/**
+ * @param {string} title
+ * @param {string} content HTML
+ * @param {string} [footer] HTML
+ * @param {{ onCancel?: function, enterSubmitsInput?: boolean, dangerOk?: boolean }} [opts]
+ */
+function showModal(title, content, footer, opts) {
+    opts = opts || {};
     closeModal();
     footer = footer || '';
-    var html = '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">' +
-        '<div class="modal">' +
-        '<div class="modal-header"><h3>' + title + '</h3><button class="modal-close" onclick="closeModal()">&times;</button></div>' +
+    _modalOnCancel = typeof opts.onCancel === 'function' ? opts.onCancel : null;
+    var html = '<div class="modal-overlay" id="edgeopsModalOverlay">' +
+        '<div class="modal" role="dialog" aria-modal="true">' +
+        '<div class="modal-header"><h3>' + title + '</h3>' +
+        '<button type="button" class="modal-close" data-edgeops-modal-cancel="1" aria-label="Close">&times;</button></div>' +
         '<div class="modal-body">' + content + '</div>' +
         (footer ? '<div class="modal-footer">' + footer + '</div>' : '') +
         '</div></div>';
     document.body.insertAdjacentHTML('beforeend', html);
+    var overlay = document.getElementById('edgeopsModalOverlay');
+    if (overlay) {
+        overlay.addEventListener('click', function(e) {
+            if (e.target === overlay) {
+                if (_modalOnCancel) _modalOnCancel();
+                else closeModal();
+            }
+        });
+        var cancelBtns = overlay.querySelectorAll('[data-edgeops-modal-cancel="1"]');
+        Array.prototype.forEach.call(cancelBtns, function(btn) {
+            btn.addEventListener('click', function() {
+                if (_modalOnCancel) _modalOnCancel();
+                else closeModal();
+            });
+        });
+    }
     _modalKeyHandler = function(e) {
-        if (e.key === 'Escape') {
-            closeModal();
-        } else if (e.key === 'Enter') {
+        if (e.isComposing || e.keyCode === 229) return;
+        if (e.key === 'Escape' || e.keyCode === 27) {
+            e.preventDefault();
+            if (_modalOnCancel) _modalOnCancel();
+            else closeModal();
+            return;
+        }
+        if (e.key === 'Enter' || e.keyCode === 13) {
             var active = document.activeElement;
+            var ov = document.getElementById('edgeopsModalOverlay') || document.querySelector('.modal-overlay');
+            if (!ov) return;
+            // prompt：输入框内 Enter = 确定
+            if (opts.enterSubmitsInput && active && ov.contains(active)
+                && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
+                e.preventDefault();
+                var okIn = ov.querySelector('.modal-footer [data-edgeops-modal-ok="1"]')
+                    || ov.querySelector('.modal-footer .btn-primary')
+                    || ov.querySelector('.modal-footer .btn-danger');
+                if (okIn) okIn.click();
+                return;
+            }
             if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT')) return;
-            var overlay = document.querySelector('.modal-overlay');
-            if (!overlay) return;
-            if (active && overlay.contains(active) && active.tagName === 'BUTTON') {
+            e.preventDefault();
+            if (active && ov.contains(active) && active.tagName === 'BUTTON' && !active.getAttribute('data-edgeops-modal-cancel')) {
                 active.click();
                 return;
             }
-            var primary = overlay.querySelector('.modal-footer .btn-danger') || overlay.querySelector('.modal-footer .btn-primary');
+            var primary = ov.querySelector('.modal-footer [data-edgeops-modal-ok="1"]')
+                || ov.querySelector('.modal-footer .btn-danger')
+                || ov.querySelector('.modal-footer .btn-primary');
             if (primary) primary.click();
         }
     };
-    document.addEventListener('keydown', _modalKeyHandler);
+    document.addEventListener('keydown', _modalKeyHandler, true);
 }
 
 function closeModal() {
     if (_modalKeyHandler) {
-        document.removeEventListener('keydown', _modalKeyHandler);
+        document.removeEventListener('keydown', _modalKeyHandler, true);
         _modalKeyHandler = null;
     }
+    _modalOnCancel = null;
     document.querySelectorAll('.modal-overlay').forEach(function(el) { el.remove(); });
 }
 
-function showConfirm(title, message) {
+/** 确认框：Enter=确定，Esc/取消=否。返回 Promise&lt;boolean&gt; */
+function showConfirm(title, message, opts) {
+    opts = opts || {};
     return new Promise(function(resolve) {
+        var settled = false;
+        function finish(value) {
+            if (settled) return;
+            settled = true;
+            closeModal();
+            resolve(!!value);
+        }
         var btnCancel = (typeof t === 'function' ? t('common.cancel') : 'Cancel');
-        var btnOk = (typeof t === 'function' ? t('common.confirm') : 'Confirm');
-        showModal(title, '<p>' + message + '</p>',
-            '<button class="btn" onclick="window._confirmResolve(false)">' + btnCancel + '</button>' +
-            ' <button class="btn btn-danger" onclick="window._confirmResolve(true)">' + btnOk + '</button>');
-        window._confirmResolve = function(value) {
+        var btnOk = opts.okLabel || (typeof t === 'function' ? t('common.confirm') : 'Confirm');
+        var okClass = opts.danger === false ? 'btn btn-primary' : 'btn btn-danger';
+        var msgHtml = '<p class="edgeops-dialog-message" style="white-space:pre-wrap;margin:0;line-height:1.5">'
+            + esc(String(message == null ? '' : message)) + '</p>';
+        var hint = '<p class="edgeops-dialog-hotkeys" style="margin:10px 0 0;font-size:12px;opacity:.55">'
+            + esc(typeof t === 'function' ? t('common.dialogHotkeysConfirm') : 'Enter confirm · Esc cancel')
+            + '</p>';
+        showModal(
+            esc(String(title || (typeof t === 'function' ? t('common.confirm') : 'Confirm'))),
+            msgHtml + hint,
+            '<button type="button" class="btn" data-edgeops-modal-cancel="1">' + esc(btnCancel) + '</button>'
+                + ' <button type="button" class="' + okClass + '" data-edgeops-modal-ok="1" id="edgeopsConfirmOk">'
+                + esc(btnOk) + '</button>',
+            { onCancel: function() { finish(false); } }
+        );
+        var okBtn = document.getElementById('edgeopsConfirmOk');
+        if (okBtn) okBtn.onclick = function() { finish(true); };
+        setTimeout(function() {
+            if (okBtn) try { okBtn.focus(); } catch (_e) {}
+        }, 0);
+    });
+}
+
+/** 输入框：Enter=确定，Esc/取消=null。返回 Promise&lt;string|null&gt; */
+function showPrompt(title, message, defaultValue, opts) {
+    opts = opts || {};
+    return new Promise(function(resolve) {
+        var settled = false;
+        function finish(value) {
+            if (settled) return;
+            settled = true;
             closeModal();
             resolve(value);
-        };
+        }
+        var btnCancel = (typeof t === 'function' ? t('common.cancel') : 'Cancel');
+        var btnOk = opts.okLabel || (typeof t === 'function' ? t('common.ok') : 'OK');
+        var inputId = 'edgeopsPromptInput';
+        var msgHtml = message
+            ? ('<p class="edgeops-dialog-message" style="white-space:pre-wrap;margin:0 0 10px;line-height:1.5">'
+                + esc(String(message)) + '</p>')
+            : '';
+        var inputHtml = '<input class="form-control" id="' + inputId + '" type="'
+            + (opts.password ? 'password' : 'text') + '" value="'
+            + esc(String(defaultValue == null ? '' : defaultValue)) + '"'
+            + (opts.placeholder ? (' placeholder="' + esc(String(opts.placeholder)) + '"') : '')
+            + ' autocomplete="' + (opts.password ? 'new-password' : 'off') + '">';
+        var hint = '<p class="edgeops-dialog-hotkeys" style="margin:10px 0 0;font-size:12px;opacity:.55">'
+            + esc(typeof t === 'function' ? t('common.dialogHotkeysPrompt') : 'Enter OK · Esc cancel')
+            + '</p>';
+        showModal(
+            esc(String(title || (typeof t === 'function' ? t('common.input') : 'Input'))),
+            msgHtml + inputHtml + hint,
+            '<button type="button" class="btn" data-edgeops-modal-cancel="1">' + esc(btnCancel) + '</button>'
+                + ' <button type="button" class="btn btn-primary" data-edgeops-modal-ok="1" id="edgeopsPromptOk">'
+                + esc(btnOk) + '</button>',
+            { onCancel: function() { finish(null); }, enterSubmitsInput: true }
+        );
+        function submitOk() {
+            var inp = document.getElementById(inputId);
+            var v = inp ? String(inp.value) : '';
+            if (opts.trim !== false) v = v.trim();
+            if (!opts.allowEmpty && !v) {
+                if (inp) try { inp.focus(); } catch (_f) {}
+                return;
+            }
+            finish(v);
+        }
+        var okBtn = document.getElementById('edgeopsPromptOk');
+        if (okBtn) okBtn.onclick = function() { submitOk(); };
         setTimeout(function() {
-            var overlay = document.querySelector('.modal-overlay');
-            if (overlay) {
-                var primary = overlay.querySelector('.modal-footer .btn-danger') || overlay.querySelector('.modal-footer .btn-primary');
-                if (primary) primary.focus();
+            var inp = document.getElementById(inputId);
+            if (inp) {
+                try {
+                    inp.focus();
+                    if (typeof inp.select === 'function') inp.select();
+                } catch (_e) {}
             }
         }, 0);
     });
+}
+
+/** 提示框：Enter/Esc 关闭。返回 Promise&lt;void&gt; */
+function showAlert(title, message) {
+    return new Promise(function(resolve) {
+        var settled = false;
+        function finish() {
+            if (settled) return;
+            settled = true;
+            closeModal();
+            resolve();
+        }
+        var btnOk = (typeof t === 'function' ? t('common.ok') : 'OK');
+        var msgHtml = '<p class="edgeops-dialog-message" style="white-space:pre-wrap;margin:0;line-height:1.5">'
+            + esc(String(message == null ? '' : message)) + '</p>';
+        var hint = '<p class="edgeops-dialog-hotkeys" style="margin:10px 0 0;font-size:12px;opacity:.55">'
+            + esc(typeof t === 'function' ? t('common.dialogHotkeysAlert') : 'Enter / Esc to close')
+            + '</p>';
+        showModal(
+            esc(String(title || (typeof t === 'function' ? t('common.tip') : 'Notice'))),
+            msgHtml + hint,
+            '<button type="button" class="btn btn-primary" data-edgeops-modal-ok="1" id="edgeopsAlertOk">'
+                + esc(btnOk) + '</button>',
+            { onCancel: finish }
+        );
+        var okBtn = document.getElementById('edgeopsAlertOk');
+        if (okBtn) okBtn.onclick = function() { finish(); };
+        setTimeout(function() {
+            if (okBtn) try { okBtn.focus(); } catch (_e) {}
+        }, 0);
+    });
+}
+
+/** 兼容原生 confirm(msg)：仅 message。Enter=是 Esc=否 */
+function edgeopsConfirm(message, title) {
+    return showConfirm(
+        title || (typeof t === 'function' ? t('common.confirm') : '确认'),
+        message
+    );
+}
+
+/** 兼容原生 prompt(msg, default)：取消返回 null */
+function edgeopsPrompt(message, defaultValue, title, opts) {
+    return showPrompt(
+        title || (typeof t === 'function' ? t('common.input') : '输入'),
+        message,
+        defaultValue,
+        opts
+    );
 }
 
 function isAdmin() {

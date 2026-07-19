@@ -107,7 +107,7 @@
     "chatModeQa": "Q&A",
     "chatModeStrict": "Strict",
     "strictConfirmTitle": "Strict mode · Confirm execution",
-    "strictConfirmHint": "The platform intercepted this tool call before execution. Confirm to continue. This prompt is system-driven, not AI chat text.",
+    "strictConfirmHint": "The platform intercepted this tool call before execution. Confirm to continue. This prompt is system-driven, not AI chat text. Shortcuts: Enter = Allow · Esc = Deny.",
     "strictConfirmTool": "Tool",
     "strictConfirmTarget": "Target",
     "strictConfirmCommand": "Command",

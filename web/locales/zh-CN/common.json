@@ -43,6 +43,11 @@
     "exportSessionTitle": "会话",
     "exportRoleUser": "用户",
     "exportRoleAssistant": "助手",
-    "exportedAt": "导出时间："
+    "exportedAt": "导出时间：",
+    "input": "输入",
+    "tip": "提示",
+    "dialogHotkeysConfirm": "快捷键：Enter 确定 · Esc 取消",
+    "dialogHotkeysPrompt": "快捷键：Enter 确定 · Esc 取消",
+    "dialogHotkeysAlert": "快捷键：Enter / Esc 关闭"
   }
 }

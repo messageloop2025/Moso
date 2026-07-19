@@ -9,7 +9,7 @@ PRODUCT_NAME_ZH = "毛竹"
 PRODUCT_NAME_EN = "Moso"
 PRODUCT_DISPLAY = f"{PRODUCT_NAME_ZH}（{PRODUCT_NAME_EN}）"  # AI 提示词中的产品指称
 
-VERSION = os.getenv("EDGEOPS_VERSION", "1.8.0")
+VERSION = os.getenv("EDGEOPS_VERSION", "1.8.2")
 
 # 数据库 / Database
 DATABASE_PATH = os.getenv("EDGEOPS_DB", str(BASE_DIR / "edgeops.db"))
@@ -73,10 +73,10 @@ AGENT_TURN_TOOL_KEEP_PAIRS = max(1, int(os.getenv("EDGEOPS_AGENT_TURN_TOOL_KEEP_
 AGENT_SYSTEM_STRIP_AFTER_STEP = max(0, int(os.getenv("EDGEOPS_AGENT_SYSTEM_STRIP_AFTER_STEP", "1")))
 # 只读工具同批并行（无依赖时）
 AGENT_PARALLEL_READ_TOOLS = os.getenv("EDGEOPS_AGENT_PARALLEL_READ_TOOLS", "true").strip().lower() in ("1", "true", "yes")
-# 轻量对话快路径：问候/闲聊不注入主机列表与全量 tools（显著降低 TTFT）
-AGENT_LIGHTWEIGHT_CHAT = os.getenv("EDGEOPS_AGENT_LIGHTWEIGHT_CHAT", "true").strip().lower() in ("1", "true", "yes")
-# 轻量对话不传 tools（tool_choice 等效 none）；false 时仍传极小工具集
-AGENT_LIGHTWEIGHT_NO_TOOLS = os.getenv("EDGEOPS_AGENT_LIGHTWEIGHT_NO_TOOLS", "true").strip().lower() in ("1", "true", "yes")
+# 轻量对话快路径已弃用（会误判运维短句并清空 tools，导致假执行）。恒为 False；环境变量不再开启。
+AGENT_LIGHTWEIGHT_CHAT = False
+# 遗留开关：轻量路径已关闭，此项无效
+AGENT_LIGHTWEIGHT_NO_TOOLS = False
 # 无 tool_call 的闲聊回复后跳过辅助 AI（避免「在吗」打两轮 LLM）
 AGENT_SKIP_ASSISTANT_ON_CHAT = os.getenv("EDGEOPS_AGENT_SKIP_ASSISTANT_ON_CHAT", "true").strip().lower() in ("1", "true", "yes")
 # 运维工具分层：按意图只传 core/terminal/fs/http 子集（false=始终全量）

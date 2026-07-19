@@ -43,6 +43,11 @@
     "exportSessionTitle": "Chat",
     "exportRoleUser": "User",
     "exportRoleAssistant": "Assistant",
-    "exportedAt": "Exported: "
+    "exportedAt": "Exported: ",
+    "input": "Input",
+    "tip": "Notice",
+    "dialogHotkeysConfirm": "Shortcuts: Enter confirm · Esc cancel",
+    "dialogHotkeysPrompt": "Shortcuts: Enter OK · Esc cancel",
+    "dialogHotkeysAlert": "Shortcuts: Enter / Esc to close"
   }
 }

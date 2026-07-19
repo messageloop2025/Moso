@@ -1594,6 +1594,10 @@ function edgeopsIsStrictConfirmUiAction(ua) {
 function edgeopsCloseStrictConfirmModal() {
     var el = document.getElementById('edgeopsStrictConfirmOverlay');
     if (el) {
+        if (typeof el._edgeopsStrictKeyHandler === 'function') {
+            try { document.removeEventListener('keydown', el._edgeopsStrictKeyHandler, true); } catch (_k) {}
+            el._edgeopsStrictKeyHandler = null;
+        }
         try { el.remove(); } catch (_e) {}
     }
 }
@@ -1652,7 +1656,7 @@ function edgeopsShowStrictConfirmModal(ua, sessionId, opts) {
 
     var hint = document.createElement('p');
     hint.className = 'edgeops-strict-confirm-hint';
-    hint.textContent = (typeof t === 'function' ? t('hostAi.strictConfirmHint') : '系统拦截了即将执行的操作，请确认后继续。此确认不经 AI 文案。');
+    hint.textContent = (typeof t === 'function' ? t('hostAi.strictConfirmHint') : '系统拦截了即将执行的操作，请确认后继续。此确认不经 AI 文案。快捷键：Enter 允许 · Esc 拒绝。');
     body.appendChild(hint);
 
     function addRow(label, value, isPre) {
@@ -1728,12 +1732,38 @@ function edgeopsShowStrictConfirmModal(ua, sessionId, opts) {
             + (style === 'danger' ? ' btn-danger' : '')
             + (style === 'success' ? ' btn-success' : '');
         btn.textContent = lab;
+        if (oid === 'allow') {
+            btn.title = lab + ' (Enter)';
+            btn.setAttribute('data-hotkey', 'Enter');
+        } else if (oid === 'deny') {
+            btn.title = lab + ' (Esc)';
+            btn.setAttribute('data-hotkey', 'Esc');
+        }
         btn.onclick = function() { submit(oid, lab); };
         actions.appendChild(btn);
     });
     modal.appendChild(actions);
     overlay.appendChild(modal);
-    // 禁止点遮罩关闭：必须显式选择
+    // 禁止点遮罩关闭：必须显式选择；Enter=允许，Esc=拒绝
+    function onStrictKey(ev) {
+        if (locked || !document.getElementById('edgeopsStrictConfirmOverlay')) return;
+        if (ev.isComposing || ev.keyCode === 229) return;
+        var key = ev.key || '';
+        if (key === 'Escape' || ev.keyCode === 27) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            submit('deny', strictChoiceLabel('deny'));
+            return;
+        }
+        if (key === 'Enter' || ev.keyCode === 13) {
+            // 避免在「总是」等按钮上按 Enter 误触原生激活；统一为允许
+            ev.preventDefault();
+            ev.stopPropagation();
+            submit('allow', strictChoiceLabel('allow'));
+        }
+    }
+    overlay._edgeopsStrictKeyHandler = onStrictKey;
+    document.addEventListener('keydown', onStrictKey, true);
     document.body.appendChild(overlay);
     try {
         var focusBtn = actions.querySelector('.style-primary') || actions.querySelector('button');
@@ -6913,15 +6943,17 @@ function renderHostsList() {
     if (activeHostsClearAllBtn) activeHostsClearAllBtn.onclick = function() {
         var list = getActiveHostsList();
         if (!list.length) return;
-        if (!confirm(t('confirm.clearAllActiveHosts'))) return;
-        list.forEach(function(h) { Router.clearPageCache('/hosts/' + h.id); });
-        clearActiveHosts();
-        refreshActiveHostsListDOM();
-        if (Router.currentPath && Router.currentPath !== '/hosts' && Router.currentPath.indexOf('/hosts/') === 0) {
-            Router._skipCacheForPath = Router.currentPath;
-            Router.navigate('/hosts');
-        }
-        showToast(t('toast.allCleared'));
+        edgeopsConfirm(t('confirm.clearAllActiveHosts')).then(function(ok) {
+            if (!ok) return;
+            list.forEach(function(h) { Router.clearPageCache('/hosts/' + h.id); });
+            clearActiveHosts();
+            refreshActiveHostsListDOM();
+            if (Router.currentPath && Router.currentPath !== '/hosts' && Router.currentPath.indexOf('/hosts/') === 0) {
+                Router._skipCacheForPath = Router.currentPath;
+                Router.navigate('/hosts');
+            }
+            showToast(t('toast.allCleared'));
+        });
     };
     var sidebarTab = document.getElementById('hostsSidebarTabActive');
     var sidebar = document.getElementById('hostsLeftSidebar');
@@ -7220,16 +7252,19 @@ function showHostTagsManageModal(onChanged) {
     };
 
     window._editHostTag = function(id, name, color) {
-        var nextName = prompt(t('forms.hostTag.promptName'), name || '');
-        if (nextName == null) return;
-        nextName = String(nextName).trim();
-        if (!nextName) { showToast(t('toast.tagNameEmpty'), 'error'); return; }
-        var nextColor = prompt(t('forms.hostTag.promptColor'), color || '') || '';
-        API.updateHostTag(id, { name: nextName, color: String(nextColor).trim() }).then(function() {
-            showToast(t('toast.tagUpdated'));
-            loadTags();
-            if (typeof onChanged === 'function') onChanged();
-        }).catch(function(err) { showToast(err.message || t('toast.updateFailed'), 'error'); });
+        edgeopsPrompt(t('forms.hostTag.promptName'), name || '').then(function(nextName) {
+            if (nextName == null) return;
+            nextName = String(nextName).trim();
+            if (!nextName) { showToast(t('toast.tagNameEmpty'), 'error'); return; }
+            edgeopsPrompt(t('forms.hostTag.promptColor'), color || '', undefined, { allowEmpty: true }).then(function(nextColor) {
+                if (nextColor == null) nextColor = '';
+                API.updateHostTag(id, { name: nextName, color: String(nextColor).trim() }).then(function() {
+                    showToast(t('toast.tagUpdated'));
+                    loadTags();
+                    if (typeof onChanged === 'function') onChanged();
+                }).catch(function(err) { showToast(err.message || t('toast.updateFailed'), 'error'); });
+            });
+        });
     };
 
     window._deleteHostTag = function(id) {
@@ -9328,14 +9363,38 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
                             });
                         };
                     })();
-                    node.querySelector('.chat-history-item-delete').onclick = function(e) { e.stopPropagation(); if (!confirm(t('toast.confirmDelete'))) return; API.deleteAISession(id).then(function() { if (sessionId === id) { sessionId = null; document.getElementById('hostAiMessages').innerHTML = ''; } loadSessions(); showToast(t('toast.deleted')); }).catch(function(err) { showToast(err.message, 'error'); }); };
+                    node.querySelector('.chat-history-item-delete').onclick = function(e) {
+                        e.stopPropagation();
+                        edgeopsConfirm(t('toast.confirmDelete')).then(function(ok) {
+                            if (!ok) return;
+                            API.deleteAISession(id).then(function() {
+                                if (sessionId === id) { sessionId = null; document.getElementById('hostAiMessages').innerHTML = ''; }
+                                loadSessions();
+                                showToast(t('toast.deleted'));
+                            }).catch(function(err) { showToast(err.message, 'error'); });
+                        });
+                    };
                     node.onclick = function(ev) { if (ev.target.closest('button') || ev.target.classList.contains('chat-history-item-title-edit')) return; sessionId = id; loadSession(id); list.querySelectorAll('.chat-history-item').forEach(function(n) { n.classList.remove('active'); }); node.classList.add('active'); };
                 });
             }
             var refreshBtn = document.getElementById('hostAiRefreshSessions');
             if (refreshBtn) refreshBtn.onclick = function() { loadSessions(); showToast(t('toast.refreshed')); };
             var clearBtn = document.getElementById('hostAiClearSessions');
-            if (clearBtn) { clearBtn.disabled = !rawSessions.length; clearBtn.onclick = function() { if (!rawSessions.length) return; if (!confirm(t('confirm.clearHostAllSessions'))) return; API.clearAISessions(hostId).then(function() { sessionId = null; document.getElementById('hostAiMessages').innerHTML = ''; loadSessions(); showToast(t('toast.cleared')); }).catch(function(err) { showToast(err.message, 'error'); }); }; }
+            if (clearBtn) {
+                clearBtn.disabled = !rawSessions.length;
+                clearBtn.onclick = function() {
+                    if (!rawSessions.length) return;
+                    edgeopsConfirm(t('confirm.clearHostAllSessions')).then(function(ok) {
+                        if (!ok) return;
+                        API.clearAISessions(hostId).then(function() {
+                            sessionId = null;
+                            document.getElementById('hostAiMessages').innerHTML = '';
+                            loadSessions();
+                            showToast(t('toast.cleared'));
+                        }).catch(function(err) { showToast(err.message, 'error'); });
+                    });
+                };
+            }
             if (hostAiFirstLoad && rawSessions.length) {
                 hostAiFirstLoad = false;
                 var toSummarize = null;
@@ -9399,11 +9458,13 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
     });
     document.getElementById('hostAiClearChat').onclick = function() {
         if (!sessionId) { showToast(t('toast.selectOrCreateSession')); return; }
-        if (!confirm(t('confirm.clearSessionChat'))) return;
-        API.clearSessionMessages(sessionId, { clear: 'all' }).then(function() {
-            loadSession(sessionId);
-            showToast(t('toast.chatCleared'));
-        }).catch(function(err) { showToast(err.message || t('toast.clearFailed'), 'error'); });
+        edgeopsConfirm(t('confirm.clearSessionChat')).then(function(ok) {
+            if (!ok) return;
+            API.clearSessionMessages(sessionId, { clear: 'all' }).then(function() {
+                loadSession(sessionId);
+                showToast(t('toast.chatCleared'));
+            }).catch(function(err) { showToast(err.message || t('toast.clearFailed'), 'error'); });
+        });
     };
     (function() {
         var modal = document.getElementById('hostAiSessionPromptModal');
@@ -10185,8 +10246,10 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
                         if (payload.hostId !== hostId) return;
                         var destDir = it.dir ? it.path : (it.path.replace(/\/[^/]+$/, '') || '/');
                         if (destDir === payload.path || (payload.path + '/').indexOf(destDir + '/') === 0) { showToast(t('toast.cannotMoveIntoSelf'), 'error'); return; }
-                        if (!confirm(t('confirm.moveConfirm'))) return;
-                        API.remoteFsCopy(hostId, payload.path, destDir, true).then(function() { showToast(t('toast.moved')); doHostRemoteFsRefresh(); }).catch(function(err) { showToast(err.message || t('toast.moveFailed'), 'error'); });
+                        edgeopsConfirm(t('confirm.moveConfirm')).then(function(ok) {
+                            if (!ok) return;
+                            API.remoteFsCopy(hostId, payload.path, destDir, true).then(function() { showToast(t('toast.moved')); doHostRemoteFsRefresh(); }).catch(function(err) { showToast(err.message || t('toast.moveFailed'), 'error'); });
+                        });
                     } catch (e) {}
                 });
                 ul.appendChild(li);
@@ -10303,16 +10366,18 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         var destDir = isDir ? path : (path.replace(/\/[^/]+$/, '') || '/');
         var baseDir = destDir === '/' ? '' : destDir;
         addItem('新建目录', function() {
-            var name = prompt('目录名');
-            if (!name || !name.trim()) return;
-            var newPath = (baseDir ? baseDir + '/' : '/') + name.trim();
-            API.remoteFsMkdir(hostId, newPath).then(function() { showToast(t('toast.fileCreated')); doHostRemoteFsRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+            edgeopsPrompt('目录名').then(function(name) {
+                if (!name || !name.trim()) return;
+                var newPath = (baseDir ? baseDir + '/' : '/') + name.trim();
+                API.remoteFsMkdir(hostId, newPath).then(function() { showToast(t('toast.fileCreated')); doHostRemoteFsRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+            });
         });
         addItem('新建文件', function() {
-            var name = prompt('文件名');
-            if (!name || !name.trim()) return;
-            var newPath = (baseDir ? baseDir + '/' : '/') + name.trim();
-            API.remoteFsWrite(hostId, newPath, '').then(function() { showToast(t('toast.fileCreated')); doHostRemoteFsRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+            edgeopsPrompt('文件名').then(function(name) {
+                if (!name || !name.trim()) return;
+                var newPath = (baseDir ? baseDir + '/' : '/') + name.trim();
+                API.remoteFsWrite(hostId, newPath, '').then(function() { showToast(t('toast.fileCreated')); doHostRemoteFsRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+            });
         });
         addItem('复制', function() { hostRemoteFsClipboard = { hostId: hostId, path: path, cut: false }; showToast(t('toast.copiedToClipboard')); });
         addItem('粘贴', function() {
@@ -10338,17 +10403,19 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         });
         addItem('改名', function() {
             var name = path.split('/').filter(Boolean).pop() || path;
-            var newName = prompt('新名称', name);
-            if (newName == null || newName.trim() === '') return;
-            var parent = path.replace(/\/[^/]+$/, '') || '/';
-            var newPath = (parent === '/' ? '/' : parent + '/') + newName.trim();
-            if (newPath === path) return;
-            API.remoteFsRename(hostId, path, newPath).then(function() { showToast(t('toast.renamed')); doHostRemoteFsRefresh(); if (hostAiRemoteFsCurrentFile === path) { hostAiRemoteFsCurrentFile = newPath; loadHostRemoteFsPreview(newPath); } }).catch(function(err) { showToast(err.message, 'error'); });
+            edgeopsPrompt('新名称', name).then(function(newName) {
+                if (newName == null || newName.trim() === '') return;
+                var parent = path.replace(/\/[^/]+$/, '') || '/';
+                var newPath = (parent === '/' ? '/' : parent + '/') + newName.trim();
+                if (newPath === path) return;
+                API.remoteFsRename(hostId, path, newPath).then(function() { showToast(t('toast.renamed')); doHostRemoteFsRefresh(); if (hostAiRemoteFsCurrentFile === path) { hostAiRemoteFsCurrentFile = newPath; loadHostRemoteFsPreview(newPath); } }).catch(function(err) { showToast(err.message, 'error'); });
+            });
         });
         addItem('打包', function() {
-            var archivePath = prompt('归档路径（如 /tmp/out.tar.gz）', (path.replace(/\/[^/]+$/, '') || '/') + '/' + (path.split('/').filter(Boolean).pop() || 'out') + '.tar.gz');
-            if (!archivePath || !archivePath.trim()) return;
-            API.executeHost(hostId, 'tar -czvf ' + escSh(archivePath.trim()) + ' ' + escSh(path), 60).then(function() { showToast(t('toast.archived')); doHostRemoteFsRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+            edgeopsPrompt('归档路径（如 /tmp/out.tar.gz）', (path.replace(/\/[^/]+$/, '') || '/') + '/' + (path.split('/').filter(Boolean).pop() || 'out') + '.tar.gz').then(function(archivePath) {
+                if (!archivePath || !archivePath.trim()) return;
+                API.executeHost(hostId, 'tar -czvf ' + escSh(archivePath.trim()) + ' ' + escSh(path), 60).then(function() { showToast(t('toast.archived')); doHostRemoteFsRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+            });
         });
         if (!isDir && isRemoteUnpackSupported(path)) addItem('解压', function() {
             var parentDir = path.replace(/\/[^/]+$/, '') || '/';
@@ -11404,11 +11471,13 @@ function renderAIPage() {
                         if (payload.hostId !== hostId) return;
                         var destDir = it.dir ? it.path : (it.path.replace(/\/[^/]+$/, '') || '/');
                         if (destDir === payload.path || (payload.path + '/').indexOf(destDir + '/') === 0) { showToast(t('toast.cannotMoveIntoSelf'), 'error'); return; }
-                        if (!confirm(t('confirm.moveConfirm'))) return;
-                        API.remoteFsCopy(parseInt(hostId, 10), payload.path, destDir, true).then(function() {
-                            showToast(t('toast.moved'));
-                            doAiRemoteFsRefresh();
-                        }).catch(function(err) { showToast(err.message || t('toast.moveFailed'), 'error'); });
+                        edgeopsConfirm(t('confirm.moveConfirm')).then(function(ok) {
+                            if (!ok) return;
+                            API.remoteFsCopy(parseInt(hostId, 10), payload.path, destDir, true).then(function() {
+                                showToast(t('toast.moved'));
+                                doAiRemoteFsRefresh();
+                            }).catch(function(err) { showToast(err.message || t('toast.moveFailed'), 'error'); });
+                        });
                     } catch (e) {}
                 });
                 ul.appendChild(li);
@@ -11539,22 +11608,24 @@ function renderAIPage() {
         var destDir = isDir ? path : (path.replace(/\/[^/]+$/, '') || '/');
         var baseDir = destDir === '/' ? '' : destDir;
         addItem('新建目录', function() {
-            var name = prompt('目录名');
-            if (!name || !name.trim()) return;
-            var newPath = (baseDir ? baseDir + '/' : '/') + name.trim();
-            API.remoteFsMkdir(hostId, newPath).then(function() {
-                showToast(t('toast.fileCreated'));
-                doAiRemoteFsRefresh();
-            }).catch(function(err) { showToast(err.message, 'error'); });
+            edgeopsPrompt('目录名').then(function(name) {
+                if (!name || !name.trim()) return;
+                var newPath = (baseDir ? baseDir + '/' : '/') + name.trim();
+                API.remoteFsMkdir(hostId, newPath).then(function() {
+                    showToast(t('toast.fileCreated'));
+                    doAiRemoteFsRefresh();
+                }).catch(function(err) { showToast(err.message, 'error'); });
+            });
         });
         addItem('新建文件', function() {
-            var name = prompt('文件名');
-            if (!name || !name.trim()) return;
-            var newPath = (baseDir ? baseDir + '/' : '/') + name.trim();
-            API.remoteFsWrite(hostId, newPath, '').then(function() {
-                showToast(t('toast.fileCreated'));
-                doAiRemoteFsRefresh();
-            }).catch(function(err) { showToast(err.message, 'error'); });
+            edgeopsPrompt('文件名').then(function(name) {
+                if (!name || !name.trim()) return;
+                var newPath = (baseDir ? baseDir + '/' : '/') + name.trim();
+                API.remoteFsWrite(hostId, newPath, '').then(function() {
+                    showToast(t('toast.fileCreated'));
+                    doAiRemoteFsRefresh();
+                }).catch(function(err) { showToast(err.message, 'error'); });
+            });
         });
         addItem('复制', function() { aiRemoteFsClipboard = { hostId: hostId, path: path, cut: false }; showToast(t('toast.copiedToClipboard')); });
         addItem('粘贴', function() {
@@ -11580,21 +11651,23 @@ function renderAIPage() {
         });
         addItem('改名', function() {
             var name = path.split('/').filter(Boolean).pop() || path;
-            var newName = prompt('新名称', name);
-            if (newName == null || newName.trim() === '') return;
-            var parent = path.replace(/\/[^/]+$/, '') || '/';
-            var newPath = (parent === '/' ? '/' : parent + '/') + newName.trim();
-            if (newPath === path) return;
-            API.remoteFsRename(hostId, path, newPath).then(function() {
-                showToast(t('toast.renamed'));
-                doAiRemoteFsRefresh();
-                if (aiRemoteFsCurrentFile === path) { aiRemoteFsCurrentFile = newPath; loadAiRemoteFsPreview(newPath); }
-            }).catch(function(err) { showToast(err.message, 'error'); });
+            edgeopsPrompt('新名称', name).then(function(newName) {
+                if (newName == null || newName.trim() === '') return;
+                var parent = path.replace(/\/[^/]+$/, '') || '/';
+                var newPath = (parent === '/' ? '/' : parent + '/') + newName.trim();
+                if (newPath === path) return;
+                API.remoteFsRename(hostId, path, newPath).then(function() {
+                    showToast(t('toast.renamed'));
+                    doAiRemoteFsRefresh();
+                    if (aiRemoteFsCurrentFile === path) { aiRemoteFsCurrentFile = newPath; loadAiRemoteFsPreview(newPath); }
+                }).catch(function(err) { showToast(err.message, 'error'); });
+            });
         });
         addItem('打包', function() {
-            var archivePath = prompt('归档路径（如 /tmp/out.tar.gz）', (path.replace(/\/[^/]+$/, '') || '/') + '/' + (path.split('/').filter(Boolean).pop() || 'out') + '.tar.gz');
-            if (!archivePath || !archivePath.trim()) return;
-            API.executeHost(hostId, 'tar -czvf ' + escShAi(archivePath.trim()) + ' ' + escShAi(path), 60).then(function() { showToast(t('toast.archived')); doAiRemoteFsRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+            edgeopsPrompt('归档路径（如 /tmp/out.tar.gz）', (path.replace(/\/[^/]+$/, '') || '/') + '/' + (path.split('/').filter(Boolean).pop() || 'out') + '.tar.gz').then(function(archivePath) {
+                if (!archivePath || !archivePath.trim()) return;
+                API.executeHost(hostId, 'tar -czvf ' + escShAi(archivePath.trim()) + ' ' + escShAi(path), 60).then(function() { showToast(t('toast.archived')); doAiRemoteFsRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+            });
         });
         if (!isDir && isRemoteUnpackSupported(path)) addItem('解压', function() {
             var parentDir = path.replace(/\/[^/]+$/, '') || '/';
@@ -11729,12 +11802,14 @@ function renderAIPage() {
                     })();
                     node.querySelector('.chat-history-item-delete').onclick = function(e) {
                         e.stopPropagation();
-                        if (!confirm(t('confirm.deleteThisSession'))) return;
-                        API.deleteAISession(id).then(function() {
-                            if (sessionId === id) { sessionId = null; document.getElementById('aiMessages').innerHTML = ''; }
-                            loadSessions();
-                            showToast(t('toast.deleted'));
-                        }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
+                        edgeopsConfirm(t('confirm.deleteThisSession')).then(function(ok) {
+                            if (!ok) return;
+                            API.deleteAISession(id).then(function() {
+                                if (sessionId === id) { sessionId = null; document.getElementById('aiMessages').innerHTML = ''; }
+                                loadSessions();
+                                showToast(t('toast.deleted'));
+                            }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
+                        });
                     };
                     node.onclick = function(ev) {
                         if (ev.target.closest('button') || ev.target.classList.contains('chat-history-item-title-edit')) return;
@@ -11752,13 +11827,15 @@ function renderAIPage() {
                 clearBtn.disabled = !rawSessions.length;
                 clearBtn.onclick = function() {
                     if (!rawSessions.length) return;
-                    if (!confirm(t('confirm.clearAllSessionsIrreversible'))) return;
-                    API.clearAISessions().then(function() {
-                        sessionId = null;
-                        document.getElementById('aiMessages').innerHTML = '';
-                        loadSessions();
-                        showToast(t('toast.cleared'));
-                    }).catch(function(err) { showToast(err.message || t('toast.clearFailed'), 'error'); });
+                    edgeopsConfirm(t('confirm.clearAllSessionsIrreversible')).then(function(ok) {
+                        if (!ok) return;
+                        API.clearAISessions().then(function() {
+                            sessionId = null;
+                            document.getElementById('aiMessages').innerHTML = '';
+                            loadSessions();
+                            showToast(t('toast.cleared'));
+                        }).catch(function(err) { showToast(err.message || t('toast.clearFailed'), 'error'); });
+                    });
                 };
             }
             if (aiFirstLoad && rawSessions.length) {
@@ -12063,11 +12140,13 @@ function renderAIPage() {
     })();
     document.getElementById('aiClearChat').onclick = function() {
         if (!sessionId) { showToast(t('toast.selectOrCreateSession')); return; }
-        if (!confirm(t('confirm.clearSessionChat'))) return;
-        API.clearSessionMessages(sessionId, { clear: 'all' }).then(function() {
-            loadSession(sessionId);
-            showToast(t('toast.chatCleared'));
-        }).catch(function(err) { showToast(err.message || t('toast.clearFailed'), 'error'); });
+        edgeopsConfirm(t('confirm.clearSessionChat')).then(function(ok) {
+            if (!ok) return;
+            API.clearSessionMessages(sessionId, { clear: 'all' }).then(function() {
+                loadSession(sessionId);
+                showToast(t('toast.chatCleared'));
+            }).catch(function(err) { showToast(err.message || t('toast.clearFailed'), 'error'); });
+        });
     };
     (function() {
         var modal = document.getElementById('aiSessionPromptModal');
@@ -13811,16 +13890,18 @@ function renderFilesPage() {
         navigateFsPath(pathParent(currentPath), { pushHistory: true });
     };
     document.getElementById('fsMkdir').onclick = function() {
-        var name = prompt('目录名');
-        if (!name || !name.trim()) return;
-        var p = pathJoin(currentPath, name.trim());
-        API.fsMkdir(p).then(function() { showToast(t('toast.fileCreated')); doFsTreeRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+        edgeopsPrompt('目录名').then(function(name) {
+            if (!name || !name.trim()) return;
+            var p = pathJoin(currentPath, name.trim());
+            API.fsMkdir(p).then(function() { showToast(t('toast.fileCreated')); doFsTreeRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+        });
     };
     document.getElementById('fsNewFile').onclick = function() {
-        var name = prompt('文件名');
-        if (!name || !name.trim()) return;
-        var p = pathJoin(currentPath, name.trim());
-        API.fsWrite(p, '').then(function() { showToast(t('toast.fileCreated')); doFsTreeRefresh(); openFile(p); }).catch(function(err) { showToast(err.message, 'error'); });
+        edgeopsPrompt('文件名').then(function(name) {
+            if (!name || !name.trim()) return;
+            var p = pathJoin(currentPath, name.trim());
+            API.fsWrite(p, '').then(function() { showToast(t('toast.fileCreated')); doFsTreeRefresh(); openFile(p); }).catch(function(err) { showToast(err.message, 'error'); });
+        });
     };
     document.getElementById('fsUploadBtn').onclick = function() { document.getElementById('fsFileInput').click(); };
     var fsDirInputEl = document.getElementById('fsDirInput');
@@ -13891,9 +13972,10 @@ function renderFilesPage() {
         API.fsPackTgz(path).then(function(r) { showToast(t('toast.packedWithPath', { path: (r.path || path) })); doFsTreeRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
     };
     window._fsUnpack = function(path) {
-        var dest = prompt('解压到目录（相对路径，留空解压到当前）', path.replace(/\.tgz$|\.tar\.gz$/i, ''));
-        if (dest === null) return;
-        API.fsUnpackTgz(path, dest.trim()).then(function(r) { showToast(t('toast.extracted')); doFsTreeRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+        edgeopsPrompt('解压到目录（相对路径，留空解压到当前）', path.replace(/\.tgz$|\.tar\.gz$/i, ''), undefined, { allowEmpty: true }).then(function(dest) {
+            if (dest === null) return;
+            API.fsUnpackTgz(path, dest.trim()).then(function(r) { showToast(t('toast.extracted')); doFsTreeRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+        });
     };
     document.getElementById('fsTreeWrap').oncontextmenu = function(e) {
         if (e.target.closest('.fs-tree-item')) return;
@@ -13968,16 +14050,18 @@ function renderFilesPage() {
         var basePath = path != null ? (isDir ? path : pathNorm(path).split('/').slice(0, -1).join('/')) : currentPath;
         if (path == null) {
             addItem('新建目录', function() {
-                var n = prompt('目录名');
-                if (!n || !n.trim()) return;
-                var p = pathJoin(basePath, n.trim());
-                API.fsMkdir(p).then(function() { showToast(t('toast.fileCreated')); doFsTreeRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+                edgeopsPrompt('目录名').then(function(n) {
+                    if (!n || !n.trim()) return;
+                    var p = pathJoin(basePath, n.trim());
+                    API.fsMkdir(p).then(function() { showToast(t('toast.fileCreated')); doFsTreeRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+                });
             });
             addItem('新建文件', function() {
-                var n = prompt('文件名');
-                if (!n || !n.trim()) return;
-                var p = pathJoin(basePath, n.trim());
-                API.fsWrite(p, '').then(function() { showToast(t('toast.fileCreated')); doFsTreeRefresh(); openFile(p); }).catch(function(err) { showToast(err.message, 'error'); });
+                edgeopsPrompt('文件名').then(function(n) {
+                    if (!n || !n.trim()) return;
+                    var p = pathJoin(basePath, n.trim());
+                    API.fsWrite(p, '').then(function() { showToast(t('toast.fileCreated')); doFsTreeRefresh(); openFile(p); }).catch(function(err) { showToast(err.message, 'error'); });
+                });
             });
             addItem('上传文件', function() { currentPath = pathNorm(basePath); pathInput.value = (currentPath ? '/' + currentPath : '/'); loadList(currentPath); document.getElementById('fsFileInput').click(); });
             if (fsClipboard) addItem('粘贴', function() {
@@ -13992,16 +14076,18 @@ function renderFilesPage() {
         } else {
             if (isDir) {
                 addItem('新建目录', function() {
-                    var n = prompt('目录名');
-                    if (!n || !n.trim()) return;
-                    var p = pathJoin(basePath, n.trim());
-                    API.fsMkdir(p).then(function() { showToast(t('toast.fileCreated')); doFsTreeRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+                    edgeopsPrompt('目录名').then(function(n) {
+                        if (!n || !n.trim()) return;
+                        var p = pathJoin(basePath, n.trim());
+                        API.fsMkdir(p).then(function() { showToast(t('toast.fileCreated')); doFsTreeRefresh(); }).catch(function(err) { showToast(err.message, 'error'); });
+                    });
                 });
                 addItem('新建文件', function() {
-                    var n = prompt('文件名');
-                    if (!n || !n.trim()) return;
-                    var p = pathJoin(basePath, n.trim());
-                    API.fsWrite(p, '').then(function() { showToast(t('toast.fileCreated')); doFsTreeRefresh(); openFile(p); }).catch(function(err) { showToast(err.message, 'error'); });
+                    edgeopsPrompt('文件名').then(function(n) {
+                        if (!n || !n.trim()) return;
+                        var p = pathJoin(basePath, n.trim());
+                        API.fsWrite(p, '').then(function() { showToast(t('toast.fileCreated')); doFsTreeRefresh(); openFile(p); }).catch(function(err) { showToast(err.message, 'error'); });
+                    });
                 });
                 addItem('上传文件', function() { currentPath = pathNorm(basePath); pathInput.value = (currentPath ? '/' + currentPath : '/'); loadList(currentPath); document.getElementById('fsFileInput').click(); });
                 addItem('复制', function() { fsClipboard = { path: path, cut: false }; showToast(t('toast.copiedToClipboard')); });
@@ -14298,12 +14384,14 @@ function _testSearchProvider(name) {
 }
 
 function _deleteSearchProvider(name) {
-    if (!confirm(t('confirm.clearSearchConfig', { name: name }))) return;
-    API.deleteMySearchConfig(name).then(function() {
-        showToast(t('toast.clearedConfigFor', { name: name }));
-        loadSearchServicesSettings();
-    }).catch(function(err) {
-        showToast(err.message || t('toast.deleteFailed'), 'error');
+    edgeopsConfirm(t('confirm.clearSearchConfig', { name: name })).then(function(ok) {
+        if (!ok) return;
+        API.deleteMySearchConfig(name).then(function() {
+            showToast(t('toast.clearedConfigFor', { name: name }));
+            loadSearchServicesSettings();
+        }).catch(function(err) {
+            showToast(err.message || t('toast.deleteFailed'), 'error');
+        });
     });
 }
 
@@ -14556,11 +14644,13 @@ function loadMcpServersPage() {
             btn.onclick = function() {
                 var id = parseInt(btn.getAttribute('data-mcp-del'), 10);
                 var name = btn.getAttribute('data-mcp-name') || '';
-                if (!confirm(t('mcp.confirmDelete', { name: name }))) return;
-                API.deleteUserMcpServer(id).then(function() {
-                    showToast(t('toast.deleted'));
-                    loadMcpServersPage();
-                }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
+                edgeopsConfirm(t('mcp.confirmDelete', { name: name })).then(function(ok) {
+                    if (!ok) return;
+                    API.deleteUserMcpServer(id).then(function() {
+                        showToast(t('toast.deleted'));
+                        loadMcpServersPage();
+                    }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
+                });
             };
         });
     }).catch(function(e) {
@@ -14881,12 +14971,13 @@ function _bindUserSkillsTableEvents(wrap) {
         btn.onclick = function() {
             var id = parseInt(btn.getAttribute('data-skill-del'), 10);
             var name = btn.getAttribute('data-skill-name') || '';
-            var rm = confirm(t('skills.confirmDelete', { name: name }) + '\n' + t('skills.confirmDeleteFiles', { name: name }));
-            API.deleteUserSkill(id, rm).then(function() {
-                showToast(t('toast.deleted'));
-                edgeopsInvalidateSlashCommandsCache();
-                loadUserSkillsPage();
-            }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
+            edgeopsConfirm(t('skills.confirmDelete', { name: name }) + '\n' + t('skills.confirmDeleteFiles', { name: name })).then(function(rm) {
+                API.deleteUserSkill(id, rm).then(function() {
+                    showToast(t('toast.deleted'));
+                    edgeopsInvalidateSlashCommandsCache();
+                    loadUserSkillsPage();
+                }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
+            });
         };
     });
     wrap.querySelectorAll('[data-skill-toggle]').forEach(function(btn) {
@@ -15040,26 +15131,29 @@ function _showSkillGroupsModal() {
             btn.onclick = function() {
                 var id = parseInt(btn.getAttribute('data-grp-edit'), 10);
                 var g = rows.find(function(x) { return x.id === id; });
-                var nn = window.prompt(t('skills.groupRenamePh'), g ? g.name : '');
-                if (nn == null) return;
-                nn = String(nn).trim();
-                if (!nn) return;
-                API.updateUserSkillGroup(id, { name: nn }).then(function() {
-                    showToast(t('toast.saved'));
-                    loadUserSkillsPage().then(function() { renderBody(); });
-                }).catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); });
+                edgeopsPrompt(t('skills.groupRenamePh'), g ? g.name : '').then(function(nn) {
+                    if (nn == null) return;
+                    nn = String(nn).trim();
+                    if (!nn) return;
+                    API.updateUserSkillGroup(id, { name: nn }).then(function() {
+                        showToast(t('toast.saved'));
+                        loadUserSkillsPage().then(function() { renderBody(); });
+                    }).catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); });
+                });
             };
         });
         modal.querySelectorAll('[data-grp-del]').forEach(function(btn) {
             btn.onclick = function() {
                 var id = parseInt(btn.getAttribute('data-grp-del'), 10);
                 var g = rows.find(function(x) { return x.id === id; });
-                if (!confirm(t('skills.confirmDeleteGroup', { name: (g && g.name) || id }))) return;
-                API.deleteUserSkillGroup(id).then(function() {
-                    showToast(t('toast.deleted'));
-                    if (String(_userSkillsFilter.groupId) === String(id)) _userSkillsFilter.groupId = 'all';
-                    loadUserSkillsPage().then(function() { renderBody(); });
-                }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
+                edgeopsConfirm(t('skills.confirmDeleteGroup', { name: (g && g.name) || id })).then(function(ok) {
+                    if (!ok) return;
+                    API.deleteUserSkillGroup(id).then(function() {
+                        showToast(t('toast.deleted'));
+                        if (String(_userSkillsFilter.groupId) === String(id)) _userSkillsFilter.groupId = 'all';
+                        loadUserSkillsPage().then(function() { renderBody(); });
+                    }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
+                });
             };
         });
     }
@@ -15309,17 +15403,18 @@ function renderUserSkillsPage() {
             reader.onload = function() {
                 try {
                     var data = JSON.parse(reader.result || '{}');
-                    var ow = window.confirm(t('skills.importOverwriteConfirm'));
-                    API.importUserSkills(data, ow).then(function(res) {
-                        var msg = t('skills.importDone', {
-                            created: (res.created || []).length,
-                            updated: (res.updated || []).length,
-                            skipped: (res.skipped || []).length
-                        });
-                        showToast(msg);
-                        edgeopsInvalidateSlashCommandsCache();
-                        loadUserSkillsPage();
-                    }).catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); });
+                    edgeopsConfirm(t('skills.importOverwriteConfirm')).then(function(ow) {
+                        API.importUserSkills(data, ow).then(function(res) {
+                            var msg = t('skills.importDone', {
+                                created: (res.created || []).length,
+                                updated: (res.updated || []).length,
+                                skipped: (res.skipped || []).length
+                            });
+                            showToast(msg);
+                            edgeopsInvalidateSlashCommandsCache();
+                            loadUserSkillsPage();
+                        }).catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); });
+                    });
                 } catch (e) {
                     showToast(t('skills.importInvalidJson'), 'error');
                 }
@@ -15894,7 +15989,7 @@ function renderSettings() {
                 API.createUserApiToken(nm).then(function(r) {
                     var tok = r && r.token;
                     if (tok) {
-                        window.prompt(t('settings.prompts.newApiToken'), tok);
+                        showPrompt(t('settings.prompts.newApiToken'), '', tok, { allowEmpty: true });
                     }
                     showToast(t('toast.newApiToken'));
                     var nameEl = document.getElementById('newApiTokenName');
@@ -15918,20 +16013,22 @@ function renderSettings() {
             btnDel.onclick = function() {
                 showConfirm(t('confirm.deleteAccountStep1Title'), t('confirm.deleteAccountStep1Body')).then(function(ok) {
                     if (!ok) return;
-                    var pwd = window.prompt(t('settings.prompts.deleteAccountPassword'));
-                    if (pwd == null || !pwd) return;
-                    var c = window.prompt(t('settings.prompts.deleteAccountTypeDelete'), '');
-                    if (c == null) return;
-                    if ((c || '').trim() !== 'DELETE') { showToast(t('toast.mustTypeDelete'), 'error'); return; }
-                    btnDel.disabled = true;
-                    API.deleteMyAccount(pwd, 'DELETE').then(function(r) {
-                        showToast(r.message || t('toast.accountDeactivated'));
-                        setTimeout(function() {
-                            try { logout(); } catch (e) { window.location.href = '/login'; }
-                        }, 1500);
-                    }).catch(function(err) {
-                        showToast(err.message || t('toast.deactivateAccountFailed'), 'error');
-                        btnDel.disabled = false;
+                    edgeopsPrompt(t('settings.prompts.deleteAccountPassword'), '', undefined, { password: true, allowEmpty: false }).then(function(pwd) {
+                        if (pwd == null || !pwd) return;
+                        edgeopsPrompt(t('settings.prompts.deleteAccountTypeDelete'), '').then(function(c) {
+                            if (c == null) return;
+                            if ((c || '').trim() !== 'DELETE') { showToast(t('toast.mustTypeDelete'), 'error'); return; }
+                            btnDel.disabled = true;
+                            API.deleteMyAccount(pwd, 'DELETE').then(function(r) {
+                                showToast(r.message || t('toast.accountDeactivated'));
+                                setTimeout(function() {
+                                    try { logout(); } catch (e) { window.location.href = '/login'; }
+                                }, 1500);
+                            }).catch(function(err) {
+                                showToast(err.message || t('toast.deactivateAccountFailed'), 'error');
+                                btnDel.disabled = false;
+                            });
+                        });
                     });
                 });
             };
@@ -16388,16 +16485,18 @@ function renderLocalPage() {
                 })();
                 node.querySelector('.chat-history-item-delete').onclick = function(e) {
                     e.stopPropagation();
-                    if (!confirm(t('confirm.deleteThisSession'))) return;
-                    API.deleteAISession(id).then(function() {
-                        if (currentSessionId === id) {
-                            currentSessionId = null;
-                            var lm = document.getElementById('localMessages');
-                            if (lm) lm.innerHTML = '';
-                        }
-                        loadLocalSessions();
-                        showToast(t('toast.deleted'));
-                    }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
+                    edgeopsConfirm(t('confirm.deleteThisSession')).then(function(ok) {
+                        if (!ok) return;
+                        API.deleteAISession(id).then(function() {
+                            if (currentSessionId === id) {
+                                currentSessionId = null;
+                                var lm = document.getElementById('localMessages');
+                                if (lm) lm.innerHTML = '';
+                            }
+                            loadLocalSessions();
+                            showToast(t('toast.deleted'));
+                        }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
+                    });
                 };
                 node.onclick = function(ev) {
                     if (ev.target.closest('button') || ev.target.classList.contains('chat-history-item-title-edit')) return;
@@ -16553,8 +16652,10 @@ function renderLocalPage() {
     });
     document.getElementById('localAiClearChat').onclick = function() {
         if (!currentSessionId) { showToast(t('toast.selectOrCreateSession')); return; }
-        if (!confirm(t('confirm.clearSessionChat'))) return;
-        API.clearSessionMessages(currentSessionId, { clear: 'all' }).then(function() { loadLocalSession(currentSessionId); showToast(t('toast.chatCleared')); }).catch(function(err) { showToast(err.message || t('toast.clearFailed'), 'error'); });
+        edgeopsConfirm(t('confirm.clearSessionChat')).then(function(ok) {
+            if (!ok) return;
+            API.clearSessionMessages(currentSessionId, { clear: 'all' }).then(function() { loadLocalSession(currentSessionId); showToast(t('toast.chatCleared')); }).catch(function(err) { showToast(err.message || t('toast.clearFailed'), 'error'); });
+        });
     };
     document.getElementById('localAiExportMd').onclick = function() { exportChatToMarkdown(currentSessionId); };
     document.getElementById('localAiNewSession').onclick = document.getElementById('localNewSession').onclick;
@@ -17145,22 +17246,24 @@ function renderLocalPage() {
         else destDir = (destDir || '').replace(/\\/g, '/');
         var baseDir = !destDir || destDir === '/' ? '' : destDir;
         addItem('新建目录', function() {
-            var name = prompt('目录名');
-            if (!name || !name.trim()) return;
-            var newPath = localFsPathJoin(baseDir || '/', name.trim());
-            API.localFsMkdir(newPath).then(function() {
-                showToast(t('toast.fileCreated'));
-                doLocalFsRefresh();
-            }).catch(function(err) { showToast(err.message, 'error'); });
+            edgeopsPrompt('目录名').then(function(name) {
+                if (!name || !name.trim()) return;
+                var newPath = localFsPathJoin(baseDir || '/', name.trim());
+                API.localFsMkdir(newPath).then(function() {
+                    showToast(t('toast.fileCreated'));
+                    doLocalFsRefresh();
+                }).catch(function(err) { showToast(err.message, 'error'); });
+            });
         });
         addItem('新建文件', function() {
-            var name = prompt('文件名');
-            if (!name || !name.trim()) return;
-            var newPath = localFsPathJoin(baseDir || '/', name.trim());
-            API.localFsWrite(newPath, '').then(function() {
-                showToast(t('toast.fileCreated'));
-                doLocalFsRefresh();
-            }).catch(function(err) { showToast(err.message, 'error'); });
+            edgeopsPrompt('文件名').then(function(name) {
+                if (!name || !name.trim()) return;
+                var newPath = localFsPathJoin(baseDir || '/', name.trim());
+                API.localFsWrite(newPath, '').then(function() {
+                    showToast(t('toast.fileCreated'));
+                    doLocalFsRefresh();
+                }).catch(function(err) { showToast(err.message, 'error'); });
+            });
         });
         addItem('复制', function() { localFsClipboard = { path: path, cut: false }; showToast(t('toast.copiedToClipboard')); });
         addItem('粘贴', function() {
@@ -17195,17 +17298,18 @@ function renderLocalPage() {
         });
         addItem('改名', function() {
             var name = path.split(/[/\\]/).filter(Boolean).pop() || path;
-            var newName = prompt('新名称', name);
-            if (newName == null || newName.trim() === '') return;
-            var parent = path.replace(/\/[^/]+$/, '').replace(/\\[^\\]+$/, '') || '';
-            if (parent.length >= 2 && parent[1] === ':') parent = parent.replace(/\\/g, '/');
-            var newPath = localFsPathJoin(parent || '/', newName.trim());
-            if (newPath === path) return;
-            API.localFsRename(path, newPath).then(function() {
-                showToast(t('toast.renamed'));
-                doLocalFsRefresh();
-                if (localFsCurrentFile === path) { localFsCurrentFile = newPath; loadLocalFsPreview(newPath); }
-            }).catch(function(err) { showToast(err.message, 'error'); });
+            edgeopsPrompt('新名称', name).then(function(newName) {
+                if (newName == null || newName.trim() === '') return;
+                var parent = path.replace(/\/[^/]+$/, '').replace(/\\[^\\]+$/, '') || '';
+                if (parent.length >= 2 && parent[1] === ':') parent = parent.replace(/\\/g, '/');
+                var newPath = localFsPathJoin(parent || '/', newName.trim());
+                if (newPath === path) return;
+                API.localFsRename(path, newPath).then(function() {
+                    showToast(t('toast.renamed'));
+                    doLocalFsRefresh();
+                    if (localFsCurrentFile === path) { localFsCurrentFile = newPath; loadLocalFsPreview(newPath); }
+                }).catch(function(err) { showToast(err.message, 'error'); });
+            });
         });
         addItem('刷新', function() { doLocalFsRefresh(); });
         menu.classList.add('open');
@@ -17699,12 +17803,14 @@ function renderUsers() {
                     var email = btn.getAttribute('data-email') || '';
                     var role = btn.getAttribute('data-role') || 'user';
                     var status = btn.getAttribute('data-status') || 'active';
-                    var newDisplay = prompt(t('pages.users.promptDisplayName'), display);
-                    if (newDisplay == null) return;
-                    var newEmail = prompt(t('pages.users.promptEmail'), email);
-                    if (newEmail == null) return;
-                    var payload = { display_name: newDisplay, email: newEmail };
-                    API.updateUser(id, payload).then(function() { showToast(t('toast.saved')); loadUsers(); }).catch(function(err) { showToast(err.message, 'error'); });
+                    edgeopsPrompt(t('pages.users.promptDisplayName'), display).then(function(newDisplay) {
+                        if (newDisplay == null) return;
+                        edgeopsPrompt(t('pages.users.promptEmail'), email).then(function(newEmail) {
+                            if (newEmail == null) return;
+                            var payload = { display_name: newDisplay, email: newEmail };
+                            API.updateUser(id, payload).then(function() { showToast(t('toast.saved')); loadUsers(); }).catch(function(err) { showToast(err.message, 'error'); });
+                        });
+                    });
                 };
             });
             tableWrap.querySelectorAll('.btn-unlock-user').forEach(function(btn) {
@@ -17717,18 +17823,21 @@ function renderUsers() {
                 btn.onclick = function() {
                     var id = parseInt(btn.getAttribute('data-id'), 10);
                     var username = btn.getAttribute('data-username') || '';
-                    var pwd = prompt(t('pages.users.promptNewPassword', { name: username }));
-                    if (pwd == null) return;
-                    if ((pwd || '').length < 6) { showToast(t('toast.passMin6'), 'error'); return; }
-                    API.resetPassword(id, pwd).then(function() { showToast(t('toast.pwdResetOk')); loadUsers(); }).catch(function(err) { showToast(err.message, 'error'); });
+                    edgeopsPrompt(t('pages.users.promptNewPassword', { name: username }), '', undefined, { password: true, allowEmpty: false }).then(function(pwd) {
+                        if (pwd == null) return;
+                        if ((pwd || '').length < 6) { showToast(t('toast.passMin6'), 'error'); return; }
+                        API.resetPassword(id, pwd).then(function() { showToast(t('toast.pwdResetOk')); loadUsers(); }).catch(function(err) { showToast(err.message, 'error'); });
+                    });
                 };
             });
             tableWrap.querySelectorAll('.btn-suspend-user').forEach(function(btn) {
                 btn.onclick = function() {
                     var id = parseInt(btn.getAttribute('data-id'), 10);
                     var username = btn.getAttribute('data-username') || '';
-                    if (!confirm(t('confirm.suspendUser', { name: username }))) return;
-                    API.updateUser(id, { status: 'suspended' }).then(function() { showToast(t('toast.userPaused')); loadUsers(); }).catch(function(err) { showToast(err.message, 'error'); });
+                    edgeopsConfirm(t('confirm.suspendUser', { name: username })).then(function(ok) {
+                        if (!ok) return;
+                        API.updateUser(id, { status: 'suspended' }).then(function() { showToast(t('toast.userPaused')); loadUsers(); }).catch(function(err) { showToast(err.message, 'error'); });
+                    });
                 };
             });
             tableWrap.querySelectorAll('.btn-resume-user').forEach(function(btn) {
@@ -17749,8 +17858,10 @@ function renderUsers() {
                 btn.onclick = function() {
                     var id = parseInt(btn.getAttribute('data-id'), 10);
                     var username = btn.getAttribute('data-username') || '';
-                    if (!confirm(t('confirm.deleteUser', { name: username }))) return;
-                    API.deleteUser(id).then(function() { showToast(t('toast.deleted')); loadUsers(); }).catch(function(err) { showToast(err.message, 'error'); });
+                    edgeopsConfirm(t('confirm.deleteUser', { name: username })).then(function(ok) {
+                        if (!ok) return;
+                        API.deleteUser(id).then(function() { showToast(t('toast.deleted')); loadUsers(); }).catch(function(err) { showToast(err.message, 'error'); });
+                    });
                 };
             });
         }).catch(function(err) {
@@ -18116,12 +18227,14 @@ function renderTriggeredTasksPage() {
             }).catch(function(err) { showToast(err.message || t('toast.requestFailed'), 'error'); });
         }
         function clearHist() {
-            if (!confirm(t('confirm.clearTriggeredRunHistory'))) return;
-            API.clearTriggeredTaskRuns(taskId).then(function() {
-                showToast(t('toast.triggeredRunsCleared'));
-                pagination.setPage(1);
-                loadRuns();
-            }).catch(function(err) { showToast(err.message || t('toast.opFailed'), 'error'); });
+            edgeopsConfirm(t('confirm.clearTriggeredRunHistory')).then(function(ok) {
+                if (!ok) return;
+                API.clearTriggeredTaskRuns(taskId).then(function() {
+                    showToast(t('toast.triggeredRunsCleared'));
+                    pagination.setPage(1);
+                    loadRuns();
+                }).catch(function(err) { showToast(err.message || t('toast.opFailed'), 'error'); });
+            });
         }
         var expBtn = document.getElementById('triggeredRunHistExport');
         var clrBtn = document.getElementById('triggeredRunHistClear');
@@ -18305,11 +18418,13 @@ function renderScheduledTasksPage() {
         }).catch(function(err) { showToast(err.message || t('toast.opFailed'), 'error'); });
     };
     window._scheduledTaskDelete = function(id) {
-        if (!confirm(t('confirm.deleteCron'))) return;
-        API.deleteScheduledTask(id).then(function() {
-            showToast(t('toast.deleted'));
-            if (window._scheduledTaskLoad) window._scheduledTaskLoad();
-        }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
+        edgeopsConfirm(t('confirm.deleteCron')).then(function(ok) {
+            if (!ok) return;
+            API.deleteScheduledTask(id).then(function() {
+                showToast(t('toast.deleted'));
+                if (window._scheduledTaskLoad) window._scheduledTaskLoad();
+            }).catch(function(err) { showToast(err.message || t('toast.deleteFailed'), 'error'); });
+        });
     };
     window._scheduledTaskRunNow = function(id) {
         API.runScheduledTaskNow(id).then(function(r) {
@@ -18382,12 +18497,14 @@ function renderScheduledTasksPage() {
             }).catch(function(err) { showToast(err.message || t('toast.requestFailed'), 'error'); });
         }
         function clearHist() {
-            if (!confirm(t('confirm.clearScheduledRunHistory'))) return;
-            API.clearScheduledTaskRuns(taskId).then(function() {
-                showToast(t('toast.scheduledRunsCleared'));
-                pagination.setPage(1);
-                loadRuns();
-            }).catch(function(err) { showToast(err.message || t('toast.opFailed'), 'error'); });
+            edgeopsConfirm(t('confirm.clearScheduledRunHistory')).then(function(ok) {
+                if (!ok) return;
+                API.clearScheduledTaskRuns(taskId).then(function() {
+                    showToast(t('toast.scheduledRunsCleared'));
+                    pagination.setPage(1);
+                    loadRuns();
+                }).catch(function(err) { showToast(err.message || t('toast.opFailed'), 'error'); });
+            });
         }
         var expBtn = document.getElementById('scheduledRunHistExport');
         var clrBtn = document.getElementById('scheduledRunHistClear');
@@ -18506,8 +18623,10 @@ function renderBatchPage() {
         }).catch(function(err) { showToast(err.message, 'error'); });
     };
     window._batchCancel = function(id) {
-        if (!confirm(t('confirm.cancelBatch'))) return;
-        API.cancelBatch(id).then(function() { showToast(t('toast.actionCancelled')); loadList(); detailWrap.style.display = 'none'; }).catch(function(err) { showToast(err.message, 'error'); });
+        edgeopsConfirm(t('confirm.cancelBatch')).then(function(ok) {
+            if (!ok) return;
+            API.cancelBatch(id).then(function() { showToast(t('toast.actionCancelled')); loadList(); detailWrap.style.display = 'none'; }).catch(function(err) { showToast(err.message, 'error'); });
+        });
     };
     window._batchRetry = function(id) {
         API.retryBatch(id).then(function() { showToast(t('toast.retrySubmitted')); loadList(); }).catch(function(err) { showToast(err.message, 'error'); });
@@ -18673,11 +18792,13 @@ function loadMyFeedback() {
         listEl.querySelectorAll('[data-fb-withdraw]').forEach(function(b) {
             b.onclick = function() {
                 var id = parseInt(b.getAttribute('data-fb-withdraw'), 10);
-                if (!confirm(t('confirm.recallFeedback', { id: id }))) return;
-                API.withdrawFeedback(id).then(function() {
-                    showToast(t('toast.feedbackRecalled'));
-                    loadMyFeedback();
-                }).catch(function(err) { showToast(err.message || t('toast.retreatFailed'), 'error'); });
+                edgeopsConfirm(t('confirm.recallFeedback', { id: id })).then(function(ok) {
+                    if (!ok) return;
+                    API.withdrawFeedback(id).then(function() {
+                        showToast(t('toast.feedbackRecalled'));
+                        loadMyFeedback();
+                    }).catch(function(err) { showToast(err.message || t('toast.retreatFailed'), 'error'); });
+                });
             };
         });
     }).catch(function(e) {
@@ -18709,12 +18830,14 @@ function renderFeedbackAdminPage() {
     // 注：[data-href] 点击由 router.js 的 document 级事件委托统一处理，无需在此重复绑定
     document.getElementById('fbAdminFilter').onchange = loadAdminFeedback;
     document.getElementById('fbAdminMarkAll').onclick = function() {
-        if (!confirm(t('confirm.markAllFeedbackRead'))) return;
-        API.adminMarkAllReadFeedback().then(function(r) {
-            showToast(t('toast.markedNRead', { n: (r.marked || 0) }));
-            loadAdminFeedback();
-            refreshFeedbackUnreadBadge();
-        }).catch(function(err) { showToast(err.message || t('toast.failGeneric'), 'error'); });
+        edgeopsConfirm(t('confirm.markAllFeedbackRead')).then(function(ok) {
+            if (!ok) return;
+            API.adminMarkAllReadFeedback().then(function(r) {
+                showToast(t('toast.markedNRead', { n: (r.marked || 0) }));
+                loadAdminFeedback();
+                refreshFeedbackUnreadBadge();
+            }).catch(function(err) { showToast(err.message || t('toast.failGeneric'), 'error'); });
+        });
     };
     loadAdminFeedback();
 }
@@ -18784,9 +18907,11 @@ function loadAdminFeedback() {
         listEl.querySelectorAll('[data-fb-rdel]').forEach(function(b) {
             b.onclick = function() {
                 var rid = parseInt(b.getAttribute('data-fb-rdel'), 10);
-                if (!confirm(t('confirm.recallReplyPhysical'))) return;
-                API.adminDeleteFeedbackReply(rid).then(function() { showToast(t('toast.replyRecalled')); loadAdminFeedback(); })
-                    .catch(function(err) { showToast(err.message || t('toast.failGeneric'), 'error'); });
+                edgeopsConfirm(t('confirm.recallReplyPhysical')).then(function(ok) {
+                    if (!ok) return;
+                    API.adminDeleteFeedbackReply(rid).then(function() { showToast(t('toast.replyRecalled')); loadAdminFeedback(); })
+                        .catch(function(err) { showToast(err.message || t('toast.failGeneric'), 'error'); });
+                });
             };
         });
     }).catch(function(e) {
@@ -19021,17 +19146,21 @@ function _bindAdminLoginBoardEvents(listEl) {
     listEl.querySelectorAll('[data-lb-del]').forEach(function(b) {
         b.onclick = function() {
             var id = parseInt(b.getAttribute('data-lb-del'), 10);
-            if (!confirm(t('confirm.deleteThisReply'))) return;
-            API.adminDeleteLoginBoard(id).then(function() { showToast(t('toast.deleted')); loadAdminLoginBoard(); })
-                .catch(function(err) { showToast(err.message || t('toast.failGeneric'), 'error'); });
+            edgeopsConfirm(t('confirm.deleteThisReply')).then(function(ok) {
+                if (!ok) return;
+                API.adminDeleteLoginBoard(id).then(function() { showToast(t('toast.deleted')); loadAdminLoginBoard(); })
+                    .catch(function(err) { showToast(err.message || t('toast.failGeneric'), 'error'); });
+            });
         };
     });
     listEl.querySelectorAll('[data-lb-del-msg]').forEach(function(b) {
         b.onclick = function() {
             var id = parseInt(b.getAttribute('data-lb-del-msg'), 10);
-            if (!confirm(t('confirm.deleteMessageThread', { id: id }))) return;
-            API.adminDeleteLoginBoard(id).then(function() { showToast(t('toast.deleted')); loadAdminLoginBoard(); })
-                .catch(function(err) { showToast(err.message || t('toast.failGeneric'), 'error'); });
+            edgeopsConfirm(t('confirm.deleteMessageThread', { id: id })).then(function(ok) {
+                if (!ok) return;
+                API.adminDeleteLoginBoard(id).then(function() { showToast(t('toast.deleted')); loadAdminLoginBoard(); })
+                    .catch(function(err) { showToast(err.message || t('toast.failGeneric'), 'error'); });
+            });
         };
     });
 }

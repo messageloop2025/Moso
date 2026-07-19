@@ -161,6 +161,12 @@ from services.edgeops_mcp.mount import mount_mcp_on_app
 
 mount_mcp_on_app(app)
 
+# Chrome DevTools 会探测该路径；返回空 JSON 避免刷 404 日志（与业务无关）
+@app.get("/.well-known/appspecific/com.chrome.devtools.json")
+async def chrome_devtools_well_known():
+    return {}
+
+
 # ── 静态文件 ──
 app.mount("/static", StaticFiles(directory=config.WEB_DIR), name="static")
 # 产品介绍站点：无需登录即可访问，html=True 使 /intro/ 自动落到 intro/index.html

@@ -222,7 +222,8 @@ _FS_HINT_RE = re.compile(
 )
 _HTTP_HINT_RE = re.compile(
     r"(http|https|url|wget|curl|下载|上传|scp|sftp|拉取|推送|api.?请求|"
-    r"http_request|http_download|scp_push|scp_pull)",
+    r"http_request|http_download|scp_push|scp_pull|连通性|探测|"
+    r"[a-z0-9][a-z0-9.-]*\.(com|cn|cc|io|net|org|local|dev|xyz|me|top)\b)",
     re.IGNORECASE,
 )
 _CORE_HINT_RE = re.compile(
@@ -443,6 +444,15 @@ _OPS_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 轻量快路径排除：HTTP/探测/催促 toolcall 等（勿与寒暄共用短句规则）
+_LIGHTWEIGHT_BLOCK_RE = re.compile(
+    r"(http|https|url|wget|curl|连通|探测|测一下|访问一下|打开一下|"
+    r"tool.?call|工具调用|发起调用|自己执行|真实执行|真的去|真去|"
+    r"不要只|别只|别贴|不要贴|代码块|假执行|自己跑|实际执行|"
+    r"[a-z0-9][a-z0-9.-]*\.(com|cn|cc|io|net|org|local|dev|xyz|me|top)\b)",
+    re.IGNORECASE,
+)
+
 # 轻量模式仍可能需要的极小工具集（默认不传任何 tools）
 LIGHTWEIGHT_FALLBACK_TOOLS: frozenset[str] = frozenset({
     "get_current_time",
@@ -473,9 +483,17 @@ def should_force_full_chat_prompts(
 
 
 def is_lightweight_chat_message(user_message: str) -> bool:
-    """判断是否为问候/闲聊，可走轻量快路径（不注入全量主机/tools）。"""
-    if not getattr(config, "AGENT_LIGHTWEIGHT_CHAT", True):
-        return False
+    """轻量寒暄快路径已弃用：恒返回 False，始终走完整提示词与工具装载。"""
+    return False
+
+
+def conversation_blocks_lightweight(conversation: list | None) -> bool:
+    """轻量路径已弃用；保留函数签名供旧调用方兼容。"""
+    return False
+
+
+def is_greeting_chat_message(user_message: str) -> bool:
+    """纯问候/确认短句（仅用于跳过辅助 AI，不再清空 tools / 缩短 system）。"""
     raw = (user_message or "").strip()
     if not raw:
         return True
@@ -485,11 +503,11 @@ def is_lightweight_chat_message(user_message: str) -> bool:
         return True
     if len(text) > 40:
         return False
+    if _OPS_HINT_RE.search(text) or _HTTP_HINT_RE.search(text) or _LIGHTWEIGHT_BLOCK_RE.search(text):
+        return False
     low = text.lower()
     if low in _LIGHTWEIGHT_EXACT or text in _LIGHTWEIGHT_EXACT:
         return True
-    if _OPS_HINT_RE.search(text):
-        return False
     if len(text) <= 12 and not re.search(r"[/\\:=@]", text):
         return True
     return False
@@ -525,8 +543,8 @@ def should_skip_assistant_after_chat(
     if not getattr(config, "AGENT_SKIP_ASSISTANT_ON_CHAT", True):
         return False
     um = user_message or ""
-    # 闲聊/问候优先于 actionable：避免「在吗」被误判后仍打辅助 AI
-    if is_lightweight_chat_message(um) and not round_had_tool_call:
+    # 纯问候优先于 actionable：避免「在吗」仍打辅助 AI（不再走清空 tools 的轻量路径）
+    if is_greeting_chat_message(um) and not round_had_tool_call:
         return True
     if _CONTINUE_USER_RE.search(um.strip()):
         return False
@@ -542,6 +560,12 @@ def should_skip_assistant_after_chat(
     return True
 
 
+_FORCE_FULL_FOLLOWUP_RE = re.compile(
+    r"(tool.?call|工具调用|自己执行|真实执行|真的去|自己跑|发起调用|假执行)",
+    re.IGNORECASE,
+)
+
+
 def resolve_tools_tier(
     user_message: str,
     *,
@@ -555,11 +579,11 @@ def resolve_tools_tier(
     """
     if force_full or not getattr(config, "AGENT_TOOL_TIERING", True):
         return "full"
-    if lightweight is None:
-        lightweight = is_lightweight_chat_message(user_message)
-    if lightweight:
-        return "lightweight"
+    # 轻量路径已弃用：忽略 lightweight 入参
     msg = user_message or ""
+    # 用户催促「真正发起 toolcall」：升 full，避免分层漏掉上一轮所需工具
+    if _FORCE_FULL_FOLLOWUP_RE.search(msg):
+        return "full"
     scope = (session_scope or "").strip().lower()
     if scope in ("local",) and _FS_HINT_RE.search(msg):
         # 本机管理会话读文件仍走 fs 层
@@ -639,19 +663,15 @@ def filter_tools_for_message(
             force_full=force_full,
             session_scope=session_scope,
         )
+    # 轻量路径已弃用：即使调用方误传 lightweight/tier=lightweight，也不清空 tools
     if tier == "lightweight" or lightweight:
-        if getattr(config, "AGENT_LIGHTWEIGHT_NO_TOOLS", True):
-            return []
-        allow = LIGHTWEIGHT_FALLBACK_TOOLS
-        out = []
-        for t in tools or []:
-            try:
-                name = t["function"]["name"]
-            except Exception:
-                continue
-            if name in allow:
-                out.append(t)
-        return out
+        lightweight = False
+        tier = resolve_tools_tier(
+            user_message,
+            lightweight=False,
+            force_full=force_full,
+            session_scope=session_scope,
+        )
     if tier == "full" or force_full:
         return list(tools or [])
     allow = _allow_set_for_tier(tier)
