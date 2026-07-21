@@ -5348,7 +5348,7 @@ function edgeopsHydrateChatDiagrams(root) {
 }
 
 /** 判断聊天消息区是否贴近底部（用于「仅贴底时自动跟随滚动」）。 */
-var EDGEOPS_CHAT_STICK_THRESHOLD_PX = 48;
+var EDGEOPS_CHAT_STICK_THRESHOLD_PX = 80;
 function edgeopsChatIsNearBottom(box) {
     if (!box) return true;
     try {
@@ -5366,38 +5366,159 @@ function edgeopsChatScrollIsProgrammatic(box) {
     return Date.now() < until;
 }
 
+/** 用户正在拖滚动条 / 滚轮 / 触摸翻阅：禁止一切程序化改 scrollTop（否则滑块会震动）。 */
+function edgeopsChatUserScrollLocked(box) {
+    if (!box) return false;
+    if (box._edgeopsUserScrollActive) return true;
+    var until = box._edgeopsUserScrollLockUntil || 0;
+    return Date.now() < until;
+}
+
+/** 取消布局滚底的定时器 / ResizeObserver，避免与用户手动滚动对打。 */
+function edgeopsCancelChatLayoutScrollFollow(box) {
+    if (!box) return;
+    if (box._edgeopsLayoutScrollObs) {
+        try { box._edgeopsLayoutScrollObs.disconnect(); } catch (_e) {}
+        box._edgeopsLayoutScrollObs = null;
+    }
+    if (box._edgeopsLayoutScrollObsTimer) {
+        clearTimeout(box._edgeopsLayoutScrollObsTimer);
+        box._edgeopsLayoutScrollObsTimer = null;
+    }
+    if (box._edgeopsLayoutScrollTimers && box._edgeopsLayoutScrollTimers.length) {
+        box._edgeopsLayoutScrollTimers.forEach(function(id) {
+            try { clearTimeout(id); } catch (_e2) {}
+        });
+        box._edgeopsLayoutScrollTimers = [];
+    }
+    if (box._edgeopsScrollStepRaf != null) {
+        try { cancelAnimationFrame(box._edgeopsScrollStepRaf); } catch (_e3) {}
+        box._edgeopsScrollStepRaf = null;
+    }
+    box._edgeopsScrollStepDirty = false;
+}
+
+/** 用户明确离开底部：立刻取消贴底，并清掉程序化滚底窗口。 */
+function edgeopsUnpinChatStickToBottom(box) {
+    if (!box) return;
+    box._edgeopsStickToBottom = false;
+    box._edgeopsProgrammaticScroll = false;
+    box._edgeopsProgrammaticScrollUntil = 0;
+    edgeopsCancelChatLayoutScrollFollow(box);
+}
+
+function edgeopsBeginChatUserScroll(box) {
+    if (!box) return;
+    box._edgeopsUserScrollActive = true;
+    box._edgeopsUserScrollLockUntil = Date.now() + 400;
+    box._edgeopsProgrammaticScroll = false;
+    box._edgeopsProgrammaticScrollUntil = 0;
+    edgeopsCancelChatLayoutScrollFollow(box);
+}
+
+function edgeopsEndChatUserScroll(box) {
+    if (!box) return;
+    box._edgeopsUserScrollActive = false;
+    box._edgeopsUserScrollLockUntil = Date.now() + 160;
+    box._edgeopsStickToBottom = edgeopsChatIsNearBottom(box);
+}
+
 /** 流式期间才启用消息区 DOM 监听，避免空闲打字时被动触发滚底/layout。 */
 function edgeopsSetChatStickObserversActive(box, active) {
     if (!box) return;
     box._edgeopsStickObserversActive = !!active;
 }
 
-/** 绑定滚动监听：用户上滑则取消贴底跟随，滑回底部则恢复。 */
+/** 绑定滚动监听：用户拖条/上滑则取消贴底跟随，松手且贴底时才恢复。 */
 function edgeopsBindChatStickToBottom(box) {
     if (!box || box._edgeopsStickBound) return;
     box._edgeopsStickBound = true;
     box._edgeopsStickToBottom = true;
     box._edgeopsStickObserversActive = false;
-    box.addEventListener('scroll', function() {
-        if (edgeopsChatScrollIsProgrammatic(box)) return;
-        box._edgeopsStickToBottom = edgeopsChatIsNearBottom(box);
+    box._edgeopsLastScrollTop = box.scrollTop || 0;
+
+    box.addEventListener('pointerdown', function() {
+        edgeopsBeginChatUserScroll(box);
     }, { passive: true });
+    // 拖滚动条时 pointerup 常落在 window/document 上
+    if (!box._edgeopsStickPointerUpBound) {
+        box._edgeopsStickPointerUpBound = true;
+        var onPointerUp = function() {
+            if (!box._edgeopsUserScrollActive) return;
+            edgeopsEndChatUserScroll(box);
+        };
+        window.addEventListener('pointerup', onPointerUp, { passive: true });
+        window.addEventListener('pointercancel', onPointerUp, { passive: true });
+    }
+
+    box.addEventListener('scroll', function() {
+        var top = box.scrollTop || 0;
+        var prev = box._edgeopsLastScrollTop || 0;
+        box._edgeopsLastScrollTop = top;
+        // 即使用户拖条触发的 scroll 落在 programmatic 窗口内，只要明显离开底部也要 unpin
+        var near = edgeopsChatIsNearBottom(box);
+        if (!near) {
+            if (top < prev - 1 || edgeopsChatUserScrollLocked(box) || !edgeopsChatScrollIsProgrammatic(box)) {
+                edgeopsUnpinChatStickToBottom(box);
+                box._edgeopsUserScrollLockUntil = Date.now() + 400;
+            }
+            return;
+        }
+        if (edgeopsChatScrollIsProgrammatic(box)) return;
+        if (edgeopsChatUserScrollLocked(box) && box._edgeopsUserScrollActive) return;
+        box._edgeopsStickToBottom = true;
+    }, { passive: true });
+
+    box.addEventListener('wheel', function(e) {
+        edgeopsBeginChatUserScroll(box);
+        if (e.deltaY < 0) edgeopsUnpinChatStickToBottom(box);
+        else if (e.deltaY > 0 && edgeopsChatIsNearBottom(box)) {
+            box._edgeopsStickToBottom = true;
+        }
+    }, { passive: true });
+
+    box.addEventListener('touchstart', function() {
+        box._edgeopsTouchStickY = null;
+        edgeopsBeginChatUserScroll(box);
+    }, { passive: true });
+    box.addEventListener('touchmove', function(e) {
+        if (!e.touches || !e.touches.length) return;
+        edgeopsBeginChatUserScroll(box);
+        var y = e.touches[0].clientY;
+        if (box._edgeopsTouchStickY == null) {
+            box._edgeopsTouchStickY = y;
+            return;
+        }
+        var dy = y - box._edgeopsTouchStickY;
+        box._edgeopsTouchStickY = y;
+        if (dy > 6) edgeopsUnpinChatStickToBottom(box);
+        else if (dy < -6 && edgeopsChatIsNearBottom(box)) box._edgeopsStickToBottom = true;
+    }, { passive: true });
+    box.addEventListener('touchend', function() {
+        edgeopsEndChatUserScroll(box);
+    }, { passive: true });
+
     if (typeof MutationObserver !== 'undefined' && !box._edgeopsStickMutationObs) {
         box._edgeopsStickMutationObs = new MutationObserver(function() {
             if (!box._edgeopsStickObserversActive) return;
+            if (box._edgeopsStickToBottom === false) return;
+            if (edgeopsChatUserScrollLocked(box)) return;
             if (edgeopsIsChatComposeFocused()) return;
             edgeopsScrollChatToBottomStepIfPinned(box);
         });
+        // 仅监听子树结构变化；characterData 在流式打字时过于频繁，易造成滚底抖动
         box._edgeopsStickMutationObs.observe(box, { childList: true, subtree: true });
     }
 }
 
-/** 程序化滚底（带标志位，避免 scroll 监听误判为用户上滑）。 */
+/** 程序化滚底；用户正在拖条/翻阅时直接跳过。 */
 function edgeopsScrollChatToBottomNow(box) {
-    if (!box) return;
-    box._edgeopsProgrammaticScrollUntil = Date.now() + 280;
+    if (!box || box._edgeopsStickToBottom === false) return;
+    if (edgeopsChatUserScrollLocked(box)) return;
+    box._edgeopsProgrammaticScrollUntil = Date.now() + 48;
     box._edgeopsProgrammaticScroll = true;
     try { box.scrollTop = box.scrollHeight; } catch (_e) {}
+    box._edgeopsLastScrollTop = box.scrollTop || 0;
     requestAnimationFrame(function() {
         if (!box) return;
         box._edgeopsProgrammaticScroll = false;
@@ -5413,12 +5534,12 @@ function edgeopsStartChatStreamStickFollow(box) {
     box._edgeopsStreamStickLastCheck = 0;
     function tick(now) {
         if (!box || !box._edgeopsStreamStickFollowActive) return;
-        if (box._edgeopsStickToBottom !== false) {
+        if (box._edgeopsStickToBottom !== false && !edgeopsChatUserScrollLocked(box)) {
             var ts = now || (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
             if (ts - (box._edgeopsStreamStickLastCheck || 0) >= 120) {
                 box._edgeopsStreamStickLastCheck = ts;
                 var sh = box.scrollHeight;
-                if (sh !== box._edgeopsLastScrollHeight || !edgeopsChatIsNearBottom(box)) {
+                if (sh !== box._edgeopsLastScrollHeight) {
                     box._edgeopsLastScrollHeight = sh;
                     edgeopsScrollChatToBottomNow(box);
                 }
@@ -5437,104 +5558,75 @@ function edgeopsStopChatStreamStickFollow(box) {
         try { cancelAnimationFrame(box._edgeopsStreamStickFollowRaf); } catch (_e) {}
         box._edgeopsStreamStickFollowRaf = null;
     }
-    // 流式结束：Markdown/图表/CoT 折叠仍会改变高度，延迟对齐到底部
+    // 流式结束：仅在仍贴底且用户未拖条时做一次收尾对齐
     edgeopsScheduleChatScrollToBottomAfterLayout(box);
 }
 
-/** 异步布局（图表/Markdown/会话重载）后多次滚底；贴底状态下用 ResizeObserver 短暂跟随增高。 */
+/** 异步布局后短暂滚底；用户拖条期间不启动。 */
 function edgeopsScheduleChatScrollToBottomAfterLayout(box, opts) {
     opts = opts || {};
     if (!box) return;
+    if (edgeopsChatUserScrollLocked(box) && !opts.force) return;
     if (box._edgeopsStickToBottom === false && !opts.force) return;
-    box._edgeopsStickToBottom = true;
+    if (opts.force) box._edgeopsStickToBottom = true;
+    edgeopsCancelChatLayoutScrollFollow(box);
     function step() {
+        if (edgeopsChatUserScrollLocked(box) && !opts.force) return;
         if (box._edgeopsStickToBottom === false && !opts.force) return;
         edgeopsScrollChatToBottomNow(box);
-        if (!edgeopsChatIsNearBottom(box)) edgeopsScrollChatToBottomNow(box);
     }
-    edgeopsScrollChatMessagesToBottom(box);
-    requestAnimationFrame(function() {
-        step();
-        requestAnimationFrame(step);
-    });
-    [350, 800, 1500].forEach(function(ms) {
-        setTimeout(step, ms);
-    });
+    step();
+    requestAnimationFrame(step);
+    box._edgeopsLayoutScrollTimers = [];
+    box._edgeopsLayoutScrollTimers.push(setTimeout(step, 120));
+    // 多轮会话消息很多时，给每个气泡挂 ResizeObserver 会在拖条时连环改 scrollTop → 震动；仅短观察最后一个气泡
     if (typeof ResizeObserver !== 'undefined') {
-        if (box._edgeopsLayoutScrollObs) {
-            try { box._edgeopsLayoutScrollObs.disconnect(); } catch (_e) {}
-            box._edgeopsLayoutScrollObs = null;
-        }
-        if (box._edgeopsLayoutScrollObsTimer) {
-            clearTimeout(box._edgeopsLayoutScrollObsTimer);
-            box._edgeopsLayoutScrollObsTimer = null;
-        }
+        var last = box.lastElementChild;
+        if (!last) return;
         var obs = new ResizeObserver(function() {
+            if (edgeopsChatUserScrollLocked(box) && !opts.force) return;
             if (box._edgeopsStickToBottom === false && !opts.force) return;
             edgeopsScrollChatToBottomStepIfPinned(box);
         });
-        try { obs.observe(box); } catch (_e) {}
+        try { obs.observe(last); } catch (_e) {}
         box._edgeopsLayoutScrollObs = obs;
         box._edgeopsLayoutScrollObsTimer = setTimeout(function() {
-            try { obs.disconnect(); } catch (_e) {}
+            try { obs.disconnect(); } catch (_e2) {}
             if (box._edgeopsLayoutScrollObs === obs) box._edgeopsLayoutScrollObs = null;
             box._edgeopsLayoutScrollObsTimer = null;
-            step();
-        }, opts.observeMs != null ? opts.observeMs : 2800);
+        }, opts.observeMs != null ? opts.observeMs : 600);
     }
 }
 
 /** 流式/增量更新：仅当当前为贴底状态时才滚到底（避免打断用户阅读上方历史）。 */
 function edgeopsScrollChatToBottomStepIfPinned(box) {
     if (!box || box._edgeopsStickToBottom === false) return;
+    if (edgeopsChatUserScrollLocked(box)) return;
     box._edgeopsScrollStepDirty = true;
     if (box._edgeopsScrollStepRaf != null) return;
     function runStep() {
         box._edgeopsScrollStepRaf = null;
-        if (!box || box._edgeopsStickToBottom === false) {
+        if (!box || box._edgeopsStickToBottom === false || edgeopsChatUserScrollLocked(box)) {
             box._edgeopsScrollStepDirty = false;
             return;
         }
         box._edgeopsScrollStepDirty = false;
-        requestAnimationFrame(function() {
-            if (!box || box._edgeopsStickToBottom === false) return;
-            edgeopsScrollChatToBottomNow(box);
-            requestAnimationFrame(function() {
-                if (!box || box._edgeopsStickToBottom === false) return;
-                if (!edgeopsChatIsNearBottom(box)) edgeopsScrollChatToBottomNow(box);
-                if (box._edgeopsScrollStepDirty) edgeopsScrollChatToBottomStepIfPinned(box);
-            });
-        });
+        edgeopsScrollChatToBottomNow(box);
+        if (box._edgeopsScrollStepDirty) edgeopsScrollChatToBottomStepIfPinned(box);
     }
     box._edgeopsScrollStepRaf = requestAnimationFrame(runStep);
 }
 
-/** 将聊天消息区滚到底部（含图表异步增高后的多次对齐）。 */
+/** 将聊天消息区滚到底部（只改本容器 scrollTop）。 */
 function edgeopsScrollChatMessagesToBottom(box) {
     if (!box) return;
+    if (edgeopsChatUserScrollLocked(box)) return;
     box._edgeopsStickToBottom = true;
-    function _edgeopsFullScrollStep() {
-        try {
-            edgeopsScrollChatToBottomNow(box);
-            var last = box.querySelector('.chat-message:last-child');
-            if (last) {
-                box._edgeopsProgrammaticScrollUntil = Date.now() + 200;
-                box._edgeopsProgrammaticScroll = true;
-                last.scrollIntoView({ behavior: 'auto', block: 'end' });
-                requestAnimationFrame(function() {
-                    if (box) box._edgeopsProgrammaticScroll = false;
-                });
-            }
-        } catch (_e) {}
-    }
-    _edgeopsFullScrollStep();
+    edgeopsScrollChatToBottomNow(box);
     requestAnimationFrame(function() {
-        _edgeopsFullScrollStep();
-        requestAnimationFrame(_edgeopsFullScrollStep);
+        if (edgeopsChatUserScrollLocked(box)) return;
+        edgeopsScrollChatToBottomNow(box);
     });
-    setTimeout(_edgeopsFullScrollStep, 50);
-    setTimeout(_edgeopsFullScrollStep, 200);
-    setTimeout(_edgeopsFullScrollStep, 500);
 }
 
 /** 从消息节点向上查找聊天滚动容器。 */

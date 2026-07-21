@@ -1888,12 +1888,14 @@ table.table-compact-ellipsis th.th-skill-group {
 
 .chat-messages {
     flex: 1;
+    min-height: 0;
+    overflow-x: hidden;
     overflow-y: auto;
     padding: 10px 14px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    contain: layout style paint;
+    /* 用普通块级流而不是 column flex，保证 scrollHeight/滑块比例按真实内容高度计算 */
+    display: block;
+    overflow-anchor: none;
+    scrollbar-gutter: stable;
 }
 
 .chat-message {
@@ -1903,11 +1905,17 @@ table.table-compact-ellipsis th.th-skill-group {
     /* 列向 flex 子项默认 min-width:auto，会被超长行/栈迹撑破侧栏；允许收缩并在气泡内横向滚动 */
     min-width: 0;
     box-sizing: border-box;
-    content-visibility: auto;
-    contain-intrinsic-size: auto 120px;
+    margin: 0 0 6px;
+    /*
+     * 禁止 content-visibility:auto：屏外气泡会被按 contain-intrinsic-size(~120px) 估算，
+     * 多轮长消息时 scrollHeight 随滚动剧变，滚动条滑块会卡在中部抖动且不反映真实位置。
+     */
 }
 
-.chat-message.user { align-self: flex-end; flex-direction: row-reverse; }
+.chat-message.user {
+    margin-left: auto;
+    flex-direction: row-reverse;
+}
 
 .chat-message .avatar {
     width: 32px;
@@ -1932,9 +1940,9 @@ table.table-compact-ellipsis th.th-skill-group {
     line-height: 1.44;
     max-height: none;
     min-width: 0;
-    /* 栈迹、长行、大量 ^ 指针行等：限制在气泡宽度内并出现横向滚动条 */
+    /* 仅横向滚动；勿用 overflow-y:visible（会与 overflow-x:auto 一起被算成 auto，气泡变嵌套纵向滚动） */
     overflow-x: auto;
-    overflow-y: visible;
+    overflow-y: hidden;
 }
 .chat-message .message-content .message-body {
     min-width: 0;
