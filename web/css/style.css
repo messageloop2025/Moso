@@ -2241,11 +2241,13 @@ table.table-compact-ellipsis th.th-skill-group {
 }
 .chat-math-block-wrap {
     margin: 6px 0;
-    padding: 8px 10px;
+    padding: 12px 12px;
     border-radius: 8px;
     border: 1px solid rgba(96, 165, 250, 0.22);
     background: rgba(15, 23, 42, 0.42);
+    /* 仅横向滚动；若只设 overflow-x，overflow-y 会被算成 auto，分数/根号会出现竖向滚动条 */
     overflow-x: auto;
+    overflow-y: hidden;
 }
 .chat-math-block {
     display: inline-block;
@@ -2265,22 +2267,49 @@ table.table-compact-ellipsis th.th-skill-group {
     font-family: 'Cambria Math', 'Times New Roman', serif;
     white-space: nowrap;
 }
-.chat-math-katex-inline,
-.chat-math-katex-block {
-    display: inline-block;
-    vertical-align: middle;
+/* KaTeX 包装：行内贴基线；块级独占一行，避免与气泡其它元素抢 vertical-align */
+.chat-math-katex-inline {
+    display: inline;
     max-width: 100%;
 }
 .chat-math-katex-block {
+    display: block;
+    max-width: 100%;
     margin: 4px 0;
 }
 .message-content .katex {
     font-size: 1.05em;
     color: #dbeafe;
+    /* 防止继承气泡 line-height / word-break 把公式撑乱 */
+    line-height: 1.2;
+    word-break: normal;
+    overflow-wrap: normal;
+    white-space: nowrap;
+    text-indent: 0;
 }
 .message-content .katex-display {
+    display: block;
     margin: 0.4em 0;
+    text-align: center;
     overflow-x: auto;
+    overflow-y: hidden;
+}
+/* 气泡内 Markdown 样式不得侵入 KaTeX 内部节点 */
+.chat-message .message-content .katex *,
+.chat-message .message-content .katex *:before,
+.chat-message .message-content .katex *:after {
+    border-color: currentColor;
+}
+.chat-message .message-content .katex a {
+    color: inherit;
+    text-decoration: none;
+}
+.chat-message .message-content .katex .mfrac,
+.chat-message .message-content .katex .vlist-t,
+.chat-message .message-content .katex .stretchy,
+.chat-message .message-content .katex svg {
+    /* 显式保留 KaTeX 布局控件，避免被通用 svg/img 规则影响 */
+    max-width: none;
 }
 .math-sqrt::before {
     content: "√";
@@ -2350,7 +2379,12 @@ table.table-compact-ellipsis th.th-skill-group {
     font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
     box-shadow: inset 0 -1px 0 rgba(255,255,255,0.06);
 }
-.chat-message .message-content span[style] {
+/*
+ * 仅约束 AI 安全 HTML 着色 span（sanitize 已去掉 display，这里防历史/漏网）。
+ * 绝不能命中 .katex 内节点：KaTeX 用 span[style=height/top] + display:block/inline-block/table 排版，
+ * 强制 inline 会导致分数/根号/上下标塌缩（display:revert 也不行，会回到 UA 的 inline）。
+ */
+.chat-message .message-content span[style]:not(.katex *) {
     display: inline;
 }
 .chat-message .message-content h1, .chat-message .message-content h2, .chat-message .message-content h3 {
