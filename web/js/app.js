@@ -1941,7 +1941,8 @@ function edgeopsInstallRuntimeControlBar(opts) {
     bar.style.display = 'none';
     var tip = document.createElement('span');
     tip.className = 'ai-runtime-control-tip';
-    tip.textContent = t('hostAi.runtimeTipCompact');
+    tip.textContent = '';
+    tip.setAttribute('aria-hidden', 'true');
     var input = document.createElement('textarea');
     input.rows = 1;
     input.setAttribute('enterkeyhint', 'send');
@@ -2024,7 +2025,7 @@ function edgeopsInstallRuntimeControlBar(opts) {
             }
             input.value = '';
             if (input._edgeopsAutoResize) try { input._edgeopsAutoResize(); } catch (_e) {}
-            tip.textContent = t('hostAi.runtimeTipCompact');
+            tip.textContent = '';
             if (wasActive) focusChatInput();
         } else if (streaming && !wasActive) {
             focusRuntimeInput();
@@ -2055,9 +2056,11 @@ function edgeopsInstallRuntimeControlBar(opts) {
             }
         },
         note: function(text) {
-            var noteText = text || t('hostAi.runtimeTipCompact');
-            tip.textContent = noteText;
-            if (awaitingHint.style.display !== 'none') awaitingHint.textContent = noteText;
+            // tip 已隐藏：仅在「等待确认」时把文案写到 awaitingHint
+            tip.textContent = '';
+            if (awaitingHint.style.display !== 'none') {
+                awaitingHint.textContent = text || (typeof t === 'function' ? t('hostAi.runtimeAwaitingConfirm') : '');
+            }
         }
     };
     inputArea._edgeopsRuntimeCtl = ctl;
@@ -8198,6 +8201,16 @@ function edgeopsReplySuggestsPendingWork(text) {
     return false;
 }
 
+function edgeopsSetChatStreamingAvatar(msgBox, active) {
+    if (!msgBox) return;
+    var prev = msgBox.querySelectorAll('.chat-message.assistant.is-streaming');
+    for (var i = 0; i < prev.length; i++) prev[i].classList.remove('is-streaming');
+    if (!active) return;
+    var nodes = msgBox.querySelectorAll('.chat-message.assistant');
+    if (!nodes.length) return;
+    nodes[nodes.length - 1].classList.add('is-streaming');
+}
+
 function edgeopsMakeChatStreamingUISetter(opts) {
     opts = opts || {};
     var prevMode = 'idle';
@@ -8229,10 +8242,10 @@ function edgeopsMakeChatStreamingUISetter(opts) {
         if (ctl && typeof ctl.setStreaming === 'function') {
             if (awaiting) ctl.setStreaming('awaiting');
             else ctl.setStreaming(active);
+            // 输入区不再展示「运行中 / 等待 Ns」文案（CoT 内已有）；仅保留「等待确认」提示
             if (typeof ctl.note === 'function') {
-                if (mode === 'auto_continuing') ctl.note(typeof t === 'function' ? t('hostAi.runtimeAutoContinuing') : '');
-                else if (awaiting) ctl.note(typeof t === 'function' ? t('hostAi.runtimeAwaitingConfirm') : '');
-                else ctl.note(typeof t === 'function' ? t('hostAi.runtimeTipCompact') : '');
+                if (awaiting) ctl.note(typeof t === 'function' ? t('hostAi.runtimeAwaitingConfirm') : '');
+                else ctl.note('');
             }
         }
         // AI 输出完成（由非空闲态转为空闲）后，把输入焦点自动跳回消息输入框
@@ -8250,6 +8263,7 @@ function edgeopsMakeChatStreamingUISetter(opts) {
         if (opts.messagesBoxId) msgBox = document.getElementById(opts.messagesBoxId);
         else if (typeof opts.getMessagesBox === 'function') msgBox = opts.getMessagesBox();
         if (msgBox) {
+            edgeopsSetChatStreamingAvatar(msgBox, !!active);
             if (active || awaiting) edgeopsStartChatStreamStickFollow(msgBox);
             else if (idle) edgeopsStopChatStreamStickFollow(msgBox);
         }
@@ -8334,9 +8348,6 @@ function edgeopsUpdateChatPollWait(toolsEl, ev, opts) {
     if (!ev || (ev.action !== 'waiting' && ev.action !== 'waiting_aborted' && ev.action !== 'waiting_woken')) return;
     if (ev.action === 'waiting_aborted' || ev.action === 'waiting_woken') {
         edgeopsClearChatPollWait(toolsEl);
-        if (opts.runtimeCtl && opts.runtimeCtl.note) {
-            opts.runtimeCtl.note(typeof t === 'function' ? t('hostAi.runtimeTipCompact') : '');
-        }
         return;
     }
     var toolName = ev.wait_tool || 'get_terminal_buffer';
@@ -8346,9 +8357,6 @@ function edgeopsUpdateChatPollWait(toolsEl, ev, opts) {
     // 倒计时到 0：等待已结束，直接隐藏 CoT/底部「等待·唤醒」条（后端正常结束不会再发 waiting_woken）
     if (rem <= 0) {
         edgeopsClearChatPollWait(toolsEl);
-        if (opts.runtimeCtl && opts.runtimeCtl.note) {
-            opts.runtimeCtl.note(typeof t === 'function' ? t('hostAi.runtimeTipCompact') : '');
-        }
         return;
     }
     var tip = typeof t === 'function'
@@ -8396,13 +8404,8 @@ function edgeopsUpdateChatPollWait(toolsEl, ev, opts) {
             panel._edgeopsPollWait.tip = fallbackTip;
         }
     }
-    if (opts.runtimeCtl) {
-        if (typeof opts.runtimeCtl.setPollWait === 'function') {
-            opts.runtimeCtl.setPollWait(true, { onWake: opts.onWake });
-        }
-        if (typeof opts.runtimeCtl.note === 'function') {
-            opts.runtimeCtl.note(step ? tip : fallbackTip);
-        }
+    if (opts.runtimeCtl && typeof opts.runtimeCtl.setPollWait === 'function') {
+        opts.runtimeCtl.setPollWait(true, { onWake: opts.onWake });
     }
     if (panel) edgeopsCotSyncActivePeek(panel);
 }
@@ -9776,13 +9779,13 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         edgeopsBindChatStickToBottom(box);
         var wasNearBottom = edgeopsChatIsNearBottom(box);
         box._edgeopsStickToBottom = wasNearBottom;
-        setStreamingUI(true);
         var now = new Date();
         var nowTs = edgeopsFormatChatTimestamp(now);
         var userBubble = edgeopsRenderMessageBubble(fmtMd(msg) + edgeopsRenderAttachmentsInline(attachments), now);
         box.insertAdjacentHTML('beforeend', '<div class="chat-message user"><div class="avatar">U</div>' + userBubble + '</div>');
         if (hostAiAttachCtl) hostAiAttachCtl.clear();
         box.insertAdjacentHTML('beforeend', '<div class="chat-message assistant"><div class="avatar">A</div><div class="message-content"><div class="ai-reply-stream"><div class="ai-reply-tools"></div><div class="ai-reply-text"></div></div>' + edgeopsRenderMessageFooter(nowTs) + '</div></div>');
+        setStreamingUI(true);
         edgeopsHydrateChatDiagrams(box);
         if (wasNearBottom) edgeopsScrollChatMessagesToBottom(box);
         else edgeopsScrollChatToBottomStepIfPinned(box);
@@ -12107,13 +12110,13 @@ function renderAIPage() {
         edgeopsBindChatStickToBottom(box);
         var wasNearBottom = edgeopsChatIsNearBottom(box);
         box._edgeopsStickToBottom = wasNearBottom;
-        setStreamingUI(true);
         var now = new Date();
         var nowTs = edgeopsFormatChatTimestamp(now);
         var userBubble = edgeopsRenderMessageBubble(fmtMd(msg) + edgeopsRenderAttachmentsInline(attachments), now);
         box.insertAdjacentHTML('beforeend', '<div class="chat-message user"><div class="avatar">U</div>' + userBubble + '</div>');
         if (aiAttachCtl) aiAttachCtl.clear();
         box.insertAdjacentHTML('beforeend', '<div class="chat-message assistant"><div class="avatar">A</div><div class="message-content"><div class="ai-reply-stream"><div class="ai-reply-tools"></div><div class="ai-reply-text"></div></div>' + edgeopsRenderMessageFooter(nowTs) + '</div></div>');
+        setStreamingUI(true);
         edgeopsHydrateChatDiagrams(box);
         if (wasNearBottom) edgeopsScrollChatMessagesToBottom(box);
         else edgeopsScrollChatToBottomStepIfPinned(box);
@@ -16941,13 +16944,13 @@ function renderLocalPage() {
         edgeopsBindChatStickToBottom(box);
         var wasNearBottom = edgeopsChatIsNearBottom(box);
         box._edgeopsStickToBottom = wasNearBottom;
-        setLocalStreamingUI(true);
         var now = new Date();
         var nowTs = edgeopsFormatChatTimestamp(now);
         var userBubble = edgeopsRenderMessageBubble(fmtMdLocal(msg) + edgeopsRenderAttachmentsInline(attachments), now);
         box.insertAdjacentHTML('beforeend', '<div class="chat-message user"><div class="avatar">U</div>' + userBubble + '</div>');
         if (localAiAttachCtl) localAiAttachCtl.clear();
         box.insertAdjacentHTML('beforeend', '<div class="chat-message assistant"><div class="avatar">A</div><div class="message-content"><div class="ai-reply-stream"><div class="ai-reply-tools"></div><div class="ai-reply-text"></div></div>' + edgeopsRenderMessageFooter(nowTs) + '</div></div>');
+        setLocalStreamingUI(true);
         edgeopsHydrateChatDiagrams(box);
         if (wasNearBottom) edgeopsScrollChatMessagesToBottom(box);
         else edgeopsScrollChatToBottomStepIfPinned(box);

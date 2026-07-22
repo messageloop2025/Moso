@@ -1931,6 +1931,28 @@ table.table-compact-ellipsis th.th-skill-group {
 
 .chat-message.user .avatar { background: var(--success); }
 
+/* 流式输出中：AI 头像脉冲闪光，替代输入区「运行中」文案 */
+.chat-message.assistant.is-streaming .avatar {
+    animation: edgeops-ai-avatar-pulse 1.15s ease-in-out infinite;
+}
+@keyframes edgeops-ai-avatar-pulse {
+    0%, 100% {
+        box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.55);
+        filter: brightness(1);
+    }
+    50% {
+        box-shadow: 0 0 10px 3px rgba(56, 189, 248, 0.55);
+        filter: brightness(1.35);
+    }
+}
+@media (prefers-reduced-motion: reduce) {
+    .chat-message.assistant.is-streaming .avatar {
+        animation: none;
+        box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.65);
+        filter: brightness(1.2);
+    }
+}
+
 .chat-message .message-content {
     background: var(--bg-card);
     border: 1px solid var(--border);
@@ -5337,13 +5359,7 @@ table.table-compact-ellipsis th.th-skill-group {
     background: linear-gradient(180deg, rgba(56, 189, 248, 0.06), rgba(56, 189, 248, 0.02));
 }
 .ai-runtime-control-tip {
-    font-size: 12px;
-    color: var(--text-muted);
-    white-space: nowrap;
-    align-self: center;
-    max-width: 42%;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    display: none;
 }
 .ai-runtime-wake-btn {
     flex-shrink: 0;
