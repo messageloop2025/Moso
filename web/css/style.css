@@ -4772,8 +4772,9 @@ table.table-compact-ellipsis th.th-skill-group {
     width: 100%;
     box-sizing: border-box;
 }
+/* 允许滚回 scrollback：hidden 会导致花屏/丢包后旧内容「看不见」且无法上滚恢复 */
 .ai-terminal-mount .xterm-viewport {
-    overflow: hidden !important;
+    overflow-y: auto !important;
 }
 .ai-terminal-mount .xterm-screen {
     width: 100% !important;

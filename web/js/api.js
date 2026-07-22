@@ -398,10 +398,11 @@ var API = {
         return this.get('/local/buffer' + (q.length ? ('?' + q.join('&')) : ''));
     },
 
-    getTerminalBuffer: function(slot) {
-        var q = '/terminal/buffer';
-        if (slot != null) q += '?slot=' + parseInt(slot, 10);
-        return this.get(q);
+    getTerminalBuffer: function(slot, scopeId) {
+        var q = [];
+        if (slot != null) q.push('slot=' + parseInt(slot, 10));
+        if (scopeId) q.push('scope_id=' + encodeURIComponent(scopeId));
+        return this.get('/terminal/buffer' + (q.length ? ('?' + q.join('&')) : ''));
     },
     terminalSend: function(text, slot) {
         var body = { text: text };

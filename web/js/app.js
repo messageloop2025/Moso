@@ -10160,6 +10160,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
             createdBy: createdBy,
             hostId: String(hostId),
             hostName: hostName,
+            scopeId: hostTerminalScopeId,
             ws: null,
             term: null,
             fitDispose: null,
@@ -10173,6 +10174,9 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
             tabBtn: tabLabel,
             panelEl: panelEl
         };
+        edgeopsAttachFixDisplayButton(rowEl, rec, function() {
+            return rec.scopeId || hostTerminalScopeId || 'default';
+        });
         hostAiConsoles.push(rec);
         showHostConsolePanels(true);
         tabLabel.onclick = function() { activateHostConsole(slot, true); };
@@ -10607,8 +10611,11 @@ function edgeopsFitTerminal(term, mount) {
     var cellW = canvas.clientWidth / term.cols;
     var cellH = canvas.clientHeight / term.rows;
     if (cellW <= 0 || cellH <= 0) return;
-    var newCols = Math.max(2, Math.floor(cw / cellW));
-    var newRows = Math.max(1, Math.floor(ch / cellH));
+    // 异常 cell 尺寸（布局未稳定）会算出离谱行数 → 大片空白 + 光标悬空
+    if (cellW < 4 || cellW > 40 || cellH < 8 || cellH > 48) return;
+    var newCols = Math.max(2, Math.min(500, Math.floor(cw / cellW)));
+    var newRows = Math.max(1, Math.min(200, Math.floor(ch / cellH)));
+    if (newCols === term.cols && newRows === term.rows) return;
     term.resize(newCols, newRows);
 }
 function edgeopsTerminalFitAfterOpen(term, mount, fitAddon, onResizeCallback) {
@@ -10655,7 +10662,7 @@ function edgeopsTerminalFitAfterOpen(term, mount, fitAddon, onResizeCallback) {
 }
 
 function edgeopsWriteConsoleChunk(rec, chunk) {
-    if (!rec || !rec.term) return;
+    if (!rec || !rec.term || rec.suppressWrite) return;
     if (!rec.writeBuf) {
         rec.term.write(chunk);
         return;
@@ -10664,7 +10671,7 @@ function edgeopsWriteConsoleChunk(rec, chunk) {
     if (rec.writeRafId == null) {
         rec.writeRafId = requestAnimationFrame(function edgeopsFlushConsoleWriteBuf() {
             rec.writeRafId = null;
-            if (!rec.term || !rec.writeBuf || !rec.writeBuf.length) return;
+            if (!rec.term || !rec.writeBuf || !rec.writeBuf.length || rec.suppressWrite) return;
             var merged = rec.writeBuf.join('');
             rec.writeBuf = [];
             var maxPerFrame = 16384;
@@ -10677,6 +10684,81 @@ function edgeopsWriteConsoleChunk(rec, chunk) {
             rec.term.write(merged);
         });
     }
+}
+
+/** 从服务端 buffer 重建 xterm 画面（WS 丢包/ANSI 截断导致花屏时，无需断开 SSH）。 */
+function edgeopsReloadSshConsoleDisplay(rec, opts) {
+    opts = opts || {};
+    if (!rec || !rec.term || !API.getTerminalBuffer) {
+        return Promise.resolve(false);
+    }
+    var slot = rec.slot != null ? rec.slot : 0;
+    var scopeId = opts.scopeId || rec.scopeId || 'default';
+    rec.suppressWrite = true;
+    if (rec.writeRafId != null) {
+        try { cancelAnimationFrame(rec.writeRafId); } catch (_e) {}
+        rec.writeRafId = null;
+    }
+    if (rec.writeBuf) rec.writeBuf = [];
+    return API.getTerminalBuffer(slot, scopeId).then(function(r) {
+        if (!r || !r.success || !rec.term) {
+            rec.suppressWrite = false;
+            return false;
+        }
+        var text = String(r.buffer || '');
+        try {
+            if (typeof rec.term.reset === 'function') rec.term.reset();
+            else if (typeof rec.term.clear === 'function') rec.term.clear();
+        } catch (_r) {}
+        return new Promise(function(resolve) {
+            function done() {
+                try { if (rec.term && typeof rec.term.scrollToBottom === 'function') rec.term.scrollToBottom(); } catch (_s) {}
+                if (rec.refit) {
+                    try { rec.refit(); } catch (_f) {}
+                }
+                rec.suppressWrite = false;
+                resolve(!!text);
+            }
+            if (!text) {
+                done();
+                return;
+            }
+            try {
+                rec.term.write(text, function() { done(); });
+            } catch (_w) {
+                try { rec.term.write(text); } catch (_w2) {}
+                done();
+            }
+        });
+    }).catch(function() {
+        rec.suppressWrite = false;
+        return false;
+    });
+}
+
+function edgeopsAttachFixDisplayButton(rowEl, rec, scopeIdGetter) {
+    if (!rowEl || !rec) return null;
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-sm btn-ghost';
+    btn.textContent = t('hostAi.fixDisplay');
+    btn.title = t('hostAi.fixDisplayTitle');
+    btn.style.display = 'none';
+    btn.onclick = function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!rec.term) {
+            showToast(t('hostAi.fixDisplayFail'), 'info');
+            return;
+        }
+        var sid = typeof scopeIdGetter === 'function' ? scopeIdGetter() : (rec.scopeId || 'default');
+        edgeopsReloadSshConsoleDisplay(rec, { scopeId: sid }).then(function(ok) {
+            showToast(ok ? t('hostAi.fixDisplayOk') : t('hostAi.fixDisplayFail'), ok ? 'success' : 'info');
+        });
+    };
+    rowEl.appendChild(btn);
+    rec.fixDisplayBtn = btn;
+    return btn;
 }
 
 function edgeopsSanitizeConsoleHostName(name) {
@@ -10719,6 +10801,7 @@ function edgeopsOpenSshConsole(rec, options) {
     rec.ws = ws;
     rec.hostId = String(options.hostId);
     if (options.hostName) rec.hostName = options.hostName;
+    rec.scopeId = options.scopeId || rec.scopeId || 'default';
     if (rec.connectBtn) rec.connectBtn.disabled = true;
     if (rec.statusEl) rec.statusEl.textContent = t('hostAi.tabStatusConnecting');
     var firstMsg = true;
@@ -10746,7 +10829,8 @@ function edgeopsOpenSshConsole(rec, options) {
                             fontSize: options.fontSize || 13,
                             cols: options.cols || 80,
                             rows: options.rows || 14,
-                            cursorBlink: options.cursorBlink !== false
+                            cursorBlink: options.cursorBlink !== false,
+                            scrollback: 8000
                         });
                         var fitAddon = null;
                         if (window.FitAddon) try { fitAddon = new window.FitAddon(); term.loadAddon(fitAddon); } catch (e) { fitAddon = null; }
@@ -10757,6 +10841,7 @@ function edgeopsOpenSshConsole(rec, options) {
                         rec.term = term;
                         rec.writeBuf = [];
                         rec.writeRafId = null;
+                        rec.suppressWrite = false;
                         if (rec.fitDispose) rec.fitDispose();
                         var fitResult = edgeopsTerminalFitAfterOpen(term, rec.mountEl, fitAddon, function(cols, rows) {
                             if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'resize', cols: cols, rows: rows }));
@@ -10769,6 +10854,7 @@ function edgeopsOpenSshConsole(rec, options) {
                     }
                     if (rec.connectBtn) rec.connectBtn.style.display = 'none';
                     if (rec.disconnectBtn) rec.disconnectBtn.style.display = 'inline-block';
+                    if (rec.fixDisplayBtn) rec.fixDisplayBtn.style.display = 'inline-block';
                     if (rec.statusEl) rec.statusEl.textContent = t('hostAi.tabStatusConnected');
                     edgeopsRefreshConsoleTabLabel(rec, { hostId: options.hostId, hostName: options.hostName || rec.hostName });
                     if (typeof options.onReady === 'function') options.onReady(rec, ws);
@@ -10784,6 +10870,7 @@ function edgeopsOpenSshConsole(rec, options) {
             rec.writeRafId = null;
         }
         rec.writeBuf = null;
+        rec.suppressWrite = false;
         rec.ws = null;
         if (rec.fitDispose) { rec.fitDispose(); rec.fitDispose = null; rec.refit = null; }
         if (rec.term) { rec.term.dispose(); rec.term = null; }
@@ -10797,6 +10884,7 @@ function edgeopsOpenSshConsole(rec, options) {
             rec.connectBtn.disabled = false;
         }
         if (rec.disconnectBtn) rec.disconnectBtn.style.display = 'none';
+        if (rec.fixDisplayBtn) rec.fixDisplayBtn.style.display = 'none';
         if (rec.statusEl) rec.statusEl.textContent = t('hostAi.tabStatusDisconnected');
         if (typeof options.onClose === 'function') options.onClose(rec);
     };
@@ -11197,7 +11285,8 @@ function renderAIPage() {
         panelEl.appendChild(rowEl);
         tabsRow.insertBefore(tabWrap, tabsRow.querySelector('.ai-console-new-btn'));
         panelsContainer.appendChild(panelEl);
-        var rec = { slot: slot, createdBy: createdBy, hostId: null, ws: null, term: null, fitDispose: null, refit: null, placeholderEl: placeholderEl, mountEl: mountEl, connectBtn: connectBtn, disconnectBtn: disconnectBtn, statusEl: statusSpan, hostPicker: hostPicker, tabEl: tabWrap, tabBtn: tabLabel, panelEl: panelEl };
+        var rec = { slot: slot, createdBy: createdBy, hostId: null, scopeId: aiTerminalScopeId, ws: null, term: null, fitDispose: null, refit: null, placeholderEl: placeholderEl, mountEl: mountEl, connectBtn: connectBtn, disconnectBtn: disconnectBtn, statusEl: statusSpan, hostPicker: hostPicker, tabEl: tabWrap, tabBtn: tabLabel, panelEl: panelEl };
+        edgeopsAttachFixDisplayButton(rowEl, rec, function() { return rec.scopeId || aiTerminalScopeId || 'default'; });
         aiConsoles.push(rec);
         showConsolePanels(true);
         tabLabel.onclick = function() {
