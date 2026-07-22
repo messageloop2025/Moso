@@ -167,7 +167,7 @@
 
 | 名称 | 说明 | 主要参数 |
 |------|------|----------|
-| get_terminal_buffer | 获取指定控制台最近输出；默认 **tail_only=true** 仅返回末尾 **max_lines**（默认 40）行；`full_output=true` 返回全文；可选 `next_poll_in_seconds` 轮询长任务（batch 末服务端 sleep；Web CoT 可唤醒/停止；集成 API 可用 `runtime-control: wake`） | slot?, full_output?, tail_only?, max_lines?, next_poll_in_seconds? |
+| get_terminal_buffer | 获取指定控制台最近输出；默认 **tail_only=true** 仅返回末尾 **max_lines**（默认 40）行；`full_output=true` 返回全文。可选 `next_poll_in_seconds`（1～3600）做 batch 末 sleep；可选 **`until_contains`**（字面子串）在超时内工具内轮询，命中或超时即返回（超时取自 `next_poll_in_seconds`，默认 30；结果含 `until_wait_reason`；带 until 时不再二次 batch sleep）。batch 末等待时 Web CoT 可唤醒/停止；until 等待无橙色倒计时条，但 Agent 路径仍可被 `runtime-control: wake` 打断 | slot?, full_output?, tail_only?, max_lines?, next_poll_in_seconds?, until_contains? |
 | scp_push | 通过 SFTP 推送到主机：**content**（文本）或 **local_path**（web/fs 相对路径，支持二进制 .tgz/.zip 等）二选一 | host_id, remote_path, content? 或 local_path? |
 | build_scp_transfer_script | 生成在源主机 A 上执行的 `scp -C` 推送脚本（A→B），仅生成不执行；用于跨主机直连方案 | source_host_id, source_path, target_host_id, target_path, compress? |
 | transfer_file_between_hosts | 自动跨主机传输：先探测 A↔B 22 端口可达性，按 [scp, rsync, sshfs] 顺序尝试直连；全部失败时自动回退到 毛竹 `web/fs` 中转 | source_host_id, source_path, target_host_id, target_path, methods?, edgeops_base_url?, ttl_seconds?, keep_staging_for_multi_target?, auto_unpack_on_target?, transfer_timeout_seconds? |
@@ -507,9 +507,9 @@ write_user_skill_file(
 | ssh_channel_list | 列出 SSH 通道；`all_open=true` 列全部 open | owner_type?, owner_id?, all_open? |
 | ssh_channel_info | 获取指定通道详情（主机信息、行号范围） | channel_id |
 | ssh_channel_send | 向通道发送内容（含控制字符） | channel_id, content |
-| ssh_channel_read_lines | 按行读；返回 **tail_text**、**pending_partial**（password 等无换行提示）；可选 **wait_seconds=0～30**（1～30 时 batch 末短等待；0/省略=立即） | channel_id, from_line?/to_line?/last_n?/since_line?, wait_seconds? |
-| ssh_channel_read_length | 按字符数读取通道输出（最近 max_chars 字符）；可选 wait_seconds=0～30 | channel_id, max_chars?, wait_seconds? |
-| ssh_channel_has_new | 是否有新输出（含 pending_partial）；可选 wait_seconds=0～30 | channel_id, after_line?, wait_seconds? |
+| ssh_channel_read_lines | 按行读；返回 **tail_text**、**pending_partial**（password 等无换行提示）。无 until：可选 **wait_seconds=0～30**（batch 末短等待；0/省略=立即）。有 **`until_contains`**：工具内轮询至子串或超时（`wait_seconds` 为超时，默认 30）；结果含 `until_wait_reason`；不再二次 batch sleep | channel_id, from_line?/to_line?/last_n?/since_line?, wait_seconds?, until_contains? |
+| ssh_channel_read_length | 按字符数读取通道输出（最近 max_chars 字符）；可选 wait_seconds / until_contains（同 read_lines） | channel_id, max_chars?, wait_seconds?, until_contains? |
+| ssh_channel_has_new | 是否有新输出（含 pending_partial）；可选 wait_seconds / until_contains。等标记或 password 时**优先 read_lines + until_contains**（has_new 的 `has_new` 仍按 after_line 计算） | channel_id, after_line?, wait_seconds?, until_contains? |
 | ssh_channel_close | 关闭指定通道 | channel_id |
 | ssh_channel_close_batch | 按 owner 或 session 批量关闭 | owner_type?, owner_id?, session_id? |
 | ssh_channel_dump_output | 导出通道缓冲到 spill | channel_id, max_chars? |

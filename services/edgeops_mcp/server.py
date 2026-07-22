@@ -15,6 +15,11 @@ from services.edgeops_mcp.context import (
     resolve_access_token,
     resolve_integration_session_id,
 )
+from services.output_wait import (
+    clamp_until_wait_seconds,
+    normalize_until_contains,
+    poll_until_contains,
+)
 from services.terminal_poll import attach_ssh_channel_wait_fields, clamp_ssh_channel_wait_seconds
 
 mcp = FastMCP(
@@ -26,7 +31,8 @@ mcp = FastMCP(
         "多会话：session_id 参数，或 HTTP 头 X-EdgeOps-Session-Id，或 edgeops_context_bind。"
         "无 Web UI：勿依赖 connect_terminal / ask_user_choice；长任务用 ops_orchestrate_chat + ops_task_*。"
         "若 ops-chat 触发 Web 终端 batch 末等待，可用 POST /api/ai/sessions/{session_id}/runtime-control action=wake 跳过。"
-        "ssh_channel 读工具可传 wait_seconds=1～30（直调时工具内静默 sleep；0=立即）；ops-chat 路径也可 wake。"
+        "ssh_channel 读工具：wait_seconds=1～30（无 until 时直调静默 sleep；0=立即）；"
+        "亦可 until_contains（字面子串，超时内轮询至命中或超时，默认超时 30s）。"
         "SSH 通道内嵌套登录：先 edgeops_list_service_credentials，再 edgeops_send_service_password（勿 ssh_channel_send 发明文）。"
     ),
     # 挂载到主 Web 的 /mcp 时，子应用内路由为 `/`；独立 --http 进程由 mount 层再包一层 /mcp。
@@ -47,16 +53,82 @@ async def _run(coro, *, ctx: Context | None = None) -> str:
         return _json({"success": False, "error": str(exc)})
 
 
+def _channel_read_haystack(data: Any) -> str:
+    """从读通道响应拼出可匹配文本。"""
+    if not isinstance(data, dict):
+        return ""
+    parts: list[str] = []
+    for key in ("tail_text", "text", "content", "content_preview", "pending_partial", "last_line"):
+        val = data.get(key)
+        if isinstance(val, str) and val:
+            parts.append(val)
+    lines = data.get("lines")
+    if isinstance(lines, list):
+        for item in lines[-80:]:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                t = item.get("text") or item.get("line") or item.get("content")
+                if isinstance(t, str) and t:
+                    parts.append(t)
+    return "\n".join(parts)
+
+
 async def _run_ssh_channel_read(
     coro_factory: Callable[[Any], Awaitable[Any]],
     *,
     wait_seconds: int | None,
+    until_contains: str | None = None,
+    until_haystack_factory: Callable[[Any], Awaitable[str]] | None = None,
+    session_id: int | None = None,
     ctx: Context | None = None,
 ) -> str:
-    """直调读通道：成功后按 wait_seconds 静默 sleep（不经 agent batch）。"""
+    """直调读通道：until_contains 时工具内轮询；否则成功后按 wait_seconds 静默 sleep。"""
+    needle = normalize_until_contains(until_contains)
     wait = clamp_ssh_channel_wait_seconds(wait_seconds)
     try:
         client = create_client(ctx=ctx)
+        if needle:
+            timeout = clamp_until_wait_seconds(wait_seconds, default=30, max_sec=30)
+            last_data: dict[str, Any] = {}
+
+            async def _fetch_raw() -> tuple[str, dict]:
+                nonlocal last_data
+                data = await coro_factory(client)
+                if not isinstance(data, dict):
+                    last_data = {"success": False, "error": "invalid response"}
+                    return "", last_data
+                last_data = data
+                if data.get("error") and data.get("success") is False:
+                    return "", data
+                haystack = _channel_read_haystack(data)
+                if until_haystack_factory is not None:
+                    try:
+                        extra = await until_haystack_factory(client)
+                        if extra:
+                            haystack = (haystack + "\n" + extra).strip()
+                    except Exception:
+                        pass
+                return haystack, {"_payload": data}
+
+            reason, snippet, _, _ = await poll_until_contains(
+                fetch_raw=_fetch_raw,
+                needle=needle,
+                timeout_sec=timeout,
+                session_id=session_id,
+                match_mode="full",
+            )
+            data = last_data if isinstance(last_data, dict) else {}
+            if data.get("error") and data.get("success") is False:
+                return _json(data)
+            data["until_contains"] = needle
+            data["until_wait_reason"] = reason or "timeout"
+            data["until_wait_done"] = True
+            if snippet:
+                data["until_matched_snippet"] = snippet
+            if reason == "matched" and "has_new" in data:
+                data["has_new"] = True
+            return _json(data)
         data = await coro_factory(client)
         if isinstance(data, dict) and not data.get("error"):
             attach_ssh_channel_wait_fields(data, {"wait_seconds": wait})
@@ -292,15 +364,19 @@ async def edgeops_ssh_channel_read_lines(
     last_n: int | None = None,
     session_id: int | None = None,
     wait_seconds: int | None = None,
+    until_contains: str | None = None,
     ctx: Context | None = None,
 ) -> str:
-    """按行读取 SSH 通道输出。wait_seconds=1～30 时读完后静默等待再返回；0/省略=立即。"""
+    """按行读通道。无 until_contains：wait_seconds=1～30 读完后静默等；0/省略=立即。
+    有 until_contains：超时内轮询至字面子串出现（wait_seconds 为超时，默认 30）。"""
     sid = _session(session_id, ctx)
     return await _run_ssh_channel_read(
         lambda c: c.ssh_channel_read_lines(
             channel_id, since_line=since_line, last_n=last_n, session_id=sid
         ),
         wait_seconds=wait_seconds,
+        until_contains=until_contains,
+        session_id=sid,
         ctx=ctx,
     )
 
@@ -311,13 +387,16 @@ async def edgeops_ssh_channel_read(
     max_chars: int | None = None,
     session_id: int | None = None,
     wait_seconds: int | None = None,
+    until_contains: str | None = None,
     ctx: Context | None = None,
 ) -> str:
-    """按字符读取 SSH 通道最近输出。可选 wait_seconds=0～30。"""
+    """按字符读通道最近输出。可选 wait_seconds / until_contains（同 read_lines）。"""
     sid = _session(session_id, ctx)
     return await _run_ssh_channel_read(
         lambda c: c.ssh_channel_read(channel_id, max_chars=max_chars, session_id=sid),
         wait_seconds=wait_seconds,
+        until_contains=until_contains,
+        session_id=sid,
         ctx=ctx,
     )
 
@@ -326,13 +405,27 @@ async def edgeops_ssh_channel_read(
 async def edgeops_ssh_channel_has_new(
     channel_id: int,
     after_line: int | None = None,
+    session_id: int | None = None,
     wait_seconds: int | None = None,
+    until_contains: str | None = None,
     ctx: Context | None = None,
 ) -> str:
-    """轮询 SSH 通道是否有新输出。可选 wait_seconds=0～30。"""
+    """轮询是否有新输出。可选 wait_seconds / until_contains。
+    until 匹配会额外拉取 recent lines/tail（因 has-new 本身无完整文本）。"""
+    sid = _session(session_id, ctx)
+
+    async def _haystack(c: Any) -> str:
+        extra = await c.ssh_channel_read_lines(
+            channel_id, last_n=80, session_id=sid
+        )
+        return _channel_read_haystack(extra)
+
     return await _run_ssh_channel_read(
         lambda c: c.ssh_channel_has_new(channel_id, after_line=after_line),
         wait_seconds=wait_seconds,
+        until_contains=until_contains,
+        until_haystack_factory=_haystack if normalize_until_contains(until_contains) else None,
+        session_id=sid,
         ctx=ctx,
     )
 

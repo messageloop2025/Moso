@@ -51,8 +51,11 @@
 
 ### 与 Web 控制台「轮询等待 / 唤醒」的区别
 
-- **Web 控制台**在长任务时，`get_terminal_buffer(next_poll_in_seconds=N)`（1～3600，可自动推断）可能在工具批次结束后由服务端 **sleep N 秒**；浏览器 CoT 可 **唤醒 / 停止**（见 [terminal.md](terminal.md)）。
-- **ssh_channel** 读/轮询工具支持显式短等待：**`wait_seconds=1～30`**（`ssh_channel_read_lines` / `read_length` / `has_new`）；**0 或不传 = 读完立即返回**，不做按命令自动推断。Web 会话同样可在 CoT 上 **唤醒** 跳过该倒计时。
+- **Web 控制台**在长任务时，`get_terminal_buffer(next_poll_in_seconds=N)`（1～3600，可自动推断）可能在工具批次结束后由服务端 **sleep N 秒**；亦可 `until_contains` 在工具内等到子串或超时。浏览器 CoT 可 **唤醒 / 停止**（见 [terminal.md](terminal.md)）。
+- **ssh_channel** 读工具：
+  - 无 `until_contains`：**`wait_seconds=1～30`** batch 末短等待；**0/不传 = 立即**（无自动推断）。
+  - 有 **`until_contains`**：工具内轮询至字面子串出现或超时（`wait_seconds` 为超时，默认 30）；结果含 `until_wait_reason`；**不再**二次 batch sleep。适合脚本标记串、`password:`；卡死靠超时兜底。**无**橙色倒计时条，仍可 runtime **唤醒**打断。
+  - 仅 batch 末 `wait_seconds` 会在 CoT 显示倒计时条。
 
 ---
 

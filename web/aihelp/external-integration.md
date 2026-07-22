@@ -212,7 +212,7 @@ A：正常。复杂任务可能数分钟。若用 **MCP**，耗时任务请改�
 A：不会主动推送。需轮询 `edgeops_ops_task_output` 或再次调用 `edgeops_ops_orchestrate_chat` 查看 `task_completions`。
 
 **Q：集成会话里 AI 在等终端编译，能提前继续吗？**  
-A：若 Agent 使用了 `get_terminal_buffer` / `send_to_terminal` 触发了服务端 `next_poll_in_seconds` 等待，可在阻塞期间调用：
+A：若 Agent/`ops-chat` 处于 **batch 末 sleep**（`next_poll_in_seconds` / `wait_seconds`）或工具内 **`until_contains` 轮询**，可在阻塞期间调用：
 
 ```http
 POST /api/ai/sessions/{session_id}/runtime-control
@@ -222,7 +222,10 @@ Content-Type: application/json
 {"action": "wake"}
 ```
 
-`wake` 仅**跳过当前倒计时**并进入下一轮推理，不中断整任务；`stop` 则中断整轮 Agent。ssh_channel 读工具传 `wait_seconds=1～30` 时同样可被 wake 跳过。MCP 暂未封装 wake 工具，需直接调 REST。
+`wake` 跳过当前等待并进入下一轮推理，不中断整任务；`stop` 则中断整轮 Agent。MCP 暂未封装 wake 工具，需直接调 REST；MCP **直调**读通道的 until 轮询需绑定 integration `session_id` 才响应 wake。
+
+**Q：如何用 until_contains 等高效率等待？**  
+A：脚本结束时 `echo DONE_<随机串>`，然后 `ssh_channel_read_lines(until_contains="DONE_…", wait_seconds=30)` 或 `get_terminal_buffer(until_contains=…, next_poll_in_seconds=…)`；等密码可用 `until_contains="password"`。超时仍会返回，避免无限卡死。
 
 **Q：401 怎么办？**  
 A：检查 Token 是否完整、`Authorization: Bearer` 拼写、Base URL 是否指向正确实例。

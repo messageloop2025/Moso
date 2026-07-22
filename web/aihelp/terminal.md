@@ -22,7 +22,8 @@
 - **send_to_terminal**：向某个 **AI 创建** 的控制台槽位发送文本（命令、控制键等）。支持 `<Ctrl+C>`、`<Ctrl+Z>`、`<Ctrl+D>`、`<Ctrl+L>` 等占位符。
 - **get_terminal_status**：轻量查询控制台 **通/断**（`connected`）与 **闲/忙**（`buffer_idle` / `session_state`）。`connected=false` 时**禁止** `send_to_terminal`；`session_state=busy` 时勿发新 shell 命令，应 `get_terminal_buffer` 轮询。
 - **get_terminal_buffer**：获取 **AI 创建** 控制台的最近输出（**末尾**即最新状态），并附带与 `get_terminal_status` 相同的状态字段。默认 `tail_only=true`：超长时仅返回最后 40 行；`tail_only=false` 为前 2+后 33 行；`full_output=true` 为全量。**仅供 AI 内部使用**。
-- **长任务轮询等待（next_poll_in_seconds）**：AI 调用 `get_terminal_buffer` 时若传入 `next_poll_in_seconds`（1～3600），或刚 `send_to_terminal` 发了 apt/make/编译等长命令、buffer 末尾仍有进度，服务端会在**该轮工具全部执行完后**倒计时 N 秒，再进入下一轮 AI 推理（避免每秒空读终端）。**Web 控制台路径**：`get_terminal_buffer` / `send_to_terminal` / `ssh_execute` detach。**ssh_channel** 另有显式短等待 `wait_seconds=1～30`（见 [ssh-channel.md](ssh-channel.md)）。
+- **条件返回（until_contains）**：可传字面子串 `until_contains`；工具在超时内轮询，**命中或超时即返回**（`until_wait_reason`）。超时取自 `next_poll_in_seconds`（默认 30、最长 3600）。适合脚本 `echo` 标记串、等 `password:`；带此参数时**不再**额外 batch 末 sleep。**无** CoT 橙色倒计时条，但仍可被 runtime **唤醒/停止**打断。
+- **长任务轮询等待（next_poll_in_seconds）**：未使用 `until_contains` 时，若传入 `next_poll_in_seconds`（1～3600），或刚 `send_to_terminal` 发了 apt/make/编译等长命令、buffer 末尾仍有进度，服务端会在**该轮工具全部执行完后**倒计时 N 秒，再进入下一轮 AI 推理。**Web 控制台路径**：`get_terminal_buffer` / `send_to_terminal` / `ssh_execute` detach。**ssh_channel** 另有 `wait_seconds` / `until_contains`（见 [ssh-channel.md](ssh-channel.md)）。
 - **CoT 上的唤醒与停止**：倒计时期间，聊天右侧「思考与计划」里**对应工具步骤**（多为 `get_terminal_buffer`）会显示剩余秒数，并提供：
   - **唤醒**：跳过剩余等待，AI 立刻进入下一轮（例如马上再读 buffer）；**不中断**整个任务。
   - **停止**：终止当前 AI 执行轮次（与输入区「停止」相同）。

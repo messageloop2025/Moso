@@ -258,6 +258,10 @@ def apply_terminal_poll_tool_result(
         state.on_send_to_terminal(str(args.get("text") or ""), success=True)
         return 0, result_obj
     if fn_name == "get_terminal_buffer" and success:
+        # 工具内已按 until_contains 等到结束 → 不再 batch 末二次 sleep
+        if result_obj.get("until_wait_done") or result_obj.get("wait_done_in_tool"):
+            result_obj.pop("next_poll_in_seconds", None)
+            return 0, result_obj
         poll, result_obj = state.on_get_terminal_buffer(args, result_obj)
         return poll, result_obj
     if fn_name == "ssh_execute" and success:
@@ -267,6 +271,10 @@ def apply_terminal_poll_tool_result(
             result_obj["next_poll_in_seconds"] = poll
         return poll, result_obj
     if fn_name in _SSH_CHANNEL_WAIT_TOOLS and success:
+        if result_obj.get("until_wait_done") or result_obj.get("wait_done_in_tool"):
+            result_obj.pop("next_poll_in_seconds", None)
+            result_obj.pop("wait_seconds", None)
+            return 0, result_obj
         wait = clamp_ssh_channel_wait_seconds(
             args.get("wait_seconds")
             if args.get("wait_seconds") is not None

@@ -444,7 +444,7 @@ token 来自解锁邮件链接。
 | content | 助手回复文本片段（流式拼接） |
 | action | executing / completed / failed（工具执行状态）；或 **waiting** / **waiting_woken** / **waiting_aborted**（终端轮询倒计时；含 `wait_remaining`、`wait_tool` 等） |
 | tool, args, result_preview | 工具名、参数、结果摘要 |
-| wait_remaining, wait_tool, seconds | 仅 `action=waiting`：`next_poll_in_seconds` 倒计时剩余秒数及触发等待的工具名（如 `get_terminal_buffer`） |
+| wait_remaining, wait_tool, seconds | 仅 `action=waiting`：**batch 末**倒计时（`next_poll_in_seconds` / `wait_seconds`）剩余秒数及触发工具名。工具内 `until_contains` 轮询**不会**产生该 SSE 事件 |
 | ui_action | 前端动作：`connect_terminal`（host_id）、`switch_console`（slot, scope）、`ensure_local_console` / `create_local_console`（scope: local, created_by: ai）、`close_local_console`（scope: local, slot）、`ask_user_choice`（模型发起的选择题）、`strict_command_confirm`（严格模式**独立确认模态**，与 ask_user_choice 分离；选项允许/总是/拒绝）、`pending_command`（问答模式待执行命令卡，`type`/`command`/`intent`）、以及其它终端 UI 动作 |
 | strict_confirm | 严格模式专用：与 `ui_action.action=strict_command_confirm` 同载荷；前端弹独立模态，不经模型文案 |
 | waiting_for_user | 等待用户：`kind=strict_command_confirm` 时配合严格确认；用户通过 `runtime-control` 的 `action=choice` 回传（如 `[allow] 允许`） |
@@ -468,7 +468,7 @@ token 来自解锁邮件链接。
 - `supplement`：把新上下文插入当前会话的 runtime control 队列，AI 在当前轮可用时优先整合。
 - `pause` / `resume`：用于让用户临时提问、补充条件后再继续。
 - `stop`：请求停止当前 agent 循环；若正在等待工具或终端轮询倒计时，后端会尽量在等待间隙中断并返回相应 aborted 结果。
-- `wake`：在 **轮询等待**（Web 控制台 `next_poll_in_seconds`，或 ssh_channel 读工具 `wait_seconds=1～30` 触发的 batch 末 sleep）期间，**跳过剩余倒计时**并进入下一轮 Agent 推理；**不中断**整轮任务。无 Web UI 的 integration 会话同样有效（需已知 `session_id`）。
+- `wake`：在 **轮询等待**期间跳过剩余等待并进入下一轮 Agent 推理（**不中断**整轮）。覆盖：① batch 末 sleep（`next_poll_in_seconds` / ssh_channel `wait_seconds`）；② Agent 工具内 `until_contains` 轮询（通过 runtime 队列打断）。无 Web UI 的 integration 会话同样有效（需已知 `session_id`）。MCP **直调**读通道时的 until 轮询仅在绑定了 integration `session_id` 时响应 wake；纯 REST ssh-channel 读接口本身**无** `until_contains` 参数（条件等待在 Agent / MCP 工具层）。
 - `choice`：用户在 `ask_user_choice` 等待期间通过按钮或文字回复选择（`message` 为选项文本）。
 - 后端在新一轮 `/ai/chat` 开始时会清空该会话残留的 runtime control 队列，避免上一轮控制指令影响下一条普通消息。
 
@@ -817,10 +817,12 @@ query：`from_line?`、`to_line?`、`last_n?`、`since_line?`、`spill?`（默�
 | `text` / `text_preview` | `spill=true` 且未落盘时为全文；过大时 `spill` + preview |
 
 > **AI 读 channel 输出**：除 `lines` 外务必看 **`tail_text` / `pending_partial`**；勿因 `lines` 为空或 `has_new=false` 误判无输出。
+>
+> **`until_contains` / `wait_seconds`**：REST 本接口**不接受**这两个参数。条件返回与短等待由 Agent Skills（`ssh_channel_read_*`）或 MCP `edgeops_ssh_channel_*` 在工具层实现（内部多次调用本 REST）。
 
 ### GET /ssh-channel/{id}/has-new
 
-返回：`has_new`、`latest_line_no`、**`pending_partial`**（有未完成行时 `has_new` 可为 true）。
+返回：`has_new`、`latest_line_no`、**`pending_partial`**（有未完成行时 `has_new` 可为 true）。条件等待请用 Agent/MCP 的 `until_contains`（优先 `read_lines`，勿单靠 has-new 匹配已落盘行）。
 
 ### WebSocket /api/ssh-channel/{id}/ws
 

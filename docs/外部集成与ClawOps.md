@@ -135,11 +135,12 @@ MCP 本地：`EDGEOPS_API_BASE_URL=http://127.0.0.1:8010`
 |----|---------|----------------------------|-----|
 | 会话 scope | default / local | **integration** | **integration** / **mcp_orchestrate** / **mcp_runtime** |
 | UI 动作 | `ask_user_choice` 按钮 | 纯文本回退 | 纯文本回退 |
-| 终端轮询等待 | CoT 步骤 **唤醒/停止** | 无 UI；`POST /ai/sessions/{id}/runtime-control` **`wake`** | 同左（MCP 未封装 wake 工具） |
+| 终端轮询等待 | CoT 步骤 **唤醒/停止**（仅 batch 末 sleep） | 无 UI；`POST /ai/sessions/{id}/runtime-control` **`wake`** | 同左（MCP 未封装 wake 工具） |
+| 条件返回 until_contains | Agent 工具内轮询（无橙色条；可 wake） | 同左（ops-chat） | MCP 直调读通道支持 until；绑 session 时可 wake |
 | 编排后台子任务 | 否 | 否 | **是**（orchestrate） |
 | 依赖浏览器 | 是 | **否** | **否** |
 
-> **wake 说明**：Web 控制台 `next_poll_in_seconds` 与 ssh_channel 读工具 `wait_seconds=1～30` 均可在 tool 批次结束后 sleep；`wake` 跳过倒计时继续推理，`stop` 中断整轮。
+> **wake 说明**：① **batch 末 sleep**（`next_poll_in_seconds` / `wait_seconds`）可被 wake 跳过；② Agent/`ops-chat` 的 **`until_contains`** 工具内轮询也可被 wake 打断；③ MCP 直调 until 需绑定 `session_id` 才响应 wake。`stop` 中断整轮。
 
 ---
 

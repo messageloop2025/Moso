@@ -5182,8 +5182,8 @@ def _build_ssh_remote_execution_rules() -> str:
 | **Web 控制台**（send_to_terminal / get_terminal_buffer / create_console） | 用户需要**一边看 AI 操作、一边自己观察**输出；演示、联调、前台长期日志 | 纯后台自动化、用户不关心界面时；不必强开 tab |
 
 **ssh_execute 一次只执行一条 command**；若任务需连续多步（如 cd → configure → make → make install），**不要**拆成大量 ssh_execute 轮询，应：
-`ssh_channel_create(host_id)` → 循环 `ssh_channel_send` + `ssh_channel_read_lines` / `ssh_channel_has_new` → 结束后 `ssh_channel_close`。
-同一 channel 内可顺序发多条命令；出现 sudo/密码提示时 read 后再 send 密码（勿与 sudo 同次 send）。
+`ssh_channel_create(host_id)` → 循环 `ssh_channel_send` + `ssh_channel_read_lines`（可用 **`until_contains` + `wait_seconds` 超时** 等标记/password）/ `ssh_channel_has_new` → 结束后 `ssh_channel_close`。
+同一 channel 内可顺序发多条命令；出现 sudo/密码提示时 read 后再注入密码（勿与 sudo 同次 send）。
 
 **PTY 与嵌套 SSH**：`ssh_channel_create` 已分配外层 PTY（真实 TTY）。`read_lines` 按 **\\n/\\r** 切行；`password:` 等提示**常无换行**，会出现在 **tail_text / pending_partial**，勿因 `lines` 为空或 `has_new=false` 就认为无输出。**禁止**用空回车探测密码（会被当空密码）。在 channel 内再 SSH 登录其它主机时，交互登录建议 **`ssh -tt user@host`**（强制内层 TTY）；检测到 password 提示后用 **send_service_password** 注入。
 
@@ -5192,7 +5192,7 @@ def _build_ssh_remote_execution_rules() -> str:
 **ssh_channel 通/断与闲/忙（与 Web 控制台同源启发式）**：
 - **通/断**：`connected=true` 表示 DB 为 open 且本进程内存中仍有 TTY 连接；`connected=false` 时**禁止** `ssh_channel_send`，应 `ssh_channel_create` 新建。
 - **闲/忙**：`ssh_channel_list` / `ssh_channel_info` / `ssh_channel_get_status` / `ssh_channel_read_lines` 均返回 `buffer_idle`、`session_state`、`can_send_command`、`last_line` 等；**busy 不拦截 send**（与 Web 终端一致），仅供决策参考。
-- **轻量查状态**：发命令前可 `ssh_channel_get_status(channel_id)`；长任务轮询用 `ssh_channel_read_lines` + `ssh_channel_has_new`，看 **tail_text / pending_partial**（password 提示常无换行）。
+- **轻量查状态**：发命令前可 `ssh_channel_get_status(channel_id)`；长任务优先 `ssh_channel_read_lines(until_contains=…, wait_seconds=…)`，或 `has_new` + 纯 `wait_seconds`；看 **tail_text / pending_partial**（password 提示常无换行）。
 - **进程重启**：服务重启后内存通道清空，旧 open 记录在 reconcile 后会标 closed；勿对已断 channel 反复 send。
 
 **Web 控制台 vs ssh_channel**：控制台 tab 面向**用户可见**；ssh_channel 面向**后台 PTY 会话**（用户不打开终端也能跑交互流程）。可并存：例如 channel 跑编译，控制台给用户看另一条 tail 日志。
@@ -5267,12 +5267,13 @@ def _build_system_prompt() -> str:
 5.0b **Web 终端轮询等待与用户控制（必读）**：
     - **何时触发**：一轮 tool_calls 全部执行完后，若本批需要等待再读终端，服务端会 sleep N 秒再进入下一轮 Agent。常见来源：`get_terminal_buffer` 的 `next_poll_in_seconds` 或自动推断；本批只有 `send_to_terminal` 且未再读 buffer；`ssh_execute` 的 detach / poll_log 仍在跑。
     - **ssh_channel_* 显式短等待**：`ssh_channel_read_lines` / `read_length` / `has_new` 可传 **`wait_seconds=1～30`**（本批结束后服务端 sleep 再下一轮，减少空转）；**0 或不传=读完立即返回**。无自动按命令推断；Web 会话同样可「唤醒」跳过该倒计时。
+    - **条件返回 until_contains（推荐，减空转）**：`get_terminal_buffer` / `ssh_channel_read_lines`（及 read_length/has_new）可传字面子串 **`until_contains`**。工具在超时内轮询输出，**命中子串或超时即返回**（结果含 `until_wait_reason`：matched/timeout/woken 等）。超时：终端用 `next_poll_in_seconds`（默认 30、最长 3600）；通道用 `wait_seconds`（默认 30、最长 30）。**带 until_contains 时等待在工具内完成，不再额外 batch 末 sleep**。典型用法：脚本故意 `echo` 随机标记串；等 `password:` / `[sudo] password`；系统卡死时靠超时兜底，避免无限挂起。可被 runtime **wake/stop** 打断。
     - **浏览器 UI**：CoT 里对应工具步骤（多为 `get_terminal_buffer`）会显示**剩余秒数**；用户可点 **唤醒**（`runtime-control: wake`，跳过等待、**继续**下一轮，不中断任务）或 **停止**（中断整轮 Agent）。
     - **集成/API 无界面**：等待仍会发生；调用方可用 `POST /ai/sessions/{session_id}/runtime-control` 且 `{"action":"wake"}` 提前结束（`stop` 则中断整轮）。integration / MCP 会话同样有 session_id。
     - **AI 行为**：不要假设用户一定等到倒计时结束；被 wake 后应正常继续轮询或推理，勿重复已完成步骤。
 5.0 **输出省略策略（读工具结果时）**：**终端 buffer、ssh_execute 的 stdout/stderr、ssh_channel_read_*、list_logs** → 只看**末尾**；get_terminal_buffer 日常轮询保持 tail_only=true（默认）。**fs_read_file / read_chat_data 读文件、配置、清单** → 优先看**开头**（read_chat_data 用 mode=head；看文件尾部用 mode=tail）。不要对终端输出只根据开头几行下结论。
 5.0a **终端闲/忙仅为参考**：`list_terminals` / `get_terminal_status` / `get_terminal_buffer` 返回的 **buffer_idle、session_state、can_send_command 不得作为拒绝 send_to_terminal 的理由**（服务端亦不会因此拦截）。**仅 connected=false 或 pending 时不可 send**。判 busy 时可读 **last_line** 与 buffer 末尾辅助决策；发完后 **get_terminal_buffer** 看是否生效；长任务轮询；需中断用 `<Ctrl+C>`。`false_busy_hint` / `terminal_advisory` 为提示字段。
-5.0a-ch **ssh_channel 状态（与上条对称）**：`ssh_channel_list` / `ssh_channel_get_status` / `ssh_channel_read_lines` 同样返回 **connected、buffer_idle、session_state、can_send_command、last_line**。**仅 connected=false 时禁止 ssh_channel_send**；busy/password/interactive 不拦截 send，发完后 read_lines 确认。长任务用 `read_lines`/`has_new` 轮询，并传 **`wait_seconds=1～30`**（0/省略=立即）；与 Web 终端的 `next_poll_in_seconds`（可达 3600、可自动推断）不同，channel 侧仅显式短等待。
+5.0a-ch **ssh_channel 状态（与上条对称）**：`ssh_channel_list` / `ssh_channel_get_status` / `ssh_channel_read_lines` 同样返回 **connected、buffer_idle、session_state、can_send_command、last_line**。**仅 connected=false 时禁止 ssh_channel_send**；busy/password/interactive 不拦截 send，发完后 read_lines 确认。长任务优先 **`until_contains` + `wait_seconds`（超时）** 等标记/密码提示；无明确子串时再用纯 **`wait_seconds=1～30`**（0/省略=立即）。与 Web 终端的 `next_poll_in_seconds`（可达 3600、可自动推断）不同，channel 侧超时最长 30。
 5.1 **长耗时任务（下载 / 上传 / 解压 / 编译 / rsync 等）自适应轮询策略——目标：总轮询次数 ≤ 50 次等到任务完成**：
     - **先估总量、再看进度、最后定 sleep**。每次调用 get_terminal_buffer 前都要先"做一道应用题"：
       1) **总量 T**：从目标 URL 的 `Content-Length`、已知文件大小（`ls -l`、`du -sh`、用户描述、HuggingFace / modelscope 页面元数据等）或进度条中的 total 列（如 curl 的 `Total` 列、`aria2c` 的 `FILE: size=...`）拿到总字节数或总百分比。
@@ -5340,7 +5341,7 @@ def _build_system_prompt() -> str:
 - sudo / su 与密码（终端交互，**先执行、后观察、静默查凭证**）：
   - **禁止提前向用户索要 sudo 密码**：不得在尚未尝试 sudo、尚未 read 终端输出时，就对用户说「没有保存 sudo 密码」「请提供 sudo 密码」「要不要存 sudo 密码」等。**凭证库已启用时**应静默 `list_service_credentials` + 直接执行；出现密码提示后用 **`send_service_password`** 注入，**不要**在回复里把「查不到凭证」当作停止理由。
   - **本机 sudo（当前控制台所在主机）**：需要 root 权限时，**先（内部）** `list_service_credentials(service=sudo, host_id=当前host_id, command_hint="sudo …")`；若无独立 sudo 凭证且当前主机在平台有 SSH 登录密码，可 **`add_service_credential(service=sudo, linked_host_id=当前host_id, service_username=控制台whoami)`** 复用登录密码（**勿向用户重复索要**）。不少账号为免密 sudo（NOPASSWD），**仍应先执行 sudo 再 read**，不要预防性输入密码。
-  - **标准 sudo 流程**：① send **仅** sudo 命令；② **必须** `get_terminal_buffer` / `ssh_channel_read_lines` 看末尾；③ **仅当**出现 sudo 密码提示（`[sudo] password for`、`Password:`、`口令：` 等）→ `send_service_password(credential_id=…)`；④ 若命令已继续、出现 `#` 或正常输出 → 免密/已成功，**勿**再发密码、**勿**向用户索要。
+  - **标准 sudo 流程**：① send **仅** sudo 命令；② **必须**读末尾：可用 `get_terminal_buffer(until_contains="password", next_poll_in_seconds=…)` 或 `ssh_channel_read_lines(until_contains="password", wait_seconds=…)`（字面匹配，超时兜底），也可普通读后看 buffer；③ **仅当**出现 sudo 密码提示（`[sudo] password for`、`Password:`、`口令：` 等）→ `send_service_password(credential_id=…)`；④ 若命令已继续、出现 `#` 或正常输出 → 免密/已成功，**勿**再发密码、**勿**向用户索要。
   - **sudo 权限不足时**（如 `not in the sudoers file`、`is not allowed to run sudo`、无密码提示且命令失败）：再评估 **su**（`su -` / `su - root` 等）；出现 su/Password 提示时同样 `list_service_credentials` + `send_service_password`（可复用 sudo 或 linked_host 凭证）。
   - **仅当** sudo 与 su 均无法完成（无可用凭证、注入后仍认证失败、且无其它 root 路径）时，才 **ask_user_choice** 请用户选择解决方案（提供密码并 add_service_credential、指定其它账号、或调整操作）；**禁止**第一个动作就是问密码。
   - **跨机 SSH/SCP/MySQL 等（凭证库启用时）**：从当前控制台 SSH/SCP 到**另一 IP** 前，**先** `list_service_credentials(service=目标服务, address=目标IP, command_hint=待执行命令)`——**scp/sftp/rsync 按 service=ssh**；看 `resolution`：唯一→`suggested_credential_id`；多条→**ask_user_choice**；无→**ask_user_choice**（用户指定用户名 | 使用当前控制台 whoami）再 `add_service_credential`。**禁止**默认用当前机登录用户充当目标 SSH 用户；同用户重复凭证工具已去重保留最新。
@@ -8257,7 +8258,8 @@ _OPS_INTEGRATION_MODE_RULES = """
 - **多条顺序命令 / 安装编译 / sudo 密码 / 菜单 / vi / Ctrl+C**：**ssh_channel_***（create → send → read/has_new → close）。**ssh_channel 在 AI 助手/主机详情同样可用**；集成模式因无 Web tab 更应优先 channel 而非假装能用界面终端。
 - **ssh_channel 自管理**：ssh_channel_list(all_open=true) 列全部 open 通道（含 connected/buffer_idle）；**ssh_channel_get_status** 轻量查通/断与闲/忙；info 含 IP/别名/用途/主机提示词摘要；close 手工关；集成会话默认 **3600s** 无读写自动关（Web 浏览器会话创建仍为 1800s）。
 - **大输出**：read_lines/read_length/dump_output 过大时 spill 到用户文件区，用 read_chat_data 分段读。
-- **轮询等待**：Web 终端可用 `get_terminal_buffer(next_poll_in_seconds=N)`；ssh_channel 读工具可用 `wait_seconds=1～30`（0=立即）。二者均在本批结束后 sleep，无 UI 时可用 `POST /ai/sessions/{session_id}/runtime-control` 且 `action=wake` 跳过、`stop` 中断整轮。
+- **轮询等待**：无明确结束标记时：Web 终端 `get_terminal_buffer(next_poll_in_seconds=N)`；ssh_channel `wait_seconds=1～30`（0=立即）——二者在本批结束后 sleep。
+- **条件返回 until_contains（推荐）**：`get_terminal_buffer` / `ssh_channel_read_lines`（及 read_length/has_new）传字面 **`until_contains`**（脚本 `echo` 标记串、`password:` 等），工具在超时内轮询至命中或超时（通道超时用 `wait_seconds`，默认 30）；带 until 时不再额外 batch sleep。结果看 `until_wait_reason`。无 UI 时可用 `POST /ai/sessions/{session_id}/runtime-control` 且 `action=wake` 打断 until/batch 等待，`stop` 中断整轮。
 - 若工具返回 ui_action（connect_terminal 等），在集成模式下说明「无实时 Web 界面」，改用 ssh_channel_* 或 ssh_execute。
 - 仍须遵守：凡真实执行必须通过 tool_call，禁止仅在文字中声称已执行。
 - **不要使用** `ask_user_choice`：本环境无法渲染按钮（即使调用，工具也会返回 `ui_capable=false` 的纯文本回退）；如需用户确认或选择，请直接在回复中以「[A] 选项一 / [B] 选项二 / 请回复 A 或 B」的纯文本形式呈现，并等待用户文字回复。

@@ -113,11 +113,11 @@ add_service_credential(
 **Web 控制台（terminal）**
 
 1. `send_to_terminal` 仅发命令  
-2. `get_terminal_buffer` 确认出现 password 提示  
+2. `get_terminal_buffer` 确认出现 password 提示（可用 `until_contains="password"` + `next_poll_in_seconds` 超时等待）  
 3. `list_service_credentials(command_hint=待执行命令)` → 与用户确认 `credential_id`（多条则 `ask_user_choice`；无则 `add_service_credential`）  
 4. `send_service_password(credential_id=…, target=terminal, host_id=…, slot=…)`
 
-**SSH 通道（ssh_channel）** — 同上，步骤 1–2 换 `ssh_channel_send` + `ssh_channel_read_lines`；步骤 4 用 `target=ssh_channel, channel_id=…`。
+**SSH 通道（ssh_channel）** — 同上，步骤 1–2 换 `ssh_channel_send` + `ssh_channel_read_lines`（可用 `until_contains="password"` + `wait_seconds`）；步骤 4 用 `target=ssh_channel, channel_id=…`。
 
 **禁止**：`send_to_terminal` / `ssh_channel_send` 发明文密码；向用户索要已保存的密码。
 
