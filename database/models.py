@@ -1346,6 +1346,55 @@ async def _migrate_user_skills(db: aiosqlite.Connection) -> None:
     await db.commit()
 
 
+async def _migrate_org_skills_and_task_skills(db: aiosqlite.Connection) -> None:
+    """幂等版「039」：org_skills 表 + scheduled/triggered_tasks.inject_user_skills。"""
+
+    async def has_col(table: str, column: str) -> bool:
+        try:
+            cur = await db.execute(f"PRAGMA table_info({table})")
+            rows = await cur.fetchall()
+            await cur.close()
+            return any(r[1] == column for r in rows)
+        except Exception:
+            return False
+
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS org_skills (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            display_name TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            content TEXT NOT NULL DEFAULT '',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            slash_name TEXT NOT NULL DEFAULT '',
+            allowed_tools TEXT NOT NULL DEFAULT '',
+            created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_org_skills_enabled ON org_skills(enabled)"
+    )
+    for table in ("scheduled_tasks", "triggered_tasks"):
+        try:
+            cur = await db.execute(f"SELECT 1 FROM {table} LIMIT 1")
+            await cur.close()
+        except Exception:
+            continue
+        if not await has_col(table, "inject_user_skills"):
+            try:
+                await db.execute(
+                    f"ALTER TABLE {table} ADD COLUMN inject_user_skills INTEGER NOT NULL DEFAULT 0"
+                )
+            except Exception as e:
+                if "duplicate column" not in str(e).lower():
+                    logger.warning("safety-net: 补列 %s.inject_user_skills 失败: %s", table, e)
+    await db.commit()
+
+
 async def _migrate_host_service_credentials(db: aiosqlite.Connection) -> None:
     """幂等版「032」：服务凭证表 + settings.credentials_vault_enabled。"""
     await db.execute(
@@ -1511,6 +1560,8 @@ async def _migrate_legacy_added_columns(db: aiosqlite.Connection) -> None:
         ("triggered_task_runs", "caller_task_name", "ALTER TABLE triggered_task_runs ADD COLUMN caller_task_name TEXT DEFAULT ''"),
         ("scheduled_tasks", "enabled", "ALTER TABLE scheduled_tasks ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1"),
         ("scheduled_tasks", "notify_email_to", "ALTER TABLE scheduled_tasks ADD COLUMN notify_email_to TEXT DEFAULT ''"),
+        ("scheduled_tasks", "inject_user_skills", "ALTER TABLE scheduled_tasks ADD COLUMN inject_user_skills INTEGER NOT NULL DEFAULT 0"),
+        ("triggered_tasks", "inject_user_skills", "ALTER TABLE triggered_tasks ADD COLUMN inject_user_skills INTEGER NOT NULL DEFAULT 0"),
         ("hosts", "aliases", "ALTER TABLE hosts ADD COLUMN aliases TEXT DEFAULT '[]'"),
         ("hosts", "remark", "ALTER TABLE hosts ADD COLUMN remark TEXT DEFAULT ''"),
         ("users", "skills_enabled", "ALTER TABLE users ADD COLUMN skills_enabled INTEGER NOT NULL DEFAULT 0"),
@@ -1625,6 +1676,7 @@ async def _ensure_full_schema_safety_net(db: aiosqlite.Connection) -> None:
         ("user_mcp_servers chat_scope_*", _migrate_user_mcp_chat_scopes),
         ("user_skills", _migrate_user_skills),
         ("user_skill_groups", _migrate_user_skill_groups),
+        ("org_skills + task inject_user_skills", _migrate_org_skills_and_task_skills),
         ("host_service_credentials", _migrate_host_service_credentials),
         ("host_service_credentials port + nullable host_id", _migrate_service_credentials_port),
         ("host_service_credentials last_accessed_at", _migrate_service_credentials_last_accessed),
@@ -1709,6 +1761,7 @@ _REQUIRED_TABLES: tuple[str, ...] = (
     "user_mcp_servers",
     "user_skills",
     "user_skill_groups",
+    "org_skills",
     "host_service_credentials",
 )
 
@@ -1765,6 +1818,8 @@ async def _check_db_schema(db: aiosqlite.Connection) -> None:
         ("users", "failed_login_attempts"),
         ("users", "locked_until"),
         ("users", "skills_enabled"),
+        ("scheduled_tasks", "inject_user_skills"),
+        ("triggered_tasks", "inject_user_skills"),
     ]
     missing_cols = []
     for table, col in critical_columns:
