@@ -110,14 +110,20 @@ add_service_credential(
 
 密码**不进 AI 上下文**。模型只处理元数据与决策；注入由 `send_service_password` 在服务端完成。
 
-**Web 控制台（terminal）**
+**本机 sudo / su（当前控制台主机）**
 
-1. `send_to_terminal` 仅发命令  
-2. `get_terminal_buffer` 确认出现 password 提示（可用 `until_contains="password"` + `next_poll_in_seconds` 超时等待）  
-3. `list_service_credentials(command_hint=待执行命令)` → 与用户确认 `credential_id`（多条则 `ask_user_choice`；无则 `add_service_credential`）  
-4. `send_service_password(credential_id=…, target=terminal, host_id=…, slot=…)`
+1. send 仅发 `sudo …`（或 su）——**不要假设一定要密码**（常见 NOPASSWD）  
+2. **必须 read** 尾部（可用 `until_contains="password"`；超时无命中也要看是否已成功）  
+3. **仅当**出现 `[sudo] password for` / `Password:` / `口令：` 等提示时才注入；无提示则结束，勿调用凭证函数  
+4. 有提示时：`list_service_credentials(service=sudo, host_id=当前)`；有本机绑定 id 用它，否则 `send_service_password(use_host_login=true, host_id=当前, target=…)`  
+5. 服务端默认校验密码提示，无提示会拒绝注入  
+6. **禁止** sudo 后默认发密码；**禁止**用其它主机 / 未绑定凭证  
 
-**SSH 通道（ssh_channel）** — 同上，步骤 1–2 换 `ssh_channel_send` + `ssh_channel_read_lines`（可用 `until_contains="password"` + `wait_seconds`）；步骤 4 用 `target=ssh_channel, channel_id=…`。
+**跨机 SSH / MySQL 等**
+
+1. send 命令 → read 确认提示  
+2. `list_service_credentials(service=…, address=目标IP, command_hint=…)`  
+3. **有密码提示后**再 `send_service_password(credential_id=…, target=…)`  
 
 **禁止**：`send_to_terminal` / `ssh_channel_send` 发明文密码；向用户索要已保存的密码。
 
@@ -147,7 +153,7 @@ add_service_credential(
 | `channel_id` | ssh_channel 时必填 | SSH 通道 id |
 | `slot` | 否 | 控制台槽位 |
 | `scope_id` | 否 | 终端 scope |
-| `require_password_prompt` | 否 | 默认 `false`：直接注入；设为 `true` 时须检测到 password 提示再注入 |
+| `require_password_prompt` | 否 | 默认 `true`：须检测到 password 提示才注入（防 sudo 免密误注入）；显式 `false` 可跳过（不推荐用于 sudo） |
 
 响应不含明文密码；失败时 HTTP 400，`detail` 为 `{ success: false, error: "..." }`。
 

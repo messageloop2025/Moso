@@ -1012,14 +1012,14 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "list_service_credentials",
-            "description": "搜索/列出服务凭证**元数据**（含 last_accessed_at、has_password、linked_host_id；**绝不返回密码**）。**本机 sudo**：`service=sudo, host_id=当前host_id, command_hint=\"sudo …\"`（可匹配 linked_host 复用 SSH 登录密码）。**跨机 SSH/SCP/MySQL 等必须先调用**：按目标 **IP+service** 查找（scp/sftp/rsync 按 **ssh**）。返回 `resolution`：`use_credential`→直接用 `suggested_credential_id`；`try_linked_host_or_execute`→静默执行 sudo/复用 linked_host，**禁止**向用户说没有 sudo 密码；`user_choice`→ask_user_choice；`ask_user_identity`→跨机无凭证时问用户身份。**禁止**默认用当前机登录用户充当**目标 SSH 机**用户。同用户重复凭证已去重保留最新。",
+            "description": "搜索/列出服务凭证**元数据**（绝不返回密码）。**本机 sudo（必传 host_id）**：仅返回绑定该主机的凭证；查凭证**不等于**要注入——须先执行 sudo 并 read，**仅有密码提示时**才 `send_service_password`（可用 `use_host_login=true`）。无提示（免密）勿注入。**跨机**按 IP+service 查找（scp→ssh）。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "command_hint": {"type": "string", "description": "待执行命令，推断 service+address（scp→ssh）；不因 user@ 隐藏其它用户凭证"},
                     "service": {"type": "string", "description": "服务类型：ssh、mysql、sudo 等（scp 请填 ssh）"},
                     "address": {"type": "string", "description": "目标 IP/域名；本机 sudo 通常留空"},
-                    "host_id": {"type": "integer", "description": "当前控制台/操作主机 ID；查本机 sudo 时传入，可匹配 linked_host_id 复用 SSH 登录密码"},
+                    "host_id": {"type": "integer", "description": "当前控制台主机 ID；本机 sudo/su **必须**传入，仅匹配 host_id/linked_host_id=该主机 的凭证"},
                     "keyword": {"type": "string", "description": "模糊搜索：id、address、service_username、label、notes、service"},
                     "port": {"type": "integer", "description": "按端口过滤"},
                     "service_username": {"type": "string", "description": "仅当已确定用户名时过滤；选凭证阶段通常留空"},
@@ -1039,19 +1039,20 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "add_service_credential",
-            "description": "新增服务凭证（密码写入后**不可查询**）。描述访问某服务所需的账号密码，**不绑定**从哪台主机操作。典型：sudo、MySQL、SSH 到某 IP。同一 service+address 下不同用户用 service_username 区分。可设 linked_host_id / linked_credential_id 引用平台已有 SSH 登录凭证而无需重复存密码。",
+            "description": "新增服务凭证（密码写入后**不可查询**）。典型：本机 sudo（务必 `linked_host_id=当前host_id` 复用 SSH 登录密码）、MySQL、跨机 SSH。同一 service+address 下不同用户用 service_username 区分。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "service": {"type": "string", "description": "服务类型：sudo、ssh、mysql、postgres、redis、ftp、other 等"},
                     "password": {"type": "string", "description": "密码（写入后不可查询；设 linked_* 时可省略）"},
-                    "address": {"type": "string", "description": "目标地址/IP；sudo 留空表示本机 sudo"},
+                    "address": {"type": "string", "description": "目标地址/IP；本机 sudo 留空"},
                     "port": {"type": "integer", "description": "端口；省略则用该 service 默认（ssh=22, mysql=3306 等）"},
                     "service_username": {"type": "string", "description": "服务账户名（SSH 用户、DB 用户等）"},
                     "label": {"type": "string", "description": "简短标签"},
                     "notes": {"type": "string", "description": "备注"},
-                    "linked_host_id": {"type": "integer", "description": "可选；目标 SSH 主机在本平台管理时，复用其登录密码"},
+                    "linked_host_id": {"type": "integer", "description": "本机 sudo 强烈推荐：填当前 host_id，复用该主机 SSH 登录密码（无需再填 password）"},
                     "linked_credential_id": {"type": "integer", "description": "可选；引用「凭证管理」中 credentials.id 的登录密码"},
+                    "host_id": {"type": "integer", "description": "可选；绑定操作主机。本机 sudo 若传 linked_host_id，服务端会同步写入 host_id"},
                 },
                 "required": ["service"],
             },
@@ -1098,18 +1099,19 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "send_service_password",
-            "description": "在 terminal / ssh_channel / local_terminal 由服务端按 credential_id 从凭证库取密码并写入 PTY stdin。**调用即注入**（默认不再二次检测 buffer 是否含 password 字样；AI 应先 read_lines/get_terminal_buffer 判断时机）。**工具结果不含密码**，禁止用 ssh_channel_send/send_to_terminal 发明文。须 credential_id + target（terminal 需 host_id；ssh_channel 需 channel_id）。",
+            "description": "向 PTY stdin 注入密码（结果不含明文）。**sudo/su 不总是要密码**：须先 read 确认尾部有 password 提示再调用；无提示则勿调用（免密成功）。默认服务端校验密码提示，无提示会拒绝。方式：① `credential_id`（本机 sudo 须绑定当前 host）；② 本机 sudo/su 推荐 `use_host_login=true`+`host_id`。禁止 send 发明文，禁止 sudo 后默认注入。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "credential_id": {"type": "integer", "description": "要使用的凭证 id（来自 list_service_credentials；推荐必填，由 AI/用户选定）"},
-                    "target": {"type": "string", "enum": ["terminal", "ssh_channel", "local_terminal"], "description": "注入目标：Web 控制台 / SSH 通道 / 本机控制台"},
-                    "host_id": {"type": "integer", "description": "target=terminal 时必填：Web 控制台所在主机 ID（仅定位注入目标，不参与查凭证）"},
-                    "channel_id": {"type": "integer", "description": "target=ssh_channel 时必填：ssh_channel_create 返回的通道 id"},
+                    "credential_id": {"type": "integer", "description": "凭证 id；与 use_host_login 二选一。本机 sudo 时该凭证必须绑定当前 host_id"},
+                    "use_host_login": {"type": "boolean", "description": "true=注入 host_id 对应主机的 SSH 登录密码（本机 sudo/su 在确认有提示后首选）"},
+                    "target": {"type": "string", "enum": ["terminal", "ssh_channel", "local_terminal"], "description": "注入目标"},
+                    "host_id": {"type": "integer", "description": "当前操作主机 ID。target=terminal 或 use_host_login 时必填"},
+                    "channel_id": {"type": "integer", "description": "target=ssh_channel 时必填"},
                     "slot": {"type": "integer", "description": "控制台槽位（terminal/local_terminal 可选）"},
-                    "require_password_prompt": {"type": "boolean", "description": "默认 false：直接注入。仅当 true 时服务端再读 buffer/通道尾部校验是否有密码提示"},
+                    "require_password_prompt": {"type": "boolean", "description": "默认 true：校验尾部有密码提示才注入。仅特殊情况可显式 false（不推荐用于 sudo）"},
                 },
-                "required": ["target", "credential_id"],
+                "required": ["target"],
             },
         },
     },
@@ -9415,6 +9417,15 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     ensure_ascii=False,
                 )
             try:
+                linked_hid = (
+                    int(arguments["linked_host_id"]) if arguments.get("linked_host_id") else None
+                )
+                bind_hid = (
+                    int(arguments["host_id"]) if arguments.get("host_id") is not None else None
+                )
+                # 本机 sudo：linked_host_id 同时写入 host_id，便于后续按主机过滤
+                if bind_hid is None and linked_hid is not None and str(service).lower() == "sudo":
+                    bind_hid = linked_hid
                 item = await add_credential(
                     user,
                     service=str(service),
@@ -9424,8 +9435,9 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     service_username=str(arguments.get("service_username") or ""),
                     label=str(arguments.get("label") or ""),
                     notes=str(arguments.get("notes") or ""),
-                    linked_host_id=int(arguments["linked_host_id"]) if arguments.get("linked_host_id") else None,
+                    linked_host_id=linked_hid,
                     linked_credential_id=int(arguments["linked_credential_id"]) if arguments.get("linked_credential_id") else None,
+                    host_id=bind_hid,
                 )
             except ValueError as e:
                 return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
@@ -9475,11 +9487,17 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
 
             host_id = arguments.get("host_id")
             target = (arguments.get("target") or "terminal").strip().lower()
+            use_host_login = bool(arguments.get("use_host_login"))
             if target == "terminal" and host_id is None:
                 return json.dumps({"success": False, "error": "target=terminal 时需要 host_id（控制台所在主机）"}, ensure_ascii=False)
+            if use_host_login and host_id is None:
+                return json.dumps(
+                    {"success": False, "error": "use_host_login=true 时需要 host_id"},
+                    ensure_ascii=False,
+                )
             require_prompt = arguments.get("require_password_prompt")
             if require_prompt is None:
-                require_prompt = False
+                require_prompt = True  # 默认必须检测到密码提示，避免 sudo 免密时误注入
             else:
                 require_prompt = bool(require_prompt)
 
@@ -9490,11 +9508,14 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 if not await _can_access_host_with_shares(row_h, user):
                     return json.dumps({"success": False, "error": "无权操作该主机"}, ensure_ascii=False)
 
-            if arguments.get("credential_id") is None:
+            if arguments.get("credential_id") is None and not use_host_login:
                 return json.dumps(
                     {
                         "success": False,
-                        "error": "缺少 credential_id。请先 list_service_credentials 查看元数据，与用户确认后传入 credential_id 再注入。",
+                        "error": (
+                            "缺少 credential_id。本机 sudo/su 请传 use_host_login=true 与 host_id；"
+                            "或先 list_service_credentials(service=sudo, host_id=…) 再注入。"
+                        ),
                     },
                     ensure_ascii=False,
                 )
@@ -9520,13 +9541,14 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
 
             result = await perform_service_password_injection(
                 user,
-                credential_id=int(arguments["credential_id"]),
+                credential_id=int(arguments["credential_id"]) if arguments.get("credential_id") is not None else None,
                 target=target,
                 host_id=int(host_id) if host_id is not None else None,
                 slot=arguments.get("slot"),
                 channel_id=int(channel_id) if channel_id is not None else None,
                 terminal_scope_id=terminal_scope_id,
                 require_password_prompt=require_prompt,
+                use_host_login=use_host_login,
             )
             return json.dumps(result, ensure_ascii=False)
 

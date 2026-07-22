@@ -505,18 +505,19 @@ async def edgeops_list_service_credentials(
 
 @mcp.tool()
 async def edgeops_send_service_password(
-    credential_id: int,
     target: str,
+    credential_id: int | None = None,
     channel_id: int | None = None,
     host_id: int | None = None,
     slot: int | None = None,
-    require_password_prompt: bool = False,
+    require_password_prompt: bool = True,
+    use_host_login: bool = False,
     ctx: Context | None = None,
 ) -> str:
-    """按 credential_id 向 PTY 注入密码（结果不含明文）。需系统开启 credentials_vault_enabled。
+    """向 PTY 注入密码（结果不含明文）。需开启 credentials_vault_enabled。
 
-    target：terminal（Web 控制台，需 host_id）| ssh_channel（需 channel_id）| local_terminal。
-    MCP 直连 ssh_channel 嵌套 SSH 时：先 read_lines 确认 password 提示，再 target=ssh_channel + channel_id。
+    默认校验密码提示：sudo/su 须先 read，仅有提示时再调；无提示勿调（可能免密）。
+    本机 sudo：确认提示后 use_host_login=true + host_id。跨机：credential_id。
     禁止用 edgeops_ssh_channel_send 发送明文密码。"""
     return await _run(
         lambda c: c.send_service_password(
@@ -526,6 +527,7 @@ async def edgeops_send_service_password(
             channel_id=channel_id,
             slot=slot,
             require_password_prompt=require_password_prompt,
+            use_host_login=use_host_login,
         ),
         ctx=ctx,
     )

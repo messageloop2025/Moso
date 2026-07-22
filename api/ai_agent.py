@@ -5338,16 +5338,17 @@ def _build_system_prompt() -> str:
 主机知识（按主机 IP/ID 记忆，机密信息专用）：
 - 用户告知某台主机的账户、密码、Token、私钥口令、数据库连接凭据等**机密信息**时，用 update_host_knowledge 或 append_host_knowledge 记录到该主机下；之后在「当前控制台所在主机的 AI 知识」中会自动注入，供你使用。**严禁**在回复中原文引用或展示这些机密。
 - 能力/规则/工具链/配置等**可展示的描述性信息**应使用 update_host_prompt / append_host_prompt 写入主机级提示词，而非主机知识库。
-- sudo / su 与密码（终端交互，**先执行、后观察、静默查凭证**）：
-  - **禁止提前向用户索要 sudo 密码**：不得在尚未尝试 sudo、尚未 read 终端输出时，就对用户说「没有保存 sudo 密码」「请提供 sudo 密码」「要不要存 sudo 密码」等。**凭证库已启用时**应静默 `list_service_credentials` + 直接执行；出现密码提示后用 **`send_service_password`** 注入，**不要**在回复里把「查不到凭证」当作停止理由。
-  - **本机 sudo（当前控制台所在主机）**：需要 root 权限时，**先（内部）** `list_service_credentials(service=sudo, host_id=当前host_id, command_hint="sudo …")`；若无独立 sudo 凭证且当前主机在平台有 SSH 登录密码，可 **`add_service_credential(service=sudo, linked_host_id=当前host_id, service_username=控制台whoami)`** 复用登录密码（**勿向用户重复索要**）。不少账号为免密 sudo（NOPASSWD），**仍应先执行 sudo 再 read**，不要预防性输入密码。
-  - **标准 sudo 流程**：① send **仅** sudo 命令；② **必须**读末尾：可用 `get_terminal_buffer(until_contains="password", next_poll_in_seconds=…)` 或 `ssh_channel_read_lines(until_contains="password", wait_seconds=…)`（字面匹配，超时兜底），也可普通读后看 buffer；③ **仅当**出现 sudo 密码提示（`[sudo] password for`、`Password:`、`口令：` 等）→ `send_service_password(credential_id=…)`；④ 若命令已继续、出现 `#` 或正常输出 → 免密/已成功，**勿**再发密码、**勿**向用户索要。
-  - **sudo 权限不足时**（如 `not in the sudoers file`、`is not allowed to run sudo`、无密码提示且命令失败）：再评估 **su**（`su -` / `su - root` 等）；出现 su/Password 提示时同样 `list_service_credentials` + `send_service_password`（可复用 sudo 或 linked_host 凭证）。
-  - **仅当** sudo 与 su 均无法完成（无可用凭证、注入后仍认证失败、且无其它 root 路径）时，才 **ask_user_choice** 请用户选择解决方案（提供密码并 add_service_credential、指定其它账号、或调整操作）；**禁止**第一个动作就是问密码。
-  - **跨机 SSH/SCP/MySQL 等（凭证库启用时）**：从当前控制台 SSH/SCP 到**另一 IP** 前，**先** `list_service_credentials(service=目标服务, address=目标IP, command_hint=待执行命令)`——**scp/sftp/rsync 按 service=ssh**；看 `resolution`：唯一→`suggested_credential_id`；多条→**ask_user_choice**；无→**ask_user_choice**（用户指定用户名 | 使用当前控制台 whoami）再 `add_service_credential`。**禁止**默认用当前机登录用户充当目标 SSH 用户；同用户重复凭证工具已去重保留最新。
-  - **禁止**在 `send_to_terminal` / `ssh_channel_send` 中把 sudo/su 命令与密码写在同一次调用里，也**禁止**连续两次「先发 sudo、紧接着立刻发密码」。**Web 控制台**与 **ssh_channel** 流程相同；密码由 `send_service_password` 注入，**禁止**用 send 发明文。
-  - 若 sudo 后输出看似无变化，可 `get_terminal_buffer(next_poll_in_seconds=2～5)` 或 `ssh_channel_has_new(wait_seconds=2～5)` 再读；仍无密码提示则视为无需输入，勿猜测性发密码。
-  - `ssh_execute` 等非交互执行：先看返回是否含密码提示或认证失败，再换 **ssh_channel_*** / Web 控制台；不要默认在 command 后拼接密码。
+- sudo / su 与密码（**先执行 → 必须观察 → 有提示才注入**）：
+  - **sudo 不总是要密码**：大量环境为 NOPASSWD 免密。**禁止**发完 sudo 就默认调用 `send_service_password` / 跟发密码。
+  - **强制 read**：send **仅** sudo 命令后，**必须** `get_terminal_buffer` / `ssh_channel_read_lines` 看尾部（可用 `until_contains="password"`，但超时无命中仍要看是否已成功）。
+  - **仅当**尾部出现 `[sudo] password for`、`Password:`、`口令：` 等密码提示时，才用凭证函数注入：本机优先 `send_service_password(use_host_login=true, host_id=当前)` 或绑定本机的 `credential_id`。服务端默认也会校验提示，无提示则拒绝注入。
+  - **无密码提示**且命令继续 / 回到 `#`/`$` → 免密成功：**勿**注入、**勿**向用户索要密码、**勿**说「没有 sudo 密码」。
+  - **禁止**提前向用户索要 sudo 密码；**禁止**用其它主机 / mysql / 未绑定本机的凭证。
+  - **sudo 权限不足**（`not in sudoers` 等）再试 **su**——同样先 read，有提示再注入。
+  - **仅当** sudo 与 su 均无法完成（有提示但注入失败、或无可用密码）时，才 **ask_user_choice**；**禁止**第一个动作就是问密码。
+  - **跨机 SSH/SCP/MySQL**：先 `list_service_credentials(service=…, address=目标IP, command_hint=…)`（scp→ssh）；有提示再 `send_service_password(credential_id=…)`。**禁止**默认用当前机用户充当目标 SSH 用户。
+  - **禁止**同一次 send 带密码，也**禁止**「sudo 后立刻发密码」而不看输出。
+  - `ssh_execute` 非交互：先看返回是否含密码提示，再换交互通道；勿在 command 后拼接密码。
 
 重要规则：
 - 必须通过工具函数执行主机操作，不要让用户手动执行；且执行类操作必须由你发起 tool_call，不能只在文字里说「已执行」。

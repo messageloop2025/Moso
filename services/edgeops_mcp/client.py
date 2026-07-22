@@ -668,18 +668,21 @@ class EdgeOpsRestClient:
     async def send_service_password(
         self,
         *,
-        credential_id: int,
+        credential_id: int | None = None,
         target: str,
         host_id: int | None = None,
         channel_id: int | None = None,
         slot: int | None = None,
-        require_password_prompt: bool = False,
+        require_password_prompt: bool = True,
+        use_host_login: bool = False,
     ) -> Any:
         body: dict[str, Any] = {
-            "credential_id": int(credential_id),
             "target": (target or "terminal").strip().lower(),
             "require_password_prompt": bool(require_password_prompt),
+            "use_host_login": bool(use_host_login),
         }
+        if credential_id is not None:
+            body["credential_id"] = int(credential_id)
         if host_id is not None:
             body["host_id"] = host_id
         if channel_id is not None:

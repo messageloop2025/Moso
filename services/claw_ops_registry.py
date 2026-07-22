@@ -178,25 +178,33 @@ def get_extended_tools_manifest() -> list[dict[str, Any]]:
             "name": "edgeops_send_service_password",
             "label": "毛竹（Moso） · 注入服务密码",
             "description": (
-                "按 credential_id 向 ssh_channel/terminal 注入密码（结果不含明文）。"
-                "MCP/OpenClaw 直连 ssh_channel 嵌套 SSH 时用 target=ssh_channel + channel_id。"
-                "需 credentials_vault_enabled。"
+                "向 ssh_channel/terminal 注入密码（结果不含明文）。"
+                "须先确认有 password 提示；sudo 常免密，无提示勿调用。"
+                "本机 sudo：use_host_login=true+host_id；跨机：credential_id。"
+                "默认校验密码提示。需 credentials_vault_enabled。"
             ),
             "timeout_ms": 60_000,
             "parameters_schema": _tool_schema(
                 {
-                    "credential_id": {**int_opt, "description": "来自 list_service_credentials"},
+                    "credential_id": {**int_opt, "description": "来自 list；与 use_host_login 二选一"},
+                    "use_host_login": {
+                        **bool_t,
+                        "description": "true=注入 host_id 的 SSH 登录密码（本机 sudo 有提示时）",
+                    },
                     "target": {
                         **str_opt,
                         "enum": ["terminal", "ssh_channel", "local_terminal"],
                         "description": "注入目标",
                     },
                     "channel_id": {**int_opt, "description": "target=ssh_channel 时必填"},
-                    "host_id": {**int_opt, "description": "target=terminal 时必填"},
+                    "host_id": {**int_opt, "description": "target=terminal 或 use_host_login 时必填"},
                     "slot": int_opt,
-                    "require_password_prompt": bool_t,
+                    "require_password_prompt": {
+                        **bool_t,
+                        "description": "默认 true：无密码提示则拒绝注入",
+                    },
                 },
-                ["credential_id", "target"],
+                ["target"],
             ),
         },
         {

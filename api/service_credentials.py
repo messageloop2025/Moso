@@ -45,13 +45,14 @@ class ServiceCredentialUpdate(BaseModel):
 
 
 class ServiceCredentialInject(BaseModel):
-    credential_id: int
+    credential_id: Optional[int] = None
     target: str = "terminal"
     host_id: Optional[int] = None
     slot: Optional[int] = None
     channel_id: Optional[int] = None
     scope_id: Optional[str] = None
-    require_password_prompt: bool = False
+    require_password_prompt: bool = True
+    use_host_login: bool = False
 
 
 async def _require_vault_enabled():
@@ -70,6 +71,7 @@ async def list_service_credentials(
     address: Optional[str] = Query(None),
     port: Optional[int] = Query(None),
     service_username: Optional[str] = Query(None),
+    host_id: Optional[int] = Query(None, description="本机 sudo 时传入：仅匹配绑定该主机的凭证"),
     keyword: Optional[str] = Query(None, description="模糊搜索 id/address/username/label/notes/service"),
     command_hint: Optional[str] = Query(None, description="从命令推断 service/address 等并过滤"),
     sort_by: Optional[str] = Query("last_accessed_at"),
@@ -84,6 +86,7 @@ async def list_service_credentials(
         address=address,
         port=port,
         service_username=service_username,
+        host_id=host_id,
         keyword=keyword,
         command_hint=command_hint,
         sort_by=sort_by,
@@ -163,7 +166,7 @@ async def remove_service_credential(credential_id: int, user=Depends(get_current
 
 @router.post("/inject")
 async def inject_service_password(body: ServiceCredentialInject, user=Depends(get_current_user)):
-    """按 credential_id 注入密码到终端/SSH 通道（不返回明文；不经 AI 上下文）。与 AI 工具 send_service_password 共用底层逻辑。"""
+    """注入密码到终端/SSH 通道（不返回明文）。credential_id 或 use_host_login+host_id。"""
     await _require_vault_enabled()
     result = await perform_service_password_injection(
         user,
@@ -174,6 +177,7 @@ async def inject_service_password(body: ServiceCredentialInject, user=Depends(ge
         channel_id=body.channel_id,
         terminal_scope_id=body.scope_id,
         require_password_prompt=body.require_password_prompt,
+        use_host_login=body.use_host_login,
     )
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result)

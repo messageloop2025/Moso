@@ -28,7 +28,7 @@
   - **唤醒**：跳过剩余等待，AI 立刻进入下一轮（例如马上再读 buffer）；**不中断**整个任务。
   - **停止**：终止当前 AI 执行轮次（与输入区「停止」相同）。
   底部运行中控制条的「暂停 / 补充 / 停止」仍可用于整轮任务；唤醒仅针对该次终端轮询等待。
-- **sudo 与密码**：不少环境为免密 sudo（NOPASSWD）。AI 应先 `send_to_terminal` 执行 sudo 命令，再 **必须** `get_terminal_buffer` 查看输出；**仅当**末尾出现 `[sudo] password for`、`Password:` 等提示时才注入密码。**凭证库已启用**（`credentials_vault_enabled=true`）时调用 **`send_service_password`**（target=terminal）；未启用时可从主机知识取密码，但仍须 **另一次** 发送且 **禁止** 在 sudo 同次调用里带密码。**禁止**在 sudo 命令后立即跟发密码，**禁止**未看到提示就默认需要密码。详见 [service-credentials.md](service-credentials.md)。
+- **sudo 与密码**：sudo **不总是**要密码（常见 NOPASSWD）。流程：先 send 仅 sudo → **必须** read 尾部 → **仅当**出现 `[sudo] password for` / `Password:` 等提示时才 `send_service_password`（本机可用 `use_host_login=true`）。无提示且命令已继续 → 成功，**勿**注入。服务端默认也会拒绝「无提示就注入」。**禁止** sudo 后立刻跟发密码。详见 [service-credentials.md](service-credentials.md)。
 
 ### 终端状态（通/断 · 闲/忙）
 
