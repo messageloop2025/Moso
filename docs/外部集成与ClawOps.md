@@ -139,7 +139,7 @@ MCP 本地：`EDGEOPS_API_BASE_URL=http://127.0.0.1:8010`
 | 编排后台子任务 | 否 | 否 | **是**（orchestrate） |
 | 依赖浏览器 | 是 | **否** | **否** |
 
-> **wake 说明**：仅 **Web 控制台**路径（`get_terminal_buffer` / `send_to_terminal` / `ssh_execute` detach）在 tool 批次结束后可能有 batch 末 sleep；`wake` 跳过倒计时继续推理，`stop` 中断整轮。**ssh_channel_* 无此等待**。
+> **wake 说明**：Web 控制台 `next_poll_in_seconds` 与 ssh_channel 读工具 `wait_seconds=1～30` 均可在 tool 批次结束后 sleep；`wake` 跳过倒计时继续推理，`stop` 中断整轮。
 
 ---
 

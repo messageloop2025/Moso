@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from typing import Any
+from typing import Any, Callable, Awaitable
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -14,6 +15,7 @@ from services.edgeops_mcp.context import (
     resolve_access_token,
     resolve_integration_session_id,
 )
+from services.terminal_poll import attach_ssh_channel_wait_fields, clamp_ssh_channel_wait_seconds
 
 mcp = FastMCP(
     "edgeops",
@@ -23,7 +25,8 @@ mcp = FastMCP(
         "HTTP 调用会自动带 X-EdgeOps-Client: mcp。"
         "多会话：session_id 参数，或 HTTP 头 X-EdgeOps-Session-Id，或 edgeops_context_bind。"
         "无 Web UI：勿依赖 connect_terminal / ask_user_choice；长任务用 ops_orchestrate_chat + ops_task_*。"
-        "若 ops-chat 触发 Web 终端 batch 末等待，可用 POST /api/ai/sessions/{session_id}/runtime-control action=wake 跳过（ssh_channel 无此等待）。"
+        "若 ops-chat 触发 Web 终端 batch 末等待，可用 POST /api/ai/sessions/{session_id}/runtime-control action=wake 跳过。"
+        "ssh_channel 读工具可传 wait_seconds=1～30（直调时工具内静默 sleep；0=立即）；ops-chat 路径也可 wake。"
         "SSH 通道内嵌套登录：先 edgeops_list_service_credentials，再 edgeops_send_service_password（勿 ssh_channel_send 发明文）。"
     ),
     # 挂载到主 Web 的 /mcp 时，子应用内路由为 `/`；独立 --http 进程由 mount 层再包一层 /mcp。
@@ -40,6 +43,26 @@ async def _run(coro, *, ctx: Context | None = None) -> str:
     try:
         client = create_client(ctx=ctx)
         return _json(await coro(client))
+    except Exception as exc:
+        return _json({"success": False, "error": str(exc)})
+
+
+async def _run_ssh_channel_read(
+    coro_factory: Callable[[Any], Awaitable[Any]],
+    *,
+    wait_seconds: int | None,
+    ctx: Context | None = None,
+) -> str:
+    """直调读通道：成功后按 wait_seconds 静默 sleep（不经 agent batch）。"""
+    wait = clamp_ssh_channel_wait_seconds(wait_seconds)
+    try:
+        client = create_client(ctx=ctx)
+        data = await coro_factory(client)
+        if isinstance(data, dict) and not data.get("error"):
+            attach_ssh_channel_wait_fields(data, {"wait_seconds": wait})
+            if wait > 0:
+                await asyncio.sleep(wait)
+        return _json(data)
     except Exception as exc:
         return _json({"success": False, "error": str(exc)})
 
@@ -268,14 +291,16 @@ async def edgeops_ssh_channel_read_lines(
     since_line: int | None = None,
     last_n: int | None = None,
     session_id: int | None = None,
+    wait_seconds: int | None = None,
     ctx: Context | None = None,
 ) -> str:
-    """按行读取 SSH 通道输出。"""
+    """按行读取 SSH 通道输出。wait_seconds=1～30 时读完后静默等待再返回；0/省略=立即。"""
     sid = _session(session_id, ctx)
-    return await _run(
+    return await _run_ssh_channel_read(
         lambda c: c.ssh_channel_read_lines(
             channel_id, since_line=since_line, last_n=last_n, session_id=sid
         ),
+        wait_seconds=wait_seconds,
         ctx=ctx,
     )
 
@@ -285,12 +310,14 @@ async def edgeops_ssh_channel_read(
     channel_id: int,
     max_chars: int | None = None,
     session_id: int | None = None,
+    wait_seconds: int | None = None,
     ctx: Context | None = None,
 ) -> str:
-    """按字符读取 SSH 通道最近输出。"""
+    """按字符读取 SSH 通道最近输出。可选 wait_seconds=0～30。"""
     sid = _session(session_id, ctx)
-    return await _run(
+    return await _run_ssh_channel_read(
         lambda c: c.ssh_channel_read(channel_id, max_chars=max_chars, session_id=sid),
+        wait_seconds=wait_seconds,
         ctx=ctx,
     )
 
@@ -299,11 +326,13 @@ async def edgeops_ssh_channel_read(
 async def edgeops_ssh_channel_has_new(
     channel_id: int,
     after_line: int | None = None,
+    wait_seconds: int | None = None,
     ctx: Context | None = None,
 ) -> str:
-    """轮询 SSH 通道是否有新输出。"""
-    return await _run(
+    """轮询 SSH 通道是否有新输出。可选 wait_seconds=0～30。"""
+    return await _run_ssh_channel_read(
         lambda c: c.ssh_channel_has_new(channel_id, after_line=after_line),
+        wait_seconds=wait_seconds,
         ctx=ctx,
     )
 

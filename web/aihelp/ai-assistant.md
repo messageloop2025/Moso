@@ -206,7 +206,7 @@ AI 正在输出或调用工具时，普通输入框会临时替换为紧凑的�
 - **在哪里看**：聊天右侧 CoT（思考与计划）里，**触发等待的那一步工具**（通常是「第 N 轮 · 调用 get_terminal_buffer」）下方会出现橙色条：**剩余 Ns · get_terminal_buffer**。
 - **唤醒**：认为已经等够、或想立刻再看终端输出时点击 **唤醒**。AI 会**马上进入下一轮**，不会把整个任务停掉。
 - **停止**：要取消当前 AI 任务时点击该步骤上的 **停止**（效果同底部「停止」）。
-- **与 ssh_channel 的区别**：后台 **SSH 通道**（`ssh_channel_*`）**没有**这种 batch 末倒计时；只有 Web 控制台的 buffer 轮询才有 CoT 唤醒条。
+- **与 ssh_channel 的区别**：后台 **SSH 通道**读工具用显式 **`wait_seconds=1～30`**（0=立即），不做自动长等待推断；Web 控制台仍用 `next_poll_in_seconds`（可达 3600）。二者在 Web 会话均可出现 CoT 等待/唤醒条。
 - **外部集成 / MCP**：无 Web UI，但 integration 会话在阻塞等待时仍可通过 API 注入 `wake`（见 [external-integration.md](external-integration.md)）。
 
 ### 与“中断”的关系

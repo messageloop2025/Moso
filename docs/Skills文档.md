@@ -507,9 +507,9 @@ write_user_skill_file(
 | ssh_channel_list | 列出 SSH 通道；`all_open=true` 列全部 open | owner_type?, owner_id?, all_open? |
 | ssh_channel_info | 获取指定通道详情（主机信息、行号范围） | channel_id |
 | ssh_channel_send | 向通道发送内容（含控制字符） | channel_id, content |
-| ssh_channel_read_lines | 按行读；返回 **tail_text**、**pending_partial**（password 等无换行提示） | channel_id, from_line?/to_line?/last_n?/since_line? |
-| ssh_channel_read_length | 按字符数读取通道输出（最近 max_chars 字符） | channel_id, max_chars? |
-| ssh_channel_has_new | 是否有新输出（含 pending_partial） | channel_id, after_line? |
+| ssh_channel_read_lines | 按行读；返回 **tail_text**、**pending_partial**（password 等无换行提示）；可选 **wait_seconds=0～30**（1～30 时 batch 末短等待；0/省略=立即） | channel_id, from_line?/to_line?/last_n?/since_line?, wait_seconds? |
+| ssh_channel_read_length | 按字符数读取通道输出（最近 max_chars 字符）；可选 wait_seconds=0～30 | channel_id, max_chars?, wait_seconds? |
+| ssh_channel_has_new | 是否有新输出（含 pending_partial）；可选 wait_seconds=0～30 | channel_id, after_line?, wait_seconds? |
 | ssh_channel_close | 关闭指定通道 | channel_id |
 | ssh_channel_close_batch | 按 owner 或 session 批量关闭 | owner_type?, owner_id?, session_id? |
 | ssh_channel_dump_output | 导出通道缓冲到 spill | channel_id, max_chars? |

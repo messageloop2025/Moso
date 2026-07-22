@@ -468,7 +468,7 @@ token 来自解锁邮件链接。
 - `supplement`：把新上下文插入当前会话的 runtime control 队列，AI 在当前轮可用时优先整合。
 - `pause` / `resume`：用于让用户临时提问、补充条件后再继续。
 - `stop`：请求停止当前 agent 循环；若正在等待工具或终端轮询倒计时，后端会尽量在等待间隙中断并返回相应 aborted 结果。
-- `wake`：在 **终端轮询等待**（`get_terminal_buffer` / `send_to_terminal` / `ssh_execute` detach 触发的 batch 末 sleep）期间，**跳过剩余倒计时**并进入下一轮 Agent 推理；**不中断**整轮任务。无 Web UI 的 integration 会话同样有效（需已知 `session_id`）。**ssh_channel_* 无此 batch 末等待**。
+- `wake`：在 **轮询等待**（Web 控制台 `next_poll_in_seconds`，或 ssh_channel 读工具 `wait_seconds=1～30` 触发的 batch 末 sleep）期间，**跳过剩余倒计时**并进入下一轮 Agent 推理；**不中断**整轮任务。无 Web UI 的 integration 会话同样有效（需已知 `session_id`）。
 - `choice`：用户在 `ask_user_choice` 等待期间通过按钮或文字回复选择（`message` 为选项文本）。
 - 后端在新一轮 `/ai/chat` 开始时会清空该会话残留的 runtime control 队列，避免上一轮控制指令影响下一条普通消息。
 

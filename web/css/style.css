@@ -2112,25 +2112,24 @@ table.table-compact-ellipsis th.th-skill-group {
 }
 .chat-message .message-content .message-footer {
     display: flex;
+    flex-direction: row;
+    flex-wrap: wrap; /* 仅当两段合计超出气泡宽度时才换行 */
     align-items: center;
-    justify-content: space-between;
-    gap: 8px;
+    justify-content: flex-start;
+    column-gap: 10px;
+    row-gap: 2px;
     margin-top: 6px;
+    max-width: 100%;
+    box-sizing: border-box;
 }
 .chat-message .message-content .message-run-stats {
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     min-width: 0;
     font-size: 11px;
     line-height: 1.2;
     color: var(--text-muted);
     opacity: 0.85;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.chat-message .message-content .message-footer .message-time {
-    flex: 0 0 auto;
-    margin-top: 0;
 }
 .chat-message .message-content .message-time {
     margin-top: 6px;
@@ -2139,6 +2138,13 @@ table.table-compact-ellipsis th.th-skill-group {
     color: var(--text-muted);
     opacity: 0.9;
     text-align: right;
+}
+.chat-message .message-content .message-footer .message-time {
+    flex: 0 0 auto;
+    margin-top: 0;
+    display: inline-block;
+    white-space: nowrap;
+    text-align: left;
 }
 
 .chat-message.user .message-content {

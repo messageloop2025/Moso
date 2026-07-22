@@ -222,7 +222,7 @@ Content-Type: application/json
 {"action": "wake"}
 ```
 
-`wake` 仅**跳过当前倒计时**并进入下一轮推理，不中断整任务；`stop` 则中断整轮 Agent。**纯 ssh_channel_* 流程无此 batch 末等待**。MCP 暂未封装 wake 工具，需直接调 REST。
+`wake` 仅**跳过当前倒计时**并进入下一轮推理，不中断整任务；`stop` 则中断整轮 Agent。ssh_channel 读工具传 `wait_seconds=1～30` 时同样可被 wake 跳过。MCP 暂未封装 wake 工具，需直接调 REST。
 
 **Q：401 怎么办？**  
 A：检查 Token 是否完整、`Authorization: Bearer` 拼写、Base URL 是否指向正确实例。

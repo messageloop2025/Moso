@@ -136,7 +136,7 @@ from services.cli_agent_delegate import (
     HostConnInfo as _HostConnInfoCls,
 )
 from services.text_abbrev import abbreviate_terminal_buffer
-from services.terminal_poll import resolve_terminal_poll_seconds
+from services.terminal_poll import attach_ssh_channel_wait_fields, resolve_terminal_poll_seconds
 from services.workflow_templates import (
     save_template as _save_workflow_template,
     list_templates as _list_workflow_templates,
@@ -284,7 +284,10 @@ def _channel_busy_advisory(state: dict) -> str | None:
         if fb:
             parts.append(fb.replace("get_terminal_buffer", "ssh_channel_read_lines"))
         else:
-            parts.append("长任务中可 ssh_channel_read_lines / has_new 轮询；需中断再用 <Ctrl+C>。")
+            parts.append(
+                "长任务中可 ssh_channel_read_lines / has_new 轮询，"
+                "并传 wait_seconds=1～30 减少空转（0/省略=立即返回）；需中断再用 <Ctrl+C>。"
+            )
     return " ".join(parts)
 
 
@@ -1837,6 +1840,8 @@ TOOLS = [
                 "按行读取通道输出；返回 **tail_text**（含无换行的 password: 提示）与 **pending_partial**，"
                 "并附带 connected / buffer_idle / session_state 等状态。"
                 "password 提示常无 \\n，勿只看 lines 为空就认为无输出。输出过大时自动落盘 spill。"
+                "长任务轮询可传 **wait_seconds=1～30**：本批工具结束后服务端再等待再进入下一轮，减少空转；"
+                "**0 或不传**表示读完立即返回（不等待）。"
             ),
             "parameters": {
                 "type": "object",
@@ -1847,6 +1852,10 @@ TOOLS = [
                     "last_n": {"type": "integer", "description": "倒数 N 行"},
                     "since_line": {"type": "integer", "description": "自该行号以来的新行"},
                     "spill": {"type": "boolean", "description": "默认 true：过大时落盘"},
+                    "wait_seconds": {
+                        "type": "integer",
+                        "description": "读完后 batch 末等待秒数：0/省略=立即；1～30=等待后再下一轮推理",
+                    },
                 },
                 "required": ["channel_id"],
             },
@@ -1856,12 +1865,19 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "ssh_channel_read_length",
-            "description": "按字符数读取通道输出；过大时自动落盘并返回 preview + spill_id。",
+            "description": (
+                "按字符数读取通道输出；过大时自动落盘并返回 preview + spill_id。"
+                "可选 wait_seconds=0～30（同 ssh_channel_read_lines）。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "channel_id": {"type": "integer"},
                     "max_chars": {"type": "integer", "description": "最多读取字符数，默认 8192"},
+                    "wait_seconds": {
+                        "type": "integer",
+                        "description": "读完后 batch 末等待秒数：0/省略=立即；1～30=等待后再下一轮推理",
+                    },
                 },
                 "required": ["channel_id"],
             },
@@ -1871,12 +1887,19 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "ssh_channel_has_new",
-            "description": "查询通道是否有新输出（含无换行的 pending 尾部，如 password: 提示）。",
+            "description": (
+                "查询通道是否有新输出（含无换行的 pending 尾部，如 password: 提示）。"
+                "长任务轮询可配合 wait_seconds=1～30；0/省略=立即返回。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "channel_id": {"type": "integer"},
                     "after_line": {"type": "integer", "description": "行号，检查是否有比该行更新的内容"},
+                    "wait_seconds": {
+                        "type": "integer",
+                        "description": "查询后 batch 末等待秒数：0/省略=立即；1～30=等待后再下一轮推理",
+                    },
                 },
                 "required": ["channel_id"],
             },
@@ -2185,7 +2208,9 @@ TOOLS = [
                 "需开头上下文时 tail_only=false 或 full_output=true。"
                 "可用 next_poll_in_seconds 轮询长任务；工具批次结束后服务端可能 sleep 该秒数再进入下一轮。"
                 "浏览器 CoT 对应步骤可显示倒计时，用户可唤醒（跳过等待）或停止；集成/API 可用 runtime-control wake。"
-                "轻量查状态用 get_terminal_status。**ssh_channel_* 不走此 batch 末等待。**"
+                "轻量查状态用 get_terminal_status。"
+                "**ssh_channel_read_lines/read_length/has_new** 可传 **wait_seconds=1～30** 做 batch 末短等待（0/省略=立即）；"
+                "与 get_terminal_buffer 的 next_poll（可达 3600）不同，channel 侧不做自动推断。"
             ),
             "parameters": {
                 "type": "object",
@@ -11242,17 +11267,16 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 since_line=arguments.get("since_line"),
             )
             if result is None:
-                return json.dumps(
-                    {
-                        "success": True,
-                        "lines": [],
-                        "oldest_line_no": 0,
-                        "latest_line_no": 0,
-                        "pending_partial": "",
-                        "tail_text": "",
-                    },
-                    ensure_ascii=False,
-                )
+                payload = {
+                    "success": True,
+                    "lines": [],
+                    "oldest_line_no": 0,
+                    "latest_line_no": 0,
+                    "pending_partial": "",
+                    "tail_text": "",
+                }
+                attach_ssh_channel_wait_fields(payload, arguments)
+                return json.dumps(payload, ensure_ascii=False)
             lines, oldest, latest = result
             mgr = SSHChannelManager.get_instance()
             last_n = arguments.get("last_n") or 30
@@ -11278,6 +11302,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     payload["text_preview"] = spill_info.get("preview", "")
                 else:
                     payload["text"] = spill_info.get("content", text)
+            attach_ssh_channel_wait_fields(payload, arguments)
             return json.dumps(payload, ensure_ascii=False)
 
         if name == "ssh_channel_read_length":
@@ -11299,7 +11324,9 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 return json.dumps({"success": False, "error": "通道不存在"}, ensure_ascii=False)
             result = SSHChannelManager.get_instance().get_content_length(cid, max_chars)
             if result is None:
-                return json.dumps({"success": True, "content": "", "length": 0}, ensure_ascii=False)
+                payload = {"success": True, "content": "", "length": 0}
+                attach_ssh_channel_wait_fields(payload, arguments)
+                return json.dumps(payload, ensure_ascii=False)
             content_text, oldest, latest = result
             payload = {
                 "success": True,
@@ -11313,6 +11340,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 payload["content_preview"] = spill_info.get("preview", "")
             else:
                 payload["content"] = spill_info.get("content", content_text)
+            attach_ssh_channel_wait_fields(payload, arguments)
             return json.dumps(payload, ensure_ascii=False)
 
         if name == "ssh_channel_has_new":
@@ -11326,17 +11354,23 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 return json.dumps({"success": False, "error": "通道不存在"}, ensure_ascii=False)
             result = SSHChannelManager.get_instance().has_new(cid, after_line)
             if result is None:
-                return json.dumps({"success": True, "has_new": False, "latest_line_no": 0, "pending_partial": ""}, ensure_ascii=False)
-            has_new_val, latest, pending = result
-            return json.dumps(
-                {
+                payload = {
                     "success": True,
-                    "has_new": has_new_val,
-                    "latest_line_no": latest,
-                    "pending_partial": pending or "",
-                },
-                ensure_ascii=False,
-            )
+                    "has_new": False,
+                    "latest_line_no": 0,
+                    "pending_partial": "",
+                }
+                attach_ssh_channel_wait_fields(payload, arguments)
+                return json.dumps(payload, ensure_ascii=False)
+            has_new_val, latest, pending = result
+            payload = {
+                "success": True,
+                "has_new": has_new_val,
+                "latest_line_no": latest,
+                "pending_partial": pending or "",
+            }
+            attach_ssh_channel_wait_fields(payload, arguments)
+            return json.dumps(payload, ensure_ascii=False)
 
         if name == "ssh_channel_close":
             cid = arguments.get("channel_id")

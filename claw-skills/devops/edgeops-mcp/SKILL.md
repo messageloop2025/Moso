@@ -96,7 +96,7 @@ edgeops_ops_task_control(task_id, action=stop|supplement, message?)
 - OpenClaw + MCP 并行时用 **不同 session_id**
 - MCP 专用写接口（ssh_execute、编排等）需 `X-EdgeOps-Client: mcp`（内置 client 已自动携带）
 - 无 Web UI：勿期待按钮/终端 SSE；确认用纯文本 `[A]/[B]` 选项
-- **`ops-chat` 终端轮询等待**：若 Agent 仍走 `get_terminal_buffer` 触发 batch 末 sleep，可用 `POST /api/ai/sessions/{session_id}/runtime-control` 且 `{"action":"wake"}` 跳过（MCP 无 wake 工具）。**ssh_channel 无此等待**
+- **`ops-chat` 轮询等待**：`get_terminal_buffer(next_poll…)` 或 ssh_channel `wait_seconds=1～30` 可触发 batch 末 sleep，可用 `runtime-control: wake` 跳过（MCP 无 wake 工具）。MCP 直调读通道时 wait_seconds 在工具内静默 sleep
 
 ## Verification
 

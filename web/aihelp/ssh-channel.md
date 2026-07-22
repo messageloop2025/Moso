@@ -51,8 +51,8 @@
 
 ### 与 Web 控制台「轮询等待 / 唤醒」的区别
 
-- **Web 控制台**在长任务时，`get_terminal_buffer(next_poll_in_seconds=N)` 可能在工具批次结束后由服务端 **sleep N 秒**；浏览器 CoT 对应步骤可 **唤醒 / 停止**（见 [terminal.md](terminal.md)）。
-- **ssh_channel** 是 AI 连续 `send` + `read_lines/has_new`，**没有**上述 batch 末倒计时，CoT 上**不会出现**针对 channel 的唤醒条。觉得 AI 读 channel 太慢时，应 **停止整轮任务** 或 **补充**说明，而不是找「唤醒 get_terminal_buffer」。
+- **Web 控制台**在长任务时，`get_terminal_buffer(next_poll_in_seconds=N)`（1～3600，可自动推断）可能在工具批次结束后由服务端 **sleep N 秒**；浏览器 CoT 可 **唤醒 / 停止**（见 [terminal.md](terminal.md)）。
+- **ssh_channel** 读/轮询工具支持显式短等待：**`wait_seconds=1～30`**（`ssh_channel_read_lines` / `read_length` / `has_new`）；**0 或不传 = 读完立即返回**，不做按命令自动推断。Web 会话同样可在 CoT 上 **唤醒** 跳过该倒计时。
 
 ---
 

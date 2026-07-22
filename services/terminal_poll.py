@@ -213,6 +213,37 @@ def infer_poll_from_ssh_result(result_obj: dict) -> int:
     return 0
 
 
+# ssh_channel 读/轮询：显式短等待（不做 send/buffer 自动推断）
+SSH_CHANNEL_WAIT_MAX = 30
+_SSH_CHANNEL_WAIT_TOOLS = frozenset(
+    {
+        "ssh_channel_read_lines",
+        "ssh_channel_read_length",
+        "ssh_channel_has_new",
+    }
+)
+
+
+def clamp_ssh_channel_wait_seconds(value) -> int:
+    """钳制 ssh_channel wait_seconds：非法/缺失→0，范围 0～30。"""
+    if value is None or value is False:
+        return 0
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(SSH_CHANNEL_WAIT_MAX, n))
+
+
+def attach_ssh_channel_wait_fields(payload: dict, arguments: dict | None) -> dict:
+    """成功读通道后写入 wait_seconds / next_poll_in_seconds（仅 >0）。"""
+    wait = clamp_ssh_channel_wait_seconds((arguments or {}).get("wait_seconds"))
+    if wait > 0:
+        payload["wait_seconds"] = wait
+        payload["next_poll_in_seconds"] = wait
+    return payload
+
+
 def apply_terminal_poll_tool_result(
     state: TerminalPollBatchState,
     fn_name: str,
@@ -235,4 +266,14 @@ def apply_terminal_poll_tool_result(
             result_obj["auto_poll_in_seconds"] = poll
             result_obj["next_poll_in_seconds"] = poll
         return poll, result_obj
+    if fn_name in _SSH_CHANNEL_WAIT_TOOLS and success:
+        wait = clamp_ssh_channel_wait_seconds(
+            args.get("wait_seconds")
+            if args.get("wait_seconds") is not None
+            else result_obj.get("wait_seconds")
+        )
+        if wait > 0:
+            result_obj["wait_seconds"] = wait
+            result_obj["next_poll_in_seconds"] = wait
+        return wait, result_obj
     return 0, result_obj

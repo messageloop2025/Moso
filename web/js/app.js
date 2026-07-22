@@ -738,7 +738,7 @@ function edgeopsRenderMessageFooter(ts, runStats) {
     var statsHtml = statsText
         ? '<span class="message-run-stats" title="' + esc(statsText) + '">' + esc(statsText) + '</span>'
         : '<span class="message-run-stats"></span>';
-    return '<div class="message-footer">' + statsHtml + '<div class="message-time">' + esc(ts) + '</div></div>';
+    return '<div class="message-footer">' + statsHtml + '<span class="message-time">' + esc(ts) + '</span></div>';
 }
 
 function edgeopsEnsureMessageFooterEl(messageContentEl) {
@@ -754,7 +754,7 @@ function edgeopsEnsureMessageFooterEl(messageContentEl) {
     if (timeEl) {
         footer.appendChild(timeEl);
     } else {
-        var timeEl2 = document.createElement('div');
+        var timeEl2 = document.createElement('span');
         timeEl2.className = 'message-time';
         footer.appendChild(timeEl2);
     }
@@ -8340,7 +8340,17 @@ function edgeopsUpdateChatPollWait(toolsEl, ev, opts) {
         return;
     }
     var toolName = ev.wait_tool || 'get_terminal_buffer';
-    var rem = ev.wait_remaining != null ? ev.wait_remaining : (ev.seconds || 0);
+    var rem = Number(ev.wait_remaining != null ? ev.wait_remaining : (ev.seconds || 0));
+    if (!isFinite(rem)) rem = 0;
+    rem = Math.max(0, Math.floor(rem));
+    // 倒计时到 0：等待已结束，直接隐藏 CoT/底部「等待·唤醒」条（后端正常结束不会再发 waiting_woken）
+    if (rem <= 0) {
+        edgeopsClearChatPollWait(toolsEl);
+        if (opts.runtimeCtl && opts.runtimeCtl.note) {
+            opts.runtimeCtl.note(typeof t === 'function' ? t('hostAi.runtimeTipCompact') : '');
+        }
+        return;
+    }
     var tip = typeof t === 'function'
         ? t('hostAi.pollWaitOnTool', { remaining: rem, tool: toolName })
         : (toolName + ' · ' + rem + 's');
