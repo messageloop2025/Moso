@@ -5019,7 +5019,12 @@ async def _poll_wait_sse(
                 if act == "stop":
                     out_status[:] = ["user_stop"]
                     yield _sse({
-                        "runtime_control": {"action": "stop", "accepted": True, "during_wait": True},
+                        "runtime_control": {
+                            "action": "stop",
+                            "accepted": True,
+                            "during_wait": True,
+                            "message": (ctrl.get("message") or "").strip(),
+                        },
                     })
                     yield _sse({
                         "action": "waiting_aborted",
@@ -5030,7 +5035,12 @@ async def _poll_wait_sse(
                 if act == "pause":
                     out_status[:] = ["user_pause"]
                     yield _sse({
-                        "runtime_control": {"action": "pause", "accepted": True, "during_wait": True},
+                        "runtime_control": {
+                            "action": "pause",
+                            "accepted": True,
+                            "during_wait": True,
+                            "message": (ctrl.get("message") or "").strip(),
+                        },
                     })
                     yield _sse({
                         "action": "waiting_aborted",
@@ -5042,7 +5052,12 @@ async def _poll_wait_sse(
                     _sup_msg = (ctrl.get("message") or "").strip()
                     out_status[:] = ["supplement", _sup_msg]
                     yield _sse({
-                        "runtime_control": {"action": "supplement", "accepted": True, "during_wait": True},
+                        "runtime_control": {
+                            "action": "supplement",
+                            "accepted": True,
+                            "during_wait": True,
+                            "message": _sup_msg,
+                        },
                     })
                     return
                 if act == "wake":
@@ -5361,7 +5376,7 @@ def _build_system_prompt() -> str:
 - 删除操作谨慎：涉及删除（文件、目录、配置、数据、任务等）时，先明确目标与范围，再执行最小化删除；避免使用高风险、宽范围删除写法。批量删除或不可逆删除前，应先给出待删除清单/数量与风险，并优先通过 `ask_user_choice` 获取确认。**一旦 `delete_host` 等删除工具已成功执行，禁止再调用 `ask_user_choice` 追问「是否删除」**（此时无法撤销，二次确认无意义）；直接汇总删除结果即可。
 - 修改先备份：对文件/配置/数据进行修改前，先判断是否需要备份；凡是批量修改、覆盖写入、不可轻易重建的数据，默认先做可回滚备份（同目录、明确备份路径、快照、导出或复制）；修改完成后先检查结果与可用性，无误后再考虑清理临时备份。若备份成本很高或会影响系统，应向用户说明风险并确认。
 - 跨主机中转传文件清理规则：relay_file_between_hosts 经用户**文件系统工作区**中转（默认 exchange/…）；单目标传输成功后默认删除中转文件；多目标分发可设 keep_staging_for_multi_target=true 保留 staging 复用。
-- 自然语言回答的语种以本消息中更靠前的 **「Response language policy / 回复语言策略」** 段为准；勿与该策略冲突（含对用户可见的流式规划/推理，见该段第 5 点）
+- 自然语言回答的语种以本消息中更靠前的 **「Response language policy / 回复语言策略」** 段为准；勿与该策略冲突（含对用户可见的流式规划/推理；不得因英文日志/术语改用英文推理）
 - **上下文与会话记忆**：注入的历史消息可能因预算被截断；优先信任较新的 user/assistant 与当前轮工具结果。若工具返回仅有 `[[EDGEOPS_CHAT_DATA ...]]` 哨兵，需用 **read_chat_data**（或附件类用 **read_chat_attachment**）分段取全量后再断言「已覆盖全部」。
 - 每轮回复中若执行了工具，也必须用至少一句话向用户说明执行结果或下一步（如「已上传到 /mnt/xxx」「已执行完成」），不要只调用工具而不输出任何文字给用户。
 - 清单/列表防漏项规则（尤其是漏洞、告警、资产、主机、失败项等）：当任务目标是“全部处理/全部汇总”时，必须先给出“总数与已处理数”，再分批处理并在结尾对账；若任一工具结果出现“已省略/已截断”提示，不得直接宣称“已全部完成”，必须继续分页或分批拉取（limit/offset/过滤）直到无截断，再输出最终结论。
@@ -6566,7 +6581,13 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                 pending_user_msg = {"text": injected, "saved": False}
                                 await _persist_pending_user_msg()
                                 messages.append({"role": "user", "content": injected})
-                                yield _sse({"runtime_control": {"action": _a, "accepted": True}})
+                                yield _sse({
+                                    "runtime_control": {
+                                        "action": _a,
+                                        "accepted": True,
+                                        "message": (_m or "").strip(),
+                                    }
+                                })
                         # resume 在这里不需要特殊处理（仅用于解除暂停语义，消息由用户下一轮驱动）
                     content = None
                     # 本轮特征用于「辅助 AI 是否需要追问」的硬拦截：
@@ -6734,7 +6755,14 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                                 pending_user_msg = {"text": injected, "saved": False}
                                                 await _persist_pending_user_msg()
                                                 messages.append({"role": "user", "content": injected})
-                                                yield _sse({"runtime_control": {"action": _a, "accepted": True, "during_llm": True}})
+                                                yield _sse({
+                                                    "runtime_control": {
+                                                        "action": _a,
+                                                        "accepted": True,
+                                                        "during_llm": True,
+                                                        "message": (_m or "").strip(),
+                                                    }
+                                                })
                                                 llm_runtime_pause_injected = injected
                                                 break
                                         llm_wait_ticks += 1
@@ -7338,6 +7366,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                                             "runtime_control": {
                                                                 "action": "choice",
                                                                 "accepted": True,
+                                                                "message": (_m or "").strip(),
                                                             }
                                                         }
                                                     )
@@ -7349,6 +7378,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                                                 "action": "pause",
                                                                 "accepted": True,
                                                                 "during_wait": "strict_confirm",
+                                                                "message": (_m or "").strip(),
                                                             }
                                                         }
                                                     )
@@ -7520,7 +7550,14 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                                         pass
                                                     _a = _ctrl["action"]
                                                     _m = _ctrl["message"]
-                                                    yield _sse({"runtime_control": {"action": _a, "accepted": True, "during_tool": fn_name}})
+                                                    yield _sse({
+                                                        "runtime_control": {
+                                                            "action": _a,
+                                                            "accepted": True,
+                                                            "during_tool": fn_name,
+                                                            "message": (_m or "").strip(),
+                                                        }
+                                                    })
                                                     if _a == "stop":
                                                         yield "data: [DONE]\n\n"
                                                         return
@@ -7596,7 +7633,14 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                                     pass
                                                 _a = _ctrl["action"]
                                                 _m = _ctrl["message"]
-                                                yield _sse({"runtime_control": {"action": _a, "accepted": True, "during_tool": fn_name}})
+                                                yield _sse({
+                                                    "runtime_control": {
+                                                        "action": _a,
+                                                        "accepted": True,
+                                                        "during_tool": fn_name,
+                                                        "message": (_m or "").strip(),
+                                                    }
+                                                })
                                                 if _a == "stop":
                                                     yield "data: [DONE]\n\n"
                                                     return
@@ -7842,16 +7886,36 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                                 return
                                             if _a in ("choice", "supplement") and _m:
                                                 choice_text = _m
-                                                yield _sse({"runtime_control": {"action": "choice", "accepted": True}})
+                                                yield _sse({
+                                                    "runtime_control": {
+                                                        "action": "choice",
+                                                        "accepted": True,
+                                                        "message": (_m or "").strip(),
+                                                    }
+                                                })
                                                 break
                                             if _a == "pause":
-                                                yield _sse({"runtime_control": {"action": "pause", "accepted": True, "during_wait": "choice"}})
+                                                yield _sse({
+                                                    "runtime_control": {
+                                                        "action": "pause",
+                                                        "accepted": True,
+                                                        "during_wait": "choice",
+                                                        "message": (_m or "").strip(),
+                                                    }
+                                                })
                                                 yield "data: [DONE]\n\n"
                                                 return
                                         if auto_choice_at is not None and asyncio.get_running_loop().time() >= auto_choice_at:
                                             choice_text = _default_choice_reply_from_ui_action(ui_action)
                                             if choice_text:
-                                                yield _sse({"runtime_control": {"action": "choice", "accepted": True, "auto": True}})
+                                                yield _sse({
+                                                    "runtime_control": {
+                                                        "action": "choice",
+                                                        "accepted": True,
+                                                        "auto": True,
+                                                        "message": (choice_text or "").strip(),
+                                                    }
+                                                })
                                                 break
                                             auto_choice_at = None
                                         await asyncio.sleep(1)

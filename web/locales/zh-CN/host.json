@@ -157,6 +157,8 @@
     "runtimeStop": "停止",
     "runtimeSent": "已发送运行时控制指令",
     "runtimeEventPrefix": "运行时控制：",
+    "runtimeResume": "继续",
+    "runtimeChoice": "选择",
     "streamNoText": "（本轮工具调用已结束，但模型未返回文字总结。）",
     "transferProgress": "{{pct}}% · {{done}} / {{total}} · {{speed}} · {{elapsed}}s · ETA {{eta}}",
     "transferPullShort": "下载",

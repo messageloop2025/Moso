@@ -1,4 +1,7 @@
-"""AI 回复语言策略：与用户输入语言一致；无法判断时按用户设置 → 站点设置 → 浏览器；显式要求优先。"""
+"""AI 回复语言策略：显式要求优先；否则按用户设置 → 站点设置 → 界面/浏览器语言。
+
+推理（reasoning / thinking / CoT）与最终叙述使用同一自然语言，不因英文日志/术语改用英文。
+"""
 from __future__ import annotations
 
 import re
@@ -143,7 +146,17 @@ def resolve_output_language(
 ) -> tuple[str, str, str]:
     """
     返回 (final_locale, reason_code, reason_label_zh)
-    reason_code: explicit | from_input | user_setting | site_setting | browser | hard_default
+
+    优先级：
+    1. 用户本条消息显式指定语言
+    2. 用户个人「回复语言」设置
+    3. 站点全局设置
+    4. 界面/浏览器语言（前端 ui_locale）
+    5. 从本条输入推测（仅作兜底）
+    6. 硬默认 zh-CN
+
+    不再把「跟输入语言一致」放在浏览器语言之前——运维对话常夹杂英文术语/日志，
+    若优先跟输入会导致推理大段英文化。
     """
     exp = parse_explicit_output_language(user_message)
     if exp and exp in ALLOWED_LOCALE_CODES:
@@ -159,7 +172,7 @@ def resolve_output_language(
         return b, "browser", "界面语言/浏览器"
     det = infer_input_language_for_output(user_message)
     if det in ALLOWED_LOCALE_CODES and det != "undetermined":
-        return det, "from_input", "与用户本条输入语言一致"
+        return det, "from_input", "与用户本条输入语言一致（兜底）"
     return "zh-CN", "hard_default", "未配置时兜底"
 
 
@@ -172,6 +185,7 @@ def build_output_language_system_section(
 ) -> str:
     """
     注入主 AI system 的「回复语言策略」段（中英双语，便于各模型遵守）。
+    强调：推理/thinking 与最终叙述使用同一自然语言，禁止因英文上下文改用英文推理。
     """
     final, reason_code, reason_zh = resolve_output_language(
         user_message,
@@ -179,50 +193,38 @@ def build_output_language_system_section(
         global_output_locale=global_output_locale,
         browser_ui_locale=browser_ui_locale,
     )
-    det = infer_input_language_for_output(user_message)
-    det_en = "Chinese (Simplified context)" if det == "zh-CN" else (
-        "English" if det == "en" else "undetermined / mixed / too short"
-    )
-    # reason labels in English for the model
     _reason_en = {
         "explicit": "user explicitly requested a language in the message (highest priority).",
-        "from_input": "inferred from the language of the user's current message.",
-        "user_setting": "user default in settings (used when the message language is unclear).",
+        "from_input": "fallback: inferred from the language of the user's current message.",
+        "user_setting": "user default in AI settings.",
         "site_setting": "site-wide default in global settings.",
-        "browser": "UI / browser language (request header or client-reported locale).",
+        "browser": "UI / browser / device language reported by the client.",
         "hard_default": "fallback when nothing else is set.",
     }.get(reason_code, reason_code)
+    lang_name_zh = "简体中文" if final == "zh-CN" else ("English" if final == "en" else final)
+    lang_name_en = "Simplified Chinese" if final == "zh-CN" else ("English" if final == "en" else final)
     zh_first = final == "zh-CN"
-    ctx_note_zh = (
-        "终端输出、工具结果、编译日志、主机提示词等上下文常为英文；**你的叙述、推理、步骤说明仍须用简体中文**，"
-        "仅命令/路径/日志原文保持英文，不要整段用英文分析。"
-        if zh_first
-        else ""
-    )
-    ctx_note_en = (
-        "Terminal output, tool results, and logs may be in another language; "
-        "your narration and reasoning must still follow the effective default below."
-        if not zh_first
-        else ""
-    )
+
     zh_block = f"""**中文（本回合必须遵守）**
 - 若用户**显式**要求某种输出语言，必须**全程**按该语言写自然语言（代码/命令/原始日志/标识符不强行翻译）。
-- 否则在可判断时，**与用户本条消息的主要语言**保持一致。
-- 若无法从本条判断，则本回合采用 **{final}**（依据：{reason_zh}，内部代码 `{reason_code}`）。
-- **对用户可见的规划与推理**（含流式思考、工具调用前的说明、中间步骤小结）须与**本条策略确定的自然语言**一致，不要无故中英混切；工具名、路径、命令与日志原文保持原样。
-{f"- {ctx_note_zh}" if ctx_note_zh else ""}
-**本回合必须使用的自然语言输出：{"简体中文为主" if final == "zh-CN" else "English" if final == "en" else final}。**"""
-    en_block = f"""**English (same rules)**
-1) If the user **explicitly** asks for a specific language, use **that** language for all natural-language narration.
-2) Otherwise, if the user's **current** message is clearly in one language, **match** that language.
-3) If ambiguous, use **effective default**: **{final}** (reason: {_reason_en}).
-4) Planning / reasoning / step narration visible to the user MUST use the same language as your final reply.
-5) Tool names, paths, shell commands, identifiers, and raw log lines stay unchanged.
-{f"6) {ctx_note_en}" if ctx_note_en else ""}
+- 否则本回合统一使用：**{lang_name_zh}**（依据：{reason_zh}，`{reason_code}`）。来源为用户设置 → 站点设置 → **界面/浏览器语言**，不是「跟英文日志走」。
+- **推理 / 思考 / 规划 / 步骤说明**（含厂商 `reasoning` / `reasoning_content` / `thinking` 流式字段、工具调用前的内心独白、中间小结）**必须**用上述自然语言书写；禁止无故中英混切，禁止因终端输出、配置、报错、包名是英文就改用英文整段推理。
+- 命令、路径、配置键、日志原文、工具名可保持英文引用；解释与结论仍用 {lang_name_zh}。
+- 即使用户消息很短、夹杂英文专有名词，或上下文几乎全是英文工具输出，**仍不要**把推理改成英文，除非用户显式要求英文。
 
-**Inferred from this user message (for step 2)**: {det_en} (`{det}`)"""
+**本回合自然语言输出（含推理）：{lang_name_zh}。**"""
+
+    en_block = f"""**English (same rules)**
+1) If the user **explicitly** asks for a language, use that language for all natural-language text.
+2) Otherwise use **{lang_name_en}** for this turn (reason: {_reason_en}). Chain: user setting → site setting → **UI/browser locale** — do **not** switch to English because logs/tools are English.
+3) **Reasoning / thinking / planning / step narration** (including vendor `reasoning` / `reasoning_content` / `thinking` streams) MUST be in **{lang_name_en}**. Do not mix languages. Do not rewrite analysis in English just because configs, errors, or package names are English.
+4) Tool names, paths, shell commands, identifiers, and raw log lines may stay as-is; your explanation stays in {lang_name_en}.
+5) Short user messages with English proper nouns still do **not** authorize English reasoning unless explicitly requested.
+
+**Natural language for this turn (including reasoning): {lang_name_en}.**"""
+
     body = (zh_block + "\n\n" + en_block) if zh_first else (en_block + "\n\n" + zh_block)
-    return f"""## Response language policy (HIGHEST PRIORITY — follow over any generic "reply in Chinese" elsewhere)
+    return f"""## Response language policy (HIGHEST PRIORITY — overrides generic bilingual habits)
 
 {body}
 """.strip()

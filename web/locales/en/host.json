@@ -157,6 +157,8 @@
     "runtimeStop": "Stop",
     "runtimeSent": "Runtime control command sent",
     "runtimeEventPrefix": "Runtime control: ",
+    "runtimeResume": "Resume",
+    "runtimeChoice": "Choice",
     "streamNoText": "(Tool calls finished, but the model did not return a text summary.)",
     "transferProgress": "{{pct}}% · {{done}} / {{total}} · {{speed}} · {{elapsed}}s · ETA {{eta}}",
     "transferPullShort": "Pull",

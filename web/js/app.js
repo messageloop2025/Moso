@@ -1930,6 +1930,30 @@ function edgeopsRenderContinueConfirmCard(onAction) {
     return wrap;
 }
 
+/**
+ * 将 runtime_control SSE 格式化为过程输出可读文案（中文动作名 + 用户输入）。
+ */
+function edgeopsFormatRuntimeControlLine(rc) {
+    rc = rc || {};
+    var action = String(rc.action || 'supplement').toLowerCase();
+    var labelKey = {
+        supplement: 'hostAi.runtimeSupplement',
+        pause: 'hostAi.runtimePause',
+        stop: 'hostAi.runtimeStop',
+        wake: 'hostAi.pollWaitWake',
+        resume: 'hostAi.runtimeResume',
+        choice: 'hostAi.runtimeChoice'
+    }[action];
+    var label = (labelKey && typeof t === 'function') ? t(labelKey) : action;
+    var prefix = (typeof t === 'function') ? t('hostAi.runtimeEventPrefix') : 'Runtime control: ';
+    var msg = String(rc.message || '').trim();
+    if (msg) {
+        if (msg.length > 500) msg = msg.slice(0, 500) + '…';
+        return prefix + label + ' — ' + msg;
+    }
+    return prefix + label;
+}
+
 function edgeopsInstallRuntimeControlBar(opts) {
     opts = opts || {};
     var inputArea = typeof opts.area === 'string' ? document.getElementById(opts.area) : opts.area;
@@ -7845,6 +7869,43 @@ function edgeopsCotEnsureActivePeekEl(panel) {
     return peek;
 }
 
+/** 从已有 CoT 步骤生成 peek HTML（等待下一轮时沿用上一条，避免反复出现「正在思考」）。 */
+function edgeopsCotPeekHtmlFromStep(stepEl) {
+    if (!stepEl) return '';
+    if (stepEl.classList.contains('ai-cot-step-reasoning')) {
+        var bodyEl = stepEl.querySelector('.ai-cot-reasoning-text');
+        var plain = edgeopsReasoningBufferToPlain((bodyEl && bodyEl.textContent) || '');
+        if (!plain.trim()) return '';
+        var truncated = plain.length > 280 ? plain.slice(0, 280) + '…' : plain;
+        var headEl = stepEl.querySelector('.ai-cot-step-head');
+        var rLabel = (headEl && headEl.textContent) || (typeof t === 'function' ? t('hostAi.cotRoundReasoning', { round: 1 }) : 'Reasoning');
+        return '<div class="ai-cot-peek-step ai-cot-peek-reasoning">'
+            + '<div class="ai-cot-peek-label">' + esc(rLabel) + '</div>'
+            + '<div class="ai-cot-peek-text">' + esc(truncated) + '</div></div>';
+    }
+    if (stepEl.classList.contains('ai-cot-step-tool')) {
+        var titleEl = stepEl.querySelector('.ai-cot-step-title');
+        var badgeEl = stepEl.querySelector('.ai-cot-tool-badge');
+        var transferEl = stepEl.querySelector('.ai-cot-transfer-head-progress');
+        var transferBar = stepEl.querySelector('.ai-tool-transfer-progress');
+        var toolPeek = '<div class="ai-cot-peek-step ai-cot-peek-tool">'
+            + (titleEl ? titleEl.outerHTML : '')
+            + (transferEl ? transferEl.outerHTML : '')
+            + (badgeEl ? badgeEl.outerHTML : '');
+        if (transferBar) {
+            toolPeek += '<div class="ai-cot-peek-transfer">' + transferBar.outerHTML + '</div>';
+        }
+        var stream = stepEl.querySelector('.ai-tool-stream');
+        if (stream && stream.lastElementChild && (stream.lastElementChild.textContent || '').trim()) {
+            toolPeek += '<div class="ai-cot-peek-stream-line">'
+                + esc(String(stream.lastElementChild.textContent).trim().slice(0, 240))
+                + '</div>';
+        }
+        return toolPeek + '</div>';
+    }
+    return '';
+}
+
 function edgeopsCotSyncActivePeek(panel) {
     if (!panel) return;
     edgeopsCotEnsureActivePeekEl(panel);
@@ -7864,24 +7925,8 @@ function edgeopsCotSyncActivePeek(panel) {
         parts.push('<div class="ai-cot-peek-step ai-cot-peek-wait"><div class="ai-cot-wait-bar ai-cot-peek-wait-bar"></div></div>');
     }
     if (st.activeToolEl) {
-        var titleEl = st.activeToolEl.querySelector('.ai-cot-step-title');
-        var badgeEl = st.activeToolEl.querySelector('.ai-cot-tool-badge');
-        var transferEl = st.activeToolEl.querySelector('.ai-cot-transfer-head-progress');
-        var transferBar = st.activeToolEl.querySelector('.ai-tool-transfer-progress');
-        var toolPeek = '<div class="ai-cot-peek-step ai-cot-peek-tool">'
-            + (titleEl ? titleEl.outerHTML : '')
-            + (transferEl ? transferEl.outerHTML : '')
-            + (badgeEl ? badgeEl.outerHTML : '');
-        if (transferBar) {
-            toolPeek += '<div class="ai-cot-peek-transfer">' + transferBar.outerHTML + '</div>';
-        }
-        var stream = st.activeToolEl.querySelector('.ai-tool-stream');
-        if (stream && stream.lastElementChild && (stream.lastElementChild.textContent || '').trim()) {
-            toolPeek += '<div class="ai-cot-peek-stream-line">'
-                + esc(String(stream.lastElementChild.textContent).trim().slice(0, 240))
-                + '</div>';
-        }
-        parts.push(toolPeek + '</div>');
+        var activePeek = edgeopsCotPeekHtmlFromStep(st.activeToolEl);
+        if (activePeek) parts.push(activePeek);
     } else if (!pollWait && st.reasoningBodyEl && (st.reasoningBuffer || '').trim()) {
         var plain = edgeopsReasoningBufferToPlain(st.reasoningBuffer);
         var truncated = plain.length > 280 ? plain.slice(0, 280) + '…' : plain;
@@ -7891,9 +7936,26 @@ function edgeopsCotSyncActivePeek(panel) {
             + '<div class="ai-cot-peek-text">' + esc(truncated) + '</div></div>');
     } else if (!pollWait) {
         var live = panel.querySelector('.ai-cot-live');
-        var thinkingText = (live && live.textContent) || (typeof t === 'function' ? t('hostAi.cotThinking') : '');
-        if (thinkingText) {
-            parts.push('<div class="ai-cot-peek-step ai-cot-peek-thinking">' + esc(thinkingText) + '</div>');
+        var liveText = (live && (live.textContent || '').trim()) || '';
+        var stepsRoot = panel.querySelector('.ai-cot-steps');
+        var lastStep = stepsRoot ? stepsRoot.lastElementChild : null;
+        var hasSteps = !!lastStep;
+        // 仅首轮（尚无任何步骤）显示「正在思考」；之后间隙沿用上一条步骤内容
+        if (!hasSteps) {
+            var thinkingText = liveText || (typeof t === 'function' ? t('hostAi.cotThinking') : '');
+            if (thinkingText) {
+                parts.push('<div class="ai-cot-peek-step ai-cot-peek-thinking">' + esc(thinkingText) + '</div>');
+            }
+        } else {
+            var lastPeek = edgeopsCotPeekHtmlFromStep(lastStep);
+            if (lastPeek) {
+                parts.push(lastPeek);
+            } else if (liveText) {
+                var thinkingLabel = typeof t === 'function' ? t('hostAi.cotThinking') : '';
+                if (liveText !== thinkingLabel) {
+                    parts.push('<div class="ai-cot-peek-step ai-cot-peek-thinking">' + esc(liveText) + '</div>');
+                }
+            }
         }
     }
     if (!parts.length) {
@@ -7936,17 +7998,23 @@ function edgeopsCotRefreshHeader(panel) {
 }
 
 /**
- * 创建 / 复用 CoT 面板，并立即在 live 区显示「正在思考」提示。
- * 让用户在 LLM 第一次响应（可能要 5~10s）之前就能看到反馈，避免空气泡误以为没在工作。
+ * 创建 / 复用 CoT 面板；仅在尚无任何步骤时写入「正在思考」提示。
+ * 首轮等待 LLM 首包时给反馈；已有步骤后不再覆盖，peek 沿用上一条内容。
  */
 function edgeopsCotEnsureThinkingPlaceholder(toolsEl) {
     if (!toolsEl) return;
     var panel = edgeopsGetOrCreateCotPanel(toolsEl);
     if (!panel) return;
+    var st = edgeopsGetCotState(panel);
+    var stepsRoot = panel.querySelector('.ai-cot-steps');
+    var hasSteps = !!(st.roundSeq > 0 || (stepsRoot && stepsRoot.firstElementChild));
     var live = panel.querySelector('.ai-cot-live');
-    if (live) {
+    if (live && !hasSteps) {
         var label = typeof t === 'function' ? t('hostAi.cotThinking') : 'AI is thinking…';
         live.textContent = label;
+    } else if (live && hasSteps) {
+        var thinkingLabel = typeof t === 'function' ? t('hostAi.cotThinking') : 'AI is thinking…';
+        if ((live.textContent || '').trim() === thinkingLabel) live.textContent = '';
     }
     edgeopsCotSyncActivePeek(panel);
 }
@@ -7965,6 +8033,11 @@ function edgeopsCotOnReasoningChunk(toolsEl, cot) {
         step.innerHTML = '<div class="ai-cot-step-head">' + esc(headText) + '</div><div class="ai-cot-step-body ai-cot-reasoning-text"></div>';
         steps.appendChild(step);
         st.reasoningBodyEl = step.querySelector('.ai-cot-reasoning-text');
+        var liveClr = panel.querySelector('.ai-cot-live');
+        if (liveClr) {
+            var thinkingClr = typeof t === 'function' ? t('hostAi.cotThinking') : '';
+            if (!thinkingClr || (liveClr.textContent || '').trim() === thinkingClr) liveClr.textContent = '';
+        }
         edgeopsCotRefreshHeader(panel);
         edgeopsCotSyncActivePeek(panel);
     }
@@ -9930,8 +10003,7 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
                 edgeopsScrollChatToBottomStepIfPinned(box);
             }
             else if (ev.runtime_control) {
-                var rc = ev.runtime_control || {};
-                streamedText += '\n\n`' + t('hostAi.runtimeEventPrefix') + (rc.action || 'supplement') + '`\n\n';
+                streamedText += '\n\n`' + edgeopsFormatRuntimeControlLine(ev.runtime_control) + '`\n\n';
                 flushStreamReplyText();
                 edgeopsScrollChatToBottomStepIfPinned(box);
             }
@@ -12251,8 +12323,7 @@ function renderAIPage() {
                 renderToolStreamEvent(toolsEl, ev);
                 edgeopsScrollChatToBottomStepIfPinned(box);
             } else if (ev.runtime_control) {
-                var rc2 = ev.runtime_control || {};
-                streamedText += '\n\n`' + t('hostAi.runtimeEventPrefix') + (rc2.action || 'supplement') + '`\n\n';
+                streamedText += '\n\n`' + edgeopsFormatRuntimeControlLine(ev.runtime_control) + '`\n\n';
                 flushStreamReplyText();
                 edgeopsScrollChatToBottomStepIfPinned(box);
             } else if (ev.action === 'waiting' || ev.action === 'waiting_aborted' || ev.action === 'waiting_woken') {
@@ -17141,8 +17212,7 @@ function renderLocalPage() {
                 renderToolStreamEvent(toolsEl, ev);
                 edgeopsScrollChatToBottomStepIfPinned(box);
             } else if (ev.runtime_control) {
-                var rc3 = ev.runtime_control || {};
-                streamedText += '\n\n`' + t('hostAi.runtimeEventPrefix') + (rc3.action || 'supplement') + '`\n\n';
+                streamedText += '\n\n`' + edgeopsFormatRuntimeControlLine(ev.runtime_control) + '`\n\n';
                 flushStreamReplyText();
                 edgeopsScrollChatToBottomStepIfPinned(box);
             }             else if (ev.action === 'waiting' || ev.action === 'waiting_aborted' || ev.action === 'waiting_woken') {
