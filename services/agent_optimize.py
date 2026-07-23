@@ -185,20 +185,25 @@ FS_TOOL_NAMES: frozenset[str] = frozenset({
     "local_chat_write_binary",
 })
 
-HTTP_TOOL_NAMES: frozenset[str] = frozenset({
-    "http_request",
-    "http_download",
-    "http_upload",
-    "http_download_merge",
+# 主机↔工作区 / 主机↔主机文件转运：与「HTTP 下载」不同，运维对话常只触发 fs/terminal 层。
+# 必须随 terminal/fs 一并下发，否则 system 提示写了 scp_pull/scp_push 但 tools 列表里没有。
+HOST_FILE_TRANSFER_TOOL_NAMES: frozenset[str] = frozenset({
     "scp_push",
     "scp_pull",
     "relay_file_between_hosts",
     "transfer_file_between_hosts",
     "build_scp_transfer_script",
+})
+
+HTTP_TOOL_NAMES: frozenset[str] = frozenset({
+    "http_request",
+    "http_download",
+    "http_upload",
+    "http_download_merge",
     "git_clone_on_host",
     "search_web",
     "search_github",
-})
+}) | HOST_FILE_TRANSFER_TOOL_NAMES
 
 FS_TOOL_PREFIXES: tuple[str, ...] = ("fs_", "local_fs_", "local_chat_")
 TERMINAL_TOOL_PREFIXES: tuple[str, ...] = ("ssh_channel_",)
@@ -217,12 +222,14 @@ _TERMINAL_HINT_RE = re.compile(
 )
 _FS_HINT_RE = re.compile(
     r"(文件|目录|工作区|fs_|artifact|报告|html|上传.?本地|下载.?本地|"
-    r"读.?文件|写.?文件|搜索.?文件|打包|解压|tgz|脚本.?落盘)",
+    r"读.?文件|写.?文件|搜索.?文件|打包|解压|tgz|tar\.gz|归档|备份|"
+    r"落盘|/tmp|传到|拷到|拷贝|搬到|转运|比对|脚本.?落盘)",
     re.IGNORECASE,
 )
 _HTTP_HINT_RE = re.compile(
     r"(http|https|url|wget|curl|下载|上传|scp|sftp|拉取|推送|api.?请求|"
     r"http_request|http_download|scp_push|scp_pull|连通性|探测|"
+    r"拉回|推到|中转|relay|transfer_file|"
     r"[a-z0-9][a-z0-9.-]*\.(com|cn|cc|io|net|org|local|dev|xyz|me|top)\b)",
     re.IGNORECASE,
 )
@@ -616,7 +623,8 @@ def _allow_set_for_tier(tier: str) -> frozenset[str] | None:
     if tier in ("full", "lightweight"):
         return None
     names: set[str] = set(CORE_TOOL_NAMES)
-    for part in tier.split("+"):
+    parts = [p for p in tier.split("+") if p]
+    for part in parts:
         if part == "terminal":
             names |= TERMINAL_TOOL_NAMES
         elif part == "fs":
@@ -627,6 +635,9 @@ def _allow_set_for_tier(tier: str) -> frozenset[str] | None:
             pass
         elif part == "ops":
             names |= TERMINAL_TOOL_NAMES
+    # 主机侧文件任务几乎总会开 terminal/fs；此时必须带上 scp_pull/scp_push 等转运工具
+    if any(p in ("terminal", "fs", "http", "ops") for p in parts):
+        names |= HOST_FILE_TRANSFER_TOOL_NAMES
     return frozenset(names)
 
 

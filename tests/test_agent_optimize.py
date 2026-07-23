@@ -107,6 +107,8 @@ def test_tools_tier_core_vs_terminal():
         {"type": "function", "function": {"name": "ask_user_choice", "parameters": {}}},
         {"type": "function", "function": {"name": "get_terminal_buffer", "parameters": {}}},
         {"type": "function", "function": {"name": "ssh_execute", "parameters": {}}},
+        {"type": "function", "function": {"name": "scp_pull", "parameters": {}}},
+        {"type": "function", "function": {"name": "scp_push", "parameters": {}}},
     ]
     assert resolve_tools_tier("列出有哪些主机") == "core"
     core = filter_tools_for_message(tools, "列出有哪些主机", lightweight=False)
@@ -114,17 +116,41 @@ def test_tools_tier_core_vs_terminal():
     assert "list_hosts" in core_names
     assert "send_to_terminal" not in core_names
     assert "batch_create" not in core_names
+    assert "scp_pull" not in core_names
 
     tier_t = resolve_tools_tier("在终端执行 df -h")
     assert "terminal" in tier_t
     term = filter_tools_for_message(tools, "在终端执行 df -h", lightweight=False)
     term_names = {t["function"]["name"] for t in term}
     assert "send_to_terminal" in term_names or "ssh_execute" in term_names
+    # 终端层必须带主机文件转运，避免提示词写了 scp_* 但 tools 里没有
+    assert "scp_pull" in term_names and "scp_push" in term_names
 
     # 未写「终端」但要查磁盘 → 仍应带 terminal 层
     assert "terminal" in resolve_tools_tier("查一下 55 号主机的磁盘")
 
     assert resolve_tools_tier("创建批量任务 batch") == "full"
+
+
+def test_scp_tools_available_for_host_file_tasks_without_saying_scp():
+    """用户说解压/分析主机文件时，不应因未写 scp 而从 tools 列表拿掉 scp_pull/scp_push。"""
+    tools = [
+        {"type": "function", "function": {"name": "list_hosts", "parameters": {}}},
+        {"type": "function", "function": {"name": "ssh_execute", "parameters": {}}},
+        {"type": "function", "function": {"name": "fs_list", "parameters": {}}},
+        {"type": "function", "function": {"name": "fs_read_file", "parameters": {}}},
+        {"type": "function", "function": {"name": "scp_pull", "parameters": {}}},
+        {"type": "function", "function": {"name": "scp_push", "parameters": {}}},
+        {"type": "function", "function": {"name": "http_request", "parameters": {}}},
+        {"type": "function", "function": {"name": "batch_create", "parameters": {}}},
+    ]
+    msg = "把 ocserv.20260722.tgz 放到 /tmp，解压后分析比对"
+    tier = resolve_tools_tier(msg)
+    assert "fs" in tier or "terminal" in tier or "http" in tier
+    names = {t["function"]["name"] for t in filter_tools_for_message(tools, msg, lightweight=False)}
+    assert "scp_pull" in names
+    assert "scp_push" in names
+    assert "batch_create" not in names
 
 
 def test_skip_assistant_after_greeting():

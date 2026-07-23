@@ -67,6 +67,7 @@ from services.agent_optimize import (
     message_needs_html_artifact,
     message_needs_ssh_terminal_rules,
     resolve_tools_tier,
+    tools_need_full_upgrade,
     resolve_weak_network_mode,
     should_enrich_tool_images,
     should_skip_assistant_after_chat,
@@ -7066,6 +7067,38 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                             return
 
                         if tool_calls:
+                            # 分层 tools 漏掉模型点名的能力（如 scp_pull 仅在 http 层）时，升 full 重跑本轮
+                            _req_names = [
+                                ((tc.get("function") or {}).get("name") or "").strip()
+                                for tc in tool_calls
+                                if isinstance(tc, dict)
+                            ]
+                            if (
+                                not force_tools_full
+                                and tools_need_full_upgrade(_req_names, cached_round_tools or [])
+                            ):
+                                _full_base = await resolve_chat_tools(
+                                    get_tools_for_scope(session_scope, user),
+                                    session_scope,
+                                    user,
+                                    session_host_id,
+                                    session_id=session_id,
+                                    user_message=last_user_message or req.message or "",
+                                )
+                                if tools_need_full_upgrade(_req_names, _full_base):
+                                    # 全量里也没有 → 正常往下走，由 execute_tool 报错
+                                    pass
+                                else:
+                                    force_tools_full = True
+                                    cached_round_tools = None
+                                    tools_tier_for_stats = "full"
+                                    logger.info(
+                                        "tools tier upgrade to full (model requested missing tools) "
+                                        "session_id=%s names=%s",
+                                        session_id,
+                                        [n for n in _req_names if n],
+                                    )
+                                    continue
                             round_had_tool_call = True
                             full_tool_calls, prepared_tool_calls = await _prepare_tool_calls_for_execution(
                                 tool_calls,
