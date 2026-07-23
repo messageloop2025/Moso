@@ -16,7 +16,7 @@ function edgeopsTrySummarizeAISessionTitle(sessionId, opts) {
     opts = opts || {};
     sessionId = parseInt(sessionId, 10);
     if (!sessionId || isNaN(sessionId)) return Promise.resolve(null);
-    return API.getAISession(sessionId).then(function(r) {
+    return API.getAISession(sessionId, { limit: 1 }).then(function(r) {
         var msgs = (r.session && r.session.messages) || [];
         if (!msgs.length) {
             if (opts.toastIfEmpty && typeof showToast === 'function') {
@@ -3793,6 +3793,98 @@ function edgeopsBindReplyProsePanelsIn(root) {
     });
 }
 
+/**
+ * 历史 TOOL_TRACE 懒挂载：默认只显示折叠头（步数），首次展开再回放 DOM / 必要时拉全文。
+ * 避免打开会话时把上百步工具轨迹一次性灌进页面。
+ */
+function edgeopsMountPersistedToolTraceLazy(toolsEl, opts) {
+    if (!toolsEl) return;
+    opts = opts || {};
+    var steps = opts.steps || null;
+    var droppedHead = opts.droppedHead || 0;
+    var stepHint = (steps && steps.length) ? steps.length : (opts.stepHint || 0);
+    var sessionId = opts.sessionId;
+    var messageId = opts.messageId;
+    var needsFetch = !!(opts.needsFetch || (!steps || !steps.length));
+    var panel = document.createElement('div');
+    panel.className = 'ai-cot-panel ai-cot-collapsed ai-cot-trace-lazy';
+    panel._edgeopsLazyTrace = {
+        steps: steps,
+        droppedHead: droppedHead,
+        needsFetch: needsFetch,
+        sessionId: sessionId,
+        messageId: messageId,
+        loading: false
+    };
+    var nLabel = stepHint > 0 ? stepHint : '…';
+    var title = typeof t === 'function' ? t('hostAi.cotTitleSteps', { n: nLabel }) : ('CoT (' + nLabel + ')');
+    var hint = typeof t === 'function' ? t('hostAi.cotTraceLazyHint') : '· click to load';
+    panel.innerHTML = '<button type="button" class="ai-cot-header" aria-expanded="false">'
+        + '<span class="ai-cot-chevron">\u25b6</span>'
+        + '<span class="ai-cot-head-main">' + esc(title) + '</span>'
+        + '<span class="ai-cot-head-status ai-cot-status-done">' + esc(hint) + '</span>'
+        + '</button>'
+        + '<div class="ai-cot-body ai-cot-collapsed"><div class="ai-cot-steps"></div></div>';
+    var header = panel.querySelector('.ai-cot-header');
+    header.addEventListener('click', function() {
+        var lazy = panel._edgeopsLazyTrace;
+        if (!lazy) {
+            var body = panel.querySelector('.ai-cot-body');
+            var collapsed = body && body.classList.toggle('ai-cot-collapsed');
+            panel.classList.toggle('ai-cot-collapsed', !!collapsed);
+            header.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+            var ch = panel.querySelector('.ai-cot-chevron');
+            if (ch) ch.textContent = collapsed ? '\u25b6' : '\u25bc';
+            return;
+        }
+        if (lazy.loading) return;
+        function replay(traceSteps, dh) {
+            toolsEl.innerHTML = '';
+            edgeopsReplayPersistedToolTrace(toolsEl, traceSteps, { droppedHead: dh || 0 });
+            var built = toolsEl.querySelector('.ai-cot-panel');
+            if (built) {
+                var bBody = built.querySelector('.ai-cot-body');
+                var bHead = built.querySelector('.ai-cot-header');
+                if (bBody) bBody.classList.remove('ai-cot-collapsed');
+                built.classList.remove('ai-cot-collapsed');
+                if (bHead) {
+                    bHead.setAttribute('aria-expanded', 'true');
+                    var bCh = built.querySelector('.ai-cot-chevron');
+                    if (bCh) bCh.textContent = '\u25bc';
+                }
+            }
+        }
+        if (lazy.steps && lazy.steps.length && !lazy.needsFetch) {
+            var ready = lazy.steps;
+            var readyDh = lazy.droppedHead;
+            panel._edgeopsLazyTrace = null;
+            replay(ready, readyDh);
+            return;
+        }
+        if (!lazy.sessionId || !lazy.messageId || !API.getAISessionMessage) return;
+        lazy.loading = true;
+        var statusEl = panel.querySelector('.ai-cot-head-status');
+        if (statusEl) statusEl.textContent = typeof t === 'function' ? t('hostAi.cotTraceLazyLoading') : 'Loading…';
+        API.getAISessionMessage(lazy.sessionId, lazy.messageId).then(function(r) {
+            var raw = (r && r.message && r.message.content) || '';
+            var extracted = edgeopsExtractToolTrace(raw);
+            var tr = extracted.toolTrace;
+            if (!tr || !tr.steps || !tr.steps.length) {
+                if (statusEl) statusEl.textContent = typeof t === 'function' ? t('hostAi.cotTraceLazyEmpty') : 'No trace';
+                lazy.loading = false;
+                return;
+            }
+            panel._edgeopsLazyTrace = null;
+            replay(tr.steps, tr.dropped_head || 0);
+        }).catch(function(err) {
+            lazy.loading = false;
+            if (statusEl) statusEl.textContent = typeof t === 'function' ? t('hostAi.cotTraceLazyFailed') : 'Failed';
+            if (typeof showToast === 'function') showToast((err && err.message) || t('toast.requestFailed'), 'error');
+        });
+    });
+    toolsEl.appendChild(panel);
+}
+
 /** 历史消息：按持久化的 steps 回放工具 / 推理面板 */
 function edgeopsReplayPersistedToolTrace(toolsEl, steps, opts) {
     if (!toolsEl || !steps || !steps.length) return;
@@ -3925,10 +4017,19 @@ function edgeopsAttachPersistedChoiceCards(messageEl, uiActions, submitFn, chose
 
 function edgeopsRenderSessionMessages(box, msgs, formatter, sessionId, options) {
     if (!box) return;
-    var submitFn = options && options.onChoice;
+    options = options || {};
+    var submitFn = options.onChoice;
+    var mode = options.mode || 'replace'; // replace | prepend
+    var hasMore = !!options.hasMore;
     var list = msgs || [];
+    var lazyToolTrace = options.lazyToolTrace !== false;
+    var eagerLastToolTrace = options.eagerLastToolTrace !== false;
     // 先对每条 assistant 原始 content 解析 UI_ACTION、TOOL_TRACE 哨兵，再 stripThinkTags，
     // 避免哨兵被 think 规则误伤或留在正文中。
+    var lastAssistantIdx = -1;
+    for (var li = list.length - 1; li >= 0; li--) {
+        if (list[li] && list[li].role === 'assistant') { lastAssistantIdx = li; break; }
+    }
     var perMsg = list.map(function(m) {
         var raw = m && m.content != null ? String(m.content) : '';
         if (m && m.role === 'assistant') {
@@ -3941,15 +4042,17 @@ function edgeopsRenderSessionMessages(box, msgs, formatter, sessionId, options) 
                 uiActions: extracted.uiActions,
                 toolTrace: extractedT.toolTrace,
                 runStats: extractedR.runStats,
+                hasToolTraceFlag: !!(m.has_tool_trace || (extractedT.toolTrace && extractedT.toolTrace.steps && extractedT.toolTrace.steps.length)),
             };
         }
-        return { raw: raw, clean: raw, uiActions: [], toolTrace: null, runStats: null };
+        return { raw: raw, clean: raw, uiActions: [], toolTrace: null, runStats: null, hasToolTraceFlag: false };
     });
-    box.innerHTML = list.map(function(m, idx) {
+    function messageHtml(m, idx) {
         var p = perMsg[idx];
         var sidAttr = sessionId != null ? ' data-session-id="' + esc(String(sessionId)) + '"' : '';
         var midAttr = (m && m.id != null) ? ' data-message-id="' + esc(String(m.id)) + '"' : '';
-        if (m && m.role === 'assistant' && p.toolTrace && p.toolTrace.steps && p.toolTrace.steps.length) {
+        var needToolsSlot = m && m.role === 'assistant' && (p.hasToolTraceFlag || (p.toolTrace && p.toolTrace.steps && p.toolTrace.steps.length));
+        if (needToolsSlot) {
             var tsP = edgeopsFormatChatTimestamp(m && m.created_at);
             return '<div class="chat-message assistant"' + sidAttr + midAttr + '><div class="avatar">A</div>'
                 + '<div class="message-content"><div class="ai-reply-stream ai-reply-persisted">'
@@ -3967,13 +4070,35 @@ function edgeopsRenderSessionMessages(box, msgs, formatter, sessionId, options) 
             return '<div class="chat-message user"' + sidAttr + midAttr + '><div class="avatar">U</div>' + edgeopsRenderMessageBubble(userBody, m && m.created_at) + '</div>';
         }
         return '<div class="chat-message ' + (m.role || 'assistant') + '"' + sidAttr + midAttr + '><div class="avatar">' + ((m && m.role) === 'user' ? 'U' : 'A') + '</div>' + edgeopsRenderMessageBubble(formatter(p.clean), m && m.created_at, p.runStats) + '</div>';
-    }).join('');
+    }
+    var html = list.map(messageHtml).join('');
+    var tipHtml = hasMore
+        ? '<div class="ai-chat-history-load-tip" aria-hidden="true">' + esc(typeof t === 'function' ? t('hostAi.historyLoadMoreTip') : 'Scroll up for earlier messages') + '</div>'
+        : '';
+    var newNodes = [];
+    if (mode === 'prepend') {
+        var wrap = document.createElement('div');
+        wrap.innerHTML = html;
+        newNodes = Array.prototype.slice.call(wrap.children);
+        var tipEl = box.querySelector(':scope > .ai-chat-history-load-tip');
+        var insertRef = tipEl ? tipEl.nextSibling : box.firstChild;
+        newNodes.forEach(function(n) { box.insertBefore(n, insertRef); });
+        if (tipEl) {
+            if (hasMore) tipEl.textContent = typeof t === 'function' ? t('hostAi.historyLoadMoreTip') : 'Scroll up for earlier messages';
+            else tipEl.remove();
+        } else if (hasMore) {
+            box.insertAdjacentHTML('afterbegin', tipHtml);
+        }
+    } else {
+        box.innerHTML = tipHtml + html;
+        newNodes = Array.prototype.slice.call(box.querySelectorAll(':scope > .chat-message'));
+    }
     var lastUnansweredAssistantNode = null;
     var lastUnansweredHadCard = false;
     var choiceFpAnsweredInEarlierTurn = {};
-    box.querySelectorAll('.chat-message').forEach(function(node, idx) {
+    newNodes.forEach(function(node, idx) {
         var m = list[idx] || {};
-        var p = perMsg[idx] || { raw: '', clean: '', uiActions: [], toolTrace: null };
+        var p = perMsg[idx] || { raw: '', clean: '', uiActions: [], toolTrace: null, hasToolTraceFlag: false };
         edgeopsSetMessagePersistenceMeta(node, sessionId, m.id, p.clean);
         if (m && m.role === 'assistant') {
             var next = list[idx + 1];
@@ -4002,15 +4127,38 @@ function edgeopsRenderSessionMessages(box, msgs, formatter, sessionId, options) 
                     skipAnsweredFpBefore: choiceFpAnsweredInEarlierTurn,
                 });
             }
-            if (p.toolTrace && p.toolTrace.steps && p.toolTrace.steps.length) {
-                var tpEl = node.querySelector('.ai-reply-tools');
-                if (tpEl) {
+            var tpEl = node.querySelector('.ai-reply-tools');
+            if (tpEl && (p.hasToolTraceFlag || (p.toolTrace && p.toolTrace.steps && p.toolTrace.steps.length))) {
+                var hasSteps = !!(p.toolTrace && p.toolTrace.steps && p.toolTrace.steps.length);
+                var isLastAsst = idx === lastAssistantIdx;
+                // 默认懒加载 DOM；仅 eagerLastToolTrace + 本页最后一条且已带 steps 时立即回放
+                var useEager = !!(eagerLastToolTrace && isLastAsst && hasSteps);
+                if (useEager && !lazyToolTrace) {
                     edgeopsReplayPersistedToolTrace(tpEl, p.toolTrace.steps, {
                         droppedHead: p.toolTrace.dropped_head || 0
                     });
-                    var rt = node.querySelector('.ai-reply-text');
-                    if (rt) try { edgeopsEnhanceChatMessageArtifacts(rt); } catch (_ert) {}
+                } else if (useEager && lazyToolTrace) {
+                    // 仍懒挂载，但 steps 已在包内，展开无需再请求
+                    edgeopsMountPersistedToolTraceLazy(tpEl, {
+                        steps: p.toolTrace.steps,
+                        droppedHead: p.toolTrace.dropped_head || 0,
+                        stepHint: p.toolTrace.steps.length,
+                        needsFetch: false,
+                        sessionId: sessionId,
+                        messageId: m.id
+                    });
+                } else {
+                    edgeopsMountPersistedToolTraceLazy(tpEl, {
+                        steps: hasSteps ? p.toolTrace.steps : null,
+                        droppedHead: hasSteps ? (p.toolTrace.dropped_head || 0) : 0,
+                        stepHint: hasSteps ? p.toolTrace.steps.length : 0,
+                        needsFetch: !hasSteps,
+                        sessionId: sessionId,
+                        messageId: m.id
+                    });
                 }
+                var rt = node.querySelector('.ai-reply-text');
+                if (rt) try { edgeopsEnhanceChatMessageArtifacts(rt); } catch (_ert) {}
             }
             // 关键修复：用户对这张卡做出过任何形式的回应（按钮 [A] xxx 或自由文字补充）后，
             // 把它的指纹记入 choiceFpAnsweredInEarlierTurn，下一条 assistant 若 embed 了同指纹的
@@ -4044,7 +4192,7 @@ function edgeopsRenderSessionMessages(box, msgs, formatter, sessionId, options) 
     // 双保险：缓存里那张的指纹如果在 choiceFpAnsweredInEarlierTurn 里说明用户已回应过，
     // 不要再贴回来；同时只有该缓存条目本身比上一条 user 消息更新（从更晚的 stream 推过来）才有意义。
     try {
-        if (lastUnansweredAssistantNode && !lastUnansweredHadCard && sessionId != null) {
+        if (mode !== 'prepend' && lastUnansweredAssistantNode && !lastUnansweredHadCard && sessionId != null) {
             var cached = edgeopsReadUIActionCache(sessionId);
             if (cached && cached.length) {
                 var lastEntry = cached[cached.length - 1] || {};
@@ -4074,11 +4222,86 @@ function edgeopsRenderSessionMessages(box, msgs, formatter, sessionId, options) 
         }
     } catch (_e3) {}
     try {
-        if (typeof window !== 'undefined' && window._edgeopsPendingProcessProseRestore && window._edgeopsPendingProcessProseRestore.length) {
+        if (mode !== 'prepend' && typeof window !== 'undefined' && window._edgeopsPendingProcessProseRestore && window._edgeopsPendingProcessProseRestore.length) {
             edgeopsRestoreProcessProseOnLastAssistant(box, window._edgeopsPendingProcessProseRestore);
             window._edgeopsPendingProcessProseRestore = null;
         }
     } catch (_eps) {}
+}
+
+/** 打开会话：默认只渲染最近一窗；滚到顶部自动补更早消息。 */
+function edgeopsLoadChatSessionIntoBox(box, sessionId, opts) {
+    opts = opts || {};
+    if (!box || sessionId == null) return Promise.resolve(null);
+    var formatter = opts.formatter;
+    var onChoice = opts.onChoice;
+    var pageSize = opts.pageSize || 12;
+    return API.getAISession(sessionId, { limit: pageSize }).then(function(r) {
+        var session = (r && r.session) || {};
+        if (typeof opts.applySessionMeta === 'function') opts.applySessionMeta(session);
+        var msgs = session.messages || [];
+        var page = session.messages_page || {};
+        edgeopsRenderSessionMessages(box, msgs, formatter, sessionId, {
+            onChoice: onChoice,
+            hasMore: !!page.has_more,
+            lazyToolTrace: true,
+            eagerLastToolTrace: false
+        });
+        box._edgeopsHistoryPager = {
+            sessionId: sessionId,
+            hasMore: !!page.has_more,
+            oldestId: page.oldest_id || (msgs[0] && msgs[0].id) || null,
+            loading: false,
+            pageSize: page.limit || pageSize,
+            formatter: formatter,
+            onChoice: onChoice
+        };
+        edgeopsEnsureChatHistoryScrollBinder(box);
+        try { edgeopsHydrateChatDiagrams(box); } catch (_h) {}
+        edgeopsScheduleChatScrollToBottomAfterLayout(box);
+        return r;
+    });
+}
+
+function edgeopsEnsureChatHistoryScrollBinder(box) {
+    if (!box || box._edgeopsHistoryScrollBound) return;
+    box._edgeopsHistoryScrollBound = true;
+    box.addEventListener('scroll', function() {
+        var pager = box._edgeopsHistoryPager;
+        if (!pager || !pager.hasMore || pager.loading || !pager.sessionId || !pager.oldestId) return;
+        if (box.scrollTop > 72) return;
+        pager.loading = true;
+        var tip = box.querySelector(':scope > .ai-chat-history-load-tip');
+        if (tip) tip.textContent = typeof t === 'function' ? t('hostAi.historyLoading') : 'Loading…';
+        var prevHeight = box.scrollHeight;
+        var prevTop = box.scrollTop;
+        API.getAISession(pager.sessionId, { limit: pager.pageSize, beforeId: pager.oldestId }).then(function(r) {
+            var msgs = (r.session && r.session.messages) || [];
+            var page = (r.session && r.session.messages_page) || {};
+            if (!msgs.length) {
+                pager.hasMore = false;
+                if (tip) tip.remove();
+                pager.loading = false;
+                return;
+            }
+            edgeopsRenderSessionMessages(box, msgs, pager.formatter, pager.sessionId, {
+                onChoice: pager.onChoice,
+                mode: 'prepend',
+                hasMore: !!page.has_more,
+                lazyToolTrace: true,
+                eagerLastToolTrace: false
+            });
+            pager.hasMore = !!page.has_more;
+            pager.oldestId = page.oldest_id || (msgs[0] && msgs[0].id) || pager.oldestId;
+            box.scrollTop = Math.max(0, box.scrollHeight - prevHeight + prevTop);
+            pager.loading = false;
+            try { edgeopsHydrateChatDiagrams(box); } catch (_h2) {}
+        }).catch(function(err) {
+            pager.loading = false;
+            if (tip) tip.textContent = typeof t === 'function' ? t('hostAi.historyLoadMoreTip') : 'Scroll up for earlier messages';
+            if (typeof showToast === 'function') showToast((err && err.message) || t('toast.requestFailed'), 'error');
+        });
+    });
 }
 
 function edgeopsReplaceSingleDiagramSource(content, oldSource, newSource) {
@@ -4099,7 +4322,7 @@ function edgeopsResolveMessagePersistenceMeta(messageEl) {
     if (sessionId && messageId) return Promise.resolve({ sessionId: sessionId, messageId: messageId });
     if (!sessionId || !messageEl._edgeopsPersistContent) return Promise.resolve(null);
     if (messageEl._edgeopsPersistResolvePromise) return messageEl._edgeopsPersistResolvePromise;
-    messageEl._edgeopsPersistResolvePromise = API.getAISession(sessionId).then(function(r) {
+    messageEl._edgeopsPersistResolvePromise = API.getAISession(sessionId, { all: true }).then(function(r) {
         var msgs = (r.session && r.session.messages) || [];
         for (var i = msgs.length - 1; i >= 0; i--) {
             var m = msgs[i] || {};
@@ -8943,7 +9166,7 @@ function edgeopsCleanAssistantContentForDisplay(content) {
 
 function exportChatToMarkdown(sessionId) {
     if (!sessionId) { showToast(t('toast.selectOrCreateSession')); return; }
-    API.getAISession(sessionId).then(function(r) {
+    API.getAISession(sessionId, { all: true }).then(function(r) {
         var session = r.session;
         if (!session || !session.messages || !session.messages.length) { showToast(t('toast.noMessagesInSession')); return; }
         var st = t('common.exportSessionTitle');
@@ -9599,18 +9822,16 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
     }
     function loadSession(id) {
         sessionId = id;
-        API.getAISession(id).then(function(r) {
-            var msgs = (r.session && r.session.messages) || [];
-            var lowToggle = document.getElementById('hostAiLowInteractionToggle');
-            if (lowToggle) lowToggle.checked = String((r.session && r.session.low_interaction_mode) || 'false').toLowerCase() === 'true';
-            edgeopsApplyChatModeSelect('hostAiChatModeSelect', r.session);
-            var box = document.getElementById('hostAiMessages');
-            if (!box) return;
-            edgeopsRenderSessionMessages(box, msgs, fmtMd, id, {
-                onChoice: function(text) { edgeopsTriggerChatSend('hostAiInput', 'hostAiSend', text); }
-            });
-            edgeopsHydrateChatDiagrams(box);
-            edgeopsScheduleChatScrollToBottomAfterLayout(box);
+        var box = document.getElementById('hostAiMessages');
+        if (!box) return;
+        edgeopsLoadChatSessionIntoBox(box, id, {
+            formatter: fmtMd,
+            onChoice: function(text) { edgeopsTriggerChatSend('hostAiInput', 'hostAiSend', text); },
+            applySessionMeta: function(session) {
+                var lowToggle = document.getElementById('hostAiLowInteractionToggle');
+                if (lowToggle) lowToggle.checked = String((session && session.low_interaction_mode) || 'false').toLowerCase() === 'true';
+                edgeopsApplyChatModeSelect('hostAiChatModeSelect', session);
+            }
         }).catch(function(err) {
             showToast((err && err.message) || t('toast.requestFailed'), 'error');
         });
@@ -12131,18 +12352,16 @@ function renderAIPage() {
     var fmtMd = function(t) { return (typeof formatMarkdown !== 'undefined' && formatMarkdown ? formatMarkdown(t) : (esc(t || '').replace(/\n/g, '<br>'))); };
     function loadSession(id) {
         sessionId = id;
-        API.getAISession(id).then(function(r) {
-            var msgs = (r.session && r.session.messages) || [];
-            var lowToggle = document.getElementById('aiLowInteractionToggle');
-            if (lowToggle) lowToggle.checked = String((r.session && r.session.low_interaction_mode) || 'false').toLowerCase() === 'true';
-            edgeopsApplyChatModeSelect('aiChatModeSelect', r.session);
-            var box = document.getElementById('aiMessages');
-            if (!box) return;
-            edgeopsRenderSessionMessages(box, msgs, fmtMd, id, {
-                onChoice: function(text) { edgeopsTriggerChatSend('aiInput', 'aiSend', text); }
-            });
-            edgeopsHydrateChatDiagrams(box);
-            edgeopsScheduleChatScrollToBottomAfterLayout(box);
+        var box = document.getElementById('aiMessages');
+        if (!box) return;
+        edgeopsLoadChatSessionIntoBox(box, id, {
+            formatter: fmtMd,
+            onChoice: function(text) { edgeopsTriggerChatSend('aiInput', 'aiSend', text); },
+            applySessionMeta: function(session) {
+                var lowToggle = document.getElementById('aiLowInteractionToggle');
+                if (lowToggle) lowToggle.checked = String((session && session.low_interaction_mode) || 'false').toLowerCase() === 'true';
+                edgeopsApplyChatModeSelect('aiChatModeSelect', session);
+            }
         }).catch(function(err) {
             showToast((err && err.message) || t('toast.requestFailed'), 'error');
         });
@@ -16825,18 +17044,16 @@ function renderLocalPage() {
     }
     function loadLocalSession(id) {
         currentSessionId = id;
-        API.getAISession(id).then(function(r) {
-            var msgs = (r.session && r.session.messages) || [];
-            var lowToggle = document.getElementById('localLowInteractionToggle');
-            if (lowToggle) lowToggle.checked = String((r.session && r.session.low_interaction_mode) || 'false').toLowerCase() === 'true';
-            edgeopsApplyChatModeSelect('localChatModeSelect', r.session);
-            var box = document.getElementById('localMessages');
-            if (!box) return;
-            edgeopsRenderSessionMessages(box, msgs, fmtMdLocal, id, {
-                onChoice: function(text) { edgeopsTriggerChatSend('localInput', 'localSend', text); }
-            });
-            edgeopsHydrateChatDiagrams(box);
-            edgeopsScheduleChatScrollToBottomAfterLayout(box);
+        var box = document.getElementById('localMessages');
+        if (!box) return;
+        edgeopsLoadChatSessionIntoBox(box, id, {
+            formatter: fmtMdLocal,
+            onChoice: function(text) { edgeopsTriggerChatSend('localInput', 'localSend', text); },
+            applySessionMeta: function(session) {
+                var lowToggle = document.getElementById('localLowInteractionToggle');
+                if (lowToggle) lowToggle.checked = String((session && session.low_interaction_mode) || 'false').toLowerCase() === 'true';
+                edgeopsApplyChatModeSelect('localChatModeSelect', session);
+            }
         }).catch(function(err) { showToast(err.message, 'error'); });
     }
     (function() {

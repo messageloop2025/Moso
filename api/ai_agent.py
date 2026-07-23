@@ -7,7 +7,7 @@ import threading
 import time
 from datetime import datetime
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -4228,8 +4228,38 @@ async def clear_sessions(
     return {"success": True}
 
 
+def _ui_message_dict(row, *, keep_tool_trace: bool) -> dict:
+    """组装 Web 会话消息；非 keep 时剥掉 TOOL_TRACE 以减轻首屏传输/解析（展开时再拉全文）。"""
+    content = row["content"] or ""
+    has_tool_trace = TOOL_TRACE_SENTINEL_PREFIX in content
+    if has_tool_trace and not keep_tool_trace:
+        content = _strip_tool_trace_sentinels(content)
+    return {
+        "id": row["id"],
+        "role": row["role"],
+        "content": content,
+        "created_at": row["created_at"],
+        "has_tool_trace": has_tool_trace,
+    }
+
+
 @router.get("/sessions/{session_id}")
-async def get_session(session_id: int, user=Depends(get_current_user)):
+async def get_session(
+    session_id: int,
+    user=Depends(get_current_user),
+    limit: int | None = Query(
+        None,
+        ge=0,
+        le=500,
+        description="返回最近/更早的消息条数；默认见 EDGEOPS_AI_CHAT_UI_MESSAGE_PAGE_SIZE；all=true 时忽略",
+    ),
+    before_id: int | None = Query(None, ge=1, description="只返回 id 小于该值的更早消息（向上翻页）"),
+    all_messages: bool = Query(
+        False,
+        alias="all",
+        description="返回全部消息（导出 Markdown 等）；忽略 limit/before_id",
+    ),
+):
     db = await get_db()
     rows = await db.execute_fetchall(
         "SELECT id, title, created_at, updated_at, COALESCE(session_prompt, '') AS session_prompt, COALESCE(session_scope, 'default') AS session_scope, COALESCE(low_interaction_mode, 'false') AS low_interaction_mode, COALESCE(chat_mode, 'normal') AS chat_mode FROM ai_chat_sessions WHERE id = ? AND user_id = ?",
@@ -4240,19 +4270,74 @@ async def get_session(session_id: int, user=Depends(get_current_user)):
     session = dict(rows[0])
     if (session.get("session_scope") or "default").strip().lower() == "local" and not _is_admin_role(user.get("role")):
         raise HTTPException(status_code=404, detail="会话不存在")
-    msg_rows = await db.execute_fetchall(
-        "SELECT id, role, content, created_at FROM ai_chat_messages WHERE session_id = ? ORDER BY id ASC",
-        (session_id,),
-    )
-    session["messages"] = [
-        {
-            "id": r["id"],
-            "role": r["role"],
-            "content": r["content"],
-            "created_at": r["created_at"],
+
+    page_default = int(getattr(_config, "AI_CHAT_UI_MESSAGE_PAGE_SIZE", 12) or 12)
+    page_size = page_default if limit is None else int(limit)
+    fetch_all = bool(all_messages) or page_size <= 0
+
+    if fetch_all:
+        msg_rows = await db.execute_fetchall(
+            "SELECT id, role, content, created_at FROM ai_chat_messages WHERE session_id = ? ORDER BY id ASC",
+            (session_id,),
+        )
+        session["messages"] = [_ui_message_dict(r, keep_tool_trace=True) for r in msg_rows]
+        session["messages_page"] = {
+            "has_more": False,
+            "limit": None,
+            "before_id": None,
+            "oldest_id": session["messages"][0]["id"] if session["messages"] else None,
+            "newest_id": session["messages"][-1]["id"] if session["messages"] else None,
+            "all": True,
         }
-        for r in msg_rows
-    ]
+    else:
+        page_size = max(1, min(page_size, 500))
+        if before_id is not None:
+            msg_rows = await db.execute_fetchall(
+                """SELECT id, role, content, created_at FROM ai_chat_messages
+                   WHERE session_id = ? AND id < ?
+                   ORDER BY id DESC LIMIT ?""",
+                (session_id, int(before_id), page_size),
+            )
+        else:
+            msg_rows = await db.execute_fetchall(
+                """SELECT id, role, content, created_at FROM ai_chat_messages
+                   WHERE session_id = ?
+                   ORDER BY id DESC LIMIT ?""",
+                (session_id, page_size),
+            )
+        msg_rows = list(reversed(list(msg_rows)))
+        # 本页仅最后一条 assistant 保留 TOOL_TRACE（便于首屏还原最近一轮）；其余剥掉，展开时再 GET 单条
+        last_assistant_id = None
+        for r in reversed(msg_rows):
+            if (r["role"] or "") == "assistant":
+                last_assistant_id = r["id"]
+                break
+        messages = []
+        for r in msg_rows:
+            keep = (r["id"] == last_assistant_id) if last_assistant_id is not None else False
+            # 向上翻页（before_id）时全部不带轨迹，避免一次补历史拖垮解析
+            if before_id is not None:
+                keep = False
+            messages.append(_ui_message_dict(r, keep_tool_trace=keep))
+        oldest_id = messages[0]["id"] if messages else None
+        newest_id = messages[-1]["id"] if messages else None
+        has_more = False
+        if oldest_id is not None:
+            older = await db.execute_fetchall(
+                "SELECT 1 AS ok FROM ai_chat_messages WHERE session_id = ? AND id < ? LIMIT 1",
+                (session_id, oldest_id),
+            )
+            has_more = bool(older)
+        session["messages"] = messages
+        session["messages_page"] = {
+            "has_more": has_more,
+            "limit": page_size,
+            "before_id": before_id,
+            "oldest_id": oldest_id,
+            "newest_id": newest_id,
+            "all": False,
+        }
+
     try:
         _rt_doc = prune_runtime_document(await load_session_runtime(db, session_id))
         _hid = session.get("host_id")
@@ -4263,6 +4348,26 @@ async def get_session(session_id: int, user=Depends(get_current_user)):
     except Exception:
         session["runtime_active"] = []
     return {"success": True, "session": session}
+
+
+@router.get("/sessions/{session_id}/messages/{message_id}")
+async def get_session_message(
+    session_id: int,
+    message_id: int,
+    user=Depends(get_current_user),
+):
+    """单条消息全文（含 TOOL_TRACE），供历史 CoT 懒加载展开。"""
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        """SELECT m.id, m.role, m.content, m.created_at
+           FROM ai_chat_messages m
+           JOIN ai_chat_sessions s ON s.id = m.session_id
+           WHERE m.id = ? AND m.session_id = ? AND s.user_id = ?""",
+        (message_id, session_id, user["id"]),
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="消息不存在")
+    return {"success": True, "message": _ui_message_dict(rows[0], keep_tool_trace=True)}
 
 
 @router.post("/sessions/{session_id}/runtime-control")

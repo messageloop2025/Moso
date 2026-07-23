@@ -3148,6 +3148,16 @@ table.table-compact-ellipsis th.th-skill-group {
 .ai-cot-live:empty {
     display: none;
 }
+.ai-chat-history-load-tip {
+    text-align: center;
+    font-size: 12px;
+    color: var(--text-muted);
+    padding: 8px 10px 4px;
+    user-select: none;
+}
+.ai-cot-panel.ai-cot-trace-lazy .ai-cot-head-status {
+    opacity: 0.85;
+}
 .ai-cot-panel.ai-cot-collapsed .ai-cot-chevron {
     transform: none;
 }

@@ -593,7 +593,17 @@ var API = {
         if (chatMode) q += '&chat_mode=' + encodeURIComponent(chatMode);
         return this.post('/ai/sessions?' + q);
     },
-    getAISession: function(id) { return this.get('/ai/sessions/' + id); },
+    getAISession: function(id, opts) {
+        opts = opts || {};
+        var q = [];
+        if (opts.all) q.push('all=true');
+        if (opts.limit != null && !opts.all) q.push('limit=' + encodeURIComponent(String(opts.limit)));
+        if (opts.beforeId != null && !opts.all) q.push('before_id=' + encodeURIComponent(String(opts.beforeId)));
+        return this.get('/ai/sessions/' + id + (q.length ? '?' + q.join('&') : ''));
+    },
+    getAISessionMessage: function(sessionId, messageId) {
+        return this.get('/ai/sessions/' + sessionId + '/messages/' + messageId);
+    },
     updateAISession: function(id, data) { return this.request('PATCH', '/ai/sessions/' + id, data); },
     updateAISessionMessage: function(sessionId, messageId, data) { return this.request('PATCH', '/ai/sessions/' + sessionId + '/messages/' + messageId, data || {}); },
     summarizeAISessionTitle: function(id) {

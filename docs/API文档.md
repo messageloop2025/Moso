@@ -411,7 +411,8 @@ token 来自解锁邮件链接。
 | POST | /ai/config | 更新**当前激活** Profile 的字段（无激活项时创建「默认配置」）。**管理员可在请求体中传 user_id**。请求体可含 context_size（0=不限制）等 |
 | GET | /ai/sessions | 会话列表（query: **host_id?**；有 host_id 仅返回该主机会话，无则仅返回全局会话；每项含 `low_interaction_mode`、`chat_mode`） |
 | POST | /ai/sessions | 新建会话（query: title?、**chat_mode?**=`qa`\|`strict`\|`normal`；body 可选 **host_id**，用于主机详情页 AI 运维） |
-| GET | /ai/sessions/{session_id} | 会话详情（含 `low_interaction_mode`、`chat_mode`） |
+| GET | /ai/sessions/{session_id} | 会话详情（含 `low_interaction_mode`、`chat_mode`）。消息默认分页：query **`limit`**（默认 `EDGEOPS_AI_CHAT_UI_MESSAGE_PAGE_SIZE`）、**`before_id`**（更早一页）、**`all=true`**（导出用全文）。响应含 `messages_page.has_more`；分页时除本页最后一条 assistant 外会剥掉 `TOOL_TRACE`（`has_tool_trace`），展开时再 `GET .../messages/{id}` |
+| GET | /ai/sessions/{session_id}/messages/{message_id} | 单条消息全文（含 TOOL_TRACE，供历史 CoT 懒加载） |
 | PATCH | /ai/sessions/{session_id} | 更新会话（标题、`low_interaction_mode`、**`chat_mode`**；切出 strict 时保留 `strict_allow_cache_json`（按**工具名**的「总是」缓存）但不使用，切回仍有效） |
 | GET | /user-skills/slash-commands | 斜杠菜单：用户 Skills + 组织 Skills + `commands/` 别名；query **`scope`**=`web`\|`host`\|`integration`\|`all`（按场景开关过滤） |
 | GET/POST/PUT/DELETE | /org-skills | 组织 Skills（管理员写；用户只读列表） |
