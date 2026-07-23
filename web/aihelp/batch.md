@@ -42,16 +42,27 @@
 
 ### 2.2 `scp_push`
 
-把同一份内容或文件上传到每台目标主机。
+把同一份内容或文件/目录上传到每台目标主机。
 
 适合：
 
 - 推送配置文件
 - 推送脚本
-- 推送压缩包
+- 推送压缩包或目录（`params.recursive=true`）
 - 批量下发证书、模板或工具包
 
-### 2.3 `run_script`
+### 2.3 `scp_pull`
+
+从每台目标主机拉取同一远程路径到工作区（按 `host_id` 分子目录，避免互相覆盖）。
+
+适合：
+
+- 批量收集日志 / 配置快照
+- 批量拉取安装包或目录（`params.recursive=true`）
+
+默认落盘：`batch_pulls/<batch_id>/<host_id>/…`
+
+### 2.4 `run_script`
 
 把 `web/fs` 中的某个脚本上传到主机并执行。
 
@@ -62,11 +73,19 @@
 - 统一安装依赖
 - 批量修复某类问题
 
-### 2.4 `restart`
+### 2.5 `restart`
 
 对目标主机执行重启。
 
 这是高风险动作，建议只在很明确的维护窗口内使用。
+
+### 2.6 在 AI 对话中创建与查状态
+
+1. `batch_create(...)` 拿到 `batch_id`
+2. 用 `get_batch_detail(batch_id)`（或 `list_batch_operations`）轮询，直到 `status` 为 `completed` / `cancelled`
+3. 查看 `progress` 与每台主机的 `result`（含 `local_path` / 错误信息）
+
+批量页也可查看同一批任务的进度（筛选类型含上传/拉取）。
 
 ---
 

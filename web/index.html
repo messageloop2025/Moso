@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>毛竹</title>
     <link rel="icon" type="image/png" href="/static/favicon.png">
-    <link rel="stylesheet" href="/static/css/style.css?v=30">
+    <link rel="stylesheet" href="/static/css/style.css?v=31">
     <link rel="stylesheet" href="/static/css/katex.min.css">
     <link rel="stylesheet" href="/static/css/xterm.min.css">
     <style>
@@ -37,7 +37,7 @@
     <script src="/static/js/echarts.min.js"></script>
     <script src="/static/js/html-to-image.js"></script>
     <script src="/static/js/katex.min.js"></script>
-    <script src="/static/js/i18n.js?v=2"></script>
+    <script src="/static/js/i18n.js?v=3"></script>
     <script src="/static/js/utils.js?v=17"></script>
     <script src="/static/js/api.js?v=7"></script>
     <script src="/static/js/router.js?v=2"></script>
@@ -48,7 +48,7 @@
             if (span) span.textContent = (typeof t === "function" && t("meta.initLoading")) || "…";
             try { document.title = t("meta.htmlTitle"); } catch (e) {}
             var s = document.createElement("script");
-            s.src = "/static/js/app.js?v=68";
+            s.src = "/static/js/app.js?v=71";
             document.body.appendChild(s);
         }).catch(function() {
             var span = document.querySelector("#app .init-loading span");

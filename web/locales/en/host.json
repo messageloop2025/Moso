@@ -161,6 +161,7 @@
     "transferProgress": "{{pct}}% · {{done}} / {{total}} · {{speed}} · {{elapsed}}s · ETA {{eta}}",
     "transferPullShort": "Pull",
     "transferPushShort": "Push",
+    "transferRelayShort": "Relay",
     "toolExecuting": "Running",
     "toolDone": "Done",
     "toolFailed": "Failed",

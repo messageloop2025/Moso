@@ -142,6 +142,7 @@
       "optionAll": "全部",
       "opRunCommand": "执行命令",
       "opScpPush": "上传文件",
+      "opScpPull": "拉取文件",
       "opRunScript": "执行脚本",
       "opRestart": "重启",
       "stFilterRunning": "运行中",

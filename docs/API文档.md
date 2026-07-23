@@ -600,7 +600,17 @@ AI 通过 `create_chat_artifact` 技能写入的报告/数据包/HTML 等；落�
 | DELETE | /batch/clear | 清空批量任务记录（普通用户清空自己的，管理员可清空全部） |
 | GET | /batch/export | 导出批量任务 CSV（同上范围） |
 
-**POST /batch** 请求体：`operation_type`（run_command / scp_push / run_script / restart）、`scope_type`（all / group / selected）、`scope_value`（分组或主机 ID 数组）、`params`（依类型：run_command 含 command、timeout；scp_push 含 remote_path、content 或 local_path；run_script 含 script_path、remote_path；restart 可选 command，默认 sudo reboot）。
+**POST /batch** 请求体：`operation_type`（`run_command` / `scp_push` / `scp_pull` / `run_script` / `restart`）、`scope_type`（`all` / `group` / `selected` / `tag`）、`scope_value`（分组/主机/标签 ID 数组）、`tag_match_mode?`（tag 时 any/all）、`params`：
+
+| operation_type | params |
+|----------------|--------|
+| run_command | `command`, `timeout?` |
+| scp_push | `remote_path`，`content?` 或 `local_path`（相对工作区），`recursive?`，`timeout?` |
+| scp_pull | `remote_path`，`local_path?`（默认 `batch_pulls/<batch_id>/`，每机落 `<local>/<host_id>/…`），`recursive?`，`timeout?`，`max_bytes?` |
+| run_script | `script_path`，`remote_path?`，`timeout?` |
+| restart | `command?`（默认 `sudo reboot`） |
+
+创建后异步执行；用 **GET /batch/{id}** 或 AI **`get_batch_detail`** 查每机状态与进度。
 
 ---
 
@@ -901,7 +911,27 @@ body：`text`
 
 ### GET/POST /integration/mcp/remote-fs/list|read|write
 
-代理 `/api/remote-fs`（无 web/fs 本地路径依赖）。
+代理 `/api/remote-fs`（无 web/fs 本地路径依赖）。`write` 仅适合 ≤2MB 文本预览；大文件/目录请用下方 `scp-push` / `scp-pull`。
+
+### POST /integration/mcp/scp-push
+
+与 AI 工具 **`scp_push`** 同一实现（Paramiko SFTP）。
+
+**请求体**：`host_id`、`remote_path`、`local_path?`（相对 web/fs）或 `content?`、`recursive?`、`timeout?`（30–3600）、`session_id?`
+
+### POST /integration/mcp/scp-pull
+
+与 AI 工具 **`scp_pull`** 同一实现；默认不限制体积（`EDGEOPS_SCP_PULL_MAX_BYTES=0`）。
+
+**请求体**：`host_id`、`remote_path`、`local_path`、`recursive?`、`session_managed?`、`max_bytes?`（0=不限制）、`timeout?`、`session_id?`
+
+### POST /integration/mcp/batch
+
+创建批量任务（与 Web `POST /api/batch` / AI `batch_create` 同一实现，含 `scp_push`/`scp_pull`）。
+
+### POST /integration/mcp/batch/{batch_id}/cancel|retry
+
+取消运行中任务 / 重试失败项。列表与详情仍用既有 `GET /api/batch`、`GET /api/batch/{id}`（MCP 工具 `edgeops_list_batch_jobs` / `edgeops_get_batch_job`）。
 
 ### POST /integration/mcp/http-request
 

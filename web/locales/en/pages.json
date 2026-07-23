@@ -142,6 +142,7 @@
       "optionAll": "All",
       "opRunCommand": "Run command",
       "opScpPush": "Upload file",
+      "opScpPull": "Pull file",
       "opRunScript": "Run script",
       "opRestart": "Restart",
       "stFilterRunning": "Running",

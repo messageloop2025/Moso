@@ -210,6 +210,7 @@ async def get_version():
 @app.get("/skills")
 @app.get("/users")
 @app.get("/logs")
+@app.get("/security-audit")
 @app.get("/local")
 @app.get("/feedback")
 @app.get("/feedback/admin")

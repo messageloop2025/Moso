@@ -96,7 +96,7 @@ MCP 本地：`EDGEOPS_API_BASE_URL=http://127.0.0.1:8010`
 - **服务注册名**：`edgeops`（FastMCP / `mcpServers.edgeops`）
 - **HTTP 端点**：`http://127.0.0.1:8010/mcp/`（默认随主 Web 同端口；独立 `--http` 可选 `:8011/mcp`）
 - **默认启用**：主进程启动即挂载 `/mcp`；设 `EDGEOPS_MCP_ENABLED=false` 可关闭
-- **工具数量**：**52** 个 `edgeops_*`（含 claw-ops 同名 22 个 + MCP 扩展 30 个）
+- **工具数量**：**58** 个 `edgeops_*`（含 claw-ops 同名 22 个 + MCP 扩展含 scp_push/pull、批量创建/状态、http 等）
 - **编排式 ops**：**仅 MCP**（`edgeops_ops_orchestrate_chat` + `ops_task_*`），不进 claw-ops / 不改 `ops-chat/complete`
 
 环境变量见 [技术栈说明.md](技术栈说明.md) §5。工具清单见 [services/edgeops_mcp/README.md](../services/edgeops_mcp/README.md)。
@@ -105,10 +105,10 @@ MCP 本地：`EDGEOPS_API_BASE_URL=http://127.0.0.1:8010`
 
 | 能力 | claw-ops | 毛竹 MCP |
 |------|----------|-------------|
-| 工具数 | **22 核心 + manifest 动态扩展 + invoke**（baseline **46**） | **52**（超集） |
+| 工具数 | **22 核心 + manifest 动态扩展 + invoke**（含 scp/批量） | **58**（超集） |
 | 扩展工具来源 | 毛竹 manifest 动态注册（v1.1+） | MCP `list_tools` |
 | 编排快响 + 后台子任务 | 否 | **是**（MCP 专用） |
-| ssh_execute / 分组 / 画像 / 审计 / remote_fs / batch 只读 | **是**（manifest 扩展） | **是** |
+| ssh_execute / 分组 / 画像 / 审计 / remote_fs / **scp_push·scp_pull** / batch 只读 | **是**（manifest 扩展） | **是** |
 | 后台新增扩展工具 | 改 registry + **重启 Gateway** | 改代码 + 重启毛竹/MCP |
 
 ---
@@ -124,7 +124,7 @@ MCP 本地：`EDGEOPS_API_BASE_URL=http://127.0.0.1:8010`
 | `GET /integration/hosts/search-by-prompt` | 按主机提示词搜主机 |
 | `GET /integration/spill/read` | 读 spill 大输出 |
 | **`/integration/claw-ops/*`** | **ClawOps 专用**：manifest、invoke、提示词、更新检查 |
-| **`/integration/mcp/*`** | **MCP 专用**（需 `X-EdgeOps-Client: mcp`）：ssh_execute、编排、remote_fs、**http-request/download/upload** 等 |
+| **`/integration/mcp/*`** | **MCP 专用**（需 `X-EdgeOps-Client: mcp`）：ssh_execute、编排、remote_fs、**scp-push/pull**、**http-request/download/upload** 等 |
 | `GET/POST /ssh-channel` … | 无界面 SSH TTY 管道 |
 
 ---

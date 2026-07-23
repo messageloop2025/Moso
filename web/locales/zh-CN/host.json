@@ -161,6 +161,7 @@
     "transferProgress": "{{pct}}% · {{done}} / {{total}} · {{speed}} · {{elapsed}}s · ETA {{eta}}",
     "transferPullShort": "下载",
     "transferPushShort": "上传",
+    "transferRelayShort": "中转",
     "toolExecuting": "执行中",
     "toolDone": "完成",
     "toolFailed": "失败",

@@ -168,7 +168,8 @@
 | 名称 | 说明 | 主要参数 |
 |------|------|----------|
 | get_terminal_buffer | 获取指定控制台最近输出；默认 **tail_only=true** 仅返回末尾 **max_lines**（默认 40）行；`full_output=true` 返回全文。可选 `next_poll_in_seconds`（1～3600）做 batch 末 sleep；可选 **`until_contains`**（字面子串）在超时内工具内轮询，命中或超时即返回（超时取自 `next_poll_in_seconds`，默认 30；结果含 `until_wait_reason`；带 until 时不再二次 batch sleep）。batch 末等待时 Web CoT 可唤醒/停止；until 等待无橙色倒计时条，但 Agent 路径仍可被 `runtime-control: wake` 打断 | slot?, full_output?, tail_only?, max_lines?, next_poll_in_seconds?, until_contains? |
-| scp_push | 通过 SFTP 推送到主机：**content**（文本）或 **local_path**（web/fs 相对路径，支持二进制 .tgz/.zip 等）二选一 | host_id, remote_path, content? 或 local_path? |
+| scp_push | 通过 SFTP 推送到主机：**content**（文本）或 **local_path**（web/fs 相对路径，支持二进制 .tgz/.zip 等）二选一；流式上传默认不限制体积 | host_id, remote_path, content? 或 local_path? |
+| scp_pull | 通过 SFTP 从主机拉取到工作区；调用卡进度与 scp_push 相同；默认不限制体积；多机转运优先 pull→push | host_id, remote_path, local_path, recursive?, max_bytes? |
 | build_scp_transfer_script | 生成在源主机 A 上执行的 `scp -C` 推送脚本（A→B），仅生成不执行；用于跨主机直连方案 | source_host_id, source_path, target_host_id, target_path, compress? |
 | transfer_file_between_hosts | 自动跨主机传输：先探测 A↔B 22 端口可达性，按 [scp, rsync, sshfs] 顺序尝试直连；全部失败时自动回退到 毛竹 `web/fs` 中转 | source_host_id, source_path, target_host_id, target_path, methods?, edgeops_base_url?, ttl_seconds?, keep_staging_for_multi_target?, auto_unpack_on_target?, transfer_timeout_seconds? |
 | relay_file_between_hosts | 经 毛竹 `web/fs` 中转：A 用 curl 上传 → B 用 curl 下载；自动签发短时效 API key，完成后默认撤销 key 并删除中转文件；目录会先在 A 上打 .tgz 再传 | source_host_id, source_path, target_host_id, target_path, edgeops_base_url?, staging_path?, ttl_seconds?, keep_staging_for_multi_target?, auto_unpack_on_target?, cleanup_staging?, revoke_token_on_finish? |
@@ -216,8 +217,9 @@ MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_up
 
 | 名称 | 说明 | 主要参数 |
 |------|------|----------|
-| batch_create | 创建批量任务并下发：run_command / scp_push / run_script / restart。普通用户仅能对自己创建的主机/分组操作；管理员可对全部 | operation_type, scope_type, scope_value?, params |
-| list_batch_operations | 列出最近批量操作记录（普通用户仅自己的） | limit? |
+| batch_create | 创建批量任务：run_command / scp_push / scp_pull / run_script / restart；创建后用 get_batch_detail 轮询 | operation_type, scope_type, scope_value?, params |
+| list_batch_operations | 列出最近批量（含 progress 摘要） | limit? |
+| get_batch_detail | 批量详情与每机状态/结果（progress.percent、finished） | batch_id |
 | get_batch_detail | 获取单次批量操作详情（含每台主机状态） | batch_id |
 | batch_cancel | 取消正在运行的批量任务 | batch_id |
 | batch_retry | 将批量任务中失败项重置并重试 | batch_id |

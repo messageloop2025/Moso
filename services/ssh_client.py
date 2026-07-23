@@ -383,7 +383,7 @@ def _sftp_get_to_local_path_sync(
                 return str(e)
             if (st.st_mode is not None) and ((st.st_mode & 0o170000) == 0o040000):
                 return "远程路径为目录，请指定文件路径"
-            if st.st_size is not None and int(st.st_size) > max_bytes:
+            if max_bytes > 0 and st.st_size is not None and int(st.st_size) > max_bytes:
                 return f"远程文件过大（{st.st_size} 字节 > 上限 {max_bytes}）"
             read_so_far = 0
             with sftp.open(remote_path, "rb") as rf:
@@ -393,7 +393,7 @@ def _sftp_get_to_local_path_sync(
                         if not chunk:
                             break
                         read_so_far += len(chunk)
-                        if read_so_far > max_bytes:
+                        if max_bytes > 0 and read_so_far > max_bytes:
                             wf.flush()
                             try:
                                 os.unlink(local_path)
@@ -507,10 +507,10 @@ async def sftp_get_to_local_path(
     private_key_pem: Optional[str] = None,
     remote_path: str = "",
     local_path: str = "",
-    max_bytes: int = 200 * 1024 * 1024,
+    max_bytes: int = 0,
     timeout: int = 120,
 ) -> Optional[str]:
-    """异步：SFTP 将远程文件流式写入 local_path。成功返回 None，失败返回错误信息。"""
+    """异步：SFTP 将远程文件流式写入 local_path。成功返回 None，失败返回错误信息。max_bytes<=0 表示不限制。"""
     return await asyncio.to_thread(
         _sftp_get_to_local_path_sync,
         host,

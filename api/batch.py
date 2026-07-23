@@ -1,4 +1,4 @@
-"""批量操作 API（参考 IOTHub）：向多台主机下发命令/脚本/上传/重启等"""
+"""批量操作 API（参考 IOTHub）：向多台主机下发命令/脚本/上传/拉取/重启等"""
 import json
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -6,16 +6,35 @@ from typing import Optional, List
 
 from database import get_db
 from api.auth import get_current_user, _is_admin_role
+from services.batch_executor import BATCH_OP_TYPES
 
 router = APIRouter(prefix="/api/batch", tags=["批量操作"])
 
 
 class BatchRequest(BaseModel):
-    operation_type: str   # run_command / scp_push / run_script / restart
+    operation_type: str   # run_command / scp_push / scp_pull / run_script / restart
     scope_type: str       # all / group / selected / tag
     scope_value: List[int] = Field(default_factory=list)  # 主机 ID / 分组 ID / 标签 ID 列表
     params: dict = Field(default_factory=dict)    # 操作参数（command, remote_path, content, script_path 等）
     tag_match_mode: str = "any"  # 仅 scope_type=tag 生效：any / all
+
+
+def _validate_batch_params(operation_type: str, params: dict) -> None:
+    p = params or {}
+    if operation_type == "run_command":
+        if not (p.get("command") or "").strip():
+            raise ValueError("run_command 需要 params.command")
+    elif operation_type == "scp_push":
+        if not (p.get("remote_path") or "").strip():
+            raise ValueError("scp_push 需要 params.remote_path")
+        if p.get("content") is None and not (p.get("local_path") or "").strip():
+            raise ValueError("scp_push 需要 params.content 或 params.local_path")
+    elif operation_type == "scp_pull":
+        if not (p.get("remote_path") or "").strip():
+            raise ValueError("scp_pull 需要 params.remote_path")
+    elif operation_type == "run_script":
+        if not (p.get("script_path") or "").strip():
+            raise ValueError("run_script 需要 params.script_path")
 
 
 async def _create_batch_and_start(
@@ -118,6 +137,11 @@ async def _create_batch_and_start(
             )
     else:
         raise ValueError("scope_type 须为 all / group / selected / tag")
+    if operation_type not in BATCH_OP_TYPES:
+        raise ValueError(
+            "operation_type 须为 run_command / scp_push / scp_pull / run_script / restart"
+        )
+    _validate_batch_params(operation_type, safe_params)
     host_ids = [dict(r)["id"] for r in rows]
     if not host_ids:
         raise ValueError("没有可操作的主机")
@@ -145,8 +169,11 @@ async def _create_batch_and_start(
 @router.post("")
 async def create_batch(req: BatchRequest, user=Depends(get_current_user)):
     """创建批量操作并异步执行"""
-    if req.operation_type not in ("run_command", "scp_push", "run_script", "restart"):
-        raise HTTPException(status_code=400, detail="operation_type 须为 run_command / scp_push / run_script / restart")
+    if req.operation_type not in BATCH_OP_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail="operation_type 须为 run_command / scp_push / scp_pull / run_script / restart",
+        )
     try:
         batch_id = await _create_batch_and_start(
             req.operation_type, req.scope_type, req.scope_value, req.params, user["id"], req.tag_match_mode, _is_admin_role(user.get("role"))

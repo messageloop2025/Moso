@@ -1,7 +1,7 @@
 ---
 name: edgeops-mcp
-description: Moso 内置 Python MCP — 49 个 edgeops_* 工具（含编排 ops、直连 SSH、服务凭证注入）；Token 在 MCP headers/env
-version: 1.0.0
+description: Moso 内置 Python MCP — 58 个 edgeops_* 工具（含编排 ops、直连 SSH、scp/批量、服务凭证注入）；Token 在 MCP headers/env
+version: 1.2.0
 author: Moso
 license: MIT-0
 platforms: [macos, linux, windows]
@@ -47,8 +47,9 @@ required_environment_variables:
 4. **sudo/vi/多步 TTY** → `edgeops_ssh_channel_*`；出现 password 提示 → `edgeops_list_service_credentials` + `edgeops_send_service_password`
 5. **复杂 / 耗时编排** → `edgeops_ops_orchestrate_chat` + `edgeops_ops_task_*`（**仅 MCP**）
 6. **简单一句话**（可接受阻塞 ≤330s）→ `edgeops_ops_chat`
-7. **远程文件** → `edgeops_remote_fs_*`（无 web/fs 依赖）
-8. **大输出 spill** → `edgeops_read_chat_data`
+7. **远程小文本预览** → `edgeops_remote_fs_*`（写 ≤2MB）
+8. **大文件/目录转运** → `edgeops_scp_pull` / `edgeops_scp_push`（经 web/fs；多机：`pull`→`push`）
+9. **大输出 spill** → `edgeops_read_chat_data`
 
 ## 编排式 ops（MCP 专用）
 
@@ -66,7 +67,7 @@ edgeops_ops_task_control(task_id, action=stop|supplement, message?)
 - **不会**主动推送到客户端；需轮询 `task_output` 或下轮 `orchestrate_chat` 看 `task_completions`
 - 会话 scope = `mcp_orchestrate`，不出现在网页 AI 列表
 
-## 工具分组（49）
+## 工具分组（58）
 
 **与 claw-ops 同名（22）**：ping、hosts、prompt、tags、alive、stats、best-practices、ops_chat、ssh_channel×10、read_chat_data、context_bind
 
@@ -76,7 +77,7 @@ edgeops_ops_task_control(task_id, action=stop|supplement, message?)
 
 **P2 编排**：ops_orchestrate_chat、ops_task_list/output/control
 
-**P2 其它**：remote_fs×3、batch×2、scheduled×2、triggered×2、list_session_messages
+**P2 其它**：remote_fs×3、**scp_push / scp_pull**、batch×5（list/get/create/cancel/retry）、scheduled×2、triggered×2、list_session_messages、http×4
 
 完整 REST 映射见 [services/edgeops_mcp/README.md](../../../services/edgeops_mcp/README.md) 与 [docs/API文档.md](../../../docs/API文档.md) §18。
 

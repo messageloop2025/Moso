@@ -2313,7 +2313,9 @@ TOOLS = [
                 "**默认 session_managed（会话区）**：`local_path` 写逻辑名 → 归位 `chats/<UTC>/` 并加 UUID。\n"
                 "**精确路径**：`local_path` 为 `scripts/…`、`exchange/…`、`chats/YYYY/MM/DD/…` 等完整相对路径"
                 "（或用户/主机/会话提示词指定）→ 按路径精确落盘；可显式 session_managed=false。\n"
-                "**禁止** OS 绝对路径。单文件受 `max_bytes` 约束；目录受系统整树字节上限约束。"
+                "**禁止** OS 绝对路径。"
+                "**默认不限制体积**（`max_bytes=0` 或不传；系统 `SCP_PULL_MAX_BYTES=0` 时亦然）。"
+                "若管理员配置了上限则生效（建议单文件 ≥ 2GiB）。"
             ),
             "parameters": {
                 "type": "object",
@@ -2331,7 +2333,7 @@ TOOLS = [
                     },
                     "max_bytes": {
                         "type": "integer",
-                        "description": "单文件字节上限，默认与系统 SCP_PULL_MAX_BYTES 一致",
+                        "description": "可选单文件字节上限；0 或不传表示不限制（受系统配置约束时以系统为准）",
                     },
                     "timeout": {
                         "type": "integer",
@@ -3543,17 +3545,33 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "batch_create",
-            "description": "创建批量操作并向多台主机下发执行。支持：run_command、scp_push、run_script、restart。脚本与资源放在 web/fs。普通用户可对自己可见主机（含收到分享）发起；scope_type=tag 可按当前用户标签筛选。",
+            "description": (
+                "创建批量操作并向多台主机下发执行（后台异步）。支持：run_command、scp_push、scp_pull、run_script、restart。"
+                "脚本与资源放在 web/fs。创建后用 **list_batch_operations** / **get_batch_detail** 轮询状态，"
+                "直至 status 为 completed/cancelled。普通用户可对自己可见主机（含收到分享）发起；scope_type=tag 可按标签筛选。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "operation_type": {"type": "string", "enum": ["run_command", "scp_push", "run_script", "restart"], "description": "run_command=执行固定命令；scp_push=上传文件到主机；run_script=执行 fs 中的脚本；restart=重启主机"},
+                    "operation_type": {
+                        "type": "string",
+                        "enum": ["run_command", "scp_push", "scp_pull", "run_script", "restart"],
+                        "description": (
+                            "run_command=固定命令；scp_push=工作区→多机；scp_pull=多机→工作区（按 host_id 分子目录）；"
+                            "run_script=上传并执行脚本；restart=重启"
+                        ),
+                    },
                     "scope_type": {"type": "string", "enum": ["all", "group", "selected", "tag"], "description": "all=可见全部主机；group=指定分组；selected=指定主机 ID 列表；tag=指定标签 ID 列表"},
                     "scope_value": {"type": "array", "items": {"type": "integer"}, "description": "scope_type 为 group 时填分组 ID，为 selected 时填主机 ID，为 tag 时填标签 ID"},
                     "tag_match_mode": {"type": "string", "enum": ["any", "all"], "description": "仅 scope_type=tag 生效：any=命中任一标签，all=必须同时命中全部标签；默认 any"},
                     "params": {
                         "type": "object",
-                        "description": "run_command: command, timeout?；scp_push: remote_path, content? 或 local_path( fs 相对路径)；run_script: script_path( fs 相对路径如 scripts/xxx.sh), remote_path?, timeout?；restart: command?( 默认 sudo reboot)",
+                        "description": (
+                            "run_command: command, timeout?；"
+                            "scp_push: remote_path, content? 或 local_path(相对工作区), recursive?, timeout?；"
+                            "scp_pull: remote_path, local_path?(默认 batch_pulls/<batch_id>/，每机落 {local}/{host_id}/…), recursive?, timeout?, max_bytes?；"
+                            "run_script: script_path, remote_path?, timeout?；restart: command?"
+                        ),
                     },
                     "task_host_id": {"type": "integer", "description": "可选，任务日志写入所用主机 ID（用于定位 ~/.edgeops）"},
                     "task_dir_name": {"type": "string", "description": "可选，任务目录名；高风险批量任务创建后自动追加日志"},
@@ -3566,7 +3584,10 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "list_batch_operations",
-            "description": "列出最近批量操作记录（id、operation_type、status、total_count、success_count、fail_count、created_at）。用于查看批量任务状态。",
+            "description": (
+                "列出最近批量操作（id、operation_type、status、total/success/fail/pending、created_at）。"
+                "用于在 AI 对话中查询批量任务总览；细节用 get_batch_detail。"
+            ),
             "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "description": "最多条数，默认 20"}}, "required": []},
         },
     },
@@ -3574,7 +3595,10 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_batch_detail",
-            "description": "获取单次批量操作的详情（含每台主机的执行状态与结果）。",
+            "description": (
+                "获取单次批量操作详情与进度：batch.status、progress 摘要、每台主机 status/result。"
+                "创建 batch 后应轮询本工具直至 completed/cancelled，再向用户汇报成败与 local_path。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"batch_id": {"type": "integer", "description": "批量操作 ID"}},
@@ -6964,6 +6988,37 @@ def _http_transfer_cap(arguments: dict, config_attr: str) -> int | None:
         return _resolve_transfer_cap(int(raw), config_attr)
     except (TypeError, ValueError):
         return _resolve_transfer_cap(None, config_attr)
+
+
+def _scp_pull_byte_caps(arguments: dict | None = None) -> tuple[int, int]:
+    """返回 (单文件上限, 整树上限)；0 表示不限制。"""
+    arguments = arguments or {}
+    try:
+        sys_file = int(getattr(config, "SCP_PULL_MAX_BYTES", 0) or 0)
+    except (TypeError, ValueError):
+        sys_file = 0
+    try:
+        sys_tree = int(getattr(config, "SCP_PULL_MAX_TREE_BYTES", 0) or 0)
+    except (TypeError, ValueError):
+        sys_tree = 0
+    if sys_file < 0:
+        sys_file = 0
+    if sys_tree < 0:
+        sys_tree = 0
+    raw = arguments.get("max_bytes")
+    if raw is None or raw == "":
+        max_bytes = sys_file
+    else:
+        try:
+            max_bytes = int(raw)
+        except (TypeError, ValueError):
+            max_bytes = sys_file
+        if max_bytes < 0:
+            max_bytes = 0
+        # 系统配置了上限时：用户 0/不限 → 用系统上限；用户更大 → 钳到系统上限
+        if sys_file > 0:
+            max_bytes = sys_file if max_bytes <= 0 else min(max_bytes, sys_file)
+    return max_bytes, sys_tree
 
 
 def _http_result_payload(result) -> dict:
@@ -12359,8 +12414,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             else:
                 cleanup_staging = bool(cleanup_staging_arg)
             timeout_seconds = _sftp_timeout_from_args(arguments, default=600)
-            pull_cap = int(getattr(config, "SCP_PULL_MAX_BYTES", 200 * 1024 * 1024))
-            tree_cap = int(getattr(config, "SCP_PULL_MAX_TREE_BYTES", 2 * 1024 * 1024 * 1024))
+            pull_cap, tree_cap = _scp_pull_byte_caps(arguments)
             if not source_host_id or not target_host_id or not source_path or not target_path:
                 return json.dumps({"success": False, "error": "需要 source_host_id/source_path/target_host_id/target_path"}, ensure_ascii=False)
             source_row = await _get_host_row(source_host_id)
@@ -12635,13 +12689,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     ensure_ascii=False,
                 )
             raw_local_requested = local_path
-            cap = int(getattr(config, "SCP_PULL_MAX_BYTES", 200 * 1024 * 1024))
-            tree_cap = int(getattr(config, "SCP_PULL_MAX_TREE_BYTES", 2 * 1024 * 1024 * 1024))
-            try:
-                max_bytes = int(arguments.get("max_bytes") or cap)
-            except (TypeError, ValueError):
-                max_bytes = cap
-            max_bytes = max(1024, min(max_bytes, cap))
+            max_bytes, tree_cap = _scp_pull_byte_caps(arguments)
             timeout = _sftp_timeout_from_args(arguments)
             local_path = _normalize_sftp_pull_local_path(
                 raw_local_requested,
@@ -13255,8 +13303,11 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             params = arguments.get("params")
             if not isinstance(params, dict):
                 params = {}
-            if op not in ("run_command", "scp_push", "run_script", "restart"):
-                return json.dumps({"success": False, "error": "operation_type 须为 run_command/scp_push/run_script/restart"}, ensure_ascii=False)
+            if op not in ("run_command", "scp_push", "scp_pull", "run_script", "restart"):
+                return json.dumps(
+                    {"success": False, "error": "operation_type 须为 run_command/scp_push/scp_pull/run_script/restart"},
+                    ensure_ascii=False,
+                )
             if scope == "tag" and tag_match_mode not in ("any", "all"):
                 return json.dumps({"success": False, "error": "tag_match_mode 须为 any/all"}, ensure_ascii=False)
             try:
@@ -13286,7 +13337,13 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                                 result=f"已提交 {op} 批量任务",
                                 details=detail,
                             )
-                return json.dumps({"success": True, "batch_id": batch_id, "message": f"已创建批量任务 #{batch_id}，正在后台执行"}, ensure_ascii=False)
+                hint = (
+                    f"已创建批量任务 #{batch_id}，正在后台执行。"
+                    f"请用 get_batch_detail(batch_id={batch_id}) 查询进度，直至 status 为 completed/cancelled。"
+                )
+                if op == "scp_pull":
+                    hint += f" 拉取文件默认落在工作区 batch_pulls/{batch_id}/<host_id>/ 下。"
+                return json.dumps({"success": True, "batch_id": batch_id, "message": hint}, ensure_ascii=False)
             except ValueError as e:
                 return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
@@ -13303,7 +13360,24 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     "SELECT id, operation_type, scope_type, total_count, pending_count, success_count, fail_count, status, created_at FROM batch_operations WHERE created_by = ? ORDER BY created_at DESC LIMIT ?",
                     (user["id"], limit),
                 )
-            return json.dumps({"success": True, "batches": [dict(r) for r in rows]}, ensure_ascii=False)
+            batches = []
+            for r in rows:
+                d = dict(r)
+                total = int(d.get("total_count") or 0)
+                success = int(d.get("success_count") or 0)
+                fail = int(d.get("fail_count") or 0)
+                pending = int(d.get("pending_count") or 0)
+                done = success + fail
+                d["progress"] = {
+                    "done": done,
+                    "total": total,
+                    "percent": round(100.0 * done / total, 1) if total > 0 else 0.0,
+                    "pending": pending,
+                    "success": success,
+                    "failed": fail,
+                }
+                batches.append(d)
+            return json.dumps({"success": True, "batches": batches}, ensure_ascii=False)
 
         if name == "get_batch_detail":
             batch_id = arguments.get("batch_id")
@@ -13316,11 +13390,51 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             batch = dict(rows[0])
             if not _is_admin(user) and batch.get("created_by") != user["id"]:
                 return json.dumps({"success": False, "error": "批量操作不存在"}, ensure_ascii=False)
+            if isinstance(batch.get("params"), str):
+                try:
+                    batch["params"] = json.loads(batch["params"] or "{}")
+                except Exception:
+                    batch["params"] = {}
+            if isinstance(batch.get("scope_value"), str):
+                try:
+                    batch["scope_value"] = json.loads(batch["scope_value"] or "[]")
+                except Exception:
+                    batch["scope_value"] = []
             details = await db.execute_fetchall(
                 "SELECT bd.*, h.name as host_name, h.host FROM batch_operation_details bd JOIN hosts h ON h.id = bd.host_id WHERE bd.batch_id = ? ORDER BY bd.id",
                 (batch_id,),
             )
-            batch["details"] = [dict(r) for r in details]
+            detail_list = []
+            status_counts = {"pending": 0, "running": 0, "success": 0, "failed": 0, "skipped": 0}
+            for r in details:
+                item = dict(r)
+                st = (item.get("status") or "").strip() or "pending"
+                status_counts[st] = status_counts.get(st, 0) + 1
+                raw_res = item.get("result")
+                if isinstance(raw_res, str) and raw_res.strip():
+                    try:
+                        item["result"] = json.loads(raw_res)
+                    except Exception:
+                        pass
+                detail_list.append(item)
+            total = int(batch.get("total_count") or 0) or len(detail_list)
+            success = int(batch.get("success_count") or 0)
+            fail = int(batch.get("fail_count") or 0)
+            pending = int(batch.get("pending_count") or 0)
+            done = success + fail + int(status_counts.get("skipped") or 0)
+            batch["details"] = detail_list
+            batch["progress"] = {
+                "done": done,
+                "total": total,
+                "percent": round(100.0 * done / total, 1) if total > 0 else 0.0,
+                "pending": pending,
+                "running": int(status_counts.get("running") or 0),
+                "success": success,
+                "failed": fail,
+                "skipped": int(status_counts.get("skipped") or 0),
+                "by_status": status_counts,
+                "finished": (batch.get("status") or "") in ("completed", "cancelled"),
+            }
             return json.dumps({"success": True, "batch": batch}, ensure_ascii=False)
 
         if name == "get_ai_config":

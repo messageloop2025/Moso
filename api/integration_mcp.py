@@ -174,6 +174,35 @@ class HttpUploadBody(BaseModel):
     session_id: int | None = None
 
 
+class ScpPushBody(BaseModel):
+    host_id: int
+    remote_path: str = Field(..., min_length=1)
+    local_path: str | None = None
+    content: str | None = None
+    recursive: bool = False
+    timeout: int | None = Field(default=None, ge=30, le=3600)
+    session_id: int | None = None
+
+
+class ScpPullBody(BaseModel):
+    host_id: int
+    remote_path: str = Field(..., min_length=1)
+    local_path: str = Field(..., min_length=1)
+    recursive: bool = False
+    session_managed: bool | None = None
+    max_bytes: int | None = Field(default=None, ge=0)
+    timeout: int | None = Field(default=None, ge=30, le=3600)
+    session_id: int | None = None
+
+
+class BatchCreateBody(BaseModel):
+    operation_type: str = Field(..., min_length=1)
+    scope_type: str = Field(..., min_length=1)
+    scope_value: list[int] = Field(default_factory=list)
+    params: dict[str, Any] = Field(default_factory=dict)
+    tag_match_mode: str = "any"
+
+
 @router.post("/ssh-execute", dependencies=[Depends(require_mcp_client)])
 async def mcp_ssh_execute(req: SshExecuteRequest, user=Depends(get_current_user)):
     """MCP：非交互 SSH（支持 detach / poll_log，无 Web UI）。"""
@@ -457,3 +486,112 @@ async def mcp_http_upload(req: HttpUploadBody, user=Depends(get_current_user)):
     out = await _tool_json("http_upload", args, user, session_id=sid)
     out["session_id"] = sid
     return out
+
+
+@router.post("/scp-push", dependencies=[Depends(require_mcp_client)])
+async def mcp_scp_push(req: ScpPushBody, user=Depends(get_current_user)):
+    """MCP：SFTP 推送到主机（与 AI 工具 scp_push 同一实现；大文件用 local_path）。"""
+    if not (req.local_path or "").strip() and req.content is None:
+        raise HTTPException(status_code=400, detail="需要 local_path 或 content")
+    db = await get_db()
+    sid = await _ensure_mcp_runtime_session(db, user, req.session_id)
+    args: dict[str, Any] = {
+        "host_id": req.host_id,
+        "remote_path": req.remote_path,
+        "recursive": req.recursive,
+    }
+    if (req.local_path or "").strip():
+        args["local_path"] = req.local_path.strip()
+    if req.content is not None:
+        args["content"] = req.content
+    if req.timeout is not None:
+        args["timeout"] = req.timeout
+    out = await _tool_json("scp_push", args, user, session_id=sid)
+    out["session_id"] = sid
+    return out
+
+
+@router.post("/scp-pull", dependencies=[Depends(require_mcp_client)])
+async def mcp_scp_pull(req: ScpPullBody, user=Depends(get_current_user)):
+    """MCP：SFTP 从主机拉取到 web/fs（与 AI 工具 scp_pull 同一实现；默认不限制体积）。"""
+    db = await get_db()
+    sid = await _ensure_mcp_runtime_session(db, user, req.session_id)
+    args: dict[str, Any] = {
+        "host_id": req.host_id,
+        "remote_path": req.remote_path,
+        "local_path": req.local_path,
+        "recursive": req.recursive,
+    }
+    if req.session_managed is not None:
+        args["session_managed"] = req.session_managed
+    if req.max_bytes is not None:
+        args["max_bytes"] = req.max_bytes
+    if req.timeout is not None:
+        args["timeout"] = req.timeout
+    out = await _tool_json("scp_pull", args, user, session_id=sid)
+    out["session_id"] = sid
+    return out
+
+
+@router.post("/batch", dependencies=[Depends(require_mcp_client)])
+async def mcp_batch_create(req: BatchCreateBody, user=Depends(get_current_user)):
+    """MCP：创建批量任务（含 scp_push/scp_pull），与 Web/AI batch_create 同一实现。"""
+    from api.auth import _is_admin_role
+    from api.batch import _create_batch_and_start
+    from services.batch_executor import BATCH_OP_TYPES
+
+    op = (req.operation_type or "").strip()
+    if op not in BATCH_OP_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail="operation_type 须为 run_command / scp_push / scp_pull / run_script / restart",
+        )
+    try:
+        batch_id = await _create_batch_and_start(
+            op,
+            (req.scope_type or "").strip(),
+            list(req.scope_value or []),
+            dict(req.params or {}),
+            user["id"],
+            req.tag_match_mode,
+            _is_admin_role(user.get("role")),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    db = await get_db()
+    cur = await db.execute("SELECT total_count FROM batch_operations WHERE id = ?", (batch_id,))
+    total = (await cur.fetchone())[0]
+    return {
+        "success": True,
+        "batch_id": batch_id,
+        "total": total,
+        "message": f"已创建批量任务 #{batch_id}；请用 GET /api/batch/{batch_id} 或 edgeops_get_batch_job 轮询状态",
+    }
+
+
+@router.post("/batch/{batch_id}/cancel", dependencies=[Depends(require_mcp_client)])
+async def mcp_batch_cancel(batch_id: int, user=Depends(get_current_user)):
+    from api.batch import _can_access_batch, _cancel_batch
+
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        "SELECT id, created_by FROM batch_operations WHERE id = ?", (batch_id,)
+    )
+    if not rows or not _can_access_batch(dict(rows[0]), user):
+        raise HTTPException(status_code=404, detail="批量操作不存在")
+    await _cancel_batch(batch_id)
+    return {"success": True}
+
+
+@router.post("/batch/{batch_id}/retry", dependencies=[Depends(require_mcp_client)])
+async def mcp_batch_retry(batch_id: int, user=Depends(get_current_user)):
+    from api.batch import _can_access_batch, _retry_batch
+
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        "SELECT id, created_by FROM batch_operations WHERE id = ?", (batch_id,)
+    )
+    if not rows or not _can_access_batch(dict(rows[0]), user):
+        raise HTTPException(status_code=404, detail="批量操作不存在")
+    await _retry_batch(batch_id)
+    return {"success": True}

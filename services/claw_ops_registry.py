@@ -13,7 +13,7 @@ from typing import Any
 from database import get_db
 
 # manifest 版本：变更 extended_tools / system_prompt 时递增
-CAPABILITIES_VERSION = "2026070721"
+CAPABILITIES_VERSION = "2026072313"
 CLAW_OPS_PLUGIN_MIN_VERSION = "1.0.0"
 CLAW_OPS_PLUGIN_RECOMMENDED_VERSION = "1.1.0"
 
@@ -25,6 +25,7 @@ _OPENCLAW_MODE_RULES = """
 - 复杂多步仍可用 `edgeops_ops_chat`（可能阻塞 ≤330s）；**编排式后台子任务仅 MCP**，ClawOps 不提供 orchestrate。
 - 禁止依赖 connect_terminal / ask_user_choice；需要用户确认时用纯文本 [A]/[B] 选项。
 - 大输出 spill 后用 `edgeops_read_chat_data` 分段读取。
+- 主机↔工作区↔多机文件转运：优先 `edgeops_scp_pull` / `edgeops_scp_push`（SFTP 流式，默认不限制体积）；小文本预览仍可用 `edgeops_remote_fs_*`（写 ≤2MB）。
 """.strip()
 
 
@@ -230,7 +231,7 @@ def get_extended_tools_manifest() -> list[dict[str, Any]]:
         {
             "name": "edgeops_remote_fs_write",
             "label": "毛竹（Moso） · 远程写文件",
-            "description": "SFTP 写入远程文本（≤2MB）",
+            "description": "SFTP 写入远程文本（≤2MB）；大文件请用 edgeops_scp_push",
             "timeout_ms": 120_000,
             "parameters_schema": _tool_schema(
                 {"host_id": int_opt, "path": str_opt, "content": str_opt},
@@ -238,9 +239,46 @@ def get_extended_tools_manifest() -> list[dict[str, Any]]:
             ),
         },
         {
+            "name": "edgeops_scp_push",
+            "label": "毛竹（Moso） · SFTP 推送",
+            "description": "SFTP 推送到主机（与 AI scp_push 同一实现；local_path 或 content）",
+            "timeout_ms": 3_600_000,
+            "parameters_schema": _tool_schema(
+                {
+                    "host_id": int_opt,
+                    "remote_path": str_opt,
+                    "local_path": str_opt,
+                    "content": str_opt,
+                    "recursive": bool_t,
+                    "timeout": int_opt,
+                    "session_id": int_opt,
+                },
+                ["host_id", "remote_path"],
+            ),
+        },
+        {
+            "name": "edgeops_scp_pull",
+            "label": "毛竹（Moso） · SFTP 拉取",
+            "description": "SFTP 从主机拉到 web/fs（与 AI scp_pull 同一实现；默认不限制体积）",
+            "timeout_ms": 3_600_000,
+            "parameters_schema": _tool_schema(
+                {
+                    "host_id": int_opt,
+                    "remote_path": str_opt,
+                    "local_path": str_opt,
+                    "recursive": bool_t,
+                    "session_managed": bool_t,
+                    "max_bytes": int_opt,
+                    "timeout": int_opt,
+                    "session_id": int_opt,
+                },
+                ["host_id", "remote_path", "local_path"],
+            ),
+        },
+        {
             "name": "edgeops_list_batch_jobs",
             "label": "毛竹（Moso） · 批量任务列表",
-            "description": "只读批量任务",
+            "description": "批量任务列表（可筛选；含 scp_push/scp_pull）",
             "timeout_ms": 60_000,
             "parameters_schema": _tool_schema(
                 {
@@ -254,7 +292,37 @@ def get_extended_tools_manifest() -> list[dict[str, Any]]:
         {
             "name": "edgeops_get_batch_job",
             "label": "毛竹（Moso） · 批量任务详情",
-            "description": "只读批量任务详情",
+            "description": "批量任务详情与每机状态（轮询进度）",
+            "timeout_ms": 60_000,
+            "parameters_schema": _tool_schema({"batch_id": int_opt}, ["batch_id"]),
+        },
+        {
+            "name": "edgeops_create_batch_job",
+            "label": "毛竹（Moso） · 创建批量任务",
+            "description": "创建批量任务（run_command/scp_push/scp_pull/run_script/restart）",
+            "timeout_ms": 120_000,
+            "parameters_schema": _tool_schema(
+                {
+                    "operation_type": str_opt,
+                    "scope_type": str_opt,
+                    "scope_value": {"type": "array", "items": int_opt},
+                    "params": {"type": "object"},
+                    "tag_match_mode": str_opt,
+                },
+                ["operation_type", "scope_type"],
+            ),
+        },
+        {
+            "name": "edgeops_cancel_batch_job",
+            "label": "毛竹（Moso） · 取消批量任务",
+            "description": "取消运行中的批量任务",
+            "timeout_ms": 60_000,
+            "parameters_schema": _tool_schema({"batch_id": int_opt}, ["batch_id"]),
+        },
+        {
+            "name": "edgeops_retry_batch_job",
+            "label": "毛竹（Moso） · 重试批量失败项",
+            "description": "重试批量任务中的失败主机",
             "timeout_ms": 60_000,
             "parameters_schema": _tool_schema({"batch_id": int_opt}, ["batch_id"]),
         },
@@ -645,6 +713,63 @@ async def invoke_claw_ops_tool(
 
         return await get_batch(int(args["batch_id"]), user=user)
 
+    if name == "edgeops_create_batch_job":
+        from api.auth import _is_admin_role
+        from api.batch import _create_batch_and_start
+        from services.batch_executor import BATCH_OP_TYPES
+
+        op = str(args.get("operation_type") or "").strip()
+        if op not in BATCH_OP_TYPES:
+            return {
+                "success": False,
+                "error": "operation_type 须为 run_command/scp_push/scp_pull/run_script/restart",
+            }
+        scope_value = args.get("scope_value") or []
+        if not isinstance(scope_value, list):
+            scope_value = []
+        params = args.get("params") if isinstance(args.get("params"), dict) else {}
+        try:
+            batch_id = await _create_batch_and_start(
+                op,
+                str(args.get("scope_type") or "").strip(),
+                [int(x) for x in scope_value if x is not None],
+                params,
+                user["id"],
+                str(args.get("tag_match_mode") or "any"),
+                _is_admin_role(user.get("role")),
+            )
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+        return {
+            "success": True,
+            "batch_id": batch_id,
+            "message": f"已创建 #{batch_id}；请用 edgeops_get_batch_job 轮询",
+        }
+
+    if name == "edgeops_cancel_batch_job":
+        from api.batch import _can_access_batch, _cancel_batch
+
+        rows = await db.execute_fetchall(
+            "SELECT id, created_by FROM batch_operations WHERE id = ?",
+            (int(args["batch_id"]),),
+        )
+        if not rows or not _can_access_batch(dict(rows[0]), user):
+            return {"success": False, "error": "批量操作不存在"}
+        await _cancel_batch(int(args["batch_id"]))
+        return {"success": True}
+
+    if name == "edgeops_retry_batch_job":
+        from api.batch import _can_access_batch, _retry_batch
+
+        rows = await db.execute_fetchall(
+            "SELECT id, created_by FROM batch_operations WHERE id = ?",
+            (int(args["batch_id"]),),
+        )
+        if not rows or not _can_access_batch(dict(rows[0]), user):
+            return {"success": False, "error": "批量操作不存在"}
+        await _retry_batch(int(args["batch_id"]))
+        return {"success": True}
+
     if name == "edgeops_list_scheduled_tasks":
         from api.scheduled_tasks import list_scheduled_tasks
 
@@ -675,7 +800,14 @@ async def invoke_claw_ops_tool(
             limit=int(args.get("limit") or 50),
         )
 
-    if name in ("edgeops_http_request", "edgeops_http_download", "edgeops_http_upload", "edgeops_http_download_merge"):
+    if name in (
+        "edgeops_http_request",
+        "edgeops_http_download",
+        "edgeops_http_upload",
+        "edgeops_http_download_merge",
+        "edgeops_scp_push",
+        "edgeops_scp_pull",
+    ):
         internal_name = name.replace("edgeops_", "")
         sid = await _ensure_integration_runtime_session(db, user, args.pop("session_id", None))
         raw = await execute_tool(

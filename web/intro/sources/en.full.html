@@ -246,7 +246,7 @@
               list_host_tags / create_host_tag / set_host_tags
               list_credentials / create_credential / generate_key
 
-<span class="k">Files &amp; SCP</span>       scp_push / fs_list / fs_write_file
+<span class="k">Files &amp; SFTP</span>      scp_push / scp_pull / fs_list / fs_write_file
               transfer_file_between_hosts / relay_file_between_hosts
 
 <span class="k">Batch</span>            batch_create / list_batch_operations
@@ -281,7 +281,7 @@
                         <li><strong>Terminal in sync</strong>: the model reads and writes the current user’s SSH terminal buffer and can switch between consoles (host screen / AI assistant).</li>
                         <li><strong>SSH channel</strong>: a long-lived TTY channel, isolated by session or task; read by line/character count, suited to interactive commands.</li>
                         <li><strong>Local host</strong>: administrators can have the model run shell, Python scripts, child processes, and file access on the Moso host.</li>
-                        <li><strong>Multi-host relay</strong>: relay files directly between machines—no “pull to local then push” hop.</li>
+                        <li><strong>Multi-host file transfer</strong>: prefer <code>scp_pull</code> → workspace → <code>scp_push</code> (progress in the tool card); use <code>transfer_file_between_hosts</code> when hosts can talk directly, else relay.</li>
                         <li><strong>System shared key quota + your own key</strong>: if you have not configured a personal key, a system shared key is used (default <strong>2000</strong> uses); when it runs out, the model prompts; your own key <strong>lifts the cap</strong>. Admins can clear shared-key counts for any user or apply system default config.</li>
                     </ul>
                 </div>
@@ -442,7 +442,7 @@
                 <div class="card reveal">
                     <div class="icon">📮</div>
                     <h3>Cross-host relay &amp; closed feedback</h3>
-                    <p>Files: <code>transfer_file_between_hosts</code> / <code>relay_file_between_hosts</code> are machine to machine, no detour through your laptop; <code>send_email</code> to oncall closes the feedback loop.</p>
+                    <p>Files: hub via <code>scp_pull</code>/<code>scp_push</code> through the workspace, or <code>transfer_file_between_hosts</code> / <code>relay_file_between_hosts</code> host-to-host; <code>send_email</code> to oncall closes the feedback loop.</p>
                 </div>
                 <div class="card reveal">
                     <div class="icon">🧾</div>

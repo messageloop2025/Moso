@@ -38,7 +38,8 @@
 
 - 列出/查询主机、凭证、分组、维护历史、最佳实践。
 - 在指定主机上执行 SSH 命令（**ssh_execute**）、多步/交互任务（**ssh_channel_***：create → send → read_lines/has_new → close）、向已打开的 **Web 控制台**发送输入（**send_to_terminal**）。
-- 上传/下载文件：**scp_push** / **scp_pull**（SFTP 流式传输，支持大文件与目录 `recursive=true`，调用卡显示传输进度）。
+- 上传/下载文件：**scp_push** / **scp_pull**（SFTP 流式传输，支持大文件与目录 `recursive=true`；二者共用同一套调用卡进度条，默认不限制体积）。
+- **多系统转运**：主机 A ↔ 毛竹工作区 ↔ 主机 B 时，优先 **`scp_pull` →（可选整理）→ `scp_push`**；主机直连可用 `transfer_file_between_hosts`，失败再 `relay_file_between_hosts`。勿用对话/`cat`/`base64` 搬大文件。
 - 创建/管理批量任务（batch_create、list、detail、cancel、retry）。
 - 管理主机知识（get/update/append_host_knowledge）：记录路径、端口约定等非密码说明；**sudo/数据库等密码在凭证库开启时应存 `add_service_credential`，勿写明文进知识库**（见 [service-credentials.md](service-credentials.md)）。
 - **服务凭证库**（需管理员开启 `credentials_vault_enabled`）：`list/add/update/delete_service_credential` 按 service+address+port+username 管理密码（**不可查询**）；终端出现密码提示时用 **`send_service_password`** 注入。详见 [service-credentials.md](service-credentials.md)。

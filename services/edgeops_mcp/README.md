@@ -46,7 +46,7 @@ python -m services.edgeops_mcp          # stdio（Cursor 本地子进程模式�
 
 **HTTPS 反代**：推荐客户端 URL 带尾斜杠 `https://host/mcp/`；nginx 示例见 [docker/nginx-edgeops.example.conf](../../docker/nginx-edgeops.example.conf)。
 
-## 工具一览（54 个）
+## 工具一览（58 个）
 
 ### 基础（22 个）
 
@@ -88,9 +88,18 @@ python -m services.edgeops_mcp          # stdio（Cursor 本地子进程模式�
 
 ### P2 其它
 
-`edgeops_remote_fs_list/read/write`、`edgeops_list_batch_jobs` / `edgeops_get_batch_job`、`edgeops_list_scheduled_tasks` / `edgeops_get_scheduled_task`、`edgeops_list_triggered_tasks` / `edgeops_get_triggered_task`、`edgeops_list_session_messages`
+`edgeops_remote_fs_list/read/write`、`edgeops_list_batch_jobs` / `edgeops_get_batch_job` / **`edgeops_create_batch_job`** / **`edgeops_cancel_batch_job`** / **`edgeops_retry_batch_job`**（含 scp_push/scp_pull 批量与状态轮询）、`edgeops_list_scheduled_tasks` / `edgeops_get_scheduled_task`、`edgeops_list_triggered_tasks` / `edgeops_get_triggered_task`、`edgeops_list_session_messages`
 
-### HTTP 出站（3 个）
+### SFTP 大文件转运（2 个，与 Web AI 同一实现）
+
+| 工具 | 说明 |
+|------|------|
+| `edgeops_scp_push` | 工作区 → 主机（`local_path` 或小文本 `content`；目录需 `recursive=true`） |
+| `edgeops_scp_pull` | 主机 → 工作区（默认不限制体积；目录需 `recursive=true`） |
+
+多机转运推荐：`scp_pull` →（可选整理）→ `scp_push`。小文本预览仍用 `edgeops_remote_fs_*`（写 ≤2MB）。
+
+### HTTP 出站（4 个）
 
 | 工具 | 说明 |
 |------|------|

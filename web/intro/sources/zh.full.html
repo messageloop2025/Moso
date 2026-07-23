@@ -244,7 +244,7 @@
               list_host_tags / create_host_tag / set_host_tags
               list_credentials / create_credential / generate_key
 
-<span class="k">文件 & SCP</span>       scp_push / fs_list / fs_write_file
+<span class="k">文件 & SFTP</span>      scp_push / scp_pull / fs_list / fs_write_file
               transfer_file_between_hosts / relay_file_between_hosts
 
 <span class="k">批量操作</span>       batch_create / list_batch_operations
@@ -279,7 +279,7 @@
                         <li><strong>终端协同</strong>：AI 读写当前用户 SSH 终端缓冲区，支持多控制台切换（主机详情 / AI 助手）。</li>
                         <li><strong>SSH Channel</strong>：长连接 TTY 通道，按会话或任务隔离；按行号/字符数读取，适合交互式命令。</li>
                         <li><strong>本机管理</strong>：管理员可让 AI 在 毛竹 宿主机上执行 shell、Python 脚本、管理子进程、读写文件。</li>
-                        <li><strong>多主机中继</strong>：跨主机文件直接中继，免去"先拉回本地再推过去"。</li>
+                        <li><strong>多机文件转运</strong>：优先 <code>scp_pull</code> → 工作区 → <code>scp_push</code>（调用卡有进度）；主机直连用 <code>transfer_file_between_hosts</code>，失败再中继。</li>
                         <li><strong>系统共享 Key 配额 + 自有 KEY</strong>：用户未配置自有 Key 时使用系统共享 Key（默认 <strong>2000 次</strong>配额），用尽后 AI 会提示；配置自有 KEY 即 <strong>解除次数限制</strong>；管理员可清零任意用户的共享 Key 计数或为其写入系统默认配置。</li>
                     </ul>
                 </div>
@@ -442,7 +442,7 @@
                 <div class="card reveal">
                     <div class="icon">📮</div>
                     <h3>跨机中继 & 反馈闭环</h3>
-                    <p>文件 <code>transfer_file_between_hosts</code> / <code>relay_file_between_hosts</code> 直接机对机，免去本地绕一圈；结果顺手 <code>send_email</code> 给 oncall，闭环到反馈阶段。</p>
+                    <p>文件优先经工作区 <code>scp_pull</code>/<code>scp_push</code> 转运，或 <code>transfer_file_between_hosts</code> / <code>relay_file_between_hosts</code> 机对机；结果顺手 <code>send_email</code> 给 oncall，闭环到反馈阶段。</p>
                 </div>
                 <div class="card reveal">
                     <div class="icon">🧾</div>

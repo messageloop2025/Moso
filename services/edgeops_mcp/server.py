@@ -775,9 +775,65 @@ async def edgeops_remote_fs_write(
     content: str,
     ctx: Context | None = None,
 ) -> str:
-    """SFTP 写入远程文本文件（≤2MB）。"""
+    """SFTP 写入远程文本文件（≤2MB）。大文件/目录请用 edgeops_scp_push。"""
     return await _run(
         lambda c: c.remote_fs_write(host_id, path, content),
+        ctx=ctx,
+    )
+
+
+@mcp.tool()
+async def edgeops_scp_push(
+    host_id: int,
+    remote_path: str,
+    local_path: str | None = None,
+    content: str | None = None,
+    recursive: bool = False,
+    timeout: int | None = None,
+    session_id: int | None = None,
+    ctx: Context | None = None,
+) -> str:
+    """SFTP 推送到主机（与 Web AI scp_push 同一实现）。大文件/目录用 local_path（相对 web/fs）；小文本可用 content。"""
+    sid = _session(session_id, ctx)
+    return await _run(
+        lambda c: c.scp_push(
+            host_id=host_id,
+            remote_path=remote_path,
+            local_path=local_path,
+            content=content,
+            recursive=recursive,
+            timeout=timeout,
+            session_id=sid,
+        ),
+        ctx=ctx,
+    )
+
+
+@mcp.tool()
+async def edgeops_scp_pull(
+    host_id: int,
+    remote_path: str,
+    local_path: str,
+    recursive: bool = False,
+    session_managed: bool | None = None,
+    max_bytes: int | None = None,
+    timeout: int | None = None,
+    session_id: int | None = None,
+    ctx: Context | None = None,
+) -> str:
+    """SFTP 从主机拉取到 web/fs（与 Web AI scp_pull 同一实现；默认不限制体积；目录需 recursive=true）。"""
+    sid = _session(session_id, ctx)
+    return await _run(
+        lambda c: c.scp_pull(
+            host_id=host_id,
+            remote_path=remote_path,
+            local_path=local_path,
+            recursive=recursive,
+            session_managed=session_managed,
+            max_bytes=max_bytes,
+            timeout=timeout,
+            session_id=sid,
+        ),
         ctx=ctx,
     )
 
@@ -790,7 +846,7 @@ async def edgeops_list_batch_jobs(
     status: str | None = None,
     ctx: Context | None = None,
 ) -> str:
-    """只读：批量任务列表。"""
+    """批量任务列表（可按 operation_type/status 筛选；含 scp_push/scp_pull）。"""
     return await _run(
         lambda c: c.list_batch_jobs(
             page=page,
@@ -804,8 +860,42 @@ async def edgeops_list_batch_jobs(
 
 @mcp.tool()
 async def edgeops_get_batch_job(batch_id: int, ctx: Context | None = None) -> str:
-    """只读：批量任务详情。"""
+    """批量任务详情（每机 status/result；用于轮询进度）。"""
     return await _run(lambda c: c.get_batch_job(batch_id), ctx=ctx)
+
+
+@mcp.tool()
+async def edgeops_create_batch_job(
+    operation_type: str,
+    scope_type: str,
+    scope_value: list[int] | None = None,
+    params: dict | None = None,
+    tag_match_mode: str = "any",
+    ctx: Context | None = None,
+) -> str:
+    """创建批量任务（run_command/scp_push/scp_pull/run_script/restart）。创建后用 get_batch_job 轮询至 completed。"""
+    return await _run(
+        lambda c: c.create_batch_job(
+            operation_type=operation_type,
+            scope_type=scope_type,
+            scope_value=scope_value,
+            params=params,
+            tag_match_mode=tag_match_mode,
+        ),
+        ctx=ctx,
+    )
+
+
+@mcp.tool()
+async def edgeops_cancel_batch_job(batch_id: int, ctx: Context | None = None) -> str:
+    """取消运行中的批量任务。"""
+    return await _run(lambda c: c.cancel_batch_job(batch_id), ctx=ctx)
+
+
+@mcp.tool()
+async def edgeops_retry_batch_job(batch_id: int, ctx: Context | None = None) -> str:
+    """重试批量任务中的失败项。"""
+    return await _run(lambda c: c.retry_batch_job(batch_id), ctx=ctx)
 
 
 @mcp.tool()

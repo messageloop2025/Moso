@@ -143,6 +143,7 @@ CREATE TABLE IF NOT EXISTS skills (
     description TEXT DEFAULT '',
     parameters_schema TEXT,
     enabled INTEGER DEFAULT 1,
+    deprecated INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -725,7 +726,7 @@ async def _migrate_local_shell_tables(db: aiosqlite.Connection):
 
 
 async def _migrate_batch_tables(db: aiosqlite.Connection):
-    """批量操作表：用于向多台主机下发脚本/命令/上传/重启等（参考 IOTHub batch）。"""
+    """批量操作表：command/script/upload/restart/scp_push/scp_pull 等（operation_type + params JSON，无需改列）。"""
     await db.execute("""
         CREATE TABLE IF NOT EXISTS batch_operations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1571,6 +1572,7 @@ async def _migrate_legacy_added_columns(db: aiosqlite.Connection) -> None:
         ("user_skills", "pre_tool_use_matcher", "ALTER TABLE user_skills ADD COLUMN pre_tool_use_matcher TEXT NOT NULL DEFAULT ''"),
         ("user_skills", "pre_tool_use_decision", "ALTER TABLE user_skills ADD COLUMN pre_tool_use_decision TEXT NOT NULL DEFAULT 'ask'"),
         ("user_skills", "allowed_tools", "ALTER TABLE user_skills ADD COLUMN allowed_tools TEXT NOT NULL DEFAULT ''"),
+        ("skills", "deprecated", "ALTER TABLE skills ADD COLUMN deprecated INTEGER NOT NULL DEFAULT 0"),
         ("ai_chat_sessions", "chat_mode", "ALTER TABLE ai_chat_sessions ADD COLUMN chat_mode TEXT NOT NULL DEFAULT 'normal'"),
         ("ai_chat_sessions", "strict_allow_cache_json", "ALTER TABLE ai_chat_sessions ADD COLUMN strict_allow_cache_json TEXT NOT NULL DEFAULT ''"),
     ]
@@ -1818,6 +1820,9 @@ async def _check_db_schema(db: aiosqlite.Connection) -> None:
         ("users", "failed_login_attempts"),
         ("users", "locked_until"),
         ("users", "skills_enabled"),
+        ("skills", "deprecated"),
+        ("user_skills", "pre_tool_use_decision"),
+        ("user_skills", "allowed_tools"),
         ("scheduled_tasks", "inject_user_skills"),
         ("triggered_tasks", "inject_user_skills"),
     ]

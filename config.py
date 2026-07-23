@@ -9,7 +9,7 @@ PRODUCT_NAME_ZH = "毛竹"
 PRODUCT_NAME_EN = "Moso"
 PRODUCT_DISPLAY = f"{PRODUCT_NAME_ZH}（{PRODUCT_NAME_EN}）"  # AI 提示词中的产品指称
 
-VERSION = os.getenv("EDGEOPS_VERSION", "1.8.4")
+VERSION = os.getenv("EDGEOPS_VERSION", "1.8.4-sp2")
 
 # 数据库 / Database
 DATABASE_PATH = os.getenv("EDGEOPS_DB", str(BASE_DIR / "edgeops.db"))
@@ -224,10 +224,10 @@ CHAT_TOOL_SPILL_INCLUDE_PREVIEW = os.getenv("EDGEOPS_CHAT_TOOL_SPILL_INCLUDE_PRE
 # AI 识图内联：单张图 data URL 字符上限（为 system/对话/工具定义留白；阿里云等常见总 input ~983616）
 VISION_INLINE_MAX_B64_CHARS = int(os.getenv("EDGEOPS_VISION_INLINE_MAX_B64_CHARS", "640000"))
 
-# AI scp_pull：从远端 SFTP 拉到用户 web/fs 的单文件上限（字节）。
-SCP_PULL_MAX_BYTES = int(os.getenv("EDGEOPS_SCP_PULL_MAX_BYTES", str(200 * 1024 * 1024)))
-# AI scp_pull 目录：整树累计字节上限（字节）。
-SCP_PULL_MAX_TREE_BYTES = int(os.getenv("EDGEOPS_SCP_PULL_MAX_TREE_BYTES", str(2 * 1024 * 1024 * 1024)))
+# AI scp_pull：单文件字节上限。0 = 不限制（默认）。若设置正数，建议 ≥ 2GiB。
+SCP_PULL_MAX_BYTES = int(os.getenv("EDGEOPS_SCP_PULL_MAX_BYTES", "0"))
+# AI scp_pull 目录：整树累计字节上限。0 = 不限制（默认）。
+SCP_PULL_MAX_TREE_BYTES = int(os.getenv("EDGEOPS_SCP_PULL_MAX_TREE_BYTES", "0"))
 # AI SFTP 目录传输：最多文件数（防止恶意/误操作拉爆磁盘）。
 SCP_TRANSFER_MAX_FILES = int(os.getenv("EDGEOPS_SCP_TRANSFER_MAX_FILES", "5000"))
 

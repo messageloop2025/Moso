@@ -155,6 +155,11 @@ def _local_tree_plan(local_root: Path) -> tuple[list[tuple[Path, str]], int]:
     return files, total
 
 
+def _cap_exceeded(size: int, cap: int) -> bool:
+    """cap <= 0 表示不限制。"""
+    return cap > 0 and size > cap
+
+
 def _remote_tree_plan(
     sftp,
     remote_root: str,
@@ -189,13 +194,13 @@ def _remote_tree_plan(
                     return err
             else:
                 sz = int(ent.st_size or 0)
-                if sz > max_file_bytes:
+                if _cap_exceeded(sz, max_file_bytes):
                     return f"远程文件过大：{child_remote}（{sz} > {max_file_bytes}）"
                 total += sz
                 file_count += 1
-                if file_count > max_files:
+                if max_files > 0 and file_count > max_files:
                     return f"远程目录文件数超过上限 {max_files}"
-                if total > max_tree_bytes:
+                if _cap_exceeded(total, max_tree_bytes):
                     return f"远程目录总大小超过上限 {max_tree_bytes} 字节"
                 out.append((child_remote, child_rel))
         return None
@@ -475,7 +480,7 @@ def sftp_pull_path_sync(
                 state.transferred_bytes = bytes_done
                 state.emit_progress(force=True)
         else:
-            if st.st_size is not None and int(st.st_size) > max_bytes:
+            if st.st_size is not None and _cap_exceeded(int(st.st_size), max_bytes):
                 return SftpTransferResult(
                     False,
                     error=f"远程文件过大（{st.st_size} 字节 > 上限 {max_bytes}）",
@@ -489,29 +494,15 @@ def sftp_pull_path_sync(
             if state.check_cancel():
                 return SftpTransferResult(False, error="传输已取消", interrupted=True, duration_sec=time.time() - started)
 
-            chunk_base = [0]
-
-            def _read_cb(tx: int, total: int) -> None:
-                chunk_base[0] = tx
+            def _read_cb(tx: int, _total: int) -> None:
                 state.transferred_bytes = tx
                 state.emit_progress()
                 if state.check_cancel():
                     raise InterruptedError("传输已取消")
 
             try:
-                with sftp.open(remote_norm, "rb") as rf, open(local_root, "wb") as wf:
-                    while True:
-                        if state.check_cancel():
-                            raise InterruptedError("传输已取消")
-                        chunk = rf.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        bytes_done += len(chunk)
-                        if bytes_done > max_bytes:
-                            raise ValueError(f"传输超过上限 {max_bytes} 字节（已中止）")
-                        wf.write(chunk)
-                        state.transferred_bytes = bytes_done
-                        state.emit_progress()
+                # 与 scp_push 的 sftp.put 对称：用 get + callback，调用卡进度一致
+                sftp.get(remote_norm, str(local_root), callback=_read_cb)
             except InterruptedError:
                 try:
                     if local_root.exists():
@@ -522,10 +513,26 @@ def sftp_pull_path_sync(
                     False,
                     error="传输已取消",
                     interrupted=True,
-                    bytes_transferred=bytes_done,
+                    bytes_transferred=state.transferred_bytes,
                     files_transferred=0,
                     duration_sec=round(time.time() - started, 2),
                 )
+            try:
+                bytes_done = local_root.stat().st_size
+            except OSError:
+                bytes_done = int(state.transferred_bytes or 0)
+            if _cap_exceeded(bytes_done, max_bytes):
+                try:
+                    if local_root.exists():
+                        local_root.unlink()
+                except OSError:
+                    pass
+                return SftpTransferResult(
+                    False,
+                    error=f"传输超过上限 {max_bytes} 字节（已中止）",
+                    bytes_transferred=bytes_done,
+                )
+            state.transferred_bytes = bytes_done
             files_done = 1
 
         state.emit_progress(force=True, phase="done")

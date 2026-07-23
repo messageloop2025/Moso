@@ -573,6 +573,70 @@ class EdgeOpsRestClient:
             timeout=httpx.Timeout(120.0, connect=30.0),
         )
 
+    async def scp_push(
+        self,
+        *,
+        host_id: int,
+        remote_path: str,
+        local_path: str | None = None,
+        content: str | None = None,
+        recursive: bool = False,
+        timeout: int | None = None,
+        session_id: int | None = None,
+    ) -> Any:
+        payload: dict[str, Any] = {
+            "host_id": host_id,
+            "remote_path": remote_path,
+            "recursive": recursive,
+        }
+        if local_path is not None:
+            payload["local_path"] = local_path
+        if content is not None:
+            payload["content"] = content
+        if timeout is not None:
+            payload["timeout"] = timeout
+        if session_id is not None:
+            payload["session_id"] = session_id
+        return await self._request(
+            "POST",
+            "/api/integration/mcp/scp-push",
+            json_body=payload,
+            timeout=httpx.Timeout(float(timeout or 3600), connect=30.0),
+        )
+
+    async def scp_pull(
+        self,
+        *,
+        host_id: int,
+        remote_path: str,
+        local_path: str,
+        recursive: bool = False,
+        session_managed: bool | None = None,
+        max_bytes: int | None = None,
+        timeout: int | None = None,
+        session_id: int | None = None,
+    ) -> Any:
+        payload: dict[str, Any] = {
+            "host_id": host_id,
+            "remote_path": remote_path,
+            "local_path": local_path,
+            "recursive": recursive,
+        }
+        if session_managed is not None:
+            payload["session_managed"] = session_managed
+        if max_bytes is not None:
+            payload["max_bytes"] = max_bytes
+        if timeout is not None:
+            payload["timeout"] = timeout
+        if session_id is not None:
+            payload["session_id"] = session_id
+        return await self._request(
+            "POST",
+            "/api/integration/mcp/scp-pull",
+            json_body=payload,
+            timeout=httpx.Timeout(float(timeout or 3600), connect=30.0),
+        )
+
     async def list_batch_jobs(
         self,
         *,
@@ -590,6 +654,42 @@ class EdgeOpsRestClient:
 
     async def get_batch_job(self, batch_id: int) -> Any:
         return await self._request("GET", f"/api/batch/{batch_id}", timeout=SHORT_TIMEOUT)
+
+    async def create_batch_job(
+        self,
+        *,
+        operation_type: str,
+        scope_type: str,
+        scope_value: list[int] | None = None,
+        params: dict[str, Any] | None = None,
+        tag_match_mode: str = "any",
+    ) -> Any:
+        return await self._request(
+            "POST",
+            "/api/integration/mcp/batch",
+            json_body={
+                "operation_type": operation_type,
+                "scope_type": scope_type,
+                "scope_value": scope_value or [],
+                "params": params or {},
+                "tag_match_mode": tag_match_mode,
+            },
+            timeout=httpx.Timeout(120.0, connect=30.0),
+        )
+
+    async def cancel_batch_job(self, batch_id: int) -> Any:
+        return await self._request(
+            "POST",
+            f"/api/integration/mcp/batch/{batch_id}/cancel",
+            timeout=SHORT_TIMEOUT,
+        )
+
+    async def retry_batch_job(self, batch_id: int) -> Any:
+        return await self._request(
+            "POST",
+            f"/api/integration/mcp/batch/{batch_id}/retry",
+            timeout=SHORT_TIMEOUT,
+        )
 
     async def list_scheduled_tasks(self) -> Any:
         return await self._request("GET", "/api/scheduled-tasks", timeout=SHORT_TIMEOUT)

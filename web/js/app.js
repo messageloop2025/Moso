@@ -7867,10 +7867,14 @@ function edgeopsCotSyncActivePeek(panel) {
         var titleEl = st.activeToolEl.querySelector('.ai-cot-step-title');
         var badgeEl = st.activeToolEl.querySelector('.ai-cot-tool-badge');
         var transferEl = st.activeToolEl.querySelector('.ai-cot-transfer-head-progress');
+        var transferBar = st.activeToolEl.querySelector('.ai-tool-transfer-progress');
         var toolPeek = '<div class="ai-cot-peek-step ai-cot-peek-tool">'
             + (titleEl ? titleEl.outerHTML : '')
             + (transferEl ? transferEl.outerHTML : '')
             + (badgeEl ? badgeEl.outerHTML : '');
+        if (transferBar) {
+            toolPeek += '<div class="ai-cot-peek-transfer">' + transferBar.outerHTML + '</div>';
+        }
         var stream = st.activeToolEl.querySelector('.ai-tool-stream');
         if (stream && stream.lastElementChild && (stream.lastElementChild.textContent || '').trim()) {
             toolPeek += '<div class="ai-cot-peek-stream-line">'
@@ -8055,12 +8059,18 @@ function edgeopsCotOnToolExecuting(toolsEl, ev) {
     var labelExec = typeof t === 'function' ? t('hostAi.toolExecuting') : 'Running';
     var headLine = typeof t === 'function' ? t('hostAi.cotRoundTool', { round: idx, tool: ev.tool || '' }) : ((idx) + ' ' + (ev.tool || ''));
     var isTransferTool = ev.tool === 'scp_push' || ev.tool === 'scp_pull'
-        || ev.tool === 'relay_file_between_hosts' || ev.tool === 'transfer_file_between_hosts';
+        || ev.tool === 'relay_file_between_hosts' || ev.tool === 'transfer_file_between_hosts'
+        || ev.tool === 'http_download' || ev.tool === 'http_upload';
     var transferHeadInit = '';
     if (isTransferTool) {
-        var dirInit = ev.tool === 'scp_push'
-            ? (typeof t === 'function' ? t('hostAi.transferPushShort') : '↑')
-            : (typeof t === 'function' ? t('hostAi.transferPullShort') : '↓');
+        var dirInit;
+        if (ev.tool === 'scp_push' || ev.tool === 'http_upload') {
+            dirInit = typeof t === 'function' ? t('hostAi.transferPushShort') : '↑';
+        } else if (ev.tool === 'scp_pull' || ev.tool === 'http_download') {
+            dirInit = typeof t === 'function' ? t('hostAi.transferPullShort') : '↓';
+        } else {
+            dirInit = typeof t === 'function' ? t('hostAi.transferRelayShort') : '⇄';
+        }
         transferHeadInit = '<span class="ai-cot-transfer-head-progress">' + esc(dirInit + ' …') + '</span>';
     }
     var head = document.createElement('div');
@@ -18136,8 +18146,11 @@ function renderSecurityAuditPage() {
         API.listSecurityAudit(params).then(function(data) {
             var logs = data.logs || [];
             pagination.update({ total: data.total, page: data.page, page_size: data.page_size });
-            var html = '<table class="data-table list-table table-compact-ellipsis"><thead><tr>'
-                + '<th>时间</th><th>用户</th><th>操作</th><th>结果</th><th>参数</th></tr></thead><tbody>';
+            var html = '<table class="data-table list-table table-compact-ellipsis"><colgroup>'
+                + '<col class="col-td-log-time"><col class="col-td-log-user"><col class="col-td-log-op"><col class="col-td-xs"><col>'
+                + '</colgroup><thead><tr>'
+                + '<th class="td-nowrap">时间</th><th class="td-nowrap">用户</th><th class="td-nowrap">操作</th>'
+                + '<th class="td-nowrap">结果</th><th class="td-fill">参数</th></tr></thead><tbody>';
             logs.forEach(function(l) {
                 html += '<tr><td class="td-nowrap">' + formatTime(l.created_at) + '</td><td class="td-nowrap">' + esc(l.username || l.user_id || '') + '</td>'
                     + '<td class="td-nowrap">' + esc(l.operation || '') + '</td><td class="td-nowrap">' + esc(l.result || '') + '</td>'
@@ -18760,7 +18773,13 @@ function renderScheduledTasksPage() {
 
 // ── 批量操作 ──
 function _batchOpTypeLabel(op) {
-    var m = { run_command: t('pages.batch.opRunCommand'), scp_push: t('pages.batch.opScpPush'), run_script: t('pages.batch.opRunScript'), restart: t('pages.batch.opRestart') };
+    var m = {
+        run_command: t('pages.batch.opRunCommand'),
+        scp_push: t('pages.batch.opScpPush'),
+        scp_pull: t('pages.batch.opScpPull'),
+        run_script: t('pages.batch.opRunScript'),
+        restart: t('pages.batch.opRestart')
+    };
     return m[op] || (op || '');
 }
 function renderBatchPage() {
@@ -18768,7 +18787,7 @@ function renderBatchPage() {
     var el = getPageEl();
     el.innerHTML = '<div class="topbar"><h2>' + t('pages.batch.title') + '</h2><div class="topbar-actions"><button type="button" class="btn" id="batchPageRefreshBtn">' + esc(t('common.refresh')) + '</button></div></div>'
         + '<div class="page-content"><div class="card"><div class="card-header"><h3>' + t('pages.batch.recentTasks') + '</h3>'
-        + '<span style="margin-left:12px">' + esc(t('pages.batch.filterType')) + ' <select class="form-control" id="batchFilterType" style="display:inline-block;width:auto;margin-right:8px"><option value="">' + esc(t('pages.batch.optionAll')) + '</option><option value="run_command">' + esc(t('pages.batch.opRunCommand')) + '</option><option value="scp_push">' + esc(t('pages.batch.opScpPush')) + '</option><option value="run_script">' + esc(t('pages.batch.opRunScript')) + '</option><option value="restart">' + esc(t('pages.batch.opRestart')) + '</option></select>'
+        + '<span style="margin-left:12px">' + esc(t('pages.batch.filterType')) + ' <select class="form-control" id="batchFilterType" style="display:inline-block;width:auto;margin-right:8px"><option value="">' + esc(t('pages.batch.optionAll')) + '</option><option value="run_command">' + esc(t('pages.batch.opRunCommand')) + '</option><option value="scp_push">' + esc(t('pages.batch.opScpPush')) + '</option><option value="scp_pull">' + esc(t('pages.batch.opScpPull')) + '</option><option value="run_script">' + esc(t('pages.batch.opRunScript')) + '</option><option value="restart">' + esc(t('pages.batch.opRestart')) + '</option></select>'
         + esc(t('pages.batch.filterStatus')) + ' <select class="form-control" id="batchFilterStatus" style="display:inline-block;width:auto"><option value="">' + esc(t('pages.batch.optionAll')) + '</option><option value="running">' + esc(t('pages.batch.stFilterRunning')) + '</option><option value="completed">' + esc(t('pages.batch.stFilterCompleted')) + '</option><option value="cancelled">' + esc(t('pages.batch.stFilterCancelled')) + '</option></select></span>'
         + '<span style="margin-left:12px"><button type="button" class="btn btn-sm" id="batchExportBtn">' + t('pages.batch.export') + '</button> <button type="button" class="btn btn-sm btn-danger" id="batchClearBtn">' + t('pages.batch.clear') + '</button></span></div>'
         + '<div id="batchListWrap"><div class="loading-overlay"><div class="spinner"></div></div></div>'
