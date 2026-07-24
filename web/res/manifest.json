@@ -42,6 +42,22 @@
       "description": "把 DOM 节点导出为 PNG / JPEG / SVG。常用 `htmlToImage.toPng(node).then(dataUrl => ...)`。需要导出按钮时引这个。",
       "files": ["html-to-image.js"],
       "snippet": "<script src=\"./libs/html-to-image.js\"></script>"
+    },
+    "three": {
+      "title": "three.js",
+      "version": "0.160.0",
+      "global": "THREE",
+      "description": "WebGL 三维引擎。聊天内可用 ```three-scene``` JSON 声明式场景；HTML 报告用 libs:[\"three\"]（可选再加 cannon-es 做物理）。全局 `window.THREE`；复杂交互报告可同时引 `three.module.js` 用 type=module。",
+      "files": ["three.min.js", "three.module.js"],
+      "snippet": "<script src=\"./libs/three.min.js\"></script>"
+    },
+    "cannon-es": {
+      "title": "Cannon / cannon-es 物理引擎",
+      "version": "cannon@0.6.2 + cannon-es@0.20.0",
+      "global": "CANNON",
+      "description": "刚体物理（重力、碰撞、弹跳）。聊天 three-scene 开启 physics 时自动使用全局 CANNON（cannon.min.js）。HTML 报告：`libs:[\"three\",\"cannon-es\"]` 后用 `window.CANNON`；若写 type=module 可用 `./libs/cannon-es.js` ESM。适合立体爆炸图、堆叠示意、撞击演示等报告表达。",
+      "files": ["cannon.min.js", "cannon-es.js"],
+      "snippet": "<script src=\"./libs/cannon.min.js\"></script>"
     }
   }
 }

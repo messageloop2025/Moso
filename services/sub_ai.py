@@ -58,7 +58,7 @@ DEFAULT_READONLY_TOOLS = {
     # 聊天会话 / 对话记忆 / spill 分段读取
     "list_recent_tool_results", "get_recent_tool_result",
     "read_chat_data", "read_chat_attachment",
-    "list_ai_sessions", "get_ai_session", "get_session_chat_detail",
+    "list_ai_sessions", "get_ai_session", "get_session_chat_detail", "ensure_chat_tools",
     # 本机工作区读
     "fs_read_file", "fs_list_dir",
     # 最佳实践 / 知识库

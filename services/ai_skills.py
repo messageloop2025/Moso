@@ -4623,6 +4623,34 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "ensure_chat_tools",
+            "description": (
+                "按需装载当前会话尚未下发的工具能力。当本轮 tools 列表缺少你需要的工具（如 scp_push、ssh_execute）时，"
+                "**必须先调用本工具**再执行业务操作；禁止用纯文字声称「缺少某工具」后结束。"
+                "可传 tool_names 和/或 capabilities（terminal|fs|http|host_transfer|full）。"
+                "成功后下一轮推理即可看到已装载工具。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tool_names": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "需要装载的工具名列表，如 [\"scp_push\",\"ssh_execute\"]",
+                    },
+                    "capabilities": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "能力集：terminal / fs / http / host_transfer / full（或 ops）",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_best_practices",
             "description": "查询最佳实践列表。用于在执行前参考已有推荐方法，或按分类/关键词筛选。来源包括用户指定方法、AI 成功解决问题后的归纳。",
             "parameters": {
@@ -14848,6 +14876,105 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                         if include_tool_results
                         else "当前为指令摘要模式；需要工具轨迹请设 include_tool_results=true。"
                     ),
+                },
+                ensure_ascii=False,
+            )
+
+        if name == "ensure_chat_tools":
+            from services.agent_optimize import (
+                CAPABILITY_FULL,
+                KNOWN_CAPABILITIES,
+                allow_set_for_capabilities,
+                expand_allow_for_tools,
+                resolve_capabilities_for_tools,
+            )
+
+            raw_names = arguments.get("tool_names") or []
+            if isinstance(raw_names, str):
+                raw_names = [x.strip() for x in raw_names.split(",") if x.strip()]
+            tool_names = [str(x).strip() for x in raw_names if str(x).strip()]
+            raw_caps = arguments.get("capabilities") or []
+            if isinstance(raw_caps, str):
+                raw_caps = [x.strip() for x in raw_caps.split(",") if x.strip()]
+            capabilities = []
+            for c in raw_caps:
+                c0 = str(c or "").strip().lower()
+                if not c0:
+                    continue
+                if c0 in ("all", "full"):
+                    capabilities.append(CAPABILITY_FULL)
+                elif c0 in KNOWN_CAPABILITIES or c0 == "ops":
+                    capabilities.append(c0)
+            if not tool_names and not capabilities:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": "请提供 tool_names 和/或 capabilities（terminal|fs|http|host_transfer|full）",
+                    },
+                    ensure_ascii=False,
+                )
+            caps = set(capabilities) | resolve_capabilities_for_tools(tool_names)
+            if CAPABILITY_FULL in caps:
+                recovery = {
+                    "capabilities": [CAPABILITY_FULL],
+                    "tool_names": tool_names,
+                    "tier_label": "full",
+                    "force_full": True,
+                }
+                return json.dumps(
+                    {
+                        "success": True,
+                        "message": "已请求装载全量工具；下一轮推理即可使用。请继续执行用户任务，勿再声称缺少工具。",
+                        "capabilities": [CAPABILITY_FULL],
+                        "requested_tools": tool_names,
+                        "tier_label": "full",
+                        "edgeops_tools_recovery": recovery,
+                    },
+                    ensure_ascii=False,
+                )
+            plan = expand_allow_for_tools(tool_names) if tool_names else {
+                "recoverable": True,
+                "capabilities": sorted(caps),
+                "allow": allow_set_for_capabilities(caps),
+                "tier_label": "+".join(["core"] + sorted(c for c in caps if c != "core")) if caps else "core",
+                "needed": [],
+                "missing_in_catalog": [],
+            }
+            if tool_names and caps:
+                # 合并显式 capabilities
+                merged_caps = set(plan.get("capabilities") or []) | caps
+                plan = {
+                    **plan,
+                    "capabilities": sorted(merged_caps),
+                    "allow": allow_set_for_capabilities(merged_caps),
+                    "tier_label": (
+                        "full"
+                        if CAPABILITY_FULL in merged_caps
+                        else "+".join(["core"] + sorted(c for c in merged_caps if c != "core"))
+                    ),
+                }
+            allow = plan.get("allow")
+            force_full = allow is None or (plan.get("tier_label") == "full")
+            recovery = {
+                "capabilities": list(plan.get("capabilities") or sorted(caps)),
+                "tool_names": tool_names,
+                "tier_label": plan.get("tier_label") or "core",
+                "force_full": bool(force_full),
+            }
+            loaded_hint = ", ".join(recovery["capabilities"]) or "core"
+            return json.dumps(
+                {
+                    "success": True,
+                    "message": (
+                        f"已请求装载能力 [{loaded_hint}]"
+                        + (f"（含 {', '.join(tool_names)}）" if tool_names else "")
+                        + "。下一轮推理即可调用相应工具；请继续执行用户任务，禁止再声称缺少工具。"
+                    ),
+                    "capabilities": recovery["capabilities"],
+                    "requested_tools": tool_names,
+                    "tier_label": recovery["tier_label"],
+                    "approx_allow_count": None if force_full else len(allow or []),
+                    "edgeops_tools_recovery": recovery,
                 },
                 ensure_ascii=False,
             )

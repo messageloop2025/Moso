@@ -1,0 +1,167 @@
+6662|        force_tools_full = False
+6818|                                force_full=force_tools_full,
+6826|                                force_full=force_tools_full,
+6836|                                    force_tools_full,
+7173|                                not force_tools_full
+7188|                                    force_tools_full = True
+8432|                        if not force_tools_full:
+8433|                            force_tools_full = True
+9088|    force_tools_full_integ = False
+9108|                            force_full=force_tools_full_integ,
+9116|                            force_full=force_tools_full_integ,
+---6620-6650---
+6620|        # 工具 / 推理步骤：落库进 TOOL_TRACE 哨兵，便于历史会话折叠查看调用流程。
+6621|        pending_tool_trace: list[dict] = []
+6622|        # Skills preToolUse hooks（fail-open）
+6623|        hook_skills_for_gate: list[dict] = []
+6624|        try:
+6625|            from services.user_skills_registry import (
+6626|                get_user_skills_root as _usk_root,
+6627|                list_chat_enabled_skills_for_context as _usk_list,
+6628|            )
+6629|
+6630|            _hook_rows = await _usk_list(
+6631|                db,
+6632|                int(user["id"]),
+6633|                user,
+6634|                session_scope,
+6635|                int(session_host_id) if session_host_id else None,
+6636|            )
+6637|            for _hr in _hook_rows or []:
+6638|                _nm = _hr.get("name") or ""
+6639|                _has_hooks_file = bool(_hr.get("has_hooks_json"))
+6640|                if not (
+6641|                    _hr.get("hooks_enabled")
+6642|                    or (_hr.get("pre_tool_use_matcher") or "").strip()
+6643|                    or _has_hooks_file
+6644|                ):
+6645|                    continue
+6646|                hook_skills_for_gate.append(
+6647|                    {
+6648|                        "name": _nm,
+6649|                        "hooks_enabled": bool(_hr.get("hooks_enabled")) or _has_hooks_file,
+6650|                        "pre_tool_use_matcher": _hr.get("pre_tool_use_matcher") or "",
+---6795-6860---
+6795|                    # 本轮特征用于「辅助 AI 是否需要追问」的硬拦截：
+6796|                    # - round_had_tool_call：本轮主 AI 是否发起过任何 tool_call。
+6797|                    # - round_had_ui_action：本轮是否触发过 ask_user_choice 等交互卡
+6798|                    #   （在 pending_ui_actions 被清空前捕获）。
+6799|                    # 见下面 `if round_had_ui_action or ...` 处的拦截逻辑。
+6800|                    round_had_tool_call = False
+6801|                    round_had_ui_action = False
+6802|                    short_final_retry_used = False
+6803|                    image_blind_tool_retry_used = False
+6804|                    spill_read_retry_used = False
+6805|                    for round_idx in range(agent_max_steps):
+6806|                        if cached_round_tools is None:
+6807|                            _base_tools = await resolve_chat_tools(
+6808|                                get_tools_for_scope(session_scope, user),
+6809|                                session_scope,
+6810|                                user,
+6811|                                session_host_id,
+6812|                                session_id=session_id,
+6813|                                user_message=last_user_message or req.message or "",
+6814|                            )
+6815|                            tools_tier_for_stats = resolve_tools_tier(
+6816|                                last_user_message or req.message or "",
+6817|                                lightweight=False,
+6818|                                force_full=force_tools_full,
+6819|                                session_scope=session_scope,
+6820|                            )
+6821|                            cached_round_tools = filter_tools_for_message(
+6822|                                _base_tools,
+6823|                                last_user_message or req.message or "",
+6824|                                lightweight=False,
+6825|                                tier=tools_tier_for_stats,
+6826|                                force_full=force_tools_full,
+6827|                                session_scope=session_scope,
+6828|                            )
+6829|                            if tools_tier_for_stats != "full":
+6830|                                logger.info(
+6831|                                    "tools tier session_id=%s tier=%s tools=%s (from %s) force_full=%s",
+6832|                                    session_id,
+6833|                                    tools_tier_for_stats,
+6834|                                    len(cached_round_tools),
+6835|                                    len(_base_tools),
+6836|                                    force_tools_full,
+6837|                                )
+6838|                        round_tools = cached_round_tools
+6839|                        compact_turn_tool_messages(messages, turn_messages_start)
+6840|                        if messages and (messages[0].get("role") or "") == "system":
+6841|                            messages[0]["content"] = build_system_prompt_for_step(
+6842|                                full_system_base,
+6843|                                round_idx,
+6844|                                session_host_id=_session_host_id_opt,
+6845|                                weak_network=weak_network,
+6846|                            )
+6847|                        # 视觉降级：provider 报 "input length 超限 / 图片过大" 等错时，
+6848|                        # 自动按阶梯压缩 image_url 段并重试；多次仍失败则剥离全部图片再试
+6849|                        # 一次，并在 user 消息里追加提示让 AI 改走 read_chat_attachment。
+6850|                        _retry_n = effective_llm_timeout_retries(weak_network)
+6851|                        _max_llm_tries = 1 + _retry_n
+6852|                        _read_sec = float(getattr(_config, "AI_CHAT_HTTP_READ_TIMEOUT_SEC", 240))
+6853|                        # 真流式：边接收 token 边推到前端，避免"等模型整段生成完才显示"
+6854|                        # 造成的"步与步之间长时间空白"。msg / tool_calls 由本段在收到
+6855|                        # `done` 事件后由流式累积器重建，与原非流式分支下游格式一致。
+6856|                        msg: dict | None = None
+6857|                        tool_calls: list = []
+6858|                        streamed_content_text = ""
+6859|                        streamed_reasoning_text = ""
+6860|                        cot_streaming_started = False
+---7155-7210---
+7155|                        if llm_runtime_pause_injected is not None:
+7156|                            continue
+7157|
+7158|                        if msg is None:
+7159|                            err_full = "AI 请求未返回有效响应（内部状态异常）"
+7160|                            await _persist_assistant_error(err_full, tool_trace=list(pending_tool_trace))
+7161|                            yield _sse({"error": err_full})
+7162|                            yield "data: [DONE]\n\n"
+7163|                            return
+7164|
+7165|                        if tool_calls:
+7166|                            # 分层 tools 漏掉模型点名的能力（如 scp_pull 仅在 http 层）时，升 full 重跑本轮
+7167|                            _req_names = [
+7168|                                ((tc.get("function") or {}).get("name") or "").strip()
+7169|                                for tc in tool_calls
+7170|                                if isinstance(tc, dict)
+7171|                            ]
+7172|                            if (
+7173|                                not force_tools_full
+7174|                                and tools_need_full_upgrade(_req_names, cached_round_tools or [])
+7175|                            ):
+7176|                                _full_base = await resolve_chat_tools(
+7177|                                    get_tools_for_scope(session_scope, user),
+7178|                                    session_scope,
+7179|                                    user,
+7180|                                    session_host_id,
+7181|                                    session_id=session_id,
+7182|                                    user_message=last_user_message or req.message or "",
+7183|                                )
+7184|                                if tools_need_full_upgrade(_req_names, _full_base):
+7185|                                    # 全量里也没有 → 正常往下走，由 execute_tool 报错
+7186|                                    pass
+7187|                                else:
+7188|                                    force_tools_full = True
+7189|                                    cached_round_tools = None
+7190|                                    tools_tier_for_stats = "full"
+7191|                                    logger.info(
+7192|                                        "tools tier upgrade to full (model requested missing tools) "
+7193|                                        "session_id=%s names=%s",
+7194|                                        session_id,
+7195|                                        [n for n in _req_names if n],
+7196|                                    )
+7197|                                    continue
+7198|                            round_had_tool_call = True
+7199|                            full_tool_calls, prepared_tool_calls = await _prepare_tool_calls_for_execution(
+7200|                                tool_calls,
+7201|                                reorder_confirm_before_irreversible=True,
+7202|                            )
+7203|                            suppress_stale_delete_asks = _should_suppress_stale_delete_confirm_asks(
+7204|                                messages, prepared_tool_calls
+7205|                            )
+7206|                            # 跨轮去重：用户已对上一轮的选择卡作答（无论点按钮还是写自由文字），
+7207|                            # 如果模型这一轮又发起一模一样的 ask_user_choice（指纹相同），本次直接跳过、
+7208|                            # 返回合成 tool_result，提示模型基于用户最新消息直接以文字答复。
+7209|                            stale_ask_user_choice_fps = _recent_assistant_ask_user_choice_fps(messages)
+7210|                            # 取最近一条 user 消息原文，用于在跳过同指纹卡时给模型一句解释（"用户已经用 X 作答了"）。

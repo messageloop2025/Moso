@@ -4,8 +4,9 @@
 
 - **HTML**：`index.html` 入口，通过 `/static/` 引用本地资源。
 - **样式**：`css/style.css`、`css/xterm.min.css` 已放在本目录，由服务端挂载到 `/static/css/`。
-- **脚本**：`js/xterm.min.js`、`js/addon-fit.min.js`（@xterm/addon-fit 本地副本，用于终端填满容器）、`js/markdown-it.min.js`（Markdown 基础引擎）、`js/utils.js`、`js/api.js`、`js/router.js`、`js/app.js` 已放在本目录，由服务端挂载到 `/static/js/`。
-- **Markdown**：全站预览/聊天/提示词均经 `formatMarkdown` → `markdownToHtml`（`utils.js`），底层为 **markdown-it**（`html:false` + breaks/linkify）；围栏图表、聊天表格、公式、Callout、HTML 注释剥离等仍由 EdgeOps 预处理层完成。
+- **脚本**：`js/xterm.min.js`、`js/addon-fit.min.js`（@xterm/addon-fit 本地副本，用于终端填满容器）、`js/markdown-it.min.js`（Markdown 基础引擎）、`js/three.min.js`、`js/cannon.min.js`（三维与物理）、`js/utils.js`、`js/api.js`、`js/router.js`、`js/app.js` 已放在本目录，由服务端挂载到 `/static/js/`。
+- **Markdown**：全站预览/聊天/提示词均经 `formatMarkdown` → `markdownToHtml`（`utils.js`），底层为 **markdown-it**（`html:false` + breaks/linkify）；围栏图表（含 ```three-scene`）、聊天表格、公式、Callout、HTML 注释剥离等仍由 EdgeOps 预处理层完成。
+- **HTML artifact 本地包**：`res/manifest.json` 登记 echarts/mermaid/markmap/d3/html-to-image/**three**/**cannon-es**；`create_chat_artifact(libs=[...])` 自动拷贝到产物目录，禁止 CDN。
 
 新增或更新前端依赖时，请将对应文件下载到 `css/` 或 `js/`，并在 `index.html` 中以 `/static/...` 引用，勿使用外部 URL。
 

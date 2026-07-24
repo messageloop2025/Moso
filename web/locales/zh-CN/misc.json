@@ -286,9 +286,15 @@
       "svgInvalid": "SVG 格式无效，请输出完整的 <svg>...</svg> 片段",
       "resizePreview": "拖拽右下角调整外框宽高",
       "resizePreviewWidth": "拖拽右下角调整外框宽高",
-      "dragPreview": "按住标题栏拖动预览窗"
+      "dragPreview": "按住标题栏拖动预览窗",
+      "threeLibNotLoaded": "Three.js 资源未加载",
+      "cannonLibNotLoaded": "物理引擎（Cannon）资源未加载",
+      "threeEmpty": "three-scene 内容为空",
+      "threeInvalid": "three-scene JSON 无效"
     },
-    "table": { "sortClick": "点击排序" },
+    "table": {
+      "sortClick": "点击排序"
+    },
     "loadFailedH3": "加载失败",
     "local": {
       "newConsole": "+ 新建控制台",

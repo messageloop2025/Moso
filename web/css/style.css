@@ -2506,9 +2506,19 @@ table.table-compact-ellipsis th.th-skill-group {
     min-height: 240px;
     background: radial-gradient(circle at top, rgba(30, 41, 59, 0.35), rgba(15, 23, 42, 0.12));
 }
+.chat-diagram-three {
+    background: #0b1220;
+    border-radius: 6px;
+    touch-action: none;
+}
+.chat-diagram-three canvas {
+    width: 100% !important;
+    height: 100% !important;
+}
 .chat-diagram-canvas svg,
 .chat-diagram-canvas canvas,
-.chat-diagram-echarts {
+.chat-diagram-echarts,
+.chat-diagram-three {
     display: block;
     max-width: none;
 }
@@ -2734,6 +2744,7 @@ table.table-compact-ellipsis th.th-skill-group {
 }
 .edgeops-diagram-preview-block .chat-diagram-canvas svg,
 .edgeops-diagram-preview-block .chat-diagram-echarts,
+.edgeops-diagram-preview-block .chat-diagram-three,
 .edgeops-diagram-preview-block .chat-diagram-svg-wrap,
 .edgeops-diagram-preview-block .chat-diagram-svg-wrap svg,
 .edgeops-diagram-preview-block .chat-diagram-svg,

@@ -220,7 +220,11 @@ var EDGEOPS_DIAGRAM_LANG_MAP = {
     'echarts-option': 'echarts',
     chart: 'echarts',
     svg: 'svg',
-    xml: 'svg'
+    xml: 'svg',
+    three: 'three',
+    'three-scene': 'three',
+    'threejs': 'three',
+    '3d': 'three'
 };
 
 /**
@@ -658,7 +662,8 @@ function edgeopsBuildDiagramBlockHtml(type, source, lang) {
     try { encoded = encodeURIComponent(source || ''); } catch (e) {}
     var label = type === 'mermaid' ? 'Mermaid'
         : (type === 'markmap' ? 'Markmap'
-            : (type === 'svg' ? 'SVG' : 'ECharts'));
+            : (type === 'svg' ? 'SVG'
+                : (type === 'three' ? 'Three.js' : 'ECharts')));
     var _t = (typeof t === 'function' ? t : function (k) { return k; });
     return ''
         + '<div class="chat-diagram-block" data-diagram-type="' + escapeHtmlForCode(type) + '" data-diagram-source="' + escapeHtmlForCode(encoded) + '" data-diagram-lang="' + escapeHtmlForCode(lang || type) + '">'

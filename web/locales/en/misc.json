@@ -286,9 +286,15 @@
       "svgInvalid": "Invalid SVG; output a complete <svg>...</svg> fragment",
       "resizePreview": "Drag the corner to resize the dialog",
       "resizePreviewWidth": "Drag the corner to resize the dialog",
-      "dragPreview": "Drag the title bar to move the preview"
+      "dragPreview": "Drag the title bar to move the preview",
+      "threeLibNotLoaded": "Three.js library failed to load",
+      "cannonLibNotLoaded": "Cannon physics library failed to load",
+      "threeEmpty": "three-scene content is empty",
+      "threeInvalid": "Invalid three-scene JSON"
     },
-    "table": { "sortClick": "Click to sort" },
+    "table": {
+      "sortClick": "Click to sort"
+    },
     "loadFailedH3": "Load failed",
     "local": {
       "newConsole": "+ New console",

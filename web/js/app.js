@@ -5228,6 +5228,324 @@ function edgeopsRenderEchartsBlock(block) {
     block.setAttribute('data-diagram-ready', '1');
 }
 
+function edgeopsParseThreeScene(source) {
+    var text = String(source || '').trim();
+    if (!text) throw new Error(typeof t === 'function' ? t('ui.diagram.threeEmpty') : 'Three scene is empty');
+    // 允许 ``` 外偶发包裹说明：取首个 {…} JSON 对象
+    if (text.charAt(0) !== '{') {
+        var m = text.match(/\{[\s\S]*\}/);
+        if (!m) throw new Error(typeof t === 'function' ? t('ui.diagram.threeInvalid') : 'Invalid three-scene JSON');
+        text = m[0];
+    }
+    var scene;
+    try {
+        scene = JSON.parse(text);
+    } catch (e1) {
+        // 与 echarts 类似：容忍尾逗号
+        try {
+            scene = JSON.parse(text.replace(/,\s*([}\]])/g, '$1'));
+        } catch (e2) {
+            throw new Error(typeof t === 'function' ? t('ui.diagram.threeInvalid') : 'Invalid three-scene JSON');
+        }
+    }
+    if (!scene || typeof scene !== 'object' || Array.isArray(scene)) {
+        throw new Error(typeof t === 'function' ? t('ui.diagram.threeInvalid') : 'Invalid three-scene JSON');
+    }
+    return scene;
+}
+
+function edgeopsDisposeThreeScene(block) {
+    if (!block || !block._edgeopsThree) return;
+    var st = block._edgeopsThree;
+    try {
+        if (st.raf) cancelAnimationFrame(st.raf);
+    } catch (e) {}
+    try {
+        if (st.onResize) window.removeEventListener('resize', st.onResize);
+    } catch (e2) {}
+    try {
+        if (st.renderer) {
+            st.renderer.dispose();
+            if (st.renderer.domElement && st.renderer.domElement.parentNode) {
+                st.renderer.domElement.parentNode.removeChild(st.renderer.domElement);
+            }
+        }
+    } catch (e3) {}
+    try {
+        if (st.scene) {
+            st.scene.traverse(function(obj) {
+                if (obj.geometry && obj.geometry.dispose) obj.geometry.dispose();
+                if (obj.material) {
+                    if (Array.isArray(obj.material)) {
+                        obj.material.forEach(function(m) { if (m && m.dispose) m.dispose(); });
+                    } else if (obj.material.dispose) obj.material.dispose();
+                }
+            });
+        }
+    } catch (e4) {}
+    block._edgeopsThree = null;
+}
+
+function edgeopsVec3(arr, fallback) {
+    var a = Array.isArray(arr) ? arr : fallback;
+    return [
+        Number(a[0] != null ? a[0] : fallback[0]) || 0,
+        Number(a[1] != null ? a[1] : fallback[1]) || 0,
+        Number(a[2] != null ? a[2] : fallback[2]) || 0
+    ];
+}
+
+function edgeopsRenderThreeSceneBlock(block) {
+    if (!window.THREE) throw new Error(t('ui.diagram.threeLibNotLoaded'));
+    var THREE = window.THREE;
+    var source = edgeopsReadDiagramSource(block);
+    var spec = edgeopsParseThreeScene(source);
+    var canvasHost = block.querySelector('.chat-diagram-canvas');
+    if (!canvasHost) throw new Error(typeof t === 'function' ? t('ui.diagram.renderFailed') : 'render failed');
+
+    edgeopsDisposeThreeScene(block);
+    canvasHost.innerHTML = '';
+
+    var width = Math.max(320, Number(spec.width) || (edgeopsIsMobileViewport() ? 420 : 760));
+    var height = Math.max(220, Number(spec.height) || (edgeopsIsMobileViewport() ? 280 : 420));
+    var wrap = document.createElement('div');
+    wrap.className = 'chat-diagram-three';
+    wrap.style.width = '100%';
+    wrap.style.minWidth = width + 'px';
+    wrap.style.height = height + 'px';
+    wrap.style.position = 'relative';
+    wrap.style.overflow = 'hidden';
+    canvasHost.appendChild(wrap);
+
+    var scene = new THREE.Scene();
+    var bg = String(spec.background || '#0b1220');
+    try { scene.background = new THREE.Color(bg); } catch (eBg) { scene.background = new THREE.Color(0x0b1220); }
+
+    var camSpec = spec.camera || {};
+    var fov = Number(camSpec.fov) || 50;
+    var camera = new THREE.PerspectiveCamera(fov, width / height, 0.1, 2000);
+    var camPos = edgeopsVec3(camSpec.position, [4, 3, 6]);
+    var lookAt = edgeopsVec3(camSpec.lookAt, [0, 0, 0]);
+    camera.position.set(camPos[0], camPos[1], camPos[2]);
+    camera.lookAt(lookAt[0], lookAt[1], lookAt[2]);
+
+    var renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(width, height, false);
+    renderer.domElement.style.width = '100%';
+    renderer.domElement.style.height = '100%';
+    renderer.domElement.style.display = 'block';
+    wrap.appendChild(renderer.domElement);
+
+    var lights = Array.isArray(spec.lights) ? spec.lights : null;
+    if (!lights || !lights.length) {
+        lights = [
+            { type: 'ambient', color: '#ffffff', intensity: 0.55 },
+            { type: 'directional', color: '#ffffff', intensity: 0.95, position: [6, 10, 4] }
+        ];
+    }
+    lights.slice(0, 12).forEach(function(L) {
+        if (!L || typeof L !== 'object') return;
+        var type = String(L.type || 'ambient').toLowerCase();
+        var color = L.color != null ? L.color : '#ffffff';
+        var intensity = Number(L.intensity != null ? L.intensity : 1) || 1;
+        if (type === 'directional') {
+            var light = new THREE.DirectionalLight(color, intensity);
+            var lp = edgeopsVec3(L.position, [5, 8, 3]);
+            light.position.set(lp[0], lp[1], lp[2]);
+            scene.add(light);
+        } else if (type === 'point') {
+            var pl = new THREE.PointLight(color, intensity, Number(L.distance) || 0);
+            var pp = edgeopsVec3(L.position, [0, 4, 0]);
+            pl.position.set(pp[0], pp[1], pp[2]);
+            scene.add(pl);
+        } else {
+            scene.add(new THREE.AmbientLight(color, intensity));
+        }
+    });
+
+    var physCfg = spec.physics || {};
+    var physicsOn = !!(physCfg.enabled || physCfg.enable || physCfg.on);
+    var world = null;
+    var CANNON = window.CANNON;
+    if (physicsOn) {
+        if (!CANNON || !CANNON.World) {
+            throw new Error(t('ui.diagram.cannonLibNotLoaded'));
+        }
+        world = new CANNON.World();
+        var g = edgeopsVec3(physCfg.gravity, [0, -9.82, 0]);
+        world.gravity.set(g[0], g[1], g[2]);
+        if (CANNON.NaiveBroadphase) world.broadphase = new CANNON.NaiveBroadphase();
+        if (world.solver) world.solver.iterations = Math.min(20, Math.max(5, Number(physCfg.iterations) || 10));
+    }
+
+    var objects = Array.isArray(spec.objects) ? spec.objects : [];
+    var pairs = [];
+    objects.slice(0, 80).forEach(function(obj) {
+        if (!obj || typeof obj !== 'object') return;
+        var otype = String(obj.type || 'box').toLowerCase();
+        var color = obj.color != null ? obj.color : '#3b82f6';
+        var opacity = obj.opacity != null ? Number(obj.opacity) : 1;
+        var metalness = Number(obj.metalness != null ? obj.metalness : 0.15) || 0;
+        var roughness = Number(obj.roughness != null ? obj.roughness : 0.55) || 0.55;
+        var mat = new THREE.MeshStandardMaterial({
+            color: color,
+            transparent: opacity < 1,
+            opacity: Math.max(0.05, Math.min(1, opacity)),
+            metalness: Math.max(0, Math.min(1, metalness)),
+            roughness: Math.max(0, Math.min(1, roughness))
+        });
+        var size = edgeopsVec3(obj.size, otype === 'sphere' ? [0.5, 0.5, 0.5] : [1, 1, 1]);
+        var pos = edgeopsVec3(obj.position, [0, 0, 0]);
+        var rot = edgeopsVec3(obj.rotation, [0, 0, 0]);
+        var geometry = null;
+        var shape = null;
+        if (otype === 'sphere') {
+            var r = Math.abs(Number(obj.radius != null ? obj.radius : size[0])) || 0.5;
+            geometry = new THREE.SphereGeometry(r, 28, 20);
+            if (world) shape = new CANNON.Sphere(r);
+        } else if (otype === 'cylinder') {
+            var radiusTop = Math.abs(Number(obj.radiusTop != null ? obj.radiusTop : size[0])) || 0.4;
+            var radiusBottom = Math.abs(Number(obj.radiusBottom != null ? obj.radiusBottom : size[0])) || 0.4;
+            var cylH = Math.abs(Number(obj.height != null ? obj.height : size[1])) || 1;
+            geometry = new THREE.CylinderGeometry(radiusTop, radiusBottom, cylH, 24);
+            if (world) shape = new CANNON.Cylinder(radiusTop, radiusBottom, cylH, 16);
+        } else if (otype === 'cone') {
+            var cr = Math.abs(Number(obj.radius != null ? obj.radius : size[0])) || 0.5;
+            var ch = Math.abs(Number(obj.height != null ? obj.height : size[1])) || 1;
+            geometry = new THREE.ConeGeometry(cr, ch, 24);
+            if (world) shape = new CANNON.Cylinder(0.01, cr, ch, 12);
+        } else if (otype === 'plane' || otype === 'ground') {
+            var pw = Math.abs(size[0]) || 10;
+            var ph = Math.abs(size[2] != null ? size[2] : size[1]) || 10;
+            var thickness = Math.abs(Number(obj.thickness != null ? obj.thickness : 0.2)) || 0.2;
+            geometry = new THREE.BoxGeometry(pw, thickness, ph);
+            if (world) shape = new CANNON.Box(new CANNON.Vec3(pw / 2, thickness / 2, ph / 2));
+        } else {
+            // box（默认）
+            var bx = Math.abs(size[0]) || 1;
+            var by = Math.abs(size[1]) || 1;
+            var bz = Math.abs(size[2]) || 1;
+            geometry = new THREE.BoxGeometry(bx, by, bz);
+            if (world) shape = new CANNON.Box(new CANNON.Vec3(bx / 2, by / 2, bz / 2));
+        }
+        var mesh = new THREE.Mesh(geometry, mat);
+        mesh.position.set(pos[0], pos[1], pos[2]);
+        mesh.rotation.set(rot[0], rot[1], rot[2]);
+        scene.add(mesh);
+
+        var usePhys = physicsOn && (obj.physics === true || obj.physics === 1 || obj.mass != null || otype === 'ground');
+        if (usePhys && world && shape) {
+            var mass = otype === 'ground' || otype === 'plane'
+                ? 0
+                : Math.max(0, Number(obj.mass != null ? obj.mass : 1) || 0);
+            var body = new CANNON.Body({ mass: mass });
+            body.addShape(shape);
+            body.position.set(pos[0], pos[1], pos[2]);
+            body.quaternion.set(mesh.quaternion.x, mesh.quaternion.y, mesh.quaternion.z, mesh.quaternion.w);
+            world.add(body);
+            pairs.push({ mesh: mesh, body: body });
+        }
+    });
+
+    // 简易轨道：拖拽绕 lookAt 旋转
+    var controlsOn = !(spec.controls && spec.controls.orbit === false);
+    var autoRotate = !!(spec.autoRotate || (spec.controls && spec.controls.autoRotate));
+    var spherical = {
+        radius: Math.max(0.5, camera.position.distanceTo(new THREE.Vector3(lookAt[0], lookAt[1], lookAt[2]))),
+        theta: Math.atan2(camera.position.x - lookAt[0], camera.position.z - lookAt[2]),
+        phi: Math.acos(Math.max(-1, Math.min(1, (camera.position.y - lookAt[1]) / Math.max(0.5, camera.position.distanceTo(new THREE.Vector3(lookAt[0], lookAt[1], lookAt[2]))))))
+    };
+    var dragging = false;
+    var lastX = 0;
+    var lastY = 0;
+    function applyOrbit() {
+        var x = lookAt[0] + spherical.radius * Math.sin(spherical.phi) * Math.sin(spherical.theta);
+        var y = lookAt[1] + spherical.radius * Math.cos(spherical.phi);
+        var z = lookAt[2] + spherical.radius * Math.sin(spherical.phi) * Math.cos(spherical.theta);
+        camera.position.set(x, y, z);
+        camera.lookAt(lookAt[0], lookAt[1], lookAt[2]);
+    }
+    if (controlsOn) {
+        wrap.style.cursor = 'grab';
+        wrap.addEventListener('pointerdown', function(ev) {
+            dragging = true;
+            lastX = ev.clientX;
+            lastY = ev.clientY;
+            try { wrap.setPointerCapture(ev.pointerId); } catch (e) {}
+            wrap.style.cursor = 'grabbing';
+        });
+        wrap.addEventListener('pointermove', function(ev) {
+            if (!dragging) return;
+            var dx = ev.clientX - lastX;
+            var dy = ev.clientY - lastY;
+            lastX = ev.clientX;
+            lastY = ev.clientY;
+            spherical.theta -= dx * 0.01;
+            spherical.phi = Math.max(0.12, Math.min(Math.PI - 0.12, spherical.phi - dy * 0.01));
+            applyOrbit();
+        });
+        wrap.addEventListener('pointerup', function() {
+            dragging = false;
+            wrap.style.cursor = 'grab';
+        });
+        wrap.addEventListener('pointerleave', function() {
+            dragging = false;
+            wrap.style.cursor = 'grab';
+        });
+        wrap.addEventListener('wheel', function(ev) {
+            ev.preventDefault();
+            spherical.radius = Math.max(1, Math.min(80, spherical.radius * (ev.deltaY > 0 ? 1.08 : 0.92)));
+            applyOrbit();
+        }, { passive: false });
+    }
+
+    var clock = new THREE.Clock();
+    var state = {
+        scene: scene,
+        camera: camera,
+        renderer: renderer,
+        world: world,
+        pairs: pairs,
+        raf: 0,
+        onResize: null
+    };
+    block._edgeopsThree = state;
+
+    function tick() {
+        if (block._edgeopsThree !== state) return;
+        var dt = Math.min(0.05, clock.getDelta());
+        if (world) {
+            world.step(1 / 60, dt, 3);
+            pairs.forEach(function(p) {
+                var bp = p.body.position;
+                var bq = p.body.quaternion;
+                p.mesh.position.set(bp.x, bp.y, bp.z);
+                p.mesh.quaternion.set(bq.x, bq.y, bq.z, bq.w);
+            });
+        }
+        if (autoRotate && !dragging) {
+            spherical.theta += dt * 0.35;
+            applyOrbit();
+        }
+        renderer.render(scene, camera);
+        state.raf = requestAnimationFrame(tick);
+    }
+    state.raf = requestAnimationFrame(tick);
+
+    state.onResize = function() {
+        if (block._edgeopsThree !== state) return;
+        var w = wrap.clientWidth || width;
+        var h = wrap.clientHeight || height;
+        camera.aspect = w / Math.max(1, h);
+        camera.updateProjectionMatrix();
+        renderer.setSize(w, h, false);
+    };
+    window.addEventListener('resize', state.onResize);
+
+    block.setAttribute('data-diagram-ready', '1');
+}
+
 var EDGEOPS_SVG_FORBIDDEN_TAGS = {
     script: 1, foreignobject: 1, iframe: 1, object: 1, embed: 1, link: 1, audio: 1, video: 1
 };
@@ -5303,6 +5621,7 @@ function edgeopsRenderDiagramBlock(block) {
     if (type === 'markmap') return Promise.resolve().then(function() { edgeopsRenderMarkmapBlock(block); }).catch(function(err) { edgeopsSetDiagramError(block, err); });
     if (type === 'echarts') return Promise.resolve().then(function() { edgeopsRenderEchartsBlock(block); }).catch(function(err) { edgeopsSetDiagramError(block, err); });
     if (type === 'svg') return Promise.resolve().then(function() { edgeopsRenderSvgBlock(block); }).catch(function(err) { edgeopsSetDiagramError(block, err); });
+    if (type === 'three') return Promise.resolve().then(function() { edgeopsRenderThreeSceneBlock(block); }).catch(function(err) { edgeopsSetDiagramError(block, err); });
     edgeopsSetDiagramError(block, t('ui.diagram.unsupported'));
     return Promise.resolve();
 }

@@ -186,6 +186,101 @@ def test_scp_tools_available_for_host_file_tasks_without_saying_scp():
     assert "batch_create" not in names
 
 
+def test_expand_allow_for_tools_minimal_capabilities():
+    from services.agent_optimize import (
+        CORE_TOOL_NAMES,
+        HOST_FILE_TRANSFER_TOOL_NAMES,
+        TERMINAL_TOOL_NAMES,
+        expand_allow_for_tools,
+        filter_tools_by_allow,
+    )
+
+    catalog = set(CORE_TOOL_NAMES) | set(TERMINAL_TOOL_NAMES) | set(HOST_FILE_TRANSFER_TOOL_NAMES)
+    plan = expand_allow_for_tools(["scp_push", "ssh_execute"], catalog_names=catalog)
+    assert plan["recoverable"] is True
+    assert "terminal" in plan["capabilities"]
+    assert "host_transfer" in plan["capabilities"]
+    assert plan["allow"] is not None
+    assert "scp_push" in plan["allow"] and "ssh_execute" in plan["allow"]
+    tools = [
+        {"type": "function", "function": {"name": n, "parameters": {}}}
+        for n in ["list_hosts", "scp_push", "ssh_execute", "batch_create"]
+    ]
+    names = {
+        t["function"]["name"]
+        for t in filter_tools_by_allow(tools, plan["allow"], tier_label=plan["tier_label"])
+    }
+    assert "scp_push" in names and "ssh_execute" in names
+    assert "batch_create" not in names
+
+    bad = expand_allow_for_tools(["totally_fake_tool_xyz"], catalog_names=catalog)
+    assert bad["recoverable"] is False
+    assert "totally_fake_tool_xyz" in bad["missing_in_catalog"]
+
+
+def test_detect_missing_tools_from_text_requires_negative_context():
+    from services.agent_optimize import (
+        CORE_TOOL_NAMES,
+        HOST_FILE_TRANSFER_TOOL_NAMES,
+        TERMINAL_TOOL_NAMES,
+        detect_missing_tools_from_text,
+    )
+
+    catalog = set(CORE_TOOL_NAMES) | set(TERMINAL_TOOL_NAMES) | set(HOST_FILE_TRANSFER_TOOL_NAMES)
+    apology = "抱歉，当前允许的可用工具中缺少远程文件传输 (scp_push) 和 SSH 执行 (ssh_execute)。"
+    found = detect_missing_tools_from_text(
+        apology, available_names={"list_hosts", "ask_user_choice"}, catalog_names=catalog
+    )
+    assert "scp_push" in found and "ssh_execute" in found
+    # 正向提及不应触发
+    assert (
+        detect_missing_tools_from_text(
+            "已用 scp_push 上传完成",
+            available_names=set(),
+            catalog_names=catalog,
+        )
+        == []
+    )
+
+
+def test_upgrade_and_short_confirm_get_terminal_transfer_tools():
+    """「升级」与确认短句「是」不得掉到纯 core（缺 scp_push/ssh_execute）。"""
+    tools = [
+        {"type": "function", "function": {"name": "list_hosts", "parameters": {}}},
+        {"type": "function", "function": {"name": "ssh_execute", "parameters": {}}},
+        {"type": "function", "function": {"name": "scp_push", "parameters": {}}},
+        {"type": "function", "function": {"name": "scp_pull", "parameters": {}}},
+        {"type": "function", "function": {"name": "ask_user_choice", "parameters": {}}},
+        {"type": "function", "function": {"name": "batch_create", "parameters": {}}},
+    ]
+    assert "terminal" in resolve_tools_tier("升级")
+    up_names = {t["function"]["name"] for t in filter_tools_for_message(tools, "升级", lightweight=False)}
+    assert "scp_push" in up_names and "ssh_execute" in up_names
+
+    # 短确认：需 recent_context 回看「升级」
+    tier_yes = resolve_tools_tier("是", recent_context="升级到最新版")
+    assert "terminal" in tier_yes
+    yes_names = {
+        t["function"]["name"]
+        for t in filter_tools_for_message(
+            tools, "是", lightweight=False, recent_context="升级到最新版"
+        )
+    }
+    assert "scp_push" in yes_names and "ssh_execute" in yes_names
+
+    # 主机详情会话：即便只问列表，也默认带 terminal/转运
+    tier_host = resolve_tools_tier("列出有哪些主机", session_host_id=12)
+    assert "terminal" in tier_host
+    host_names = {
+        t["function"]["name"]
+        for t in filter_tools_for_message(
+            tools, "列出有哪些主机", lightweight=False, session_host_id=12
+        )
+    }
+    assert "scp_push" in host_names and "ssh_execute" in host_names
+    assert "batch_create" not in host_names
+
+
 def test_skip_assistant_after_greeting():
     assert should_skip_assistant_after_chat(
         assistant_enabled=True,

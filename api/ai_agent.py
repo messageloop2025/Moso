@@ -61,9 +61,14 @@ from services.ai_output_language import build_output_language_system_section, re
 from services.user_mcp_client import resolve_chat_tools
 from services.agent_optimize import (
     agent_can_parallel_read_tools,
+    available_tool_names,
     build_system_prompt_for_step,
+    catalog_tool_names_from_tools,
     compact_turn_tool_messages,
+    detect_missing_tools_from_text,
     effective_llm_timeout_retries,
+    expand_allow_for_tools,
+    filter_tools_by_allow,
     filter_tools_for_message,
     message_needs_html_artifact,
     message_needs_ssh_terminal_rules,
@@ -2810,7 +2815,10 @@ def _compact_system_prompt_for_request(system_prompt: str, user_message: str) ->
     """按请求意图裁剪系统提示中的低相关长段，降低每轮固定开销。"""
     text = system_prompt or ""
     q = (user_message or "").lower()
-    need_graph = any(k in q for k in ("流程图", "时序图", "网络图", "拓扑", "mermaid", "markmap", "echarts", "svg", "图表", "思维导图", "矢量图", "图标"))
+    need_graph = any(k in q for k in (
+        "流程图", "时序图", "网络图", "拓扑", "mermaid", "markmap", "echarts", "svg", "图表",
+        "思维导图", "矢量图", "图标", "三维", "3d", "three", "three-scene", "物理引擎", "立体",
+    ))
     need_mail = any(k in q for k in ("邮件", "smtp", "发信", "邮箱"))
     need_time = any(k in q for k in ("时间", "时区", "timezone", "几点"))
     need_html = message_needs_html_artifact(user_message)
@@ -5362,6 +5370,49 @@ def _build_ssh_remote_execution_rules() -> str:
 """
 
 
+
+
+_MAX_TOOLS_RECOVERY = 2
+
+
+def _tools_recovery_nudge(needed: list[str] | None, tier_label: str, *, locale: str | None = None) -> str:
+    names = ", ".join([n for n in (needed or []) if n][:12]) or "(能力集)"
+    # 简短中性指令，避免被当成用户新需求
+    return (
+        f"【系统·工具已装载】已按能力恢复装载工具（tier={tier_label or 'expanded'}；涉及：{names}）。"
+        "请立即继续执行用户原任务并发起相应 tool_call；"
+        "禁止再次声称缺少工具或仅用文字道歉结束。"
+    )
+
+
+def _parse_edgeops_tools_recovery(result_obj: dict | None) -> dict | None:
+    if not isinstance(result_obj, dict):
+        return None
+    rec = result_obj.get("edgeops_tools_recovery")
+    return rec if isinstance(rec, dict) else None
+
+
+def _recent_user_context_for_tools_tier(conversation: list | None, current_message: str, *, max_msgs: int = 6) -> str:
+    """拼接近期 user 消息，供短确认句（「是」「好的」）的工具分层回看意图。"""
+    parts: list[str] = []
+    for m in (conversation or [])[-max_msgs:]:
+        if not isinstance(m, dict):
+            continue
+        if (m.get("role") or "").strip().lower() != "user":
+            continue
+        c = m.get("content")
+        if isinstance(c, list):
+            texts = []
+            for p in c:
+                if isinstance(p, dict) and (p.get("type") or "") == "text":
+                    texts.append(str(p.get("text") or ""))
+            c = chr(10).join(texts)
+        s = (str(c) if c is not None else "").strip()
+        if s:
+            parts.append(s[:400])
+    return chr(10).join(parts[-max_msgs:])
+
+
 def _build_session_history_self_lookup_section(session_id: int) -> str:
     """当前会话 ID + 历史/工具轨迹自查规则（Web 与集成共用）。
 
@@ -5372,6 +5423,11 @@ def _build_session_history_self_lookup_section(session_id: int) -> str:
     return f"""## 当前会话 ID
 当前会话 ID 为 {sid}。当用户要求「更新会话提示词」「补充会话级约束」「把上述要求记到会话里」等时，请调用 update_session_prompt(session_id={sid}, content="...", append=True/False) 来更新或追加本会话的会话级提示词（修改前可用 get_session_prompt 核对）。注意：content 只应归纳用户的要求和你的执行意图（要做什么、怎么做），不要包含终端输出、命令输出或任何程序日志的原文。跨会话可展示的主机环境/状态请写入 Memory（memory_write），勿塞进会话提示词。
 生成会话提示词或归纳最佳实践/经验时，请先调用 get_session_operations(session_id={sid}) 获取「仅用户要求与助手指令」的操作序列（不含程序输出），再据此归纳；不要基于含大量日志的完整对话归纳。
+
+## 工具装载与恢复（必读）
+- 本轮下发的 tools 列表可能是分层子集（非全量）。若你需要的工具不在当前列表中：**先调用 `ensure_chat_tools`**（传 `tool_names` 和/或 `capabilities=terminal|fs|http|host_transfer|full`），等其返回后再执行业务 tool_call。
+- **禁止**用纯文字声称「缺少 scp_push / ssh_execute / …」后结束；系统也会检测此类话术并自动扩层重试，但你应主动 `ensure_chat_tools`。
+- 若 `ensure_chat_tools` 后仍无该工具，再向用户说明当前会话无权或未启用该能力。
 
 ## 上下文完整性与自查（必读）
 - **默认不全**：注入给你的历史 user/assistant 文本**默认不含**工具调用轨迹（TOOL_TRACE）与 role=tool 原始结果；界面「AI 思考与计划」折叠内容也是懒加载，不会自动进入当前上下文。因此你**不能**仅凭「当前上下文里看不到 tool_call」就断言「我当时是猜的 / 编造的 / 没有调工具」。
@@ -5401,7 +5457,7 @@ def _build_system_prompt(*, user: dict | None = None) -> str:
         "毛竹文件系统 fs_*（侧栏「文件系统」= 当前用户工作区）；"
         "批量任务；操作日志；最佳实践与凭证；"
         "会话提示词（get_session_prompt / update_session_prompt）；"
-        "会话自查（get_session_operations / **get_session_chat_detail**，核对历史与工具轨迹）；"
+        "会话自查（get_session_operations / **get_session_chat_detail**）；工具恢复（**ensure_chat_tools**）；"
         "长期 Memory（memory_ensure / memory_list / memory_search / memory_read / memory_write / memory_rebuild_index）；"
         "操作帮助只读（get_aihelp_index / list_aihelp_files / get_aihelp_file）。"
     )
@@ -5570,7 +5626,8 @@ def _build_system_prompt(*, user: dict | None = None) -> str:
 - **表格数据真实性**：输出 Markdown 表格前须遵守上文「数据清单 / 表格防编造」；表格行必须来自工具结果，不得补假数据；无依据单元格用「—」或省略列。
 - 对“漏洞修复/漏洞核对”类任务，回复中需包含覆盖核对信息：`总项数`、`已处理项数`、`失败/跳过项数`、`未覆盖项ID或名称`（若无则明确写“无”），避免遗漏。
 - 输出规范：当返回多项、多列数据（如主机列表、凭证列表、维护记录、分组与主机等）时，优先使用 Markdown 表格呈现，表头一行，每行一条记录，便于阅读。
-- 图形输出规范：当用户要求“流程图”“时序图”“网络关系图”“拓扑图”“依赖关系图”等图形化关系展示时，优先直接输出 ` ```mermaid ` 代码块；当用户要求“思维导图”“脑图”时，优先直接输出 ` ```markmap ` 代码块；当用户要求“图表”“柱状图”“折线图”“饼图”“趋势图”时，优先直接输出 ` ```echarts-option ` 代码块；当用户要求“SVG”“矢量图”“图标”“简单几何示意图”且 Mermaid 不合适时，优先直接输出 ` ```svg ` 代码块（完整 `<svg>...</svg>` 片段，含 xmlns）。不要把这些图形源码放进普通代码块，也不要只返回普通列表文本。
+- 图形输出规范：当用户要求“流程图”“时序图”“网络关系图”“拓扑图”“依赖关系图”等图形化关系展示时，优先直接输出 ` ```mermaid ` 代码块；当用户要求“思维导图”“脑图”时，优先直接输出 ` ```markmap ` 代码块；当用户要求“图表”“柱状图”“折线图”“饼图”“趋势图”时，优先直接输出 ` ```echarts-option ` 代码块；当用户要求“SVG”“矢量图”“图标”“简单几何示意图”且 Mermaid 不合适时，优先直接输出 ` ```svg ` 代码块（完整 `<svg>...</svg>` 片段，含 xmlns）；当用户要求“三维”“立体示意”“爆炸图”“物理演示”“3D 报告片段”时，优先直接输出 ` ```three-scene ` JSON 代码块（声明式场景，可开 physics）。复杂可交互三维报告用 `create_chat_artifact` 且 `libs: ["three","cannon-es"]`（本地资源，禁止 CDN）。不要把这些图形源码放进普通代码块，也不要只返回普通列表文本。
+- 三维与物理（```three-scene`）：JSON 对象，常用字段 `camera`/`lights`/`objects`/`physics`/`background`/`autoRotate`。`objects[].type` 支持 box/sphere/cylinder/cone/ground(plane)；需要刚体时设 `physics.enabled=true` 且物体 `physics:true` 或给 `mass`（地面 mass=0）。**禁止**在聊天 fence 里写可执行 JS；复杂交互进 HTML artifact。
 - 若用户已经明确要求图形化展示，则应优先返回可渲染代码块本身，文字说明尽量简短；除非用户额外要求，否则不要先解释一大段再给图。
 - 图形内容应尽量自包含，节点名、标题、数据直接写在代码块内，不依赖外部文件、外部接口或运行时变量。
 - Mermaid 语法规则：节点 ID 一律只用 ASCII 字母/数字/下划线，例如 `A1`、`host_1`；中文、IP、说明文字放在方括号标签中，例如 `host_1[172.28.250.33]`。关系箭头统一使用 `-->`，不要写成 `->`、`=>` 或混用其它变体。除首行 `flowchart TD` 外，每行只写一条关系或一条节点定义，不要在 Mermaid 代码块里混入项目符号、编号列表或解释文字。
@@ -5762,7 +5819,7 @@ def _build_chat_output_format_rules() -> str:
 - 段落之间最多保留一个空行；列表项之间不要插入空行；不要用“补充说明：”这类泛泛标签堆砌正文，除非确实需要区分上下文。
 - 公式必须使用 LaTeX 数学定界符：块级公式用 `$$ ... $$` 单独成段，行内公式用 `$...$`；不要把公式放进普通代码块，也不要输出裸 `\\sqrt{...}` 公式行。
 - 代码、命令、配置必须使用带语言名的围栏代码块，例如 ```bash、```python、```json、```yaml、```sql、```diff、```log。
-- 流程图/时序图/拓扑图用 ```mermaid；思维导图用 ```markmap；统计图用 ```echarts-option；矢量图/图标/简单几何示意图用 ```svg（输出完整 `<svg xmlns="http://www.w3.org/2000/svg" viewBox="...">...</svg>`，不要外链脚本）。不要用普通代码块包这些图表源码。
+- 流程图/时序图/拓扑图用 ```mermaid；思维导图用 ```markmap；统计图用 ```echarts-option；矢量图/图标/简单几何示意图用 ```svg（输出完整 `<svg xmlns="http://www.w3.org/2000/svg" viewBox="...">...</svg>`，不要外链脚本）；**三维示意 / 立体爆炸图 / 带物理的演示**用 ```three-scene（JSON 声明，见「三维与物理」）。不要用普通代码块包这些图表源码。
 - 警告、提示、注意事项可使用 Callout：`> [!WARNING] 标题`、`> [!TIP] 标题`。"""
 
 
@@ -6660,6 +6717,8 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         turn_messages_start = len(messages)
         cached_round_tools: list | None = None
         force_tools_full = False
+        tools_allow_override: frozenset | None = None
+        tools_recovery_count = 0
         tools_tier_for_stats = "full"
         last_poll_wait_seconds = 0
         llm_ms_total = 0
@@ -6812,28 +6871,48 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                 session_id=session_id,
                                 user_message=last_user_message or req.message or "",
                             )
-                            tools_tier_for_stats = resolve_tools_tier(
-                                last_user_message or req.message or "",
-                                lightweight=False,
-                                force_full=force_tools_full,
-                                session_scope=session_scope,
+                            _tier_msg = last_user_message or req.message or ""
+                            _tier_recent = _recent_user_context_for_tools_tier(
+                                conversation, _tier_msg
                             )
-                            cached_round_tools = filter_tools_for_message(
-                                _base_tools,
-                                last_user_message or req.message or "",
-                                lightweight=False,
-                                tier=tools_tier_for_stats,
-                                force_full=force_tools_full,
-                                session_scope=session_scope,
-                            )
-                            if tools_tier_for_stats != "full":
+                            if force_tools_full:
+                                tools_tier_for_stats = "full"
+                                cached_round_tools = list(_base_tools or [])
+                            elif tools_allow_override is not None:
+                                tools_tier_for_stats = tools_tier_for_stats or "expanded"
+                                cached_round_tools = filter_tools_by_allow(
+                                    _base_tools,
+                                    tools_allow_override,
+                                    tier_label=str(tools_tier_for_stats or "expanded"),
+                                )
+                            else:
+                                tools_tier_for_stats = resolve_tools_tier(
+                                    _tier_msg,
+                                    lightweight=False,
+                                    force_full=False,
+                                    session_scope=session_scope,
+                                    session_host_id=session_host_id,
+                                    recent_context=_tier_recent,
+                                )
+                                cached_round_tools = filter_tools_for_message(
+                                    _base_tools,
+                                    _tier_msg,
+                                    lightweight=False,
+                                    tier=tools_tier_for_stats,
+                                    force_full=False,
+                                    session_scope=session_scope,
+                                    session_host_id=session_host_id,
+                                    recent_context=_tier_recent,
+                                )
+                            if tools_tier_for_stats != "full" or tools_allow_override is not None:
                                 logger.info(
-                                    "tools tier session_id=%s tier=%s tools=%s (from %s) force_full=%s",
+                                    "tools tier session_id=%s tier=%s tools=%s (from %s) force_full=%s override=%s",
                                     session_id,
                                     tools_tier_for_stats,
                                     len(cached_round_tools),
                                     len(_base_tools),
                                     force_tools_full,
+                                    tools_allow_override is not None,
                                 )
                         round_tools = cached_round_tools
                         compact_turn_tool_messages(messages, turn_messages_start)
@@ -7163,7 +7242,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                             return
 
                         if tool_calls:
-                            # 分层 tools 漏掉模型点名的能力（如 scp_pull 仅在 http 层）时，升 full 重跑本轮
+                            # 分层漏装：按能力集最小扩层后重跑（无法映射时再 full）
                             _req_names = [
                                 ((tc.get("function") or {}).get("name") or "").strip()
                                 for tc in tool_calls
@@ -7171,6 +7250,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                             ]
                             if (
                                 not force_tools_full
+                                and tools_recovery_count < _MAX_TOOLS_RECOVERY
                                 and tools_need_full_upgrade(_req_names, cached_round_tools or [])
                             ):
                                 _full_base = await resolve_chat_tools(
@@ -7181,19 +7261,43 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                     session_id=session_id,
                                     user_message=last_user_message or req.message or "",
                                 )
-                                if tools_need_full_upgrade(_req_names, _full_base):
+                                _catalog = catalog_tool_names_from_tools(_full_base)
+                                _missing = [
+                                    n for n in _req_names
+                                    if n and n not in available_tool_names(cached_round_tools)
+                                ]
+                                if tools_need_full_upgrade(_missing, _full_base):
                                     # 全量里也没有 → 正常往下走，由 execute_tool 报错
                                     pass
                                 else:
-                                    force_tools_full = True
-                                    cached_round_tools = None
-                                    tools_tier_for_stats = "full"
-                                    logger.info(
-                                        "tools tier upgrade to full (model requested missing tools) "
-                                        "session_id=%s names=%s",
-                                        session_id,
-                                        [n for n in _req_names if n],
+                                    _plan = expand_allow_for_tools(
+                                        _missing,
+                                        current_allow=tools_allow_override,
+                                        catalog_names=_catalog,
                                     )
+                                    tools_recovery_count += 1
+                                    if _plan.get("allow") is None or _plan.get("tier_label") == "full":
+                                        force_tools_full = True
+                                        tools_allow_override = None
+                                        tools_tier_for_stats = "full"
+                                    else:
+                                        tools_allow_override = frozenset(_plan["allow"])
+                                        tools_tier_for_stats = str(_plan.get("tier_label") or "expanded")
+                                    cached_round_tools = None
+                                    logger.info(
+                                        "tools recovery (tool_call gap) session_id=%s tier=%s names=%s count=%s",
+                                        session_id,
+                                        tools_tier_for_stats,
+                                        _missing,
+                                        tools_recovery_count,
+                                    )
+                                    yield _sse({
+                                        "stream_status": {
+                                            "phase": "tools_recovering",
+                                            "tier": tools_tier_for_stats,
+                                            "tools": _missing,
+                                        }
+                                    })
                                     continue
                             round_had_tool_call = True
                             full_tool_calls, prepared_tool_calls = await _prepare_tool_calls_for_execution(
@@ -7966,6 +8070,69 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                             )
                                 if fn_name in _AGENT_IRREVERSIBLE_TOOL_NAMES and is_success:
                                     batch_had_irreversible_success = True
+                                # ensure_chat_tools：按能力集扩层，供下一轮 LLM 使用
+                                if fn_name == "ensure_chat_tools" and isinstance(result_obj, dict) and result_obj.get("success"):
+                                    _rec = _parse_edgeops_tools_recovery(result_obj)
+                                    if _rec:
+                                        if _rec.get("force_full") or (_rec.get("tier_label") == "full"):
+                                            force_tools_full = True
+                                            tools_allow_override = None
+                                            tools_tier_for_stats = "full"
+                                        else:
+                                            _needed = list(_rec.get("tool_names") or [])
+                                            _caps = list(_rec.get("capabilities") or [])
+                                            _full_base_ens = await resolve_chat_tools(
+                                                get_tools_for_scope(session_scope, user),
+                                                session_scope,
+                                                user,
+                                                session_host_id,
+                                                session_id=session_id,
+                                                user_message=last_user_message or req.message or "",
+                                            )
+                                            _plan_ens = expand_allow_for_tools(
+                                                _needed,
+                                                current_allow=tools_allow_override,
+                                                catalog_names=catalog_tool_names_from_tools(_full_base_ens),
+                                            )
+                                            if _caps and not _needed:
+                                                from services.agent_optimize import allow_set_for_capabilities
+                                                _allow_c = allow_set_for_capabilities(set(_caps))
+                                                if _allow_c is None:
+                                                    force_tools_full = True
+                                                    tools_allow_override = None
+                                                    tools_tier_for_stats = "full"
+                                                else:
+                                                    tools_allow_override = frozenset(
+                                                        set(_allow_c) | set(tools_allow_override or [])
+                                                    )
+                                                    tools_tier_for_stats = str(
+                                                        _rec.get("tier_label") or "expanded"
+                                                    )
+                                            elif _plan_ens.get("allow") is None:
+                                                force_tools_full = True
+                                                tools_allow_override = None
+                                                tools_tier_for_stats = "full"
+                                            else:
+                                                tools_allow_override = frozenset(_plan_ens["allow"])
+                                                tools_tier_for_stats = str(
+                                                    _plan_ens.get("tier_label")
+                                                    or _rec.get("tier_label")
+                                                    or "expanded"
+                                                )
+                                        cached_round_tools = None
+                                        logger.info(
+                                            "tools recovery (ensure_chat_tools) session_id=%s tier=%s rec=%s",
+                                            session_id,
+                                            tools_tier_for_stats,
+                                            _rec,
+                                        )
+                                        yield _sse({
+                                            "stream_status": {
+                                                "phase": "tools_recovering",
+                                                "tier": tools_tier_for_stats,
+                                                "via": "ensure_chat_tools",
+                                            }
+                                        })
                                 # Skills postToolUse / postToolUseFailure（fail-open；deny 则拒绝采纳结果）
                                 try:
                                     from services.user_skills_hooks import (
@@ -8419,6 +8586,68 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                         yield "data: [DONE]\n\n"
                         return
 
+                    # 文字声称缺少工具：按能力集扩层并重试（不把道歉当最终交付）
+                    if (
+                        not round_had_tool_call
+                        and tools_recovery_count < _MAX_TOOLS_RECOVERY
+                        and (content or "").strip()
+                    ):
+                        _full_for_detect = await resolve_chat_tools(
+                            get_tools_for_scope(session_scope, user),
+                            session_scope,
+                            user,
+                            session_host_id,
+                            session_id=session_id,
+                            user_message=last_user_message or req.message or "",
+                        )
+                        _catalog_d = catalog_tool_names_from_tools(_full_for_detect)
+                        _avail_d = available_tool_names(cached_round_tools)
+                        _missing_txt = detect_missing_tools_from_text(
+                            content or "",
+                            available_names=_avail_d,
+                            catalog_names=_catalog_d,
+                        )
+                        if _missing_txt:
+                            _plan_txt = expand_allow_for_tools(
+                                _missing_txt,
+                                current_allow=tools_allow_override,
+                                catalog_names=_catalog_d,
+                            )
+                            if _plan_txt.get("recoverable") and not _plan_txt.get("missing_in_catalog"):
+                                tools_recovery_count += 1
+                                if _plan_txt.get("allow") is None or _plan_txt.get("tier_label") == "full":
+                                    force_tools_full = True
+                                    tools_allow_override = None
+                                    tools_tier_for_stats = "full"
+                                else:
+                                    tools_allow_override = frozenset(_plan_txt["allow"])
+                                    tools_tier_for_stats = str(_plan_txt.get("tier_label") or "expanded")
+                                cached_round_tools = None
+                                logger.info(
+                                    "tools recovery (text gap) session_id=%s tier=%s names=%s count=%s",
+                                    session_id,
+                                    tools_tier_for_stats,
+                                    _missing_txt,
+                                    tools_recovery_count,
+                                )
+                                yield _sse({
+                                    "stream_status": {
+                                        "phase": "tools_recovering",
+                                        "tier": tools_tier_for_stats,
+                                        "tools": _missing_txt,
+                                        "via": "text",
+                                    }
+                                })
+                                _nudge_rec = _tools_recovery_nudge(
+                                    _missing_txt, tools_tier_for_stats, locale=_output_locale
+                                )
+                                messages.append({"role": "assistant", "content": content})
+                                messages.append({"role": "user", "content": _nudge_rec})
+                                last_user_message = _nudge_rec
+                                pending_user_msg = {"text": _nudge_rec, "saved": False}
+                                await _persist_pending_user_msg()
+                                continue
+
                     # 可执行类请求却零 tool_call 且正文像在「将要去干」：同 SSE 内自动续跑一轮，逼模型调工具。
                     if (
                         not round_had_tool_call
@@ -8431,6 +8660,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                         # 分层工具可能漏了所需能力：升到 full 再逼一次 tool_call
                         if not force_tools_full:
                             force_tools_full = True
+                            tools_allow_override = None
                             cached_round_tools = None
                             tools_tier_for_stats = "full"
                         yield _sse({"stream_status": {"phase": "auto_continuing"}})
@@ -9086,6 +9316,9 @@ async def run_ops_integration_chat_complete(
     turn_messages_start_integ = len(messages)
     cached_round_tools_integ: list | None = None
     force_tools_full_integ = False
+    tools_allow_override_integ: frozenset | None = None
+    tools_recovery_count_integ = 0
+    tools_tier_for_stats_integ = "full"
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -9102,20 +9335,38 @@ async def run_ops_integration_chat_complete(
                             session_id=sid,
                             user_message=last_user_message or msg_in or "",
                         )
-                        _tier_integ = resolve_tools_tier(
-                            last_user_message or msg_in or "",
-                            lightweight=False,
-                            force_full=force_tools_full_integ,
-                            session_scope=session_scope,
+                        _tier_msg_integ = last_user_message or msg_in or ""
+                        _tier_recent_integ = _recent_user_context_for_tools_tier(
+                            conversation, _tier_msg_integ
                         )
-                        cached_round_tools_integ = filter_tools_for_message(
-                            _base_tools_integ,
-                            last_user_message or msg_in or "",
-                            lightweight=False,
-                            tier=_tier_integ,
-                            force_full=force_tools_full_integ,
-                            session_scope=session_scope,
-                        )
+                        if force_tools_full_integ:
+                            tools_tier_for_stats_integ = "full"
+                            cached_round_tools_integ = list(_base_tools_integ or [])
+                        elif tools_allow_override_integ is not None:
+                            cached_round_tools_integ = filter_tools_by_allow(
+                                _base_tools_integ,
+                                tools_allow_override_integ,
+                                tier_label=str(tools_tier_for_stats_integ or "expanded"),
+                            )
+                        else:
+                            tools_tier_for_stats_integ = resolve_tools_tier(
+                                _tier_msg_integ,
+                                lightweight=False,
+                                force_full=False,
+                                session_scope=session_scope,
+                                session_host_id=session_host_id,
+                                recent_context=_tier_recent_integ,
+                            )
+                            cached_round_tools_integ = filter_tools_for_message(
+                                _base_tools_integ,
+                                _tier_msg_integ,
+                                lightweight=False,
+                                tier=tools_tier_for_stats_integ,
+                                force_full=False,
+                                session_scope=session_scope,
+                                session_host_id=session_host_id,
+                                recent_context=_tier_recent_integ,
+                            )
                     round_tools = cached_round_tools_integ
                     compact_turn_tool_messages(messages, turn_messages_start_integ)
                     if messages and (messages[0].get("role") or "") == "system":
@@ -9170,6 +9421,50 @@ async def run_ops_integration_chat_complete(
                     msg, tool_calls = parse_chat_response(result)
 
                     if tool_calls:
+                        _req_names_i = [
+                            ((tc.get("function") or {}).get("name") or "").strip()
+                            for tc in tool_calls
+                            if isinstance(tc, dict)
+                        ]
+                        if (
+                            not force_tools_full_integ
+                            and tools_recovery_count_integ < _MAX_TOOLS_RECOVERY
+                            and tools_need_full_upgrade(_req_names_i, cached_round_tools_integ or [])
+                        ):
+                            _full_base_i = await resolve_chat_tools(
+                                get_tools_for_scope(tool_scope, user),
+                                tool_scope,
+                                user,
+                                session_host_id,
+                                session_id=sid,
+                                user_message=last_user_message or msg_in or "",
+                            )
+                            _missing_i = [
+                                n for n in _req_names_i
+                                if n and n not in available_tool_names(cached_round_tools_integ)
+                            ]
+                            if not tools_need_full_upgrade(_missing_i, _full_base_i):
+                                _plan_i = expand_allow_for_tools(
+                                    _missing_i,
+                                    current_allow=tools_allow_override_integ,
+                                    catalog_names=catalog_tool_names_from_tools(_full_base_i),
+                                )
+                                tools_recovery_count_integ += 1
+                                if _plan_i.get("allow") is None or _plan_i.get("tier_label") == "full":
+                                    force_tools_full_integ = True
+                                    tools_allow_override_integ = None
+                                    tools_tier_for_stats_integ = "full"
+                                else:
+                                    tools_allow_override_integ = frozenset(_plan_i["allow"])
+                                    tools_tier_for_stats_integ = str(_plan_i.get("tier_label") or "expanded")
+                                cached_round_tools_integ = None
+                                logger.info(
+                                    "tools recovery integ (tool_call gap) sid=%s tier=%s names=%s",
+                                    sid,
+                                    tools_tier_for_stats_integ,
+                                    _missing_i,
+                                )
+                                continue
                         round_had_tool_call = True
                         full_tool_calls, prepared_tool_calls = await _prepare_tool_calls_for_execution(tool_calls)
                         messages.append({
@@ -9251,6 +9546,43 @@ async def run_ops_integration_chat_complete(
                             except Exception:
                                 result_obj = {}
                                 is_success = False
+                            if fn_name == "ensure_chat_tools" and isinstance(result_obj, dict) and result_obj.get("success"):
+                                _rec_i = _parse_edgeops_tools_recovery(result_obj)
+                                if _rec_i:
+                                    if _rec_i.get("force_full") or _rec_i.get("tier_label") == "full":
+                                        force_tools_full_integ = True
+                                        tools_allow_override_integ = None
+                                        tools_tier_for_stats_integ = "full"
+                                    else:
+                                        _needed_i = list(_rec_i.get("tool_names") or [])
+                                        _full_ens_i = await resolve_chat_tools(
+                                            get_tools_for_scope(tool_scope, user),
+                                            tool_scope,
+                                            user,
+                                            session_host_id,
+                                            session_id=sid,
+                                            user_message=last_user_message or msg_in or "",
+                                        )
+                                        _plan_ens_i = expand_allow_for_tools(
+                                            _needed_i,
+                                            current_allow=tools_allow_override_integ,
+                                            catalog_names=catalog_tool_names_from_tools(_full_ens_i),
+                                        )
+                                        if _plan_ens_i.get("allow") is None:
+                                            force_tools_full_integ = True
+                                            tools_allow_override_integ = None
+                                            tools_tier_for_stats_integ = "full"
+                                        else:
+                                            tools_allow_override_integ = frozenset(_plan_ens_i["allow"])
+                                            tools_tier_for_stats_integ = str(
+                                                _plan_ens_i.get("tier_label") or _rec_i.get("tier_label") or "expanded"
+                                            )
+                                    cached_round_tools_integ = None
+                                    logger.info(
+                                        "tools recovery integ (ensure_chat_tools) sid=%s tier=%s",
+                                        sid,
+                                        tools_tier_for_stats_integ,
+                                    )
                             try:
                                 _ = await _store_tool_result_cache(
                                     db,
@@ -9352,6 +9684,53 @@ async def run_ops_integration_chat_complete(
                         "error": f"Agent 达到最大执行步数 ({agent_max_steps})，已停止",
                         "session_id": sid,
                     }
+
+                # 文字声称缺少工具：集成路径同样按能力集扩层重试
+                if (
+                    not round_had_tool_call
+                    and tools_recovery_count_integ < _MAX_TOOLS_RECOVERY
+                    and (content or "").strip()
+                ):
+                    _full_d_i = await resolve_chat_tools(
+                        get_tools_for_scope(tool_scope, user),
+                        tool_scope,
+                        user,
+                        session_host_id,
+                        session_id=sid,
+                        user_message=last_user_message or msg_in or "",
+                    )
+                    _missing_d_i = detect_missing_tools_from_text(
+                        content or "",
+                        available_names=available_tool_names(cached_round_tools_integ),
+                        catalog_names=catalog_tool_names_from_tools(_full_d_i),
+                    )
+                    if _missing_d_i:
+                        _plan_d_i = expand_allow_for_tools(
+                            _missing_d_i,
+                            current_allow=tools_allow_override_integ,
+                            catalog_names=catalog_tool_names_from_tools(_full_d_i),
+                        )
+                        if _plan_d_i.get("recoverable") and not _plan_d_i.get("missing_in_catalog"):
+                            tools_recovery_count_integ += 1
+                            if _plan_d_i.get("allow") is None or _plan_d_i.get("tier_label") == "full":
+                                force_tools_full_integ = True
+                                tools_allow_override_integ = None
+                                tools_tier_for_stats_integ = "full"
+                            else:
+                                tools_allow_override_integ = frozenset(_plan_d_i["allow"])
+                                tools_tier_for_stats_integ = str(_plan_d_i.get("tier_label") or "expanded")
+                            cached_round_tools_integ = None
+                            _nudge_i = _tools_recovery_nudge(_missing_d_i, tools_tier_for_stats_integ)
+                            messages.append({"role": "assistant", "content": content})
+                            messages.append({"role": "user", "content": _nudge_i})
+                            last_user_message = _nudge_i
+                            logger.info(
+                                "tools recovery integ (text gap) sid=%s tier=%s names=%s",
+                                sid,
+                                tools_tier_for_stats_integ,
+                                _missing_d_i,
+                            )
+                            continue
 
                 if not (content or "").strip():
                     content = "（已按上述工具执行完成；若需继续可发送下一条消息。）"

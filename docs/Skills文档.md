@@ -317,6 +317,7 @@ MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_up
 | update_session_prompt | 更新或追加当前会话的会话级提示词（供「把上述要求记到会话里」等场景）。content 建议使用 Markdown 格式（## 标题、- 列表、\`代码\`）便于查看 | session_id, content, append? |
 | get_session_operations | 获取当前会话的「操作序列」：仅用户要求与助手指令，不含程序输出与工具轨迹。用于生成会话提示词或归纳最佳实践/经验时参考 | session_id, limit? |
 | get_session_chat_detail | 获取当前会话聊天详情。include_tool_results=false 时同 get_session_operations；true 时含可读正文与解码后的 tool_trace（工具名/参数/结果预览），供自查「怎么查到的」或分析报错 | session_id, include_tool_results?, limit? |
+| ensure_chat_tools | 按需装载当前分层未下发的工具能力（CORE 常驻）。传 tool_names 和/或 capabilities（terminal/fs/http/host_transfer/full）；成功后下一轮即可调用。禁止用纯文字声称缺少工具 | tool_names?, capabilities? |
 
 ---
 

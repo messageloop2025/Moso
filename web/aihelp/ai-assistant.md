@@ -70,7 +70,7 @@
 - **聊天操作序列与详情**：AI 生成会话提示词或归纳最佳实践/经验时，会先获取「仅用户要求与助手指令」的操作序列（不含程序输出）；需要分析具体报错或引用终端/命令输出时，可获取含完整输出的聊天详情。详见下文「聊天操作序列与详情」。
 - **聊天模式与低交互**：顶部工具条可选 **问答 / 严格 / 普通**（按会话保存，紧挨模型下拉，无「模式」字样标签），另有「低交互」开关。**问答模式**只做分析与推荐：不能代为执行；AI 应说明限制并给出 bash/Python 等可复制命令；若需 tool call 则只说明「需要调用工具但当前模式无法执行」，不展示调用参数。**严格模式**由平台在写操作前弹出独立确认框，模型侧与普通模式一样直接调工具，无需感知「严格」。详见下文「聊天模式」。
 - **斜杠唤起 Skill**：若管理员已为你开启 Skills，在输入框输入 `/`，用 ↑↓ / Enter 选命令，再按提示填参数后发送；也可用 `/skill-name 参数`（`{{arg}}` 占位；`commands/别名.md` 用 `/别名`）。填参浮层的参数建议来自 Skill 的 `slash-args` /「斜杠参数」列表（详见下文约定）。Skill 上配置的 Hook 会在工具执行前拦截（确认/拒绝）。也可对 AI 说「帮我创建一个带确认的 SSH Skill」或「给这个 Skill 加斜杠命令」，AI 会用 `save_user_skill` / `write_user_skill_file` 写入 `hooks.json`、`commands/` 与参数建议。
-- **内置 Markdown / 公式渲染**：聊天消息本地渲染标题、列表、表格、安全链接、代码高亮、diff/log/tree/http 块、Callout、Mermaid/Markmap/ECharts 与 LaTeX 公式；系统会压缩无意义空行。流式输出时对**已闭合**的段落/表格/代码块即时渲染，尾部未完成部分仍以纯文本或增量表格显示，减少闪动。详见下文「聊天输出格式」。
+- **内置 Markdown / 公式渲染**：聊天消息本地渲染标题、列表、表格、安全链接、代码高亮、diff/log/tree/http 块、Callout、Mermaid/Markmap/ECharts、**Three.js 三维场景（```three-scene`）**、Cannon 物理与 LaTeX 公式；系统会压缩无意义空行。流式输出时对**已闭合**的段落/表格/代码块即时渲染，尾部未完成部分仍以纯文本或增量表格显示，减少闪动。详见下文「聊天输出格式」。
 
 ---
 
@@ -237,7 +237,7 @@ AI 聊天支持常见 Markdown：
 
 AI **流式回复**时，前端不会等整段文字结束才一次性排版，而是按「块」增量渲染，减少闪烁并尽早看到结构化内容：
 
-- **已闭合的 fenced 代码块**（含 ```mermaid、```markmap、```echarts-option、```svg 等）：块写完后立即按对应渲染器展示。
+- **已闭合的 fenced 代码块**（含 ```mermaid、```markmap、```echarts-option、```svg、```three-scene 等）：块写完后立即按对应渲染器展示。
 - **完整 Markdown 表格**（含表头分隔行，且表格后有空行）：表格段落闭合后渲染为 HTML 表格；流式过程中若仅 tbody 在增长，会尽量只更新表格主体而不重绘整表。
 - **双换行段落**：普通段落以 `\n\n` 为界，段落完整后走 Markdown 排版。
 - **尾部未闭合内容**：仍按纯文本或局部表格增量显示，直到该块闭合。
@@ -265,8 +265,9 @@ $$
 - 思维导图：使用 ```markmap
 - 统计图：使用 ```echarts-option
 - 矢量图 / 图标 / 简单几何示意图：使用 ```svg（完整 `<svg>...</svg>` 片段）
+- **三维 / 物理示意**：使用 ```three-scene（JSON 声明；`physics.enabled=true` 启用本地 Cannon）。示例字段：`camera`、`lights`、`objects`（box/sphere/cylinder/cone/ground）、`physics`、`autoRotate`。拖拽旋转、滚轮缩放。复杂可交互三维报告用 `create_chat_artifact` + `libs: ["three","cannon-es"]`（`web/res/manifest.json`），禁止外网 CDN。
 
-这些能力都走本地资源；Mermaid 还会做预检查和常见语法修复。SVG 会过滤脚本与事件属性后再渲染。
+这些能力都走本地资源；Mermaid 还会做预检查和常见语法修复。SVG 会过滤脚本与事件属性后再渲染。three-scene **只接受 JSON**，不在聊天围栏里执行任意 JS。
 
 ---
 
@@ -324,6 +325,16 @@ Docker 镜像需安装 `libmagic1` 与 Python 包 `markitdown`；依赖变更后
   - 需要分析某次命令报错、引用终端/工具输出时。
 - **为何需要自查**：下一轮注入模型的历史默认会剥离 TOOL_TRACE；Web 端折叠的思考与计划也是懒加载，不会自动进上下文。系统提示词中的「上下文完整性与自查」要求 AI 用本工具核对。
 - 在对话中让 AI「根据当前对话总结会话提示词」或「归纳成最佳实践」时，AI 会先调用 get_session_operations 再归纳；若用户问「上次执行某某命令的输出是什么」或「你怎么查到天气的」，AI 应调用 get_session_chat_detail(include_tool_results=true) 获取详情与 tool_trace。
+
+## 工具分层与能力恢复
+
+- 为控制请求体积，每轮下发的 tools 可能是**分层子集**（core / terminal / fs / http 等），并非永远全量。
+- **主动恢复**：若所需工具不在当前列表，AI 应先调用 **`ensure_chat_tools`**（`tool_names` 和/或 `capabilities=terminal|fs|http|host_transfer|full`），再执行业务工具；禁止用纯文字「缺少某某工具」后结束。
+- **自动恢复（安全网）**：
+  1. 模型 `tool_call` 点名了当前子集没有、但会话全量有的工具 → 按能力集最小扩层并重跑；
+  2. 模型纯文字声称缺少已知工具名 → 同样扩层、注入续跑提示（最多约 2 次）；
+  3. SSE `stream_status.phase=tools_recovering` 表示正在恢复装载。
+- 关键词分层仅为降本优化；正确性依赖上述恢复机制，而不是为每个业务词打补丁。
 
 ---
 

@@ -138,6 +138,7 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "list_service_credentials",
     "get_session_operations",
     "get_session_chat_detail",
+    "ensure_chat_tools",
     "get_session_prompt",
     "update_session_prompt",
     "memory_ensure",
@@ -252,6 +253,251 @@ HTTP_TOOL_NAMES: frozenset[str] = frozenset({
 FS_TOOL_PREFIXES: tuple[str, ...] = ("fs_", "local_fs_", "local_chat_")
 TERMINAL_TOOL_PREFIXES: tuple[str, ...] = ("ssh_channel_",)
 
+# 能力集：工具恢复的单一真相源（keyword 分层仅作优化，正确性靠扩层恢复）
+CAPABILITY_CORE = "core"
+CAPABILITY_TERMINAL = "terminal"
+CAPABILITY_FS = "fs"
+CAPABILITY_HTTP = "http"
+CAPABILITY_HOST_TRANSFER = "host_transfer"
+CAPABILITY_FULL = "full"
+
+CAPABILITY_TOOL_SETS: dict[str, frozenset[str]] = {
+    CAPABILITY_CORE: CORE_TOOL_NAMES,
+    CAPABILITY_TERMINAL: TERMINAL_TOOL_NAMES,
+    CAPABILITY_FS: FS_TOOL_NAMES,
+    CAPABILITY_HTTP: HTTP_TOOL_NAMES - HOST_FILE_TRANSFER_TOOL_NAMES,
+    CAPABILITY_HOST_TRANSFER: HOST_FILE_TRANSFER_TOOL_NAMES,
+}
+
+KNOWN_CAPABILITIES: frozenset[str] = frozenset(CAPABILITY_TOOL_SETS) | {CAPABILITY_FULL}
+
+
+def _build_tool_capability_index() -> dict[str, str]:
+    """tool_name → capability（后写覆盖：transfer 优先于 http 并集中的同名项）。"""
+    idx: dict[str, str] = {}
+    for cap in (
+        CAPABILITY_CORE,
+        CAPABILITY_TERMINAL,
+        CAPABILITY_FS,
+        CAPABILITY_HTTP,
+        CAPABILITY_HOST_TRANSFER,
+    ):
+        for name in CAPABILITY_TOOL_SETS[cap]:
+            idx[name] = cap
+    # 前缀类（未枚举全名时）
+    for name in TERMINAL_TOOL_NAMES:
+        idx.setdefault(name, CAPABILITY_TERMINAL)
+    return idx
+
+
+TOOL_CAPABILITY_INDEX: dict[str, str] = _build_tool_capability_index()
+
+
+def capability_for_tool(name: str) -> str | None:
+    """解析工具所属能力集；未知前缀按约定推断。"""
+    n = (name or "").strip()
+    if not n:
+        return None
+    if n in TOOL_CAPABILITY_INDEX:
+        return TOOL_CAPABILITY_INDEX[n]
+    if n.startswith(TERMINAL_TOOL_PREFIXES):
+        return CAPABILITY_TERMINAL
+    if n.startswith(FS_TOOL_PREFIXES):
+        return CAPABILITY_FS
+    return None
+
+
+def catalog_tool_names_from_tools(tools: list[dict[str, Any]] | None) -> set[str]:
+    out: set[str] = set()
+    for t in tools or []:
+        try:
+            out.add(t["function"]["name"])
+        except Exception:
+            continue
+    return out
+
+
+def available_tool_names(tools: list[dict[str, Any]] | None) -> set[str]:
+    return catalog_tool_names_from_tools(tools)
+
+
+def resolve_capabilities_for_tools(tool_names: list[str] | None) -> set[str]:
+    caps: set[str] = set()
+    for name in tool_names or []:
+        cap = capability_for_tool(name)
+        if cap:
+            caps.add(cap)
+    return caps
+
+
+def allow_set_for_capabilities(capabilities: set[str] | frozenset[str] | list[str]) -> frozenset[str] | None:
+    """None = full（不过滤）。"""
+    caps = {str(c or "").strip().lower() for c in (capabilities or []) if str(c or "").strip()}
+    if CAPABILITY_FULL in caps or "all" in caps:
+        return None
+    names: set[str] = set(CORE_TOOL_NAMES)
+    for cap in caps:
+        if cap == CAPABILITY_CORE:
+            continue
+        if cap == "ops":
+            names |= TERMINAL_TOOL_NAMES
+            names |= HOST_FILE_TRANSFER_TOOL_NAMES
+            continue
+        toolset = CAPABILITY_TOOL_SETS.get(cap)
+        if toolset is not None:
+            names |= toolset
+        if cap in (CAPABILITY_TERMINAL, CAPABILITY_FS, CAPABILITY_HTTP):
+            names |= HOST_FILE_TRANSFER_TOOL_NAMES
+    return frozenset(names)
+
+
+def expand_allow_for_tools(
+    needed_names: list[str] | None,
+    *,
+    current_allow: frozenset[str] | set[str] | None = None,
+    catalog_names: set[str] | frozenset[str] | None = None,
+) -> dict[str, Any]:
+    """按能力集最小扩层。
+
+    返回:
+      recoverable: bool — 所需工具在 catalog 中且可映射能力（或需 full）
+      missing_in_catalog: 全量也没有的名字
+      capabilities: 需要并入的能力
+      allow: 扩层后的 allow（None=full）
+      tier_label: 便于日志/stats
+    """
+    needed = [str(n).strip() for n in (needed_names or []) if str(n).strip()]
+    catalog = set(catalog_names or []) if catalog_names is not None else None
+    missing_in_catalog: list[str] = []
+    known_needed: list[str] = []
+    for n in needed:
+        if catalog is not None and n not in catalog:
+            # 前缀匹配：catalog 里可能有 ssh_channel_* 等
+            if any(c == n or c.startswith(n + "_") for c in catalog):
+                known_needed.append(n)
+            else:
+                missing_in_catalog.append(n)
+        else:
+            known_needed.append(n)
+
+    if not known_needed and missing_in_catalog:
+        return {
+            "recoverable": False,
+            "missing_in_catalog": missing_in_catalog,
+            "capabilities": [],
+            "allow": frozenset(current_allow) if current_allow is not None else frozenset(CORE_TOOL_NAMES),
+            "tier_label": "unrecoverable",
+            "needed": needed,
+        }
+
+    caps = resolve_capabilities_for_tools(known_needed)
+    unmapped = [n for n in known_needed if capability_for_tool(n) is None]
+    if unmapped:
+        # 未知工具但在 catalog → 回退 full
+        return {
+            "recoverable": True,
+            "missing_in_catalog": missing_in_catalog,
+            "capabilities": [CAPABILITY_FULL],
+            "allow": None,
+            "tier_label": "full",
+            "needed": known_needed,
+            "unmapped": unmapped,
+        }
+
+    # terminal/fs 任务附带转运
+    if caps & {CAPABILITY_TERMINAL, CAPABILITY_FS, CAPABILITY_HTTP}:
+        caps.add(CAPABILITY_HOST_TRANSFER)
+
+    allow = allow_set_for_capabilities(caps)
+    if current_allow is not None and allow is not None:
+        allow = frozenset(set(allow) | set(current_allow))
+
+    # 标签：core+… 或 full
+    if allow is None:
+        tier_label = "full"
+    else:
+        parts = ["core"] + sorted(c for c in caps if c != CAPABILITY_CORE)
+        tier_label = "+".join(parts) if len(parts) > 1 else "core"
+
+    return {
+        "recoverable": True,
+        "missing_in_catalog": missing_in_catalog,
+        "capabilities": sorted(caps),
+        "allow": allow,
+        "tier_label": tier_label,
+        "needed": known_needed,
+    }
+
+
+_MISSING_TOOL_CONTEXT_RE = re.compile(
+    r"(缺少|没有|不可用|无法使用|不在|未提供|未装载|未加载|工具集中没有|工具列表没有|"
+    r"allowed tools|not available|missing|don't have|do not have|cannot find)",
+    re.IGNORECASE,
+)
+_TOOL_NAME_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{2,64}")
+
+
+def detect_missing_tools_from_text(
+    content: str,
+    *,
+    available_names: set[str] | frozenset[str] | None = None,
+    catalog_names: set[str] | frozenset[str] | None = None,
+) -> list[str]:
+    """从助手正文检测「声称缺少的工具名」（不靠业务词，只认工具名+负向语境）。"""
+    text = content or ""
+    if not text.strip() or not _MISSING_TOOL_CONTEXT_RE.search(text):
+        return []
+    catalog = set(catalog_names or TOOL_CAPABILITY_INDEX.keys())
+    if not catalog:
+        return []
+    avail = set(available_names or [])
+    # 优先扫 catalog 中的已知名（长名优先，避免短前缀误伤）
+    ordered = sorted(catalog, key=len, reverse=True)
+    found: list[str] = []
+    lower = text
+    for name in ordered:
+        if name in avail:
+            continue
+        if name in lower or f"`{name}`" in lower or f"({name})" in lower:
+            found.append(name)
+    if found:
+        # 去重保序
+        seen: list[str] = []
+        for n in found:
+            if n not in seen:
+                seen.append(n)
+        return seen
+    # 回退：负向句附近的标识符 token
+    tokens = _TOOL_NAME_TOKEN_RE.findall(text)
+    for tok in tokens:
+        if tok in catalog and tok not in avail and tok not in found:
+            found.append(tok)
+    return found
+
+
+def filter_tools_by_allow(
+    tools: list[dict[str, Any]],
+    allow: frozenset[str] | set[str] | None,
+    *,
+    tier_label: str = "full",
+) -> list[dict[str, Any]]:
+    """按 allow 过滤；allow is None 表示 full。"""
+    if allow is None:
+        return list(tools or [])
+    allow_set = frozenset(allow)
+    out = []
+    for t in tools or []:
+        try:
+            name = t["function"]["name"]
+        except Exception:
+            continue
+        if _tool_allowed_in_tier(name, allow_set, tier_label):
+            out.append(t)
+    if not out and tools:
+        return list(tools or [])
+    return out
+
+
 _FULL_HINT_RE = re.compile(
     r"(批量|batch_|定时|触发|scheduled|triggered|mcp|skill|凭证库|模型.?profile|"
     r"ai_model_profile|工作流|workflow|委托|delegate_|子任务|用户管理|管理员|"
@@ -260,6 +506,7 @@ _FULL_HINT_RE = re.compile(
 )
 _TERMINAL_HINT_RE = re.compile(
     r"(终端|控制台|ssh|sudo|命令|执行|通道|channel|连接|登录|重启|安装|部署|"
+    r"升级|升到|升版|更新版本|版本更新|打补丁|patch|upgrade|update\b|"
     r"编译|日志|排障|进程|docker|nginx|systemctl|apt|yum|dnf|"
     r"send_to_terminal|get_terminal|ssh_execute|ssh_channel)",
     re.IGNORECASE,
@@ -285,7 +532,8 @@ _CORE_HINT_RE = re.compile(
 )
 # 虽未写「终端」但明显要上机执行/排查 → 并入 terminal 层
 _EXEC_SOFT_RE = re.compile(
-    r"(执行|运行|安装|部署|重启|登录|连接|终端|控制台|通道|sudo|ssh|命令|"
+    r"(执行|运行|安装|部署|升级|升到|升版|更新版本|打补丁|upgrade|patch|"
+    r"重启|登录|连接|终端|控制台|通道|sudo|ssh|命令|"
     r"\bdf\b|磁盘|内存|负载|进程|服务|nginx|docker|排查|日志|uptime|top\b|systemctl)",
     re.IGNORECASE,
 )
@@ -489,7 +737,8 @@ _LIGHTWEIGHT_EXACT = frozenset({
 })
 
 _OPS_HINT_RE = re.compile(
-    r"(主机|服务器|终端|控制台|ssh|sudo|scp|上传|下载|部署|安装|重启|日志|报错|错误|"
+    r"(主机|服务器|终端|控制台|ssh|sudo|scp|上传|下载|部署|安装|升级|升到|升版|"
+    r"更新版本|打补丁|upgrade|patch|重启|日志|报错|错误|"
     r"脚本|文件|目录|fs_|批量|任务|定时|触发|凭证|密码|分组|标签|mcp|skill|"
     r"执行|命令|连接|通道|docker|nginx|mysql|排查|运维|配置|备份|还原|"
     r"list_|get_|search_|send_|create_|delete_|update_)",
@@ -619,40 +868,73 @@ _FORCE_FULL_FOLLOWUP_RE = re.compile(
 )
 
 
+# 短确认句：自身不含运维词，但常接在「升级/执行…」之后；需结合 recent_context 分层
+_SHORT_CONFIRM_RE = re.compile(
+    r"^(是|是的|对|对的|好|好的|行|可以|确认|同意|嗯|嗯嗯|ok|okay|yes|y|继续|就这样|按这个来)$",
+    re.IGNORECASE,
+)
+
+
+def _is_short_confirm_message(user_message: str) -> bool:
+    raw = (user_message or "").strip()
+    if not raw or len(raw) > 24:
+        return False
+    text = re.sub(r"[\s\U0001F300-\U0001FAFF]+", "", raw)
+    text = text.strip("！!。.~～…、，,")
+    return bool(text) and bool(_SHORT_CONFIRM_RE.match(text))
+
+
 def resolve_tools_tier(
     user_message: str,
     *,
     lightweight: bool | None = None,
     force_full: bool = False,
     session_scope: str | None = None,
+    session_host_id: int | None = None,
+    recent_context: str | None = None,
 ) -> str:
     """返回 lightweight / core / terminal / fs / http / ops / full。
 
     ops = core∪terminal（常见运维默认）；多意图用 '+' 拼接（如 core+terminal+fs）。
+
+    - session_host_id：主机详情 AI 运维会话默认带 terminal（含 scp_*）。
+    - recent_context：短确认（「是」「好的」）时并入近期用户话，避免确认轮掉到纯 core。
     """
     if force_full or not getattr(config, "AGENT_TOOL_TIERING", True):
         return "full"
     # 轻量路径已弃用：忽略 lightweight 入参
     msg = user_message or ""
+    hint_src = msg
+    if recent_context and (_is_short_confirm_message(msg) or len(msg.strip()) <= 8):
+        hint_src = f"{recent_context}\n{msg}"
     # 用户催促「真正发起 toolcall」：升 full，避免分层漏掉上一轮所需工具
-    if _FORCE_FULL_FOLLOWUP_RE.search(msg):
+    if _FORCE_FULL_FOLLOWUP_RE.search(msg) or _FORCE_FULL_FOLLOWUP_RE.search(hint_src):
         return "full"
     scope = (session_scope or "").strip().lower()
-    if scope in ("local",) and _FS_HINT_RE.search(msg):
+    try:
+        host_bound = session_host_id is not None and int(session_host_id) > 0
+    except (TypeError, ValueError):
+        host_bound = False
+    if scope in ("local",) and _FS_HINT_RE.search(hint_src):
         # 本机管理会话读文件仍走 fs 层
         pass
-    if _FULL_HINT_RE.search(msg):
+    if _FULL_HINT_RE.search(hint_src):
         return "full"
     parts: list[str] = ["core"]
-    if _TERMINAL_HINT_RE.search(msg) or scope in ("host", "ssh"):
+    # 主机详情页 / host|ssh scope：默认具备远程执行与文件转运能力
+    if (
+        _TERMINAL_HINT_RE.search(hint_src)
+        or scope in ("host", "ssh")
+        or host_bound
+    ):
         parts.append("terminal")
-    if _FS_HINT_RE.search(msg) or scope == "local":
+    if _FS_HINT_RE.search(hint_src) or scope == "local":
         parts.append("fs")
-    if _HTTP_HINT_RE.search(msg):
+    if _HTTP_HINT_RE.search(hint_src):
         parts.append("http")
     # 运维语义：纯列表/搜索可留 core；带执行/排查意味则并入 terminal
-    if parts == ["core"] and _OPS_HINT_RE.search(msg):
-        if _EXEC_SOFT_RE.search(msg) or not _CORE_HINT_RE.search(msg):
+    if parts == ["core"] and _OPS_HINT_RE.search(hint_src):
+        if _EXEC_SOFT_RE.search(hint_src) or not _CORE_HINT_RE.search(hint_src):
             parts.append("terminal")
     # 去重保序
     seen: list[str] = []
@@ -709,6 +991,8 @@ def filter_tools_for_message(
     tier: str | None = None,
     force_full: bool = False,
     session_scope: str | None = None,
+    session_host_id: int | None = None,
+    recent_context: str | None = None,
 ) -> list[dict[str, Any]]:
     """按消息意图裁剪 tools；轻量对话默认空列表；运维按 tier 分层。"""
     if lightweight is None:
@@ -719,6 +1003,8 @@ def filter_tools_for_message(
             lightweight=lightweight,
             force_full=force_full,
             session_scope=session_scope,
+            session_host_id=session_host_id,
+            recent_context=recent_context,
         )
     # 轻量路径已弃用：即使调用方误传 lightweight/tier=lightweight，也不清空 tools
     if tier == "lightweight" or lightweight:
@@ -728,6 +1014,8 @@ def filter_tools_for_message(
             lightweight=False,
             force_full=force_full,
             session_scope=session_scope,
+            session_host_id=session_host_id,
+            recent_context=recent_context,
         )
     if tier == "full" or force_full:
         return list(tools or [])
@@ -809,7 +1097,8 @@ def message_needs_html_artifact(user_message: str) -> bool:
     q = (user_message or "").lower()
     keys = (
         "html", "报表", "报告", "artifact", "页面", "可视化", "echarts",
-        "天气页", "看板", "dashboard", "create_chat_artifact",
+        "看板", "大屏", "dashboard", "create_chat_artifact",
+        "三维", "3d", "three", "three-scene", "物理", "cannon", "立体",
     )
     return any(k in q for k in keys)
 
