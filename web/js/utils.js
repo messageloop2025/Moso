@@ -1005,20 +1005,71 @@ if (typeof document !== 'undefined') {
     }
 }
 
+function edgeopsStripHtmlComments(text) {
+    if (!text) return '';
+    return String(text).replace(/<!--[\s\S]*?-->/g, '');
+}
+
+/** AI 友好：标题 # 后无空格时补空格（CommonMark 要求空格）。 */
+function edgeopsNormalizeAtxHeadingSpace(text) {
+    return String(text || '').replace(/^(\s{0,3})(#{1,6})([^\s#\n])/gm, '$1$2 $3');
+}
+
 /**
- * 仅处理行内格式（用于表格单元格、列表项、标题等）：<strong>/<code> 等安全标签、**粗体**、*斜体*、`代码`、链接
+ * markdown-it 单例：html=false（防 XSS）；breaks/linkify 便于 AI 输出。
+ * 链接/图片走附件 token 改写；围栏代码由外层提取后交给 edgeops 图表/高亮。
+ */
+function edgeopsGetMarkdownIt() {
+    if (typeof window !== 'undefined' && window._edgeopsMarkdownIt) {
+        return window._edgeopsMarkdownIt;
+    }
+    var factory = (typeof window !== 'undefined' && window.markdownit)
+        || (typeof markdownit !== 'undefined' ? markdownit : null);
+    if (typeof factory !== 'function') {
+        return null;
+    }
+    var md = factory({
+        html: false,
+        xhtmlOut: false,
+        breaks: true,
+        linkify: true,
+        typographer: false,
+    });
+    md.renderer.rules.link_open = function (tokens, idx, options, env, self) {
+        var token = tokens[idx];
+        var hrefIdx = token.attrIndex('href');
+        if (hrefIdx >= 0) {
+            token.attrs[hrefIdx][1] = edgeopsNormalizeSafeHref(token.attrs[hrefIdx][1]);
+        }
+        token.attrSet('target', '_blank');
+        token.attrSet('rel', 'noopener noreferrer');
+        return self.renderToken(tokens, idx, options);
+    };
+    md.renderer.rules.image = function (tokens, idx, options, env, self) {
+        var token = tokens[idx];
+        var srcIdx = token.attrIndex('src');
+        if (srcIdx >= 0) {
+            token.attrs[srcIdx][1] = edgeopsRewriteChatAttachmentUrl(token.attrs[srcIdx][1] || '');
+        }
+        token.attrSet('class', 'chat-md-inline-image chat-attachment-image-inline');
+        token.attrSet('loading', 'lazy');
+        return self.renderToken(tokens, idx, options);
+    };
+    if (typeof window !== 'undefined') {
+        window._edgeopsMarkdownIt = md;
+    }
+    return md;
+}
+
+/**
+ * 仅处理行内格式（用于表格单元格、列表项、标题等）。
+ * 基础引擎：markdown-it.renderInline；保留安全 HTML / 行内公式 / 附件 URL 改写。
  */
 function formatMarkdownInline(text) {
     if (!text) return '';
-    var s = normalizeSafeHtmlTags(text);
+    var s = edgeopsStripHtmlComments(normalizeSafeHtmlTags(text));
     var inlineMath = [];
     s = edgeopsApplyInlineMathPlaceholders(s, inlineMath, 'EDGEOPSMDINLINEMATH');
-    var inlineCodes = [];
-    s = s.replace(/\x60([^\x60\n]+)\x60/g, function (match, code) {
-        var id = 'EDGEOPSMDINLINE' + inlineCodes.length;
-        inlineCodes.push(code);
-        return id;
-    });
     var safeHtmlTags = [];
     s = s.replace(new RegExp('<(' + EDGEOPS_SAFE_HTML_TAG_NAMES + ')(\\s[^>]*)?>([\\s\\S]*?)</\\1>', 'gi'), function (match, tagName, attrs, content) {
         var id = 'EDGEOPSMDSAFE' + safeHtmlTags.length;
@@ -1030,11 +1081,30 @@ function formatMarkdownInline(text) {
         safeHtmlTags.push({ tag: 'br', attrs: '', content: null });
         return id;
     });
-    s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    // AI 友好：~~删除线~~（CommonMark 无，转成安全占位）
+    s = s.replace(/~~([^~\n]+?)~~/g, function (_, inner) {
+        var id = 'EDGEOPSMDSAFE' + safeHtmlTags.length;
+        safeHtmlTags.push({ tag: 'del', attrs: '', content: inner });
+        return id;
+    });
+
+    var md = edgeopsGetMarkdownIt();
+    if (md) {
+        try {
+            s = md.renderInline(s);
+        } catch (e) {
+            s = escapeHtmlForCode(s);
+        }
+    } else {
+        s = escapeHtmlForCode(s);
+    }
+
     for (var i = 0; i < safeHtmlTags.length; i++) {
         var item = safeHtmlTags[i];
         if (item.content === null) {
             s = edgeopsReplaceIndexedPlaceholder(s, 'EDGEOPSMDSAFE', i, '<br>');
+        } else if (item.tag === 'del') {
+            s = edgeopsReplaceIndexedPlaceholder(s, 'EDGEOPSMDSAFE', i, '<del>' + escapeHtmlForCode(item.content) + '</del>');
         } else {
             var inner = edgeopsSanitizeSafeInlineHtml(item.content);
             if (item.tag === 'a' && item.attrs) {
@@ -1046,25 +1116,9 @@ function formatMarkdownInline(text) {
             }
         }
     }
-    s = s.replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>');
-    s = s.replace(/__([^_]+?)__/g, '<strong>$1</strong>');
-    s = s.replace(/\*([^*\n]+?)\*/g, '<em>$1</em>');
-    s = s.replace(/_([^_\n]+?)_/g, '<em>$1</em>');
-    s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function (_, alt, src) {
-        var u = edgeopsRewriteChatAttachmentUrl(String(src || '').trim());
-        return '<img class="chat-md-inline-image chat-attachment-image-inline" src="' + escapeHtmlForCode(u) + '" alt="' + escapeHtmlForCode(alt || 'image') + '" loading="lazy">';
-    });
-    s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function (_, label, href) {
-        var u = edgeopsRewriteChatAttachmentUrl(String(href || '').trim());
-        return '<a href="' + escapeHtmlForCode(u) + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
-    });
-    for (var j = 0; j < inlineCodes.length; j++) {
-        s = edgeopsReplaceIndexedPlaceholder(s, 'EDGEOPSMDINLINE', j, '<code>' + escapeHtmlForCode(inlineCodes[j]) + '</code>');
-    }
     for (var m = 0; m < inlineMath.length; m++) {
         s = edgeopsReplaceIndexedPlaceholder(s, 'EDGEOPSMDINLINEMATH', m, edgeopsRenderMathHtml(inlineMath[m], false));
     }
-    // 模型偶发不写 $...$ 时，常见符号仍可读
     s = s.replace(/\\iff\b/g, '⇔')
         .replace(/\\Leftrightarrow\b/g, '⇔')
         .replace(/\\Rightarrow\b/g, '⇒')
@@ -1239,19 +1293,22 @@ function edgeopsExtractTrailingIncompleteMarkdownTable(text) {
 }
 
 /**
- * Markdown 转 HTML（从 IOTHub 提取）：代码块、行内代码、表格、标题、列表、粗斜体、链接、段落换行
- * 表格在全局转义前提取，单元格用 formatMarkdownInline 解析，使表格内 strong/code/星斜杠/反引号 等正常显示
+ * Markdown 转 HTML。
+ * 基础引擎：markdown-it（本地 markdown-it.min.js）。
+ * 仍由本函数预处理：HTML 注释剥离、围栏代码/图表、表格（聊天样式）、公式、Callout、安全 HTML。
  */
 function markdownToHtml(text) {
     if (!text) return '';
-    var html = edgeopsCompactMarkdownBlankLines(normalizeSafeHtmlTags(text));
+    var html = edgeopsStripHtmlComments(String(text));
+    html = edgeopsCompactMarkdownBlankLines(normalizeSafeHtmlTags(html));
+    html = edgeopsNormalizeAtxHeadingSpace(html);
 
     var codeBlocks = [];
     html = html.replace(/\x60\x60\x60([^\n`]*)\n?([\s\S]*?)\x60\x60\x60/g, function (match, lang, code) {
         var id = 'EDGEOPSMDCODEBLOCK' + codeBlocks.length;
         var info = String(lang || '').trim();
         codeBlocks.push({ lang: info ? info.split(/\s+/)[0] : '', code: code.trim() });
-        return id;
+        return '\n\n' + id + '\n\n';
     });
 
     var mathBlocks = [];
@@ -1259,12 +1316,12 @@ function markdownToHtml(text) {
     html = html.replace(/\$\$([\s\S]+?)\$\$/g, function (match, expr) {
         var id = 'EDGEOPSMDMATHBLOCK' + mathBlocks.length;
         mathBlocks.push(String(expr || '').trim());
-        return '\n' + id + '\n';
+        return '\n\n' + id + '\n\n';
     });
     html = html.replace(/\\\[([\s\S]+?)\\\]/g, function (match, expr) {
         var id = 'EDGEOPSMDMATHBLOCK' + mathBlocks.length;
         mathBlocks.push(String(expr || '').trim());
-        return '\n' + id + '\n';
+        return '\n\n' + id + '\n\n';
     });
     html = html.split('\n').map(function(line) {
         if (!edgeopsLooksLikeStandaloneLatexMath(line)) return line;
@@ -1276,7 +1333,6 @@ function markdownToHtml(text) {
     var inlineMath = [];
     html = edgeopsApplyInlineMathPlaceholders(html, inlineMath, 'EDGEOPSMDMATHINLINE');
 
-    // 先提取表格（与 edgeopsComputeStreamCommittedEnd 同一套扫描器，避免流式冻结段与收尾全量渲染不一致）
     var tableExtract = edgeopsExtractCompleteMarkdownTablesIterative(html);
     html = tableExtract.html;
     var tables = tableExtract.tables;
@@ -1290,14 +1346,33 @@ function markdownToHtml(text) {
         html = (tailPrefix ? tailPrefix + '\n' : '') + tid;
     }
 
-    var inlineCodes = [];
-    html = html.replace(/\x60([^\x60\n]+)\x60/g, function (match, code) {
-        var id = 'EDGEOPSMDINLINECODE' + inlineCodes.length;
-        inlineCodes.push(code);
+    var callouts = [];
+    html = html.replace(/(?:^|\n)>\s*\[!(NOTE|TIP|IMPORTANT|WARNING|ERROR)\]\s*([^\n]*)(\n(?:>[^\n]*)*)?/gi, function(match, kind, title, body) {
+        var type = String(kind || 'NOTE').toLowerCase();
+        var bodyHtml = '';
+        if (body) {
+            bodyHtml = String(body).split('\n').map(function(line) {
+                return line.replace(/^>\s?/, '').trim();
+            }).filter(Boolean).join('<br>');
+        }
+        var titleHtml = formatMarkdownInline((title || '').trim() || kind);
+        if (bodyHtml) bodyHtml = formatMarkdownInline(bodyHtml);
+        var block = '<div class="chat-callout chat-callout-' + escapeHtmlForCode(type) + '">'
+            + '<div class="chat-callout-title">' + titleHtml + '</div>'
+            + (bodyHtml ? '<div class="chat-callout-body">' + bodyHtml + '</div>' : '')
+            + '</div>';
+        var id = 'EDGEOPSMDCALLOUT' + callouts.length;
+        callouts.push(block);
+        return '\n\n' + id + '\n\n';
+    });
+
+    var strikeTags = [];
+    html = html.replace(/~~([^~\n]+?)~~/g, function (_, inner) {
+        var id = 'EDGEOPSMDSTRIKE' + strikeTags.length;
+        strikeTags.push(inner);
         return id;
     });
 
-    // 安全 HTML 标签白名单：先提取再统一转义，最后还原，使 AI 返回的 <strong> 等能正确渲染
     var safeHtmlTags = [];
     html = html.replace(new RegExp('<(' + EDGEOPS_SAFE_HTML_TAG_NAMES + ')(\\s[^>]*)?>([\\s\\S]*?)</\\1>', 'gi'), function (match, tagName, attrs, content) {
         var id = 'EDGEOPSMDSAFEHTML' + safeHtmlTags.length;
@@ -1310,7 +1385,30 @@ function markdownToHtml(text) {
         return id;
     });
 
-    html = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    var md = edgeopsGetMarkdownIt();
+    if (md) {
+        try {
+            html = md.render(html);
+        } catch (e) {
+            html = '<p>' + escapeHtmlForCode(html) + '</p>';
+        }
+    } else {
+        html = '<p>' + escapeHtmlForCode(html).replace(/\n/g, '<br>') + '</p>';
+    }
+
+    html = html.replace(
+        /<p>\s*(EDGEOPSMD(?:CODEBLOCK|TABLE|MATHBLOCK|CALLOUT|SAFEHTML|STRIKE|MATHINLINE)\d+)\s*<\/p>/g,
+        '$1'
+    );
+
+    for (var si = 0; si < strikeTags.length; si++) {
+        html = edgeopsReplaceIndexedPlaceholder(
+            html,
+            'EDGEOPSMDSTRIKE',
+            si,
+            '<del>' + escapeHtmlForCode(strikeTags[si]) + '</del>'
+        );
+    }
 
     for (var i = 0; i < safeHtmlTags.length; i++) {
         var item = safeHtmlTags[i];
@@ -1328,74 +1426,9 @@ function markdownToHtml(text) {
         }
     }
 
-    for (var i = 0; i < inlineCodes.length; i++) {
-        html = edgeopsReplaceIndexedPlaceholder(html, 'EDGEOPSMDINLINECODE', i, '<code>' + escapeHtmlForCode(inlineCodes[i]) + '</code>');
+    for (var c = 0; c < callouts.length; c++) {
+        html = edgeopsReplaceIndexedPlaceholder(html, 'EDGEOPSMDCALLOUT', c, callouts[c]);
     }
-
-    html = html.replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>');
-    html = html.replace(/__([^_]+?)__/g, '<strong>$1</strong>');
-    html = html.replace(/\*([^*\n]+?)\*/g, '<em>$1</em>');
-    html = html.replace(/_([^_\n]+?)_/g, '<em>$1</em>');
-    html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function (_, alt, src) {
-        var u = edgeopsRewriteChatAttachmentUrl(String(src || '').trim());
-        return '<img class="chat-md-inline-image chat-attachment-image-inline" src="' + escapeHtmlForCode(u) + '" alt="' + escapeHtmlForCode(alt || 'image') + '" loading="lazy">';
-    });
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function (_, label, href) {
-        var u = edgeopsRewriteChatAttachmentUrl(String(href || '').trim());
-        return '<a href="' + escapeHtmlForCode(u) + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
-    });
-
-    // 标题：逐行识别，兼容“###标题”、全角空格、零宽字符，以及模型偶尔输出的转义形式 \#\#\#。
-    // 仅在行首识别，避免正文中的 # 被误当作标题。
-    html = html.split('\n').map(function(line) {
-        var m = String(line || '').match(/^[\s\u00a0\u3000\u200b\ufeff]*((?:\\?#){1,6})[\s\u00a0\u3000\u200b\ufeff]*(\S.*)$/);
-        if (!m) return line;
-        var marks = m[1].replace(/\\/g, '');
-        var rest = (m[2] || '').trim();
-        if (!rest) return line;
-        var level = Math.min(6, Math.max(1, marks.length));
-        return '<h' + level + '>' + formatMarkdownInline(rest) + '</h' + level + '>';
-    }).join('\n');
-
-    var lines = html.split('\n');
-    var inUl = false, inOl = false, result = [];
-    for (var j = 0; j < lines.length; j++) {
-        var line = lines[j];
-        if (/^[\s]*[-*]\s/.test(line)) {
-            if (inOl) { result.push('</ol>'); inOl = false; }
-            if (!inUl) { result.push('<ul>'); inUl = true; }
-            result.push('<li>' + formatMarkdownInline(line.replace(/^[\s]*[-*]\s+/, '')) + '</li>');
-        } else if (/^[\s]*\d+\.\s/.test(line)) {
-            if (inUl) { result.push('</ul>'); inUl = false; }
-            if (!inOl) { result.push('<ol>'); inOl = true; }
-            result.push('<li>' + formatMarkdownInline(line.replace(/^[\s]*\d+\.\s+/, '')) + '</li>');
-        } else {
-            if (inUl) { result.push('</ul>'); inUl = false; }
-            if (inOl) { result.push('</ol>'); inOl = false; }
-            result.push(line);
-        }
-    }
-    if (inUl) result.push('</ul>');
-    if (inOl) result.push('</ol>');
-    html = result.join('\n');
-
-    html = html.replace(/^---$/gm, '<hr>');
-
-    html = html.replace(/(?:^|\n)&gt;\s*\[!(NOTE|TIP|IMPORTANT|WARNING|ERROR)\]\s*([^\n]*)(\n(?:&gt;[^\n]*)*)?/gi, function(match, kind, title, body) {
-        var type = String(kind || 'NOTE').toLowerCase();
-        var bodyHtml = '';
-        if (body) {
-            bodyHtml = String(body).split('\n').map(function(line) {
-                return line.replace(/^&gt;\s?/, '').trim();
-            }).filter(Boolean).join('<br>');
-        }
-        var titleHtml = formatMarkdownInline((title || '').trim() || kind);
-        if (bodyHtml) bodyHtml = formatMarkdownInline(bodyHtml);
-        return '\n<div class="chat-callout chat-callout-' + escapeHtmlForCode(type) + '">'
-            + '<div class="chat-callout-title">' + titleHtml + '</div>'
-            + (bodyHtml ? '<div class="chat-callout-body">' + bodyHtml + '</div>' : '')
-            + '</div>\n';
-    });
 
     for (var k = 0; k < codeBlocks.length; k++) {
         var block = codeBlocks[k];
@@ -1414,13 +1447,6 @@ function markdownToHtml(text) {
         var tb = tables[t];
         html = edgeopsReplaceIndexedPlaceholder(html, 'EDGEOPSMDTABLE', t, edgeopsBuildChatMarkdownTableHtml(tb.header, tb.rows));
     }
-
-    html = html.split(/\n\n+/).map(function (para) {
-        para = para.trim();
-        if (!para) return '';
-        if (/^<(h[1-6]|ul|ol|li|p|div|table|pre|hr)/i.test(para) || /EDGEOPSMDCODEBLOCK\d|EDGEOPSMDTABLE\d/.test(para)) return para;
-        return '<p>' + para.replace(/\n/g, '<br>') + '</p>';
-    }).join('');
 
     for (var mi = 0; mi < inlineMath.length; mi++) {
         html = edgeopsReplaceIndexedPlaceholder(html, 'EDGEOPSMDMATHINLINE', mi, edgeopsRenderMathHtml(inlineMath[mi], false));
@@ -2123,6 +2149,9 @@ function edgeopsBindPromptEditPreview(opts) {
 
 if (typeof window !== 'undefined') {
     window.formatMarkdown = formatMarkdown;
+    window.markdownToHtml = markdownToHtml;
+    window.edgeopsGetMarkdownIt = edgeopsGetMarkdownIt;
+    window.edgeopsStripHtmlComments = edgeopsStripHtmlComments;
     window.edgeopsSanitizeLeakedToolMarkup = edgeopsSanitizeLeakedToolMarkup;
     window.edgeopsProseItemSummary = edgeopsProseItemSummary;
     window.edgeopsParseCommittedStreamSegments = edgeopsParseCommittedStreamSegments;
