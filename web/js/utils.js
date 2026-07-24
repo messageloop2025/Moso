@@ -524,6 +524,8 @@ function edgeopsCompactMarkdownBlankLines(text) {
 function edgeopsNormalizeSafeHref(href) {
     href = String(href || '').trim();
     if (!href) return '#';
+    // 聊天成果物协议：前端 edgeopsEnhanceArtifactLinks 会据此渲染预览/下载卡片
+    if (/^artifact:[0-9a-fA-F-]{8,}$/i.test(href)) return href;
     if (/^(https?:|mailto:|tel:|\/|#)/i.test(href)) return edgeopsRewriteChatAttachmentUrl(href);
     return '#';
 }

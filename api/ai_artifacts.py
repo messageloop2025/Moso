@@ -872,7 +872,8 @@ async def download_artifact(uuid_str: str, request: Request):
 # 其它类型仍可通过 download=1 以 attachment 方式取回。
 _INLINE_MIME_ALLOW_PREFIXES = ("text/", "image/", "application/json", "application/pdf", "application/xml")
 
-# 与 web/js/app.js `edgeopsRewriteArtifactHtmlRefs` 对齐：相对 src/href → `/files/<rel>?token=…`
+# 与 web/js/app.js `edgeopsRewriteArtifactHtmlRefs` 对齐：
+# 相对 src/href / importmap / ESM import → `/files/<rel>?token=…`
 _REL_ATTR_RE = re.compile(
     r"\b(src|href)\s*=\s*(?P<q>['\"])(?P<v>[^'\"]*)(?P=q)",
     re.IGNORECASE,
@@ -881,12 +882,46 @@ _SKIP_SCHEME_RE = re.compile(
     r"^(https?:|data:|blob:|mailto:|tel:|javascript:|#|//)",
     re.IGNORECASE,
 )
+_IMPORTMAP_SCRIPT_RE = re.compile(
+    r"(<script\b(?=[^>]*\btype\s*=\s*['\"]importmap['\"])[^>]*>)(.*?)(</script\s*>)",
+    re.IGNORECASE | re.DOTALL,
+)
+# import './x.js' | import … from './x.js' | import('./x.js') | export … from './x.js'
+_ESM_REL_SPEC_RE = re.compile(
+    r"(?P<pre>(?:\bimport\s*\(\s*|\b(?:import|export)\s+(?:type\s+)?(?:[^'\"\n;]|'[^']*'|\"[^\"]*\")*?\s+from\s+|\bimport\s+))"
+    r"(?P<q>['\"])(?P<v>\./[^'\"]+)(?P=q)",
+    re.IGNORECASE | re.DOTALL,
+)
+_REL_ASSET_EXT_RE = re.compile(
+    r"\.(?:js|mjs|cjs|css|json|wasm|map|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|otf|html?)$",
+    re.IGNORECASE,
+)
+
+
+def _is_relative_asset_url(url: str) -> bool:
+    """判断是否应改写的相对资源路径（排除 bare specifier，如 importmap 的 key `three`）。"""
+    trimmed = str(url or "").strip()
+    if not trimmed or _SKIP_SCHEME_RE.match(trimmed) or trimmed.startswith("/"):
+        return False
+    if trimmed.startswith("../") or "/../" in trimmed.replace("\\", "/"):
+        return False
+    norm = trimmed.replace("\\", "/")
+    if norm.startswith("./"):
+        return True
+    if "/" in norm:
+        return True
+    return bool(_REL_ASSET_EXT_RE.search(norm.split("?", 1)[0].split("#", 1)[0]))
 
 
 def _rewrite_artifact_html_refs_for_token(html: str, uuid_str: str, token: str) -> str:
-    """新窗口打开 `…/files/index.html?token=…` 时，浏览器解析 `./libs/x.js` 不会附带 query，
-    子资源请求缺 token → 401，图表脚本加载失败。若入口 HTML 带 ?token=，则内联返回前
-    把相对引用改写成带同一 token 的绝对路径（与站内 iframe 预览改写一致）。
+    """新窗口打开 `…/files/index.html?token=…` 时，浏览器解析相对子资源不会附带 query，
+    缺 token → 401。入口 HTML 带 ?token= 时，内联返回前把相对引用改写成带同一 token
+    的绝对路径（与站内 iframe 预览改写一致）。
+
+    覆盖：
+    - `<script src>` / `<link href>` / `<img src>` 等属性
+    - `<script type="importmap">` 内相对 URL（three ESM 常用）
+    - `import './x.js'` / `from './x.js'` / `import('./x.js')` 相对模块说明符
     """
     enc_uuid = quote(uuid_str, safe="")
     token_q = "?token=" + quote(token, safe="")
@@ -896,6 +931,8 @@ def _rewrite_artifact_html_refs_for_token(html: str, uuid_str: str, token: str) 
         if not trimmed:
             return url
         if _SKIP_SCHEME_RE.match(trimmed) or trimmed.startswith("/"):
+            return url
+        if not _is_relative_asset_url(trimmed):
             return url
         hash_part = ""
         hidx = trimmed.find("#")
@@ -921,11 +958,57 @@ def _rewrite_artifact_html_refs_for_token(html: str, uuid_str: str, token: str) 
         out += hash_part
         return out
 
-    def repl(m: re.Match[str]) -> str:
+    def rewrite_importmap_body(body: str) -> str:
+        try:
+            data = json.loads(body)
+
+            def walk(obj: Any) -> Any:
+                if isinstance(obj, dict):
+                    return {k: walk(v) for k, v in obj.items()}
+                if isinstance(obj, list):
+                    return [walk(x) for x in obj]
+                if isinstance(obj, str):
+                    return rewrite_one(obj)
+                return obj
+
+            return json.dumps(walk(data), ensure_ascii=False, indent=2)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            # JSON 解析失败时退回：只改写形如 "./libs/..." 的引号字符串
+            return re.sub(
+                r"(['\"])(\./[^'\"]+)\1",
+                lambda m: f"{m.group(1)}{rewrite_one(m.group(2))}{m.group(1)}",
+                body,
+            )
+
+    def repl_attr(m: re.Match[str]) -> str:
         attr, q, v = m.group(1), m.group("q"), m.group("v")
         return f"{attr}={q}{rewrite_one(v)}{q}"
 
-    return _REL_ATTR_RE.sub(repl, html)
+    out = _REL_ATTR_RE.sub(repl_attr, html)
+    out = _IMPORTMAP_SCRIPT_RE.sub(
+        lambda m: m.group(1) + rewrite_importmap_body(m.group(2)) + m.group(3),
+        out,
+    )
+    out = _ESM_REL_SPEC_RE.sub(
+        lambda m: f"{m.group('pre')}{m.group('q')}{rewrite_one(m.group('v'))}{m.group('q')}",
+        out,
+    )
+    return out
+
+
+# 站内预览 iframe 使用 sandbox（无 allow-same-origin）时文档 origin 为 opaque/null，
+# ESM / importmap 拉取同站绝对 URL 会走 CORS；鉴权已在 query token，故允许 *。
+_ARTIFACT_FILE_CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+    "Cross-Origin-Resource-Policy": "cross-origin",
+}
+
+
+def _with_artifact_file_cors(resp: Union[FileResponse, Response]) -> Union[FileResponse, Response]:
+    for key, val in _ARTIFACT_FILE_CORS_HEADERS.items():
+        resp.headers[key] = val
+    return resp
 
 
 async def _serve_artifact_file(
@@ -959,7 +1042,14 @@ async def _serve_artifact_file(
     import mimetypes as _mt
     mt, _ = _mt.guess_type(target.name)
     mt = mt or "application/octet-stream"
-    want_inline = not bool(download) and any(mt.startswith(p) for p in _INLINE_MIME_ALLOW_PREFIXES)
+    # .js / .mjs 在部分环境被猜成 application/javascript，需 inline + CORS 才能给 sandbox 预览里的 ESM 用
+    if mt in ("application/javascript", "text/javascript", "application/ecmascript"):
+        mt = "text/javascript"
+    want_inline = not bool(download) and (
+        any(mt.startswith(p) for p in _INLINE_MIME_ALLOW_PREFIXES)
+        or mt == "text/javascript"
+        or target.suffix.lower() in (".js", ".mjs", ".cjs", ".wasm", ".map")
+    )
     if want_inline:
         q_token = (request.query_params.get("token") or "").strip()
         if q_token and mt.startswith("text/html"):
@@ -970,19 +1060,25 @@ async def _serve_artifact_file(
             else:
                 body = _rewrite_artifact_html_refs_for_token(raw_html, uuid_str, q_token)
                 disp = f'inline; filename="{re.sub(r"[^A-Za-z0-9._-]+", "_", target.name) or "index.html"}"'
-                return Response(
-                    content=body.encode("utf-8"),
-                    media_type="text/html; charset=utf-8",
-                    headers={"Content-Disposition": disp},
+                return _with_artifact_file_cors(
+                    Response(
+                        content=body.encode("utf-8"),
+                        media_type="text/html; charset=utf-8",
+                        headers={"Content-Disposition": disp},
+                    )
                 )
         # Starlette 0.33+ 支持 content_disposition_type="inline"；毛竹 运行在 0.52
-        return FileResponse(
-            str(target),
-            media_type=mt,
-            filename=target.name,
-            content_disposition_type="inline",
+        return _with_artifact_file_cors(
+            FileResponse(
+                str(target),
+                media_type=mt,
+                filename=target.name,
+                content_disposition_type="inline",
+            )
         )
-    return FileResponse(str(target), media_type=mt, filename=target.name)
+    return _with_artifact_file_cors(
+        FileResponse(str(target), media_type=mt, filename=target.name)
+    )
 
 
 @router.get("/{uuid_str}/file")
@@ -1017,8 +1113,8 @@ async def artifact_file_by_path(
 
     新窗口 URL 常为 `…/files/index.html?token=…`：相对脚本不会继承 query，
     子资源请求缺 token 会 401。对带 `?token=` 的 **HTML** 内联响应，服务端
-    会把相对 `src`/`href` 改写成带同一 token 的绝对路径（与站内 iframe 预览
-    `edgeopsRewriteArtifactHtmlRefs` 一致）。
+    会把相对 `src`/`href`、`importmap`、ESM `import './…'` 改写成带同一 token
+    的绝对路径（与站内 iframe 预览 `edgeopsRewriteArtifactHtmlRefs` 一致）。
 
     `_validate_relative_path` 已经吸收 `./`、拒绝 `..`，越界路径会返回 400。
     鉴权与 `/file` 完全一致（token 走 query，cookie 走 header）。

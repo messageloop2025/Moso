@@ -2659,7 +2659,8 @@ function edgeopsEnhanceChatAttachmentLinks(rootEl) {
 
 /**
  * AI 成果物站内预览：根据 entry_file 扩展名选择渲染方式，全部在当前 Web 页面的模态窗口里完成。
- *  - HTML / HTM → iframe srcdoc（bundle 的相对资源 src/href 自动重写为 /api/ai/artifacts/.../file?path=...）
+ *  - HTML / HTM → iframe.src 路径式 `/files/<rel>?token=…`（与「新窗口打开」一致；
+ *    不用 srcdoc：null origin + 绝对脚本 URL 会触发 CORS，ESM/importmap 无法加载）
  *  - Markdown / MDX → markdownToHtml 渲染到 DIV
  *  - TXT / LOG / YAML / XML / INI / TOML → <pre> 文本
  *  - CSV / TSV → 简易表格（最多 500 行）
@@ -2689,12 +2690,25 @@ function edgeopsFetchArtifactText(uuid, relPath) {
  */
 function edgeopsRewriteArtifactHtmlRefs(html, uuid) {
     var tokenQuery = (API && API.token) ? ('?token=' + encodeURIComponent(API.token)) : '';
+    function isRelativeAssetUrl(url) {
+        var trimmed = String(url || '').trim();
+        if (!trimmed) return false;
+        if (/^(https?:|data:|blob:|mailto:|tel:|javascript:|#|\/\/)/i.test(trimmed)) return false;
+        if (trimmed.charAt(0) === '/') return false;
+        var norm = trimmed.replace(/\\/g, '/');
+        if (norm.indexOf('../') === 0 || norm.indexOf('/../') !== -1) return false;
+        if (norm.indexOf('./') === 0) return true;
+        if (norm.indexOf('/') !== -1) return true;
+        var pathOnly = norm.split('?')[0].split('#')[0];
+        return /\.(?:js|mjs|cjs|css|json|wasm|map|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|otf|html?)$/i.test(pathOnly);
+    }
     function rewriteOne(url) {
         if (!url) return url;
         var trimmed = String(url).trim();
         if (!trimmed) return url;
         if (/^(https?:|data:|blob:|mailto:|tel:|javascript:|#|\/\/)/i.test(trimmed)) return url;
         if (trimmed.charAt(0) === '/') return url;
+        if (!isRelativeAssetUrl(trimmed)) return url;
         // 拆成 path + 查询/hash，分别处理
         var hashIdx = trimmed.indexOf('#');
         var hash = '';
@@ -2715,9 +2729,39 @@ function edgeopsRewriteArtifactHtmlRefs(html, uuid) {
         if (hash) out += hash;
         return out;
     }
-    return String(html || '').replace(/\b(src|href)\s*=\s*(['"])([^'"]*)\2/gi, function(_m, attr, q, v) {
+    function rewriteImportmapBody(body) {
+        try {
+            var data = JSON.parse(body);
+            function walk(obj) {
+                if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+                    var o = {};
+                    Object.keys(obj).forEach(function(k) { o[k] = walk(obj[k]); });
+                    return o;
+                }
+                if (Array.isArray(obj)) return obj.map(walk);
+                if (typeof obj === 'string') return rewriteOne(obj);
+                return obj;
+            }
+            return JSON.stringify(walk(data), null, 2);
+        } catch (_e) {
+            return String(body || '').replace(/(['"])(\.\/[^'"]+)\1/g, function(_m, q, v) {
+                return q + rewriteOne(v) + q;
+            });
+        }
+    }
+    var out = String(html || '').replace(/\b(src|href)\s*=\s*(['"])([^'"]*)\2/gi, function(_m, attr, q, v) {
         return attr + '=' + q + rewriteOne(v) + q;
     });
+    // importmap：three ESM 常用；相对 URL 不会继承入口 ?token=
+    out = out.replace(/(<script\b(?=[^>]*\btype\s*=\s*['"]importmap['"])[^>]*>)([\s\S]*?)(<\/script\s*>)/gi, function(_m, open, body, close) {
+        return open + rewriteImportmapBody(body) + close;
+    });
+    // ESM：import './x.js' / from './x.js' / import('./x.js')
+    out = out.replace(
+        /((?:\bimport\s*\(\s*|\b(?:import|export)\s+(?:type\s+)?(?:[^'"\n;]|'[^']*'|"[^"]*")*?\s+from\s+|\bimport\s+))(['"])(\.\/[^'"]+)\2/gi,
+        function(_m, pre, q, v) { return pre + q + rewriteOne(v) + q; }
+    );
+    return out;
 }
 
 function edgeopsCsvToTableHtml(text, delim) {
@@ -3027,19 +3071,26 @@ function edgeopsOpenArtifactPreview(uuid, meta) {
             bodyEl.appendChild(frame);
             return;
         }
-        if (/\.(html?|md|markdown|mdx|txt|log|csv|tsv|json|xml|ya?ml|ini|toml)$/i.test(lower)) {
+        // HTML：直接用路径式 URL 作 iframe.src（后端对带 token 的 HTML 会改写 importmap/相对引用）。
+        // 若用 srcdoc，文档 origin 为 null，改写后的绝对 /api/... 脚本会被 CORS 拦截（ESM 必挂）。
+        if (/\.html?$/i.test(lower)) {
+            if (!viewUrl) {
+                showError(t('artifact.previewFailed'));
+                return;
+            }
+            var htmlFrame = document.createElement('iframe');
+            htmlFrame.className = 'edgeops-artifact-preview-frame';
+            htmlFrame.setAttribute('title', (art && art.title) || 'HTML');
+            // 不加 allow-same-origin：预览页脚本不能直接读写父页面；子资源靠后端 CORS。
+            htmlFrame.setAttribute('sandbox', 'allow-scripts allow-popups allow-forms');
+            htmlFrame.src = viewUrl;
+            bodyEl.innerHTML = '';
+            bodyEl.appendChild(htmlFrame);
+            return;
+        }
+        if (/\.(md|markdown|mdx|txt|log|csv|tsv|json|xml|ya?ml|ini|toml)$/i.test(lower)) {
             edgeopsFetchArtifactText(uuid, path).then(function(text) {
-                if (/\.html?$/i.test(lower)) {
-                    // srcdoc 没有 base URL，所有相对引用（./libs/x.js、css/y.css、img/z.png …）
-                    // 都解析失败 → 不分 kind，统一改写为带 token 的 /file?path=... 后端绝对路径。
-                    var src = edgeopsRewriteArtifactHtmlRefs(text, uuid);
-                    var iframe = document.createElement('iframe');
-                    iframe.className = 'edgeops-artifact-preview-frame';
-                    iframe.setAttribute('sandbox', 'allow-scripts allow-popups allow-forms');
-                    iframe.srcdoc = src;
-                    bodyEl.innerHTML = '';
-                    bodyEl.appendChild(iframe);
-                } else if (/\.(md|markdown|mdx)$/i.test(lower)) {
+                if (/\.(md|markdown|mdx)$/i.test(lower)) {
                     bodyEl.innerHTML = '<div class="edgeops-artifact-preview-markdown"></div>';
                     bodyEl.querySelector('.edgeops-artifact-preview-markdown').innerHTML = markdownToHtml(text);
                 } else if (/\.(csv|tsv)$/i.test(lower)) {
