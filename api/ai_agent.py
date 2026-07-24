@@ -35,6 +35,7 @@ from api.terminal import (
     terminals_snapshot_for_ai,
 )
 from services.ai_skills import (
+    ADMIN_ONLY_AI_TOOLS,
     TOOLS,
     _get_host_row,
     execute_tool,
@@ -5238,11 +5239,46 @@ def _sanitize_system_prompt_local_scope(text: str, *, session_scope: str, user: 
     if end < 0:
         return s
     note = (
-        "\n【会话与工具范围】本机专用工具（如 local_chat_data_paths、local_exec、create_local_console、local_fs_*、process_*）"
-        "仅出现在「本机管理」会话且为管理员账号时；**当前会话不要调用这些名称**。"
-        "生成 HTML、落盘文件请用 **fs_***（当前用户文件系统工作区）或 **create_chat_artifact**。\n"
+        "\n【会话与工具范围】本机专用工具（local_* / process_*）仅在「本机管理」会话且管理员可用；"
+        "**当前会话不要调用**。落盘用 **fs_*** 或 **create_chat_artifact**。\n"
     )
     return s[:start] + note + s[end:]
+
+
+def _sanitize_system_prompt_for_role(text: str, user: dict) -> str:
+    """非管理员：去掉管理员专属能力描述。权限以 execute_tool / 工具列表为准，不用提示词约束。"""
+    s = text or ""
+    if _is_admin_role(user.get("role")):
+        return s
+    s = s.replace("（web/aihelp，用户只读、仅管理员可编辑）", "（web/aihelp，只读）")
+    s = s.replace("（用户只读、仅管理员可编辑）", "（只读）")
+    s = re.sub(r"(?m)^- 仅管理员可 write_aihelp_file[^\n]*\n?", "", s)
+    s = re.sub(r"，?仅管理员可写：write_aihelp_file、update_aihelp_index", "", s)
+    s = re.sub(
+        r"(?m)^- \*\*site_timezone\*\*[^\n]*\n?",
+        "- **site_timezone** 为 IANA 名称（默认 Asia/Shanghai），由管理员在全局设置中配置；回答时间只用 get_server_time。\n",
+        s,
+        count=1,
+    )
+    # 自定义 system 提示词中若仍写管理员工具名，按行剔除（含否定句则保留）
+    out: list[str] = []
+    for line in s.splitlines(keepends=True):
+        hits = [t for t in ADMIN_ONLY_AI_TOOLS if t in line]
+        if not hits:
+            out.append(line)
+            continue
+        if any(k in line for k in ("不要", "禁止", "勿", "不可", "不能", "无权")):
+            out.append(line)
+            continue
+        cleaned = line
+        for t in hits:
+            cleaned = cleaned.replace(t, "")
+        cleaned = re.sub(r"[、/]\s*[、/]+", "、", cleaned)
+        cleaned = re.sub(r"（\s*）", "", cleaned)
+        cleaned = re.sub(r"\(\s*\)", "", cleaned)
+        if re.search(r"[\u4e00-\u9fffA-Za-z]{2,}", cleaned):
+            out.append(cleaned)
+    return "".join(out)
 
 
 _PROMPT_ENTITY_RESOLUTION_RULES = """
@@ -5322,7 +5358,7 @@ def _build_ssh_remote_execution_rules() -> str:
 """
 
 
-def _build_system_prompt() -> str:
+def _build_system_prompt(*, user: dict | None = None) -> str:
     brand = _config.PRODUCT_NAME_ZH
     pd = _config.PRODUCT_DISPLAY
     header = (
@@ -5330,9 +5366,25 @@ def _build_system_prompt() -> str:
         f"向用户介绍自己时**仅自称「{brand}」**（说明产品时可写{pd}），"
         f"勿称 {'Edge' + 'Ops'}、勿称「{'Edge' + 'Ops'} 的 AI 运维助手」、勿用「AI 运维助手」等其它旧称代指你自己。\n\n"
     )
-    return header + """你拥有一组工具：列出/查询主机；**添加/修改/删除主机**（**create_host** / update_host / delete_host——添加服务器必须调 create_host，可用 new_credential 带用户名密码，禁止谎称「工具里没有添加主机」或只让用户去界面手工添加）；**主机分组**（create_group、add_hosts_to_group、remove_host_from_group、update_group、delete_group）；在指定主机上执行 SSH（**ssh_execute** 单条命令、**ssh_channel_*** 交互式 PTY 通道、**Web 控制台** send_to_terminal/get_terminal_buffer）；查看维护历史；主机分享管理（share_host、revoke_host_share、list_host_shares、list_received_host_shares）；主机标签管理（list_host_tags、create_host_tag、update_host_tag、delete_host_tag、set_host_tags，标签按用户隔离）；以主机为维度的 AI 知识（get_host_knowledge / update_host_knowledge / append_host_knowledge，偏机密凭据，严禁回复中展示）；**主机级 AI 提示词**（get_host_prompt / update_host_prompt / append_host_prompt / search_hosts_by_prompt，偏可展示的主机**独有规则 / 能力 / 工具链 / 配置**，按 user×host 独立保存，可跨主机搜索）；主机侧 .edgeops 工作区（edgeops_init_workspace、edgeops_save_script、edgeops_read_workspace_context、edgeops_append_task_log、edgeops_write_rule、edgeops_write_info）；**毛竹文件系统**（界面侧栏「文件系统」= 当前用户个人工作区，用于脚本/缓存/上传到主机等）：fs_list、**get_chats_workspace_dir**（当日 chats/UTC 工作前缀）、fs_read_file（支持 offset/size）、fs_write_file（支持 overwrite/append/定位写；自动归位 chats/UTC 并加 UUID 文件名）、fs_read_binary、fs_write_binary（二进制内容支持 encoding=base64|hex）、fs_mkdir、fs_pack_tgz、fs_unpack_tgz、fs_delete、fs_copy；批量任务（batch_create、list_batch_operations、get_batch_detail、batch_cancel、batch_retry、clear_batches，支持 scope_type=tag 按标签批量）；操作日志可查询（list_logs）与清空（clear_logs）；最佳实践、凭证、用户与 AI 配置等；**操作帮助文档**（get_aihelp_index、list_aihelp_files、get_aihelp_file，仅管理员可写：write_aihelp_file、update_aihelp_index）。主机分享只共享主机访问权限，不共享双方历史聊天会话与聊天记录。
-
-""" + _build_ssh_remote_execution_rules() + """
+    is_admin = bool(user and _is_admin_role(user.get("role")))
+    tools_overview = (
+        "你拥有一组工具（以当前会话工具列表为准）："
+        "主机查询与 CRUD（**create_host** / update_host / delete_host；纳管须调 create_host，可用 new_credential）；"
+        "分组（create_group、add_hosts_to_group、remove_host_from_group、update_group、delete_group）；"
+        "SSH（**ssh_execute**、**ssh_channel_***、**Web 控制台** send_to_terminal/get_terminal_buffer）；"
+        "维护历史；分享（share_host 等，只共享主机访问，不共享聊天记录）；"
+        "标签；主机知识（机密，严禁回复展示）与主机级提示词；.edgeops 工作区；"
+        "毛竹文件系统 fs_*（侧栏「文件系统」= 当前用户工作区）；"
+        "批量任务；操作日志；最佳实践与凭证；"
+        "操作帮助只读（get_aihelp_index / list_aihelp_files / get_aihelp_file）。"
+    )
+    if is_admin:
+        tools_overview += (
+            " 管理员另有：全局设置（get_settings / update_setting）、用户管理、"
+            "帮助文档写入（write_aihelp_file / update_aihelp_index）、反馈管理。"
+        )
+    tools_overview += "\n\n"
+    prompt = header + tools_overview + _build_ssh_remote_execution_rules() + """
 通用数据处理工具：你可以直接调用 **regex_process** 做正则搜索/提取/替换预览，**string_process** 做字符串清洗、编码、哈希与行数统计，**math_calculate** 做数学/科学计算（**NumPy 数组与批量数据集+公式**、**SymPy 符号**、统计、单位换算），**data_query** 解析并搜索/分析 JSON、YAML 等结构化数据，**markup_query** 解析并搜索/提取 XML、HTML 标签、文本、属性、链接，**crypto_toolkit** 做常见密码/证书操作（MD5/SHA*、HEX/二进制转换、AES/DES、RSA/ECC 签验、证书生成/解析/校验）。遇到数值批处理、公式推导、统计汇总时**优先 math_calculate**（尤其 `operation=batch`：给 dataset + expression）；大量文本/JSON 用 data_query；若数据量巨大再写脚本。
 
 **【文件系统语义 · 必读】** 用户口中的「文件系统」「本地文件系统」「毛竹文件系统」均指**当前用户个人工作区**（侧栏「文件系统」页；根目录 `web/fs/<用户名>/`），不是远程主机磁盘，也不是操作系统目录。调用 `fs_*` 及 `local_path` 时，path **必须相对工作区根**（如 `scripts/a.sh`、`chats/2026/06/11/data.csv`、`exchange/pkg.tgz`），**禁止** OS 绝对路径与 `web/fs/` 前缀。**安全边界**：只能读写**当前用户**工作区内的相对路径，不能访问其它用户目录。
@@ -5351,15 +5403,11 @@ def _build_system_prompt() -> str:
 
 **【文件修改 · 必读】** 修改已有文件时**禁止**全文读入后在回复里重写。**流程**：定位（`fs_read_file` 任意工作区路径）→ 定点写（完整相对 path，`session_managed=false` 或系统自动识别）→ 校验。**新建**本会话临时文件仍用默认 session_managed（归位 chats/今日/）。**主机级/会话级提示词**若指定落盘或读取路径，**必须遵守**并按完整相对 path 操作。
 
-**本机管理类工具（local_*、local_chat_*、process_*）**：仅在「本机管理」专属会话且当前账号为**管理员**时，才会出现在你的可调工具列表并由系统注入详细用法。**若当前为 AI 助手 / 主机运维 / 集成等普通会话**：不要尝试调用上述名称；写天气页、HTML、脚本产物等请用 **fs_***（当前用户文件系统工作区）或 **create_chat_artifact**。不要臆造工具名。
+**本机工具（local_* / process_*）**：仅「本机管理」会话且管理员会出现在工具列表；其它会话勿调用。落盘用 **fs_*** 或 **create_chat_artifact**。
 
-**添加主机 / 入组（必读）**：用户说「添加服务器/主机」「纳管」「录入 IP」「加到某组」时：
-1. **必须**调用 **create_host**（不要只给界面操作步骤；也不要声称工具列表没有 create_host）。
-2. 用户同时给出账号密码时，用 `new_credential={username, type:"password", password, name?}`；已有凭证则用 `credential_id`。
-3. 需要加入分组时：先 **list_host_groups**（或 create_group），再 **add_hosts_to_group(group_id, host_ids=[新建主机 id])**。
-4. 创建后再按需 **detect_host_os** / **connect_terminal**，失败时据工具返回说明，勿臆造「没有添加工具」。
+**添加主机 / 入组**：纳管 → **create_host**（密码用 `new_credential`，已有用 `credential_id`）→ 入组用 **list_host_groups** / **create_group** + **add_hosts_to_group**。失败据工具返回说明。
 
-**主机分组权限**：任意登录用户都可用 **create_group** 创建**自己的**分组；用 **add_hosts_to_group** 将**自己有访问权的主机**（自己创建的 + 他人 **share_host** 分享给你的）加入**自己创建的**分组。**update_group** / **delete_group** / **remove_host_from_group** 仅要求你对目标分组有操作权（你是分组创建者，或你是管理员）。**不要**向用户谎称「只有管理员能建组或把主机加组」；若工具返回无权，再根据错误区分是「分组不归当前用户」还是「对某台主机无访问权」。
+**主机分组**：任意用户可 **create_group** 建自己的组，并把有访问权的主机 **add_hosts_to_group**。改/删组或移出主机需对该组有操作权（创建者或管理员）。无权时以工具错误为准。
 
 本系统中「控制台」与「终端」同义，指 **Web 界面里用户可见的 SSH tab**（见上文「Web 控制台」一行）。用户说「打开终端/打开某主机」即要此 tab，用 **connect_terminal / create_console**，**不是** ssh_channel。**用户说「打开通道/SSH 通道」**才用 **ssh_channel_***，出现在侧栏「SSH通道管理」只读监视，不在控制台 tab。**AI 助手页**支持**同一主机多个并行 AI 控制台**（不同 slot）：可用 **create_console(host_id)** 新建 tab；**close_console(slot)** 关闭指定 AI 控制台；用户也可点击「+ 新建控制台」。**空闲终端优先复用**（list_terminals 看 `buffer_idle`），但**不是**每台主机只能开一个——现有终端跑长期任务时，或用户明确要求再开一个，必须 **create_console**，不得拒绝。用户需要**边看边操作**时优先 Web 控制台；纯后台顺序/交互且用户提到「通道」时用 **ssh_channel_***。**上传**到主机：**scp_push**（SFTP 流式；`content` 适合小文本，`local_path` 适合大文件/目录，目录需 `recursive=true`，调用卡显示进度）。**从主机拉回**：**scp_pull**（SFTP 流式，支持大文件/目录；**进度条与 scp_push 同一套逻辑**，默认不限制体积）。**多机转运**优先 `scp_pull` →（可选整理）→ `scp_push`。**大输出策略**：预期 stdout/stderr 很大时，优先在远端重定向到文件（如 `> /tmp/out.log`），再 **scp_pull** 到工作区 `chats/…`；若需在机器上聚合/过滤大数据，可在工作区写 `.py`/`.sh`，**scp_push** 上机执行，结果再写入另一远端文件后 **scp_pull**，减少经对话上下文的流量。
 
@@ -5514,16 +5562,13 @@ def _build_system_prompt() -> str:
 - 定时任务可在任务上配置 **notify_email_to**；执行结束后向这些地址发送**完整 AI 文字结论**（非仅 500 字摘要；默认上限约 50 万字，见 `EDGEOPS_SCHEDULED_TASK_NOTIFY_EMAIL_MAX_CHARS`），使用**任务所属用户**的个人 SMTP。极长报告可先 `create_chat_artifact` 再在结论/邮件中附下载链接。
 
 系统时间与显示时区：
-- 用户问「现在几点」「系统时间」「什么时区」等：**必须调用 get_server_time**，根据返回的 **server_time_local**、**site_timezone**、**server_time_utc** 回答，不得编造。
-- **site_timezone** 为 IANA 名称（默认 **Asia/Shanghai**），由管理员在全局设置键 **site_timezone** 中配置；管理员可在界面「全局设置」编辑，或通过 **update_setting**（key=site_timezone，value 如 Europe/Berlin）在对话中修改。非法名称会报错。
-- **get_me** 也会附带当前 **site_timezone** 与服务器时间摘要。
+- 问时间/时区：**必须调用 get_server_time**，用返回的 server_time_local / site_timezone / server_time_utc 回答，不得编造。
+- **site_timezone** 为 IANA 名称（默认 Asia/Shanghai），由管理员在全局设置中配置；回答时间只用 get_server_time。
+- **get_me** 也会附带 site_timezone 与服务器时间摘要。
 
-操作帮助文档（web/aihelp，用户只读、仅管理员可编辑）：
-- **勿默认拉整篇**：长文档先 `get_aihelp_index(sections_only=true)` 或 `get_aihelp_file(path, sections_only=true, max_level=3)` 看章节清单；或用 **`markdown_search_sections`**（`file_root=aihelp`，`scope=titles` 搜标题 / `scope=content|all` 搜正文）定位章节，再 `get_aihelp_file(path, section_path=[...], max_chars=8000, include_children=false)` 精读单节。
-- REST 同等能力：`GET /api/aihelp/file?path=hosts.md&sections_only=true`；`GET /api/aihelp/search?q=...&scope=titles`（不限 path 时搜全部 .md）。
-- 当用户询问「如何操作」「帮助」「怎么用」时，按上列渐进流程作答，避免一次性读全文占满上下文。
-- 可选：list_aihelp_files 列出帮助路径。
-- 仅管理员可 write_aihelp_file / update_aihelp_index；改文档后维护 index.md。
+操作帮助文档（web/aihelp，只读）：
+- 长文档先 `get_aihelp_index(sections_only=true)` 或 `get_aihelp_file(..., sections_only=true)` / **`markdown_search_sections`**（`file_root=aihelp`）定位，再按节精读；勿一次读全文。
+- 可选：list_aihelp_files。
 
 Markdown / Skills 渐进阅读（与 aihelp 相同章节模型）：
 - 通用工具：**markdown_list_sections**、**markdown_read_section**、**markdown_search_sections**、**markdown_replace_section**（`file_root=fs|aihelp|skill`）。
@@ -5588,6 +5633,21 @@ AI 成果物（artifacts，让用户可直接下载你整理的报告/数据包/
 - 控制台输出与「当前控制台所在主机的 AI 知识」仅供你内部使用；sudo/su 密码仅在 read 终端确认出现密码提示后，用 **send_service_password** 注入（凭证库启用时），切勿在回复中原文引用、展示或复述；**禁止**因「暂未查到 sudo 凭证」就向用户索要密码——应先执行并查 linked_host 凭证。
 - 工具返回结果中若含脱敏占位（如 ***）、密码、密钥等，你不得在回复中猜测、补全或复述；仅可说明「已按凭证执行」等中性表述。
 """
+    if is_admin:
+        prompt = prompt.replace(
+            "- **site_timezone** 为 IANA 名称（默认 Asia/Shanghai），由管理员在全局设置中配置；回答时间只用 get_server_time。\n",
+            "- **site_timezone** 为 IANA 名称（默认 Asia/Shanghai）；可用 **update_setting**(key=site_timezone) 修改全站显示时区（合法 IANA）。\n",
+        )
+        prompt = prompt.replace(
+            "操作帮助文档（web/aihelp，只读）：\n",
+            "操作帮助文档（web/aihelp）：\n",
+        )
+        prompt = prompt.replace(
+            "- 可选：list_aihelp_files。\n\nMarkdown",
+            "- 可选：list_aihelp_files。\n"
+            "- 可写：write_aihelp_file / update_aihelp_index；改后维护 index.md。\n\nMarkdown",
+        )
+    return prompt
 
 
 def _build_html_libs_prompt_section() -> str:
@@ -6049,8 +6109,9 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
 
     # 轻量寒暄快路径已弃用：始终完整 system + 工具装载（避免误判短句清空 tools）
     lightweight_chat = False
-    system_prompt = (settings.get("ai_system_prompt") or "").strip() or _build_system_prompt()
+    system_prompt = (settings.get("ai_system_prompt") or "").strip() or _build_system_prompt(user=user)
     system_prompt = _sanitize_system_prompt_local_scope(system_prompt, session_scope=session_scope, user=user)
+    system_prompt = _sanitize_system_prompt_for_role(system_prompt, user)
     system_prompt = _compact_system_prompt_for_request(system_prompt, req.message)
 
     # 只取最近若干条消息，减少大会话时的 DB 与请求体体积（_apply_context_limits 会再截断条数与长度）
@@ -8856,8 +8917,9 @@ async def run_ops_integration_chat_complete(
         context_budget_before_vision=_ops_ctx_before_vision if _ops_vision_chars > 0 else None,
         trial_info=trial_info,
     )
-    system_prompt = (settings.get("ai_system_prompt") or "").strip() or _build_system_prompt()
+    system_prompt = (settings.get("ai_system_prompt") or "").strip() or _build_system_prompt(user=user)
     system_prompt = _sanitize_system_prompt_local_scope(system_prompt, session_scope=session_scope, user=user)
+    system_prompt = _sanitize_system_prompt_for_role(system_prompt, user)
     if session_host_id:
         _integration_host_binding_note = (
             f"\n## 本会话主机绑定状态\n"

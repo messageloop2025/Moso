@@ -1581,7 +1581,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "create_credential",
-            "description": "新建凭证。需管理员。type 必须与认证方式一致：type=password 时填 username、password；type=key_pair 时填 username 及 public_key/private_key（或 key_type、key_bits）。提供 private_key 或 public_key 时 type 必须为 key_pair，不能为 password。",
+            "description": "新建凭证（归属当前用户）。type 须与认证方式一致：password 填 username+password；key_pair 填 username+private_key（public_key 可选）。提供私钥/公钥时 type 必须为 key_pair。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1604,7 +1604,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "update_credential",
-            "description": "更新凭证（code、name、description、username、password 或公钥私钥）。需管理员。",
+            "description": "更新本人凭证（code、name、description、username、password 或公钥私钥）。管理员可改任意凭证。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3306,7 +3306,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_server_time",
-            "description": "获取 毛竹（Moso）服务器当前时间与站点显示时区。任意登录用户可调用。返回 site_timezone（IANA，默认 Asia/Shanghai）、server_time_local、server_time_utc。用于回答「现在几点」「系统时间」「什么时区」；勿编造时间。管理员可用 update_setting 设置 key=site_timezone 修改全站显示时区（合法 IANA 如 Asia/Shanghai、UTC）。",
+            "description": "获取 毛竹（Moso）服务器当前时间与站点显示时区。任意登录用户可调用。返回 site_timezone（IANA，默认 Asia/Shanghai）、server_time_local、server_time_utc。用于回答「现在几点」「系统时间」「什么时区」；勿编造时间。",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -7219,8 +7219,20 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
     sub_ai_batch_start / sub_ai_batch_end / chain_step_line / chain_step_end / chain_step_skip）。
     ui_locale: 可选；浏览器/界面 BCP-47（如 zh-CN、en），传入时子技能（如 delegate_to_edgeops_ai）可将回复语言策略与界面一致。
     chat_mode: 可选；会话聊天模式。问答模式下写类工具在本函数入口硬拒（含嵌套调用）；未传时按 session_id 读库。
-    权限由本函数内程序逻辑强制校验，不依赖 AI 描述。本机类工具仅在本机管理会话中且仅管理员可调用。"""
+    权限由本函数内程序逻辑强制校验，不依赖 AI 描述。本机类工具仅在本机管理会话中且仅管理员可调用。
+    ADMIN_ONLY_AI_TOOLS 在入口统一拒绝非管理员（即使绕过 tools 列表）。"""
     try:
+        # —— 管理员专属工具：代码门禁（不依赖提示词 / tools 列表过滤）——
+        if name in ADMIN_ONLY_AI_TOOLS and not _is_admin(user):
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "需要管理员权限",
+                    "code": "admin_required",
+                    "tool": name,
+                },
+                ensure_ascii=False,
+            )
         # —— 问答 / 严格模式硬门禁（execute_tool 入口，不可被 agent 循环旁路）——
         try:
             from services.chat_mode_enforce import (

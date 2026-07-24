@@ -101,6 +101,9 @@ HOST_MGMT_TOOL_NAMES: frozenset[str] = frozenset({
     "delete_host_tag",
     "set_host_tags",
     "list_credentials",
+    "create_credential",
+    "update_credential",
+    "delete_credential",
 })
 
 CORE_TOOL_NAMES: frozenset[str] = frozenset({
