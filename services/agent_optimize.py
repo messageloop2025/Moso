@@ -81,6 +81,28 @@ _STREAMING_OR_STATE_TOOLS: frozenset[str] = frozenset({
 
 # —— 工具分层 —— #
 
+# 主机/分组/标签 CRUD：必须进 core。否则「添加服务器到某组」只开 core+terminal 时
+# tools 里没有 create_host，模型会误称「没有添加主机能力」（提示词却提到了创建主机）。
+HOST_MGMT_TOOL_NAMES: frozenset[str] = frozenset({
+    "create_host",
+    "update_host",
+    "delete_host",
+    "create_group",
+    "update_group",
+    "delete_group",
+    "add_hosts_to_group",
+    "remove_host_from_group",
+    "share_host",
+    "revoke_host_share",
+    "list_host_shares",
+    "list_received_host_shares",
+    "create_host_tag",
+    "update_host_tag",
+    "delete_host_tag",
+    "set_host_tags",
+    "list_credentials",
+})
+
 CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "list_hosts",
     "search_hosts",
@@ -121,7 +143,7 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "get_aihelp_index",
     "list_aihelp_files",
     "get_aihelp_file",
-})
+}) | HOST_MGMT_TOOL_NAMES
 
 TERMINAL_TOOL_NAMES: frozenset[str] = frozenset({
     "send_to_terminal",
@@ -235,6 +257,7 @@ _HTTP_HINT_RE = re.compile(
 )
 _CORE_HINT_RE = re.compile(
     r"(主机|服务器|分组|标签|列表|搜索|查一下|有哪些|详情|提示词|知识库|"
+    r"添加|新建|加入|加组|纳管|录入|create_host|add_hosts|"
     r"list_hosts|search_hosts|get_host)",
     re.IGNORECASE,
 )
@@ -568,7 +591,8 @@ def should_skip_assistant_after_chat(
 
 
 _FORCE_FULL_FOLLOWUP_RE = re.compile(
-    r"(tool.?call|工具调用|自己执行|真实执行|真的去|自己跑|发起调用|假执行)",
+    r"(tool.?call|工具调用|自己执行|真实执行|真的去|自己跑|发起调用|假执行|"
+    r"调用一下|试试调用|你调用|再调用|没有.*工具|工具集中没有|工具列表没有)",
     re.IGNORECASE,
 )
 

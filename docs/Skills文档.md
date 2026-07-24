@@ -29,7 +29,7 @@
 | list_terminals | 查询当前 AI 助手页所有控制台列表（slot、host_id、created_by、connected） | — |
 | create_console | 在 AI 助手页动态创建新控制台并连接指定主机（多机协同） | host_id |
 | close_console | 关闭由 AI 创建的控制台 | slot |
-| create_host | 新建 SSH 主机（需管理员） | name, host, port?, credential_id? / new_credential?, description?, aliases?, remark? |
+| create_host | 新建 SSH 主机（任意登录用户；可用 new_credential 带账号密码） | name, host, port?, credential_id? / new_credential?, description?, aliases?, remark?, allow_duplicate? |
 | update_host | 更新主机信息（**aliases** 传入为整表替换，**[]** 清空别名） | host_id, name? / host? / port? / credential_id? / description? / aliases? / remark? 等 |
 | delete_host | 删除主机：所有者/管理员真实删除；接收分享用户调用时解除分享 | host_id |
 | share_host | 分享主机给指定用户（所有者/管理员） | host_id, user_id? / username? |

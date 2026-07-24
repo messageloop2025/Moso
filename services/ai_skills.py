@@ -1339,7 +1339,14 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "create_host",
-            "description": "新建 SSH 主机。需管理员。必须提供 credential_id（选择已有凭证）或 new_credential（新建凭证并自动保存、关联到该主机）。不内联账号密码。重复判定：同一所有者下地址（忽略大小写）+ 端口（未指定则 22）均相同视为重复；若 duplicate 且未传 allow_duplicate 会返回已有主机及所有者信息，用户确认后可传 allow_duplicate=true 强制添加。",
+            "description": (
+                "新建 SSH 主机（任意登录用户可用，非仅管理员）。"
+                "必须提供 credential_id（已有凭证）或 new_credential（新建凭证并自动保存、关联）。"
+                "用户给出「IP + 用户名/密码」时：用 new_credential={code?, name?, username, type:password, password}。"
+                "不在其它字段内联账号密码。重复判定：同一所有者下地址（忽略大小写）+ 端口（默认 22）相同视为重复；"
+                "若返回 duplicate 且未传 allow_duplicate，需用户确认后再传 allow_duplicate=true。"
+                "创建成功后若要加入分组，再调 add_hosts_to_group（可先 list_host_groups / create_group）。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {

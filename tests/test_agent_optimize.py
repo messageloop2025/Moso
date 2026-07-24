@@ -132,6 +132,39 @@ def test_tools_tier_core_vs_terminal():
     assert resolve_tools_tier("创建批量任务 batch") == "full"
 
 
+def test_create_host_in_core_tier_for_add_server_requests():
+    """「添加服务器到某组」不得因分层漏掉 create_host / add_hosts_to_group。"""
+    tools = [
+        {"type": "function", "function": {"name": "list_hosts", "parameters": {}}},
+        {"type": "function", "function": {"name": "create_host", "parameters": {}}},
+        {"type": "function", "function": {"name": "add_hosts_to_group", "parameters": {}}},
+        {"type": "function", "function": {"name": "create_group", "parameters": {}}},
+        {"type": "function", "function": {"name": "list_host_groups", "parameters": {}}},
+        {"type": "function", "function": {"name": "ssh_execute", "parameters": {}}},
+        {"type": "function", "function": {"name": "ask_user_choice", "parameters": {}}},
+        {"type": "function", "function": {"name": "batch_create", "parameters": {}}},
+    ]
+    msg = "添加服务器 10.0.0.30 user/user 到 HC组"
+    names = {t["function"]["name"] for t in filter_tools_for_message(tools, msg, lightweight=False)}
+    assert "create_host" in names
+    assert "add_hosts_to_group" in names
+    assert "create_group" in names or "list_host_groups" in names
+    assert "batch_create" not in names
+    # 纯 core 查询也要带上 CRUD，避免模型只见 list 不见 create
+    core_names = {
+        t["function"]["name"]
+        for t in filter_tools_for_message(tools, "列出有哪些主机", lightweight=False)
+    }
+    assert "create_host" in core_names
+
+
+def test_force_full_followup_when_user_insists_to_call_tool():
+    from services.agent_optimize import resolve_tools_tier
+
+    assert resolve_tools_tier("你调用一下试试") == "full"
+    assert resolve_tools_tier("工具列表没有添加主机？再调用试试") == "full"
+
+
 def test_scp_tools_available_for_host_file_tasks_without_saying_scp():
     """用户说解压/分析主机文件时，不应因未写 scp 而从 tools 列表拿掉 scp_pull/scp_push。"""
     tools = [
