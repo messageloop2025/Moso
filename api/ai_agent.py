@@ -5362,6 +5362,26 @@ def _build_ssh_remote_execution_rules() -> str:
 """
 
 
+def _build_session_history_self_lookup_section(session_id: int) -> str:
+    """当前会话 ID + 历史/工具轨迹自查规则（Web 与集成共用）。
+
+    历史回灌会剥离 TOOL_TRACE；界面 CoT 默认折叠懒加载。须明确告诉模型如何自查，
+    避免因上下文看不到工具步骤就声称「我是猜的」。
+    """
+    sid = int(session_id)
+    return f"""## 当前会话 ID
+当前会话 ID 为 {sid}。当用户要求「更新会话提示词」「补充会话级约束」「把上述要求记到会话里」等时，请调用 update_session_prompt(session_id={sid}, content="...", append=True/False) 来更新或追加本会话的会话级提示词（修改前可用 get_session_prompt 核对）。注意：content 只应归纳用户的要求和你的执行意图（要做什么、怎么做），不要包含终端输出、命令输出或任何程序日志的原文。跨会话可展示的主机环境/状态请写入 Memory（memory_write），勿塞进会话提示词。
+生成会话提示词或归纳最佳实践/经验时，请先调用 get_session_operations(session_id={sid}) 获取「仅用户要求与助手指令」的操作序列（不含程序输出），再据此归纳；不要基于含大量日志的完整对话归纳。
+
+## 上下文完整性与自查（必读）
+- **默认不全**：注入给你的历史 user/assistant 文本**默认不含**工具调用轨迹（TOOL_TRACE）与 role=tool 原始结果；界面「AI 思考与计划」折叠内容也是懒加载，不会自动进入当前上下文。因此你**不能**仅凭「当前上下文里看不到 tool_call」就断言「我当时是猜的 / 编造的 / 没有调工具」。
+- **自查调用过程**：当用户问「你怎么查到的」「依据是什么」「调了哪些工具」「刚才那步怎么做的」等，**先**调用 `get_session_chat_detail(session_id={sid}, include_tool_results=true)`。返回中助手消息会含可读正文与解码后的 **tool_trace**（工具名、参数摘要、结果预览——与界面展开「思考与计划」同源）。据 tool_trace **如实说明**；仅当详情中确实无工具轨迹且正文也无法印证时，才可说明「本会话记录中未找到工具调用」。
+- **自查历史聊天**：需要更长操作序列（只要指令、不要日志）用 `get_session_operations(session_id={sid})`；需要操作日志侧证据可用 `list_logs`（AI 工具记录的 operation 常为 `ai_tool:工具名`）；大结果 spill 用 `read_chat_data`。
+- **当前轮例外**：本轮正在进行的 tool_call 结果仍在当轮上下文中，可直接引用；跨轮回顾一律走上述自查工具。
+后续注入的历史对话中，每条消息开头会有 `[历史时间: YYYY-MM-DD HH:MM:SS]`。请结合该时间判断信息时效性，越新的内容优先作为当前依据。
+"""
+
+
 def _build_system_prompt(*, user: dict | None = None) -> str:
     brand = _config.PRODUCT_NAME_ZH
     pd = _config.PRODUCT_DISPLAY
@@ -5381,6 +5401,7 @@ def _build_system_prompt(*, user: dict | None = None) -> str:
         "毛竹文件系统 fs_*（侧栏「文件系统」= 当前用户工作区）；"
         "批量任务；操作日志；最佳实践与凭证；"
         "会话提示词（get_session_prompt / update_session_prompt）；"
+        "会话自查（get_session_operations / **get_session_chat_detail**，核对历史与工具轨迹）；"
         "长期 Memory（memory_ensure / memory_list / memory_search / memory_read / memory_write / memory_rebuild_index）；"
         "操作帮助只读（get_aihelp_index / list_aihelp_files / get_aihelp_file）。"
     )
@@ -5543,7 +5564,7 @@ def _build_system_prompt(*, user: dict | None = None) -> str:
 - 修改先备份：对文件/配置/数据进行修改前，先判断是否需要备份；凡是批量修改、覆盖写入、不可轻易重建的数据，默认先做可回滚备份（同目录、明确备份路径、快照、导出或复制）；修改完成后先检查结果与可用性，无误后再考虑清理临时备份。若备份成本很高或会影响系统，应向用户说明风险并确认。
 - 跨主机中转传文件清理规则：relay_file_between_hosts 经用户**文件系统工作区**中转（默认 exchange/…）；单目标传输成功后默认删除中转文件；多目标分发可设 keep_staging_for_multi_target=true 保留 staging 复用。
 - 自然语言回答的语种以本消息中更靠前的 **「Response language policy / 回复语言策略」** 段为准；勿与该策略冲突（含对用户可见的流式规划/推理；不得因英文日志/术语改用英文推理）
-- **上下文与会话记忆**：注入的历史消息可能因预算被截断；优先信任较新的 user/assistant 与当前轮工具结果。若工具返回仅有 `[[EDGEOPS_CHAT_DATA ...]]` 哨兵，需用 **read_chat_data**（或附件类用 **read_chat_attachment**）分段取全量后再断言「已覆盖全部」。
+- **上下文与会话记忆**：注入的历史消息可能因预算被截断，且**默认剥离工具调用轨迹**（见「上下文完整性与自查」）。优先信任较新的 user/assistant 与**当前轮**工具结果；跨轮回顾「怎么做到的」须先 `get_session_chat_detail(include_tool_results=true)`，禁止凭「上下文里看不到工具」就声称自己是猜的。若工具返回仅有 `[[EDGEOPS_CHAT_DATA ...]]` 哨兵，需用 **read_chat_data**（或附件类用 **read_chat_attachment**）分段取全量后再断言「已覆盖全部」。
 - 每轮回复中若执行了工具，也必须用至少一句话向用户说明执行结果或下一步（如「已上传到 /mnt/xxx」「已执行完成」），不要只调用工具而不输出任何文字给用户。
 - 清单/列表防漏项规则（尤其是漏洞、告警、资产、主机、失败项等）：当任务目标是“全部处理/全部汇总”时，必须先给出“总数与已处理数”，再分批处理并在结尾对账；若任一工具结果出现“已省略/已截断”提示，不得直接宣称“已全部完成”，必须继续分页或分批拉取（limit/offset/过滤）直到无截断，再输出最终结论。
 - **表格数据真实性**：输出 Markdown 表格前须遵守上文「数据清单 / 表格防编造」；表格行必须来自工具结果，不得补假数据；无依据单元格用「—」或省略列。
@@ -6393,10 +6414,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
 {_build_chat_output_format_rules()}
 {_build_html_libs_prompt_section() if message_needs_html_artifact(req.message or "") else ""}
 
-## 当前会话 ID
-当前会话 ID 为 {session_id}。当用户要求「更新会话提示词」「补充会话级约束」「把上述要求记到会话里」等时，请调用 update_session_prompt(session_id={session_id}, content="...", append=True/False) 来更新或追加本会话的会话级提示词（修改前可用 get_session_prompt 核对）。注意：content 只应归纳用户的要求和你的执行意图（要做什么、怎么做），不要包含终端输出、命令输出或任何程序日志的原文。跨会话可展示的主机环境/状态请写入 Memory（memory_write），勿塞进会话提示词。
-生成会话提示词或归纳最佳实践/经验时，请先调用 get_session_operations(session_id={session_id}) 获取「仅用户要求与助手指令」的操作序列（不含程序输出），再据此归纳；不要基于含大量日志的完整对话归纳。当需要分析具体报错、引用终端或命令输出等详细内容时，可调用 get_session_chat_detail(session_id={session_id}, include_tool_results=True) 获取含程序输出的完整聊天详情。
-后续注入的历史对话中，每条消息开头会有 `[历史时间: YYYY-MM-DD HH:MM:SS]`。请结合该时间判断信息时效性，越新的内容优先作为当前依据。
+{_build_session_history_self_lookup_section(session_id)}
 {session_prompt_block}
 {host_scope_note}
 {_user_fs_ctx}
@@ -8957,9 +8975,7 @@ async def run_ops_integration_chat_complete(
 
 {_OPS_INTEGRATION_MODE_RULES}
 {_build_html_libs_prompt_section() if message_needs_html_artifact(msg_in or "") else ""}
-## 当前会话 ID
-当前会话 ID 为 {sid}。需要更新会话级约束时可调用 update_session_prompt(session_id={sid}, ...)（可用 get_session_prompt 核对）。跨会话主机环境/状态用 memory_*。
-后续注入的历史对话中，每条消息开头会有 `[历史时间: YYYY-MM-DD HH:MM:SS]`。请结合该时间判断信息时效性，越新的内容优先作为当前依据。
+{_build_session_history_self_lookup_section(sid)}
 {session_prompt_block}
 {_integration_host_binding_note}
 {host_scope_note}

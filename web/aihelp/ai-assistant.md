@@ -316,13 +316,14 @@ Docker 镜像需安装 `libmagic1` 与 Python 包 `markitdown`；依赖变更后
 
 ## 聊天操作序列与详情
 
-- **操作序列（get_session_operations）**：返回「仅用户消息 + 助手指令/决策」的按时间序列表，**不包含**程序输出（如终端输出、命令结果、工具返回的长日志）。适用于：
+- **操作序列（get_session_operations）**：返回「仅用户消息 + 助手指令/决策」的按时间序列表，**不包含**程序输出（如终端输出、命令结果、工具返回的长日志）与工具轨迹。适用于：
   - 生成或更新会话级提示词时，让 AI 基于「用户要做什么、助手决定做什么」归纳，而不是基于大段日志；
   - 归纳最佳实践或经验时，只参考操作意图与步骤，避免把日志当依据。
-- **聊天详情（get_session_chat_detail）**：当 `include_tool_results=false` 时与操作序列一致；当 `include_tool_results=true` 时返回**完整消息内容**（含助手回复中的执行结果、报错、日志等）。适用于：
-  - 用户或 AI 需要分析某次命令的具体报错、引用某段终端输出时；
-  - 需要从历史对话中查找某次执行的完整输出时。
-- 在对话中让 AI「根据当前对话总结会话提示词」或「归纳成最佳实践」时，AI 会先调用 get_session_operations 再归纳；若用户问「上次执行某某命令的输出是什么」，AI 可调用 get_session_chat_detail(include_tool_results=true) 获取详情。
+- **聊天详情（get_session_chat_detail）**：当 `include_tool_results=false` 时与操作序列一致；当 `include_tool_results=true` 时返回助手可读正文，并附带解码后的 **tool_trace**（工具名、参数摘要、结果预览；与界面展开「AI 思考与计划」同源）。适用于：
+  - 用户问「你怎么查到的 / 调了哪些工具 / 依据是什么」——AI **必须先自查**再回答，不能因当前上下文看不到 tool_call 就声称「我是猜的」；
+  - 需要分析某次命令报错、引用终端/工具输出时。
+- **为何需要自查**：下一轮注入模型的历史默认会剥离 TOOL_TRACE；Web 端折叠的思考与计划也是懒加载，不会自动进上下文。系统提示词中的「上下文完整性与自查」要求 AI 用本工具核对。
+- 在对话中让 AI「根据当前对话总结会话提示词」或「归纳成最佳实践」时，AI 会先调用 get_session_operations 再归纳；若用户问「上次执行某某命令的输出是什么」或「你怎么查到天气的」，AI 应调用 get_session_chat_detail(include_tool_results=true) 获取详情与 tool_trace。
 
 ---
 

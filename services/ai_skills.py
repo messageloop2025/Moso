@@ -4578,7 +4578,12 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_session_operations",
-            "description": "获取当前会话的「操作序列」：仅包含用户要求与助手的指令/决策，不含程序输出（终端输出、命令结果等）。用于生成会话提示词、归纳最佳实践/经验时参考，避免把长日志传给 AI。返回按时间序的列表，每项含 role、content、created_at。",
+            "description": (
+                "获取当前会话的「操作序列」：仅用户要求与助手指令/决策，不含程序输出与工具轨迹。"
+                "适合生成会话提示词、归纳最佳实践。"
+                "若要核对「调了哪些工具/结果依据」，请改用 get_session_chat_detail(include_tool_results=true)。"
+                "返回按时间序列表，每项含 role、content、created_at。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -4593,12 +4598,22 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_session_chat_detail",
-            "description": "获取当前会话的聊天详情。include_tool_results 为 false 时与 get_session_operations 一致（仅用户与助手指令，不含程序输出）；为 true 时返回完整消息内容（含助手回复中的执行结果、日志等），供需要分析具体输出、报错或引用日志时使用。",
+            "description": (
+                "获取当前会话的聊天详情，用于自查「本会话做过什么、调了哪些工具」。"
+                "include_tool_results=false 时与 get_session_operations 一致（仅用户与助手指令）；"
+                "为 true 时：助手消息含可读正文，并附带解码后的 tool_trace（工具名/参数摘要/结果预览；"
+                "界面「AI 思考与计划」折叠内容的同源数据）。"
+                "当用户问「你怎么查到的/依据是什么/调了哪些工具」时优先调用本工具（include_tool_results=true）；"
+                "勿因当前上下文看不到 tool_call 就声称「我是猜的」。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "session_id": {"type": "integer", "description": "当前会话 ID"},
-                    "include_tool_results": {"type": "boolean", "description": "是否包含程序输出/日志；false=仅用户与助手指令，true=完整内容"},
+                    "include_tool_results": {
+                        "type": "boolean",
+                        "description": "是否含程序输出与工具轨迹；false=仅指令；true=正文+tool_trace",
+                    },
                     "limit": {"type": "integer", "description": "最多返回条数，默认 50"},
                 },
                 "required": ["session_id"],
@@ -14794,21 +14809,48 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                    WHERE session_id = ? ORDER BY id ASC LIMIT ?""",
                 (sid, limit),
             )
-            try:
-                from services.chat_utils import strip_ui_action_sentinels as _strip_uia2
-            except Exception:
-                _strip_uia2 = None
+            from services.chat_utils import assistant_content_for_chat_detail
+
             items = []
             for r in msg_rows:
                 role = r["role"]
-                content = (r["content"] or "").strip()
+                created_at = r["created_at"] or ""
                 if role == "assistant":
+                    detail = assistant_content_for_chat_detail(
+                        r["content"] or "",
+                        include_tool_results=include_tool_results,
+                    )
+                    item = {
+                        "role": role,
+                        "content": detail.get("content") or "",
+                        "created_at": created_at,
+                    }
                     if include_tool_results:
-                        content = (_strip_uia2(content) if _strip_uia2 else content).strip()
-                    else:
-                        content = assistant_content_for_summary(r["content"] or "")
-                items.append({"role": role, "content": content, "created_at": r["created_at"] or ""})
-            return json.dumps({"success": True, "messages": items, "include_tool_results": include_tool_results}, ensure_ascii=False)
+                        item["tool_trace"] = detail.get("tool_trace") or []
+                        item["tool_trace_step_count"] = int(detail.get("tool_trace_step_count") or 0)
+                    items.append(item)
+                else:
+                    items.append(
+                        {
+                            "role": role,
+                            "content": (r["content"] or "").strip(),
+                            "created_at": created_at,
+                        }
+                    )
+            return json.dumps(
+                {
+                    "success": True,
+                    "messages": items,
+                    "include_tool_results": include_tool_results,
+                    "note": (
+                        "历史注入给模型时默认剥离工具轨迹；本接口 include_tool_results=true 会返回解码后的 tool_trace，"
+                        "用于回答「怎么查到的/调了哪些工具」。"
+                        if include_tool_results
+                        else "当前为指令摘要模式；需要工具轨迹请设 include_tool_results=true。"
+                    ),
+                },
+                ensure_ascii=False,
+            )
 
         if name == "get_best_practices":
             db = await get_db()
