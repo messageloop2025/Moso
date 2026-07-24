@@ -150,17 +150,19 @@ def _build_user_fs_workspace_block(user: dict) -> str:
 
     uname = _safe_username(user.get("username") or "default")
     brand = _config.PRODUCT_NAME_ZH
+    mem = (getattr(_config, "USER_MEMORY_SUBDIR", None) or "memory").strip("/\\") or "memory"
     return f"""## 当前用户文件系统工作区
 - 用户：**{uname}**
 - **语义映射**：用户说「文件系统」「本地文件系统」「{brand}文件系统」或侧栏「文件系统」，均指你的**个人工作区**（`web/fs/{uname}/`；非远程主机磁盘、非 OS 目录）。**只能访问本用户根下路径**，不能越权到其它用户目录。
 - **路径规则**：`fs_*`、`scp_push`/`scp_pull` 的 `local_path` 等，一律传**相对工作区根**的路径；空或 `/` 表示根目录。
+- **长期 Memory**：`{mem}/`（hosts/topics/journal + INDEX.md）。用 `memory_*` 读写与搜索；勿归位到 chats。记忆可能过时，重要操作以实机为准。
 - **默认 `chats/<UTC年>/<月>/<日>/` 会话区**（系统自动归位，无需手拼日期）仅用于：
   1. 用户在聊天中**上传的附件**（系统写入，非 fs_write）；
   2. **API 工具返回溢出**落盘（`read_chat_data` / spill，系统写入）；
   3. AI 为生成复杂内容而**临时创建**的文件（`fs_write_*` / `scp_pull` 默认 `session_managed`，path 写逻辑短名如 `report.md`）。
 - **读写工作区其它路径**（须正常完成，不限于当日 chats）：
-  - **读取**：`fs_list` / `fs_read_file` / `fs_read_binary` 可读任意相对路径（`scripts/`、`exchange/`、任意 `chats/YYYY/MM/DD/…` 等）。
-  - **写入/修改**：用户明确要求、或**主机级/会话级提示词**指定路径时，传**完整相对 path**（如 `scripts/deploy.sh`、`chats/2026/07/03/pkg.tgz`）；系统自动识别为精确路径；也可显式 `session_managed=false`。`fs_mkdir` / `fs_delete` / `fs_copy` 同理。
+  - **读取**：`fs_list` / `fs_read_file` / `fs_read_binary` 可读任意相对路径（`{mem}/`、`scripts/`、`exchange/`、任意 `chats/YYYY/MM/DD/…` 等）。
+  - **写入/修改**：用户明确要求、或**主机级/会话级提示词**/Memory 约定路径时，传**完整相对 path**（如 `{mem}/hosts/…`、`scripts/deploy.sh`）；系统自动识别为精确路径；也可显式 `session_managed=false`。
 - **禁止**：操作系统绝对路径；路径中写 `web/fs/` 或 `{uname}/` 前缀。
 - 向用户说明位置时用相对路径，勿报服务器磁盘绝对路径。"""
 
@@ -5286,10 +5288,11 @@ _PROMPT_ENTITY_RESOLUTION_RULES = """
 当用户要求你做某事，且消息里出现**项目名、环境名、服务名、组件名、口语称呼、缩写、代号、业务名词**等（未必是正式主机名或 IP）时，**禁止凭猜测**直接选主机或执行命令。必须先做「用户名词 → 哪台主机 / 哪项功能 / 哪条约定」的对齐，再动手。
 
 **提示词与约定检索（按优先级）**：
-1. **会话级约束**（若 system 已注入「会话级约束」块）— 用户对本会话的专用约定，**必须遵守**。
+1. **会话级约束**（若 system 已注入「会话级约束」块）— 用户对本会话的专用约定，**必须遵守**。可用 `get_session_prompt` 核对。
 2. **主机级提示词**（若 system 已注入「主机级提示词」块）— 该机独有规则、工具链、服务/功能映射；**必须遵守**。未注入时对该候选 host_id 调用 `get_host_prompt(host_id)` 读取全文。
 3. **用户自定义 system 提示词**（本消息靠前的主体规则）— 全局约定与术语表。
-4. **主机知识库** — 机密凭据与内部连接信息；用 `get_host_knowledge(host_id)` 按需读取，**严禁**在回复中泄露。
+4. **Memory 空间**（`memory/`）— 路径/环境/历史参考/用户习惯操作；开工前 `memory_search`/`memory_read` 减摸索。**检查可自决**；用记忆补全并**执行**前须向用户确认。可能过时，重要操作仍须实机核实。
+5. **主机知识库** — 机密凭据与内部连接信息；用 `get_host_knowledge(host_id)` 按需读取，**严禁**在回复中泄露。
 
 **主机资产检索（名词可能是别名 / 标签 / 用途 / 分组）**：
 - `search_hosts(query=名词, tag_ids?, group_id?, regex?, limit?)` — 匹配 **name、IP、port、remark、aliases、tag_names** 等。
@@ -5300,15 +5303,16 @@ _PROMPT_ENTITY_RESOLUTION_RULES = """
 
 **文件系统名词**：用户说「文件系统」「本地文件系统」「毛竹文件系统」或「工作区里有某文件」，均指**当前用户个人工作区**（侧栏「文件系统」），不是远程主机路径。用 `fs_list`/`fs_read_file` 等时 path **相对工作区根**，勿用 OS 绝对路径。
 
-**功能 / 能力映射（名词写在主机提示词或最佳实践里）**：
+**功能 / 能力映射（名词写在主机提示词、Memory 或最佳实践里）**：
 - `search_hosts_by_prompt(query=名词, group_id?, tag_ids?)` — 在**当前用户维护的各主机级提示词**中搜索（如「Redis 主库」「装了 gh cli」「网关」「禁止重启 nginx」）。
-- 命中后对该 host_id 再调 `get_host_prompt` / `get_host_knowledge` 读全文，判断用户说的功能/服务对应哪台机、哪条操作约定。
+- `memory_search(query=名词)` — 历史路径、习惯操作、环境笔记；命中后 `memory_read` 精读。
+- 命中后对该 host_id 再调 `get_host_prompt` / `get_host_knowledge` / `memory_read` 读全文，判断用户说的功能/服务对应哪台机、哪条操作约定。
 - 涉及安装、配置、部署、排障等通用流程时，用 `get_best_practices(category 或 keyword=名词)` 查是否有现成推荐，并在回复中可简要说明参考了哪条。
 
 **解析结果怎么用**：
-- **唯一命中**：在回复或执行前用一句话说明依据（如「已将『网关』解析为 host_id=3，依据：别名 gateway-prod + 主机提示词含 nginx 网关约定」），再 `ssh_execute` / 控制台操作。
-- **多台候选**：列出候选（id、name、aliases、tag_names、remark 摘要、提示词命中片段），请用户确认或给出最可能项及依据；**不要**默认选第一台。
-- **未命中**：说明已检索的层（别名/标签/提示词/最佳实践），再请用户补充主机名、IP 或 host_id。
+- **唯一命中**：在回复或执行前用一句话说明依据（如「已将『网关』解析为 host_id=3，依据：别名 gateway-prod + 主机提示词/Memory」）。若该命中来自记忆且用户未明示、却将作为**执行目标**，先确认再动手；若仅用于安排检查顺序，可自决。
+- **多台候选**：列出候选（id、name、aliases、tag_names、remark 摘要、提示词/Memory 命中片段），请用户确认或给出最可能项及依据；**不要**默认选第一台。
+- **未命中**：说明已检索的层（别名/标签/提示词/Memory/最佳实践），再请用户补充主机名、IP 或 host_id。
 
 **跨主机**：即使本会话已绑定一台主机，用户若提到**另一台**或**多台**上的名词，仍须对**每一台**分别检索提示词/别名/标签，不得用绑定机约定代替其它机器。
 """
@@ -5376,6 +5380,8 @@ def _build_system_prompt(*, user: dict | None = None) -> str:
         "标签；主机知识（机密，严禁回复展示）与主机级提示词；.edgeops 工作区；"
         "毛竹文件系统 fs_*（侧栏「文件系统」= 当前用户工作区）；"
         "批量任务；操作日志；最佳实践与凭证；"
+        "会话提示词（get_session_prompt / update_session_prompt）；"
+        "长期 Memory（memory_ensure / memory_list / memory_search / memory_read / memory_write / memory_rebuild_index）；"
         "操作帮助只读（get_aihelp_index / list_aihelp_files / get_aihelp_file）。"
     )
     if is_admin:
@@ -5570,10 +5576,11 @@ def _build_system_prompt(*, user: dict | None = None) -> str:
 - 长文档先 `get_aihelp_index(sections_only=true)` 或 `get_aihelp_file(..., sections_only=true)` / **`markdown_search_sections`**（`file_root=aihelp`）定位，再按节精读；勿一次读全文。
 - 可选：list_aihelp_files。
 
-Markdown / Skills 渐进阅读（与 aihelp 相同章节模型）：
+Markdown / Skills / Memory 渐进阅读：
 - 通用工具：**markdown_list_sections**、**markdown_read_section**、**markdown_search_sections**、**markdown_replace_section**（`file_root=fs|aihelp|skill`）。
-- **Agent Skills**：目录注入仅 name+description；正文用 **get_user_skill** / **read_user_skill_file**（支持 sections_only、section_path、heading、max_chars）。大 SKILL.md 先 `markdown_search_sections(file_root=skill, skill_name=..., scope=titles)` 再读单节。REST：`GET /api/user-skills/by-name/{name}/markdown?path=SKILL.md&sections_only=true`；`?q=关键字` 为章节搜索。
-- 用户 fs 下 .md 报告/笔记：优先章节工具，勿 fs_read_file 通读大文件。
+- **多文件搜索**：`markdown_search_sections(file_root=fs, path="memory")` 或 `path="docs"` 递归搜目录下全部 .md；Memory 优先用 **memory_search**。
+- **Agent Skills**：目录注入仅 name+description；正文用 **get_user_skill** / **read_user_skill_file**。大 SKILL.md 先搜标题再读单节。
+- 用户 fs 下大 .md：先章节工具 / 搜索，勿通读全文。
 
 聊天附件（用户在聊天输入框中上传或粘贴的图片/文本/Markdown 等）：
 - 用户消息末尾若出现「📎 附件」清单（每行形如 `` - `name.ext`（kind · size）· uuid: `XXXX` ``），表示本轮有若干附件可供参考。
@@ -6373,9 +6380,13 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         trial_info=trial_info,
     )
     _user_fs_ctx = _build_user_fs_workspace_block(user)
+    from services.user_memory import build_memory_map_prompt_section
+
+    _memory_map_ctx = build_memory_map_prompt_section()
     full_system = f"""{system_prompt}
 
 {_PROMPT_ENTITY_RESOLUTION_RULES}
+{_memory_map_ctx}
 {output_lang_block}
 {_model_runtime_ctx}
 
@@ -6383,7 +6394,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
 {_build_html_libs_prompt_section() if message_needs_html_artifact(req.message or "") else ""}
 
 ## 当前会话 ID
-当前会话 ID 为 {session_id}。当用户要求「更新会话提示词」「补充会话级约束」「把上述要求记到会话里」等时，请调用 update_session_prompt(session_id={session_id}, content="...", append=True/False) 来更新或追加本会话的会话级提示词。注意：content 只应归纳用户的要求和你的执行意图（要做什么、怎么做），不要包含终端输出、命令输出或任何程序日志的原文。
+当前会话 ID 为 {session_id}。当用户要求「更新会话提示词」「补充会话级约束」「把上述要求记到会话里」等时，请调用 update_session_prompt(session_id={session_id}, content="...", append=True/False) 来更新或追加本会话的会话级提示词（修改前可用 get_session_prompt 核对）。注意：content 只应归纳用户的要求和你的执行意图（要做什么、怎么做），不要包含终端输出、命令输出或任何程序日志的原文。跨会话可展示的主机环境/状态请写入 Memory（memory_write），勿塞进会话提示词。
 生成会话提示词或归纳最佳实践/经验时，请先调用 get_session_operations(session_id={session_id}) 获取「仅用户要求与助手指令」的操作序列（不含程序输出），再据此归纳；不要基于含大量日志的完整对话归纳。当需要分析具体报错、引用终端或命令输出等详细内容时，可调用 get_session_chat_detail(session_id={session_id}, include_tool_results=True) 获取含程序输出的完整聊天详情。
 后续注入的历史对话中，每条消息开头会有 `[历史时间: YYYY-MM-DD HH:MM:SS]`。请结合该时间判断信息时效性，越新的内容优先作为当前依据。
 {session_prompt_block}
@@ -8934,16 +8945,20 @@ async def run_ops_integration_chat_complete(
             "确认 host_id 与对应约定后再 ssh_execute。\n"
         )
     _integ_user_fs_ctx = _build_user_fs_workspace_block(user)
+    from services.user_memory import build_memory_map_prompt_section as _build_mem_map
+
+    _integ_memory_map = _build_mem_map()
     full_system = f"""{system_prompt}
 
 {_PROMPT_ENTITY_RESOLUTION_RULES}
+{_integ_memory_map}
 {_integ_lang}
 {_integ_model_runtime_ctx}
 
 {_OPS_INTEGRATION_MODE_RULES}
 {_build_html_libs_prompt_section() if message_needs_html_artifact(msg_in or "") else ""}
 ## 当前会话 ID
-当前会话 ID 为 {sid}。需要更新会话级约束时可调用 update_session_prompt(session_id={sid}, ...)。
+当前会话 ID 为 {sid}。需要更新会话级约束时可调用 update_session_prompt(session_id={sid}, ...)（可用 get_session_prompt 核对）。跨会话主机环境/状态用 memory_*。
 后续注入的历史对话中，每条消息开头会有 `[历史时间: YYYY-MM-DD HH:MM:SS]`。请结合该时间判断信息时效性，越新的内容优先作为当前依据。
 {session_prompt_block}
 {_integration_host_binding_note}

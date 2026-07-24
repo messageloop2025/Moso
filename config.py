@@ -9,7 +9,7 @@ PRODUCT_NAME_ZH = "毛竹"
 PRODUCT_NAME_EN = "Moso"
 PRODUCT_DISPLAY = f"{PRODUCT_NAME_ZH}（{PRODUCT_NAME_EN}）"  # AI 提示词中的产品指称
 
-VERSION = os.getenv("EDGEOPS_VERSION", "1.8.5-sp2")
+VERSION = os.getenv("EDGEOPS_VERSION", "1.8.5-sp3")
 
 # 数据库 / Database
 DATABASE_PATH = os.getenv("EDGEOPS_DB", str(BASE_DIR / "edgeops.db"))
@@ -246,6 +246,8 @@ ARTIFACT_MAX_FILES = int(os.getenv("EDGEOPS_ARTIFACT_MAX_FILES", "200"))
 
 # 每用户 Agent Skills 根目录：web/fs/<username>/skills/<skill-name>/SKILL.md
 USER_SKILLS_SUBDIR = os.getenv("EDGEOPS_USER_SKILLS_SUBDIR", "skills").strip("/\\") or "skills"
+# 每用户长期 Memory 空间：web/fs/<username>/memory/（INDEX + hosts/topics/journal）
+USER_MEMORY_SUBDIR = os.getenv("EDGEOPS_USER_MEMORY_SUBDIR", "memory").strip("/\\") or "memory"
 # 注入 AI system 的单 skill 正文上限（字符）
 USER_SKILLS_BODY_MAX_CHARS = int(os.getenv("EDGEOPS_USER_SKILLS_BODY_MAX_CHARS", str(12_000)))
 USER_SKILLS_TOTAL_MAX_CHARS = int(os.getenv("EDGEOPS_USER_SKILLS_TOTAL_MAX_CHARS", str(48_000)))

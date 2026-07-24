@@ -4463,6 +4463,120 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "get_session_prompt",
+            "description": "读取指定会话的会话级提示词全文。已注入「会话级约束」时可不必重复调用；修改前可用本工具核对。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_id": {"type": "integer", "description": "当前会话 ID（系统提示中已提供）"},
+                },
+                "required": ["session_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "memory_ensure",
+            "description": "确保用户 Memory 空间存在（memory/hosts|topics|journal + GUIDE.md + INDEX.md）。开始写入长期记忆前可调用一次。",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "memory_list",
+            "description": "列出 Memory 条目（path/title/summary/host_id/tags）。优先于盲目 fs_list；记忆可能过时，重要操作仍须实机检查。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["host", "topic", "journal", "note"],
+                        "description": "可选筛选",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "memory_search",
+            "description": "在 Memory 空间多文件搜索 Markdown 章节。用于快速定位主机环境/状态笔记；命中后 memory_read 精读，重要结论仍须实机核实。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "scope": {"type": "string", "enum": ["titles", "content", "all"]},
+                    "regex": {"type": "boolean"},
+                    "case_insensitive": {"type": "boolean"},
+                    "max_hits": {"type": "integer"},
+                    "kind": {"type": "string", "enum": ["host", "topic", "journal", "note"]},
+                    "host_id": {"type": "integer"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "memory_read",
+            "description": "读取 Memory 文件全文或按章节精读。可用 path，或 host_id 读取该主机记忆文件。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "相对工作区，如 memory/hosts/h1_web.md"},
+                    "host_id": {"type": "integer"},
+                    "host_name": {"type": "string"},
+                    "section_path": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "章节路径，如 [\"Status\"]",
+                    },
+                    "heading": {"type": "string"},
+                    "max_chars": {"type": "integer"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "memory_write",
+            "description": "写入/更新 Memory（路径、环境/状态、历史参考、用户习惯操作等）。用户开展新内容或已验证关键事实后应写入；状态变化时更新。传 host_id 时默认写入 memory/hosts/h{id}_{name}.md。默认重建 INDEX.md。勿写入密码/密钥。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "Markdown 正文"},
+                    "path": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["host", "topic", "journal", "note"]},
+                    "title": {"type": "string"},
+                    "summary": {"type": "string", "description": "一句话摘要，写入元数据与索引"},
+                    "host_id": {"type": "integer"},
+                    "host_name": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                    "append": {"type": "boolean", "description": "true=追加正文；false=覆盖"},
+                    "rebuild_index": {"type": "boolean", "description": "默认 true"},
+                },
+                "required": ["content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "memory_rebuild_index",
+            "description": "扫描 Memory 下 md 文件，根据元数据/摘要重建 memory/INDEX.md。",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_session_operations",
             "description": "获取当前会话的「操作序列」：仅包含用户要求与助手的指令/决策，不含程序输出（终端输出、命令结果等）。用于生成会话提示词、归纳最佳实践/经验时参考，避免把长日志传给 AI。返回按时间序的列表，每项含 role、content、created_at。",
             "parameters": {
@@ -4613,16 +4727,20 @@ TOOLS = [
         "function": {
             "name": "markdown_search_sections",
             "description": (
-                "在 Markdown 中按关键字搜索章节（scope=titles 仅标题 | content 仅正文 | all）。"
-                "返回命中章节 path/index 与 snippets；file_root=aihelp 且不设 path 时搜全部帮助文档。"
-                "命中后再 markdown_read_section / get_aihelp_file 精读。"
+                "在 Markdown 中按关键字搜索章节（scope=titles|content|all）。"
+                "file_root=aihelp 且 path 空：搜全部帮助文档；"
+                "file_root=fs 且 path 为目录（如 memory 或 memory/hosts）：多文件递归搜该目录下全部 .md；"
+                "path 为单文件则只搜该文件。命中后再 markdown_read_section / memory_read / fs_read_file 精读。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "搜索关键字"},
                     "file_root": {"type": "string", "enum": ["fs", "aihelp", "skill"]},
-                    "path": {"type": "string", "description": "限定单文件；aihelp 空则搜全部 .md"},
+                    "path": {
+                        "type": "string",
+                        "description": "单文件，或 fs 下的目录（多文件搜索）；aihelp 空则搜全部",
+                    },
                     "skill_name": {"type": "string"},
                     "scope": {"type": "string", "enum": ["titles", "content", "all"]},
                     "regex": {"type": "boolean"},
@@ -6790,6 +6908,7 @@ _EXPLICIT_FS_TOPLEVEL_DIRS = frozenset({
     "repo", "output", "outputs", "downloads", "download", "upload", "uploads", "files",
     "assets", "media", "docs", "notes", "reports", "report", "build", "builds",
     "dist", "release", "releases", "vendor", "vendors", "share", "shared",
+    "memory",  # 用户长期 Memory 空间（勿归位 chats）
 })
 _CHATS_DATE_PREFIX_RE = re.compile(r"^chats/\d{4}/\d{2}/\d{2}/", re.I)
 _CHATS_SESSION_PREFIX_RE = re.compile(r"^chats/sessions/\d+/", re.I)
@@ -7295,6 +7414,19 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             from services.user_mcp_client import invoke_user_mcp_tool
 
             return await invoke_user_mcp_tool(user, name, arguments, session_id=session_id)
+        # Memory / get_session_prompt
+        try:
+            from services.user_memory import MEMORY_TOOL_NAMES, execute_memory_tool
+
+            if name in MEMORY_TOOL_NAMES:
+                _mem_out = await execute_memory_tool(name, arguments or {}, user, session_id=session_id)
+                if _mem_out is not None:
+                    return _mem_out
+        except Exception as _mem_exc:
+            return json.dumps(
+                {"success": False, "error": f"memory 工具失败: {_mem_exc}", "tool": name},
+                ensure_ascii=False,
+            )
         # 插件注册表 handler（P2-7）
         try:
             from services.tools_registry import get_extra_handler
@@ -14911,6 +15043,14 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 file_root = (arguments.get("file_root") or "aihelp").strip().lower()
                 path_arg = (arguments.get("path") or "").strip()
                 scope = arguments.get("scope") or "all"
+                _search_kw = dict(
+                    scope=scope,
+                    regex=bool(arguments.get("regex")),
+                    case_insensitive=arguments.get("case_insensitive") is not False,
+                    max_level=arguments.get("max_level") or 6,
+                    max_hits=arguments.get("max_hits") or 30,
+                    snippet_chars=arguments.get("snippet_chars") or 200,
+                )
                 if file_root == "aihelp" and not path_arg:
                     rels = await asyncio.to_thread(list_aihelp_md_paths_sync)
                     max_files = int(getattr(config, "MARKDOWN_SECTIONS_SEARCH_MAX_FILES", 100))
@@ -14920,28 +15060,37 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                             pairs.append((rel, await read_aihelp_text_async(rel)))
                         except (FileNotFoundError, ValueError):
                             continue
-                    out = search_markdown_corpus(
-                        pairs,
-                        query,
-                        scope=scope,
-                        regex=bool(arguments.get("regex")),
-                        case_insensitive=arguments.get("case_insensitive") is not False,
-                        max_level=arguments.get("max_level") or 6,
-                        max_hits=arguments.get("max_hits") or 30,
-                        snippet_chars=arguments.get("snippet_chars") or 200,
-                    )
+                    out = search_markdown_corpus(pairs, query, **_search_kw)
+                elif file_root == "fs":
+                    from services.user_memory import list_fs_markdown_under
+
+                    base = get_user_fs_root(user)
+                    rel_try = coerce_fs_relative_path(path_arg or "", base) if path_arg else ""
+                    is_dir_corpus = False
+                    if not path_arg:
+                        is_dir_corpus = True
+                        corpus_root = ""
+                    else:
+                        try:
+                            resolved = resolve_fs_path(rel_try, base)
+                            is_dir_corpus = resolved.exists() and resolved.is_dir()
+                            corpus_root = rel_try
+                        except (ValueError, OSError):
+                            is_dir_corpus = False
+                            corpus_root = rel_try
+                    if is_dir_corpus:
+                        pairs = await list_fs_markdown_under(user, corpus_root)
+                        out = search_markdown_corpus(pairs, query, **_search_kw)
+                        out["path"] = corpus_root or "/"
+                        out["corpus"] = True
+                    else:
+                        text, file_root, path_arg = await _load_markdown_source_text(arguments)
+                        out = search_markdown_sections(text, query, **_search_kw)
+                        if path_arg:
+                            out["path"] = path_arg
                 else:
                     text, file_root, path_arg = await _load_markdown_source_text(arguments)
-                    out = search_markdown_sections(
-                        text,
-                        query,
-                        scope=scope,
-                        regex=bool(arguments.get("regex")),
-                        case_insensitive=arguments.get("case_insensitive") is not False,
-                        max_level=arguments.get("max_level") or 6,
-                        max_hits=arguments.get("max_hits") or 30,
-                        snippet_chars=arguments.get("snippet_chars") or 200,
-                    )
+                    out = search_markdown_sections(text, query, **_search_kw)
                     if path_arg:
                         out["path"] = path_arg
                 out["success"] = True
