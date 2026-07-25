@@ -3246,11 +3246,17 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "list_chat_artifacts",
-            "description": "列出当前用户已生成的 artifacts（可按 session_id 过滤）；仅返回本人数据。",
+            "description": (
+                "列出已生成的 artifacts。在聊天 Agent 中**省略 session_id 时默认只列当前会话**；"
+                "显式传 session_id=0 可查看本人全部会话成果。仅返回本人数据。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "session_id": {"type": "integer", "description": "可选；只看本会话"},
+                    "session_id": {
+                        "type": "integer",
+                        "description": "可选；省略=当前会话；传 0=本人全部会话",
+                    },
                     "limit": {"type": "integer", "description": "最大返回条数，默认 50，最大 200"},
                 },
                 "required": [],
@@ -4657,10 +4663,10 @@ TOOLS = [
         "function": {
             "name": "ensure_chat_tools",
             "description": (
-                "按需装载当前会话尚未下发的工具能力。当本轮 tools 列表缺少你需要的工具（如 scp_push、ssh_execute）时，"
-                "**必须先调用本工具**再执行业务操作；禁止用纯文字声称「缺少某工具」后结束。"
-                "可传 tool_names 和/或 capabilities（terminal|fs|http|host_transfer|full）。"
-                "成功后下一轮推理即可看到已装载工具。"
+                "【分层装载专用·始终可用】按需装载本轮尚未下发的工具。"
+                "本轮 tools 是子集≠平台没有该能力。需要 scp_push / ssh_execute / fs_* 等但不在列表时，"
+                "**必须先调用本工具**（tool_names 和/或 capabilities=terminal|fs|http|host_transfer|full），"
+                "成功后再做业务 tool_call。禁止用「没有文件传输/SSH 工具」等文字道歉结束。"
             ),
             "parameters": {
                 "type": "object",
@@ -15490,6 +15496,21 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 out["requested_path"] = path
                 out["managed_relative_path"] = managed_rel
                 out["session_managed"] = session_managed
+                if out.get("success") is not False and session_id:
+                    try:
+                        from services.session_file_resources import record_session_file_resource
+
+                        record_session_file_resource(
+                            username=(user.get("username") or "default"),
+                            session_id=session_id,
+                            kind="workspace",
+                            path=managed_rel or path,
+                            title=Path(managed_rel or path).name,
+                            note="fs_write_file",
+                        )
+                        out["session_file_indexed"] = True
+                    except Exception:
+                        pass
                 return json.dumps(out, ensure_ascii=False)
             except ValueError as e:
                 return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
@@ -15547,6 +15568,21 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 out["requested_path"] = path
                 out["managed_relative_path"] = managed_rel
                 out["session_managed"] = session_managed
+                if out.get("success") is not False and session_id:
+                    try:
+                        from services.session_file_resources import record_session_file_resource
+
+                        record_session_file_resource(
+                            username=(user.get("username") or "default"),
+                            session_id=session_id,
+                            kind="workspace",
+                            path=managed_rel or path,
+                            title=Path(managed_rel or path).name,
+                            note="fs_write_binary",
+                        )
+                        out["session_file_indexed"] = True
+                    except Exception:
+                        pass
                 return json.dumps(out, ensure_ascii=False)
             except ValueError as e:
                 return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
@@ -16686,6 +16722,22 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 return json.dumps({"success": False, "error": f"创建失败: {exc}"}, ensure_ascii=False)
             # 附一个 markdown_link 方便 AI 直接贴到最终答复里；前端见到 `artifact:UUID` 会渲染为下载按钮。
             artifact["markdown_link"] = f"[{title}](artifact:{artifact.get('uuid')})"
+            try:
+                from services.session_file_resources import record_session_file_resource
+
+                record_session_file_resource(
+                    username=(user.get("username") or "default"),
+                    session_id=session_id or artifact.get("session_id"),
+                    kind="artifact",
+                    path=(artifact.get("fs_path") or ""),
+                    uuid=(artifact.get("uuid") or ""),
+                    title=title,
+                    entry_file=(artifact.get("entry_file") or ""),
+                    note="create_chat_artifact",
+                )
+            except Exception:
+                pass
+            artifact["session_file_indexed"] = True
             return json.dumps({"success": True, "artifact": artifact}, ensure_ascii=False)
 
         if name == "update_chat_artifact":
@@ -16743,6 +16795,22 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 return json.dumps({"success": False, "error": f"更新失败: {exc}"}, ensure_ascii=False)
             title_out = artifact.get("title") or "成果物"
             artifact["markdown_link"] = f"[{title_out}](artifact:{artifact.get('uuid')})"
+            try:
+                from services.session_file_resources import record_session_file_resource
+
+                record_session_file_resource(
+                    username=(user.get("username") or "default"),
+                    session_id=session_id or artifact.get("session_id"),
+                    kind="artifact",
+                    path=(artifact.get("fs_path") or ""),
+                    uuid=(artifact.get("uuid") or ""),
+                    title=title_out,
+                    entry_file=(artifact.get("entry_file") or ""),
+                    note="update_chat_artifact",
+                )
+            except Exception:
+                pass
+            artifact["session_file_indexed"] = True
             return json.dumps({"success": True, "artifact": artifact, "updated": True}, ensure_ascii=False)
 
         if name == "list_chat_artifacts":
@@ -16753,11 +16821,18 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             except (TypeError, ValueError):
                 limit = 50
             limit = max(1, min(200, limit))
+            # 省略 session_id：Agent 内默认当前会话；显式 0 = 全部
+            if sid_arg is None and session_id is not None:
+                sid_arg = int(session_id)
+            list_all = False
             if sid_arg is not None:
                 try:
                     sid_arg = int(sid_arg)
                 except (TypeError, ValueError):
                     return json.dumps({"success": False, "error": "session_id 不合法"}, ensure_ascii=False)
+                if sid_arg == 0:
+                    list_all = True
+            if sid_arg is not None and not list_all:
                 rows = await db.execute_fetchall(
                     """SELECT uuid, title, description, kind, storage_subdir, entry_file,
                               file_count, total_bytes, created_at
@@ -16841,6 +16916,22 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             if len(text) > max_chars:
                 text = text[:max_chars]
                 truncated = True
+            try:
+                from api.ai_artifacts import _workspace_relpath_for_artifact as _art_path
+                from services.session_file_resources import record_session_file_resource
+
+                record_session_file_resource(
+                    username=(user.get("username") or "default"),
+                    session_id=session_id or row.get("session_id"),
+                    kind="artifact",
+                    path=_art_path(row.get("storage_subdir") or "", row.get("entry_file") or ""),
+                    uuid=uuid_s,
+                    title=(row.get("title") or ""),
+                    entry_file=rel_norm,
+                    note="read_chat_artifact_file",
+                )
+            except Exception:
+                pass
             return json.dumps({
                 "success": True,
                 "uuid": uuid_s,

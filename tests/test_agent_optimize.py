@@ -224,6 +224,8 @@ def test_detect_missing_tools_from_text_requires_negative_context():
         HOST_FILE_TRANSFER_TOOL_NAMES,
         TERMINAL_TOOL_NAMES,
         detect_missing_tools_from_text,
+        infer_capabilities_from_lack_text,
+        plan_tools_recovery_from_assistant_text,
     )
 
     catalog = set(CORE_TOOL_NAMES) | set(TERMINAL_TOOL_NAMES) | set(HOST_FILE_TRANSFER_TOOL_NAMES)
@@ -241,6 +243,26 @@ def test_detect_missing_tools_from_text_requires_negative_context():
         )
         == []
     )
+
+    # 扩展负向词：未包含 / 不具备
+    soft = "当前工具集未包含 scp_push，我无法完成上传。"
+    assert "scp_push" in detect_missing_tools_from_text(
+        soft, available_names=set(), catalog_names=catalog
+    )
+
+    # 只抱怨能力、不点英文工具名 → 能力语义扩层
+    vague = "抱歉，我目前没有文件传输能力，无法把安装包传到那台主机。"
+    caps = infer_capabilities_from_lack_text(vague)
+    assert "host_transfer" in caps
+    plan = plan_tools_recovery_from_assistant_text(
+        vague,
+        available_names={"list_hosts", "ask_user_choice", "ensure_chat_tools"},
+        catalog_names=catalog,
+        current_allow=frozenset({"list_hosts", "ask_user_choice", "ensure_chat_tools"}),
+    )
+    assert plan is not None and plan["recoverable"] is True
+    assert plan.get("via") == "capability_hint"
+    assert plan["allow"] is not None and "scp_push" in plan["allow"]
 
 
 def test_upgrade_and_short_confirm_get_terminal_transfer_tools():

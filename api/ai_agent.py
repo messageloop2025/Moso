@@ -72,6 +72,7 @@ from services.agent_optimize import (
     filter_tools_for_message,
     message_needs_html_artifact,
     message_needs_ssh_terminal_rules,
+    plan_tools_recovery_from_assistant_text,
     resolve_tools_tier,
     tools_need_full_upgrade,
     resolve_weak_network_mode,
@@ -5444,15 +5445,17 @@ def _build_session_history_self_lookup_section(session_id: int) -> str:
 当前会话 ID 为 {sid}。当用户要求「更新会话提示词」「补充会话级约束」「把上述要求记到会话里」等时，请调用 update_session_prompt(session_id={sid}, content="...", append=True/False) 来更新或追加本会话的会话级提示词（修改前可用 get_session_prompt 核对）。注意：content 只应归纳用户的要求和你的执行意图（要做什么、怎么做），不要包含终端输出、命令输出或任何程序日志的原文。跨会话可展示的主机环境/状态请写入 Memory（memory_write），勿塞进会话提示词。
 生成会话提示词或归纳最佳实践/经验时，请先调用 get_session_operations(session_id={sid}) 获取「仅用户要求与助手指令」的操作序列（不含程序输出），再据此归纳；不要基于含大量日志的完整对话归纳。
 
-## 工具装载与恢复（必读）
-- 本轮下发的 tools 列表可能是分层子集（非全量）。若你需要的工具不在当前列表中：**先调用 `ensure_chat_tools`**（传 `tool_names` 和/或 `capabilities=terminal|fs|http|host_transfer|full`），等其返回后再执行业务 tool_call。
-- **禁止**用纯文字声称「缺少 scp_push / ssh_execute / …」后结束；系统也会检测此类话术并自动扩层重试，但你应主动 `ensure_chat_tools`。
-- 若 `ensure_chat_tools` 后仍无该工具，再向用户说明当前会话无权或未启用该能力。
+## 工具装载与恢复（必读 · 高优先级）
+- 本轮 `tools` **常常是分层子集**，不是平台能力上限。system 里提到的能力名（如 scp_push / ssh_execute）若**未出现在本轮 tools 列表**，**不代表平台没有**，只代表尚未装载。
+- **缺工具时的唯一正确动作**：先调用 **`ensure_chat_tools`**（`tool_names=[...]` 和/或 `capabilities=terminal|fs|http|host_transfer|full`），等返回成功后再发起业务 tool_call。`ensure_chat_tools` 始终在 CORE 层可用。
+- **严禁**仅用文字道歉结束（「我没有文件传输/SSH 工具」「当前工具集不支持」等）。系统会检测此类话术并自动扩层重试，但你应主动 `ensure_chat_tools`，不要等用户再催。
+- 若 `ensure_chat_tools` 后 tools 里仍无该名，再向用户说明当前会话无权或未启用该能力。
 
 ## 上下文完整性与自查（必读）
 - **默认不全**：注入给你的历史 user/assistant 文本**默认不含**工具调用轨迹（TOOL_TRACE）与 role=tool 原始结果；界面「AI 思考与计划」折叠内容也是懒加载，不会自动进入当前上下文。因此你**不能**仅凭「当前上下文里看不到 tool_call」就断言「我当时是猜的 / 编造的 / 没有调工具」。
 - **自查调用过程**：当用户问「你怎么查到的」「依据是什么」「调了哪些工具」「刚才那步怎么做的」等，**先**调用 `get_session_chat_detail(session_id={sid}, include_tool_results=true)`。返回中助手消息会含可读正文与解码后的 **tool_trace**（工具名、参数摘要、结果预览——与界面展开「思考与计划」同源）。据 tool_trace **如实说明**；仅当详情中确实无工具轨迹且正文也无法印证时，才可说明「本会话记录中未找到工具调用」。
 - **自查历史聊天**：需要更长操作序列（只要指令、不要日志）用 `get_session_operations(session_id={sid})`；需要操作日志侧证据可用 `list_logs`（AI 工具记录的 operation 常为 `ai_tool:工具名`）；大结果 spill 用 `read_chat_data`。
+- **本会话文件**：system 中「本会话文件资源」清单会自动列出本会话成果物 / 附件 / 工作区文件的 uuid 与路径。修订已有报告时从该清单取 uuid，再 `read_chat_artifact_file` → `update_chat_artifact`；**禁止**因正文不在上下文就 recreate。
 - **当前轮例外**：本轮正在进行的 tool_call 结果仍在当轮上下文中，可直接引用；跨轮回顾一律走上述自查工具。
 后续注入的历史对话中，每条消息开头会有 `[历史时间: YYYY-MM-DD HH:MM:SS]`。请结合该时间判断信息时效性，越新的内容优先作为当前依据。
 """
@@ -5468,10 +5471,11 @@ def _build_system_prompt(*, user: dict | None = None) -> str:
     )
     is_admin = bool(user and _is_admin_role(user.get("role")))
     tools_overview = (
-        "你拥有一组工具（以当前会话工具列表为准）："
+        "平台具备下列能力（**以本轮 tools 列表实际下发的函数为准**；列表里没有时先 `ensure_chat_tools` 扩层，勿声称平台没有）："
         "主机查询与 CRUD（**create_host** / update_host / delete_host；纳管须调 create_host，可用 new_credential）；"
         "分组（create_group、add_hosts_to_group、remove_host_from_group、update_group、delete_group）；"
         "SSH（**ssh_execute**、**ssh_channel_***、**Web 控制台** send_to_terminal/get_terminal_buffer）；"
+        "主机文件传输（**scp_push** / **scp_pull** 等）；"
         "维护历史；分享（share_host 等，只共享主机访问，不共享聊天记录）；"
         "标签；主机知识（机密，严禁回复展示）与主机级提示词；.edgeops 工作区；"
         "毛竹文件系统 fs_*（侧栏「文件系统」= 当前用户工作区）；"
@@ -5732,7 +5736,7 @@ AI 成果物（artifacts，让用户可直接下载你整理的报告/数据包/
 - 入口文件：HTML 报告推荐 `entry_file: "index.html"`；纯数据可用 `report.md` / `data.csv`。
 - 调用成功后：把返回的 `markdown_link`（`[标题](artifact:UUID)`）**原样**贴到最终答复；不要改写链接。
 - **禁止编造** `artifact:UUID`：未成功调用 `create_chat_artifact` / `update_chat_artifact`、或工具返回 `success:false` 时，**不得**在答复中写 `artifact:` 链接，也不得手搓 UUID；只能粘贴工具返回的 `markdown_link`。
-- **修订已有报告（重要）**：用户要求改时间、改样式、修错字、补一小段等**局部修改**时，**禁止**再 `create_chat_artifact` 整份重生成。流程：`list_chat_artifacts` → `read_chat_artifact_file(uuid, path)` → **`update_chat_artifact(uuid, files=[...])`**，**保持同一 UUID**；答复说明「已在原报告上更新」，链接仍用原 `artifact:UUID`。
+- **修订已有报告（重要）**：用户要求改时间、改样式、修错字、补一小段、加发光效果等**局部修改**时，**禁止**再 `create_chat_artifact` 整份重生成。优先看 system「本会话文件资源」清单中的 uuid；流程：`list_chat_artifacts` → `read_chat_artifact_file(uuid, path)` → **`update_chat_artifact(uuid, files=[...])`**，**保持同一 UUID**；答复说明「已在原报告上更新」，链接仍用原 `artifact:UUID`。正文看不到 HTML **不等于**文件不存在。
 - 读取已有成果：`list_chat_artifacts`、`read_chat_artifact_file(uuid, path)`；更新：`update_chat_artifact`。
 - 不要滥用：简单问答、一两行数据直接在正文展示即可。
 
@@ -6485,6 +6489,18 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
     from services.user_memory import build_memory_map_prompt_section
 
     _memory_map_ctx = build_memory_map_prompt_section()
+    _session_file_resources_ctx = ""
+    try:
+        from services.session_file_resources import build_session_file_resources_section
+
+        _session_file_resources_ctx = await build_session_file_resources_section(
+            db,
+            user_id=int(user["id"]),
+            session_id=int(session_id),
+            username=(user.get("username") or "default"),
+        )
+    except Exception as _sfr_exc:
+        logger.debug("注入本会话文件资源失败 sid=%s: %s", session_id, _sfr_exc)
     full_system = f"""{system_prompt}
 
 {_PROMPT_ENTITY_RESOLUTION_RULES}
@@ -6496,6 +6512,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
 {_build_html_libs_prompt_section() if message_needs_html_artifact(req.message or "") else ""}
 
 {_build_session_history_self_lookup_section(session_id)}
+{_session_file_resources_ctx}
 {session_prompt_block}
 {host_scope_note}
 {_user_fs_ctx}
@@ -8498,6 +8515,84 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                 )
                             messages.append({"role": "user", "content": _retry_nudge})
                             continue
+                        # 落库前：正文声称缺工具 / 缺能力 → 扩层并重试（含本轮已有其它 tool_call 的情况）
+                        if (
+                            not force_tools_full
+                            and tools_recovery_count < _MAX_TOOLS_RECOVERY
+                            and (content or "").strip()
+                        ):
+                            try:
+                                _full_pre = await resolve_chat_tools(
+                                    get_tools_for_scope(session_scope, user),
+                                    session_scope,
+                                    user,
+                                    session_host_id,
+                                    session_id=session_id,
+                                    user_message=last_user_message or req.message or "",
+                                )
+                                _plan_pre = plan_tools_recovery_from_assistant_text(
+                                    content or "",
+                                    available_names=available_tool_names(cached_round_tools),
+                                    catalog_names=catalog_tool_names_from_tools(_full_pre),
+                                    current_allow=tools_allow_override,
+                                )
+                            except Exception as _pre_rec_exc:
+                                logger.debug(
+                                    "tools recovery (pre-persist) plan failed sid=%s: %s",
+                                    session_id,
+                                    _pre_rec_exc,
+                                )
+                                _plan_pre = None
+                            if _plan_pre and _plan_pre.get("recoverable"):
+                                tools_recovery_count += 1
+                                # 最后一次恢复直接拉满，避免反复窄层空转
+                                if (
+                                    tools_recovery_count >= _MAX_TOOLS_RECOVERY
+                                    or _plan_pre.get("allow") is None
+                                    or _plan_pre.get("tier_label") == "full"
+                                ):
+                                    force_tools_full = True
+                                    tools_allow_override = None
+                                    tools_tier_for_stats = "full"
+                                else:
+                                    tools_allow_override = frozenset(_plan_pre["allow"])
+                                    tools_tier_for_stats = str(
+                                        _plan_pre.get("tier_label") or "expanded"
+                                    )
+                                cached_round_tools = None
+                                _needed_pre = list(
+                                    _plan_pre.get("needed_tools")
+                                    or _plan_pre.get("needed")
+                                    or []
+                                )
+                                logger.info(
+                                    "tools recovery (pre-persist) session_id=%s tier=%s via=%s names=%s count=%s",
+                                    session_id,
+                                    tools_tier_for_stats,
+                                    _plan_pre.get("via"),
+                                    _needed_pre,
+                                    tools_recovery_count,
+                                )
+                                yield _sse({
+                                    "stream_status": {
+                                        "phase": "tools_recovering",
+                                        "tier": tools_tier_for_stats,
+                                        "tools": _needed_pre,
+                                        "via": _plan_pre.get("via") or "text",
+                                    }
+                                })
+                                yield _sse({
+                                    "content": (
+                                        "\n\n*（系统正在装载所需工具并继续执行，请稍候…）*\n\n"
+                                    )
+                                })
+                                messages.append(build_assistant_history_message(msg))
+                                _nudge_pre = _tools_recovery_nudge(
+                                    _needed_pre, tools_tier_for_stats, locale=_output_locale
+                                )
+                                messages.append({"role": "user", "content": _nudge_pre})
+                                last_user_message = _nudge_pre
+                                continue
                         break
 
                     if content is None:
@@ -8641,9 +8736,9 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                         yield "data: [DONE]\n\n"
                         return
 
-                    # 文字声称缺少工具：按能力集扩层并重试（不把道歉当最终交付）
+                    # 文字声称缺少工具（兜底：落库后若仍命中且未耗尽次数，再扩层续跑）
                     if (
-                        not round_had_tool_call
+                        not force_tools_full
                         and tools_recovery_count < _MAX_TOOLS_RECOVERY
                         and (content or "").strip()
                     ):
@@ -8655,53 +8750,54 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                             session_id=session_id,
                             user_message=last_user_message or req.message or "",
                         )
-                        _catalog_d = catalog_tool_names_from_tools(_full_for_detect)
-                        _avail_d = available_tool_names(cached_round_tools)
-                        _missing_txt = detect_missing_tools_from_text(
+                        _plan_txt = plan_tools_recovery_from_assistant_text(
                             content or "",
-                            available_names=_avail_d,
-                            catalog_names=_catalog_d,
+                            available_names=available_tool_names(cached_round_tools),
+                            catalog_names=catalog_tool_names_from_tools(_full_for_detect),
+                            current_allow=tools_allow_override,
                         )
-                        if _missing_txt:
-                            _plan_txt = expand_allow_for_tools(
-                                _missing_txt,
-                                current_allow=tools_allow_override,
-                                catalog_names=_catalog_d,
+                        if _plan_txt and _plan_txt.get("recoverable"):
+                            tools_recovery_count += 1
+                            if (
+                                tools_recovery_count >= _MAX_TOOLS_RECOVERY
+                                or _plan_txt.get("allow") is None
+                                or _plan_txt.get("tier_label") == "full"
+                            ):
+                                force_tools_full = True
+                                tools_allow_override = None
+                                tools_tier_for_stats = "full"
+                            else:
+                                tools_allow_override = frozenset(_plan_txt["allow"])
+                                tools_tier_for_stats = str(_plan_txt.get("tier_label") or "expanded")
+                            cached_round_tools = None
+                            _missing_txt = list(
+                                _plan_txt.get("needed_tools") or _plan_txt.get("needed") or []
                             )
-                            if _plan_txt.get("recoverable") and not _plan_txt.get("missing_in_catalog"):
-                                tools_recovery_count += 1
-                                if _plan_txt.get("allow") is None or _plan_txt.get("tier_label") == "full":
-                                    force_tools_full = True
-                                    tools_allow_override = None
-                                    tools_tier_for_stats = "full"
-                                else:
-                                    tools_allow_override = frozenset(_plan_txt["allow"])
-                                    tools_tier_for_stats = str(_plan_txt.get("tier_label") or "expanded")
-                                cached_round_tools = None
-                                logger.info(
-                                    "tools recovery (text gap) session_id=%s tier=%s names=%s count=%s",
-                                    session_id,
-                                    tools_tier_for_stats,
-                                    _missing_txt,
-                                    tools_recovery_count,
-                                )
-                                yield _sse({
-                                    "stream_status": {
-                                        "phase": "tools_recovering",
-                                        "tier": tools_tier_for_stats,
-                                        "tools": _missing_txt,
-                                        "via": "text",
-                                    }
-                                })
-                                _nudge_rec = _tools_recovery_nudge(
-                                    _missing_txt, tools_tier_for_stats, locale=_output_locale
-                                )
-                                messages.append({"role": "assistant", "content": content})
-                                messages.append({"role": "user", "content": _nudge_rec})
-                                last_user_message = _nudge_rec
-                                pending_user_msg = {"text": _nudge_rec, "saved": False}
-                                await _persist_pending_user_msg()
-                                continue
+                            logger.info(
+                                "tools recovery (text gap) session_id=%s tier=%s via=%s names=%s count=%s",
+                                session_id,
+                                tools_tier_for_stats,
+                                _plan_txt.get("via"),
+                                _missing_txt,
+                                tools_recovery_count,
+                            )
+                            yield _sse({
+                                "stream_status": {
+                                    "phase": "tools_recovering",
+                                    "tier": tools_tier_for_stats,
+                                    "tools": _missing_txt,
+                                    "via": _plan_txt.get("via") or "text",
+                                }
+                            })
+                            _nudge_rec = _tools_recovery_nudge(
+                                _missing_txt, tools_tier_for_stats, locale=_output_locale
+                            )
+                            messages.append({"role": "assistant", "content": content})
+                            messages.append({"role": "user", "content": _nudge_rec})
+                            last_user_message = _nudge_rec
+                            pending_user_msg = {"text": _nudge_rec, "saved": False}
+                            await _persist_pending_user_msg()
+                            continue
 
                     # 可执行类请求却零 tool_call 且正文像在「将要去干」：同 SSE 内自动续跑一轮，逼模型调工具。
                     if (
@@ -9251,6 +9347,18 @@ async def run_ops_integration_chat_complete(
     from services.user_memory import build_memory_map_prompt_section as _build_mem_map
 
     _integ_memory_map = _build_mem_map()
+    _integ_file_resources_ctx = ""
+    try:
+        from services.session_file_resources import build_session_file_resources_section
+
+        _integ_file_resources_ctx = await build_session_file_resources_section(
+            db,
+            user_id=int(user["id"]),
+            session_id=int(sid),
+            username=(user.get("username") or "default"),
+        )
+    except Exception as _integ_sfr_exc:
+        logger.debug("注入本会话文件资源失败(integ) sid=%s: %s", sid, _integ_sfr_exc)
     full_system = f"""{system_prompt}
 
 {_PROMPT_ENTITY_RESOLUTION_RULES}
@@ -9261,6 +9369,7 @@ async def run_ops_integration_chat_complete(
 {_OPS_INTEGRATION_MODE_RULES}
 {_build_html_libs_prompt_section() if message_needs_html_artifact(msg_in or "") else ""}
 {_build_session_history_self_lookup_section(sid)}
+{_integ_file_resources_ctx}
 {session_prompt_block}
 {_integration_host_binding_note}
 {host_scope_note}
@@ -9759,6 +9868,62 @@ async def run_ops_integration_chat_complete(
                             ),
                         })
                         continue
+                    if (
+                        not force_tools_full_integ
+                        and tools_recovery_count_integ < _MAX_TOOLS_RECOVERY
+                        and (content or "").strip()
+                    ):
+                        try:
+                            _full_pre_i = await resolve_chat_tools(
+                                get_tools_for_scope(tool_scope, user),
+                                tool_scope,
+                                user,
+                                session_host_id,
+                                session_id=sid,
+                                user_message=last_user_message or msg_in or "",
+                            )
+                            _plan_pre_i = plan_tools_recovery_from_assistant_text(
+                                content or "",
+                                available_names=available_tool_names(cached_round_tools_integ),
+                                catalog_names=catalog_tool_names_from_tools(_full_pre_i),
+                                current_allow=tools_allow_override_integ,
+                            )
+                        except Exception:
+                            _plan_pre_i = None
+                        if _plan_pre_i and _plan_pre_i.get("recoverable"):
+                            tools_recovery_count_integ += 1
+                            if (
+                                tools_recovery_count_integ >= _MAX_TOOLS_RECOVERY
+                                or _plan_pre_i.get("allow") is None
+                                or _plan_pre_i.get("tier_label") == "full"
+                            ):
+                                force_tools_full_integ = True
+                                tools_allow_override_integ = None
+                                tools_tier_for_stats_integ = "full"
+                            else:
+                                tools_allow_override_integ = frozenset(_plan_pre_i["allow"])
+                                tools_tier_for_stats_integ = str(
+                                    _plan_pre_i.get("tier_label") or "expanded"
+                                )
+                            cached_round_tools_integ = None
+                            _needed_pre_i = list(
+                                _plan_pre_i.get("needed_tools") or _plan_pre_i.get("needed") or []
+                            )
+                            logger.info(
+                                "tools recovery integ (pre-final) sid=%s tier=%s via=%s names=%s",
+                                sid,
+                                tools_tier_for_stats_integ,
+                                _plan_pre_i.get("via"),
+                                _needed_pre_i,
+                            )
+                            messages.append(build_assistant_history_message(msg))
+                            messages.append({
+                                "role": "user",
+                                "content": _tools_recovery_nudge(
+                                    _needed_pre_i, tools_tier_for_stats_integ
+                                ),
+                            })
+                            continue
                     break
 
                 if content is None:
@@ -9768,9 +9933,9 @@ async def run_ops_integration_chat_complete(
                         "session_id": sid,
                     }
 
-                # 文字声称缺少工具：集成路径同样按能力集扩层重试
+                # 文字声称缺少工具：集成路径兜底扩层
                 if (
-                    not round_had_tool_call
+                    not force_tools_full_integ
                     and tools_recovery_count_integ < _MAX_TOOLS_RECOVERY
                     and (content or "").strip()
                 ):
@@ -9782,38 +9947,41 @@ async def run_ops_integration_chat_complete(
                         session_id=sid,
                         user_message=last_user_message or msg_in or "",
                     )
-                    _missing_d_i = detect_missing_tools_from_text(
+                    _plan_d_i = plan_tools_recovery_from_assistant_text(
                         content or "",
                         available_names=available_tool_names(cached_round_tools_integ),
                         catalog_names=catalog_tool_names_from_tools(_full_d_i),
+                        current_allow=tools_allow_override_integ,
                     )
-                    if _missing_d_i:
-                        _plan_d_i = expand_allow_for_tools(
-                            _missing_d_i,
-                            current_allow=tools_allow_override_integ,
-                            catalog_names=catalog_tool_names_from_tools(_full_d_i),
+                    if _plan_d_i and _plan_d_i.get("recoverable"):
+                        tools_recovery_count_integ += 1
+                        if (
+                            tools_recovery_count_integ >= _MAX_TOOLS_RECOVERY
+                            or _plan_d_i.get("allow") is None
+                            or _plan_d_i.get("tier_label") == "full"
+                        ):
+                            force_tools_full_integ = True
+                            tools_allow_override_integ = None
+                            tools_tier_for_stats_integ = "full"
+                        else:
+                            tools_allow_override_integ = frozenset(_plan_d_i["allow"])
+                            tools_tier_for_stats_integ = str(_plan_d_i.get("tier_label") or "expanded")
+                        cached_round_tools_integ = None
+                        _missing_d_i = list(
+                            _plan_d_i.get("needed_tools") or _plan_d_i.get("needed") or []
                         )
-                        if _plan_d_i.get("recoverable") and not _plan_d_i.get("missing_in_catalog"):
-                            tools_recovery_count_integ += 1
-                            if _plan_d_i.get("allow") is None or _plan_d_i.get("tier_label") == "full":
-                                force_tools_full_integ = True
-                                tools_allow_override_integ = None
-                                tools_tier_for_stats_integ = "full"
-                            else:
-                                tools_allow_override_integ = frozenset(_plan_d_i["allow"])
-                                tools_tier_for_stats_integ = str(_plan_d_i.get("tier_label") or "expanded")
-                            cached_round_tools_integ = None
-                            _nudge_i = _tools_recovery_nudge(_missing_d_i, tools_tier_for_stats_integ)
-                            messages.append({"role": "assistant", "content": content})
-                            messages.append({"role": "user", "content": _nudge_i})
-                            last_user_message = _nudge_i
-                            logger.info(
-                                "tools recovery integ (text gap) sid=%s tier=%s names=%s",
-                                sid,
-                                tools_tier_for_stats_integ,
-                                _missing_d_i,
-                            )
-                            continue
+                        _nudge_i = _tools_recovery_nudge(_missing_d_i, tools_tier_for_stats_integ)
+                        messages.append({"role": "assistant", "content": content})
+                        messages.append({"role": "user", "content": _nudge_i})
+                        last_user_message = _nudge_i
+                        logger.info(
+                            "tools recovery integ (text gap) sid=%s tier=%s via=%s names=%s",
+                            sid,
+                            tools_tier_for_stats_integ,
+                            _plan_d_i.get("via"),
+                            _missing_d_i,
+                        )
+                        continue
 
                 if not (content or "").strip():
                     content = "（已按上述工具执行完成；若需继续可发送下一条消息。）"

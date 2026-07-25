@@ -430,11 +430,118 @@ def expand_allow_for_tools(
 
 
 _MISSING_TOOL_CONTEXT_RE = re.compile(
-    r"(缺少|没有|不可用|无法使用|不在|未提供|未装载|未加载|工具集中没有|工具列表没有|"
-    r"allowed tools|not available|missing|don't have|do not have|cannot find)",
+    r"(缺少|没有|不可用|无法使用|无法调用|无法完成|不能调用|不能使用|做不到|"
+    r"不在|未提供|未装载|未加载|未包含|未启用|不具备|无权|权限不足|"
+    r"工具集中没有|工具列表没有|当前工具|可用工具|"
+    r"allowed tools|not available|not included|unable to|can't|cannot|"
+    r"don't have|do not have|does not have|missing|no access)",
     re.IGNORECASE,
 )
 _TOOL_NAME_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{2,64}")
+
+# 正文只抱怨「没能力」却不点英文工具名时，按语义推断应扩的能力集
+_CAPABILITY_LACK_HINTS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
+    (
+        re.compile(
+            r"(文件传输|传文件|传输文件|上传到主机|从主机下载|远程拷贝|拷贝到|"
+            r"scp|sftp|没有.*传输|无法.*传输|不具备.*传输)",
+            re.IGNORECASE,
+        ),
+        (CAPABILITY_HOST_TRANSFER, CAPABILITY_TERMINAL),
+    ),
+    (
+        re.compile(
+            r"(远程执行|SSH\b|ssh执行|登录主机|主机终端|发命令|执行命令|"
+            r"没有.*终端|无法.*SSH|不具备.*SSH|不能.*ssh)",
+            re.IGNORECASE,
+        ),
+        (CAPABILITY_TERMINAL, CAPABILITY_HOST_TRANSFER),
+    ),
+    (
+        re.compile(
+            r"(本地文件|工作区文件|读写文件|写文件|读文件|文件系统|"
+            r"没有.*fs_|无法.*文件|不具备.*文件)",
+            re.IGNORECASE,
+        ),
+        (CAPABILITY_FS,),
+    ),
+    (
+        re.compile(
+            r"(HTTP\b|下载网址|拉取URL|curl\b|webhook|外网请求)",
+            re.IGNORECASE,
+        ),
+        (CAPABILITY_HTTP,),
+    ),
+    (
+        re.compile(
+            r"(批量任务|定时任务|触发任务|MCP\b|委托子|工作流|Agent Skills|skills/)",
+            re.IGNORECASE,
+        ),
+        (CAPABILITY_FULL,),
+    ),
+)
+
+
+def infer_capabilities_from_lack_text(content: str) -> list[str]:
+    """负向语境下，从业务话术推断应扩层的 capabilities（可不含英文工具名）。"""
+    text = content or ""
+    if not text.strip() or not _MISSING_TOOL_CONTEXT_RE.search(text):
+        return []
+    caps: list[str] = []
+    seen: set[str] = set()
+    for pat, needed in _CAPABILITY_LACK_HINTS:
+        if not pat.search(text):
+            continue
+        for c in needed:
+            if c not in seen:
+                seen.add(c)
+                caps.append(c)
+    return caps
+
+
+def expand_allow_for_capabilities(
+    capabilities: list[str] | set[str] | frozenset[str] | None,
+    *,
+    current_allow: frozenset[str] | set[str] | None = None,
+) -> dict[str, Any]:
+    """按能力名直接扩层（正文只抱怨能力、未点工具名时用）。"""
+    caps = {str(c or "").strip().lower() for c in (capabilities or []) if str(c or "").strip()}
+    if not caps:
+        return {
+            "recoverable": False,
+            "missing_in_catalog": [],
+            "capabilities": [],
+            "allow": frozenset(current_allow) if current_allow is not None else frozenset(CORE_TOOL_NAMES),
+            "tier_label": "unrecoverable",
+            "needed": [],
+        }
+    if CAPABILITY_FULL in caps or "all" in caps:
+        return {
+            "recoverable": True,
+            "missing_in_catalog": [],
+            "capabilities": [CAPABILITY_FULL],
+            "allow": None,
+            "tier_label": "full",
+            "needed": [],
+        }
+    if caps & {CAPABILITY_TERMINAL, CAPABILITY_FS, CAPABILITY_HTTP}:
+        caps.add(CAPABILITY_HOST_TRANSFER)
+    allow = allow_set_for_capabilities(caps)
+    if current_allow is not None and allow is not None:
+        allow = frozenset(set(allow) | set(current_allow))
+    if allow is None:
+        tier_label = "full"
+    else:
+        parts = ["core"] + sorted(c for c in caps if c != CAPABILITY_CORE)
+        tier_label = "+".join(parts) if len(parts) > 1 else "core"
+    return {
+        "recoverable": True,
+        "missing_in_catalog": [],
+        "capabilities": sorted(caps),
+        "allow": allow,
+        "tier_label": tier_label,
+        "needed": sorted(caps),
+    }
 
 
 def detect_missing_tools_from_text(
@@ -443,7 +550,7 @@ def detect_missing_tools_from_text(
     available_names: set[str] | frozenset[str] | None = None,
     catalog_names: set[str] | frozenset[str] | None = None,
 ) -> list[str]:
-    """从助手正文检测「声称缺少的工具名」（不靠业务词，只认工具名+负向语境）。"""
+    """从助手正文检测「声称缺少的工具名」（工具名 + 负向语境）。"""
     text = content or ""
     if not text.strip() or not _MISSING_TOOL_CONTEXT_RE.search(text):
         return []
@@ -473,6 +580,44 @@ def detect_missing_tools_from_text(
         if tok in catalog and tok not in avail and tok not in found:
             found.append(tok)
     return found
+
+
+def plan_tools_recovery_from_assistant_text(
+    content: str,
+    *,
+    available_names: set[str] | frozenset[str] | None = None,
+    catalog_names: set[str] | frozenset[str] | None = None,
+    current_allow: frozenset[str] | set[str] | None = None,
+) -> dict[str, Any] | None:
+    """综合「点名缺工具」与「能力语义抱怨」，产出 expand 计划；无需恢复时返回 None。"""
+    text = (content or "").strip()
+    if not text or not _MISSING_TOOL_CONTEXT_RE.search(text):
+        return None
+    missing = detect_missing_tools_from_text(
+        text,
+        available_names=available_names,
+        catalog_names=catalog_names,
+    )
+    if missing:
+        plan = expand_allow_for_tools(
+            missing,
+            current_allow=current_allow,
+            catalog_names=catalog_names,
+        )
+        if plan.get("recoverable") and not plan.get("missing_in_catalog"):
+            plan["via"] = "tool_names"
+            plan["needed_tools"] = missing
+            return plan
+        # 点名了但都不在 catalog：再试能力语义
+    caps = infer_capabilities_from_lack_text(text)
+    if not caps:
+        return None
+    plan = expand_allow_for_capabilities(caps, current_allow=current_allow)
+    if not plan.get("recoverable"):
+        return None
+    plan["via"] = "capability_hint"
+    plan["needed_tools"] = list(caps)
+    return plan
 
 
 def filter_tools_by_allow(
