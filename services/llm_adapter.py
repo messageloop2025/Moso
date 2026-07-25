@@ -3,12 +3,25 @@
 - 根据 base_url 自动识别提供商，规范化模型名与请求头
 - 重点兼容 qwen3.5-plus（阿里云 compatible-mode 官方模型名）
 - 统一解析 chat completions 响应（流式 / 非流式），兼容各端返回格式
+- Kimi K3：顶层 reasoning_effort + 多轮/tool 完整回传 reasoning_content
 """
 
 import json
+import os
 import re
 from typing import Any
 from urllib.parse import urlparse
+
+# Kimi K3 官方允许的 reasoning_effort；未指定时 API 默认 max（思考很久）
+KIMI_REASONING_EFFORTS = frozenset({"low", "high", "max"})
+# K3 文档标明固定、应省略的采样参数（乱传无益）
+_KIMI_K3_OMIT_SAMPLING_KEYS = (
+    "temperature",
+    "top_p",
+    "n",
+    "presence_penalty",
+    "frequency_penalty",
+)
 
 # 提供商类型
 PROVIDER_ALIYUN = "aliyun"
@@ -145,6 +158,102 @@ def extract_message_content(message: dict) -> str:
                 return (part.get("text") or "") or ""
         return ""
     return str(c)
+
+
+def extract_message_reasoning(message: dict | None) -> str:
+    """取出思考链文本（Kimi / 阿里等：reasoning_content / reasoning / thinking）。"""
+    if not isinstance(message, dict):
+        return ""
+    for key in ("reasoning_content", "reasoning", "thinking"):
+        raw = message.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw
+    return ""
+
+
+def is_kimi_k3_model(model: str | None) -> bool:
+    """识别 Kimi K3 系列（Preserved Thinking 始终开启，用 reasoning_effort 控长度）。"""
+    name = (model or "").strip().lower()
+    if not name:
+        return False
+    # 兼容 kimi-k3、moonshot/kimi-k3、kimi-k3-xxx
+    base = name.rsplit("/", 1)[-1]
+    return base == "kimi-k3" or base.startswith("kimi-k3-") or base.startswith("kimi-k3.")
+
+
+def resolve_kimi_reasoning_effort(explicit: str | None = None) -> str:
+    """解析 K3 的 reasoning_effort：显式值 > EDGEOPS_/MOSS_ 环境变量 > 默认 low。
+
+    官方默认多为 max；Agent 场景默认 low 以缩短空等，需要更强推理时再调高。
+    """
+    candidates = (
+        (explicit or "").strip().lower(),
+        (os.getenv("EDGEOPS_KIMI_REASONING_EFFORT") or "").strip().lower(),
+        (os.getenv("MOSS_KIMI_REASONING_EFFORT") or "").strip().lower(),
+    )
+    for val in candidates:
+        if val in KIMI_REASONING_EFFORTS:
+            return val
+    return "low"
+
+
+def build_assistant_history_message(
+    message: dict | None,
+    *,
+    tool_calls: list | None = None,
+) -> dict[str, Any]:
+    """构造多轮 / tool 循环回灌的完整 assistant 消息。
+
+    Kimi K3 官方要求：回传 API 返回的完整 assistant（含 reasoning_content 与
+    tool_calls），不要只保留 content，否则后续轮次思维链被掐断。
+    """
+    msg = message if isinstance(message, dict) else {}
+    out: dict[str, Any] = {
+        "role": "assistant",
+        "content": extract_message_content(msg) or "",
+    }
+    reasoning = extract_message_reasoning(msg)
+    if reasoning:
+        out["reasoning_content"] = reasoning
+    tcs = tool_calls
+    if tcs is None:
+        raw_tc = msg.get("tool_calls")
+        tcs = raw_tc if isinstance(raw_tc, list) and raw_tc else None
+    if tcs:
+        out["tool_calls"] = tcs
+    return out
+
+
+def apply_provider_request_extensions(
+    payload: dict | None,
+    *,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """按模型注入/清理请求扩展字段（原地友好：返回新 dict）。
+
+    Kimi K3：
+    - 注入顶层 reasoning_effort（默认 low，可用环境变量覆盖）
+    - 移除 enable_thinking / thinking（那是 Qwen / K2.x 旋钮，对 K3 无效）
+    - 移除官方建议省略的固定采样参数
+    """
+    out: dict[str, Any] = dict(payload or {})
+    model_name = (model or out.get("model") or "").strip()
+    if not is_kimi_k3_model(model_name):
+        return out
+
+    out.pop("enable_thinking", None)
+    out.pop("thinking", None)
+    for key in _KIMI_K3_OMIT_SAMPLING_KEYS:
+        out.pop(key, None)
+
+    existing = out.get("reasoning_effort")
+    if isinstance(existing, str) and existing.strip().lower() in KIMI_REASONING_EFFORTS:
+        out["reasoning_effort"] = existing.strip().lower()
+    else:
+        out["reasoning_effort"] = resolve_kimi_reasoning_effort(
+            existing if isinstance(existing, str) else None
+        )
+    return out
 
 
 def is_ollama(provider: str) -> bool:

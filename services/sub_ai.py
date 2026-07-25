@@ -33,6 +33,8 @@ import httpx
 
 from database import get_db
 from services.llm_adapter import (
+    apply_provider_request_extensions,
+    build_assistant_history_message,
     detect_provider,
     ensure_chat_completions_url,
     extract_message_content,
@@ -248,12 +250,12 @@ async def run_sub_ai(
                     truncated = True
                     break
                 steps += 1
-                payload = {
+                payload = apply_provider_request_extensions({
                     "model": model,
                     "messages": messages,
                     "max_tokens": DEFAULT_MAX_TOKENS,
                     "stream": True,
-                }
+                }, model=model)
                 if tools_for_subai:
                     payload["tools"] = tools_for_subai
                     payload["tool_choice"] = "auto"
@@ -274,11 +276,12 @@ async def run_sub_ai(
                             break
                         tool_acc: list[dict] = []
                         content_parts: list[str] = []
+                        reasoning_parts: list[str] = []
                         async for line in resp.aiter_lines():
                             chunk = parse_stream_line(line)
                             if not chunk:
                                 continue
-                            c_delta, _r_delta, tc_delta, _finish = extract_stream_delta(chunk)
+                            c_delta, r_delta, tc_delta, _finish = extract_stream_delta(chunk)
                             if c_delta:
                                 content_parts.append(c_delta)
                                 if on_step:
@@ -290,11 +293,16 @@ async def run_sub_ai(
                                         })
                                     except Exception:
                                         pass
+                            if r_delta:
+                                reasoning_parts.append(r_delta)
                             if tc_delta:
                                 merge_tool_call_deltas(tool_acc, tc_delta)
                         final_content = "".join(content_parts)
+                        final_reasoning = "".join(reasoning_parts)
                         tool_calls = finalize_tool_calls(tool_acc) if tool_acc else []
                         msg = {"content": final_content}
+                        if final_reasoning:
+                            msg["reasoning_content"] = final_reasoning
                 except Exception as e:
                     err = f"LLM 请求异常：{type(e).__name__}: {e}"
                     break
@@ -303,11 +311,9 @@ async def run_sub_ai(
                     break
 
                 if tool_calls:
-                    messages.append({
-                        "role": "assistant",
-                        "content": extract_message_content(msg) or "",
-                        "tool_calls": tool_calls,
-                    })
+                    messages.append(
+                        build_assistant_history_message(msg, tool_calls=tool_calls)
+                    )
                     if on_step:
                         try:
                             await on_step({"kind": "sub_ai_step", "step": steps, "tool_calls": [tc["function"]["name"] for tc in tool_calls]})

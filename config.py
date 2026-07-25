@@ -9,7 +9,7 @@ PRODUCT_NAME_ZH = "毛竹"
 PRODUCT_NAME_EN = "Moso"
 PRODUCT_DISPLAY = f"{PRODUCT_NAME_ZH}（{PRODUCT_NAME_EN}）"  # AI 提示词中的产品指称
 
-VERSION = os.getenv("EDGEOPS_VERSION", "1.8.6-sp4")
+VERSION = os.getenv("EDGEOPS_VERSION", "1.8.6-sp5")
 
 # 数据库 / Database
 DATABASE_PATH = os.getenv("EDGEOPS_DB", str(BASE_DIR / "edgeops.db"))
@@ -104,6 +104,13 @@ AI_CONTEXT_SIZE = int(os.getenv("EDGEOPS_AI_CONTEXT_SIZE", "0"))
 # 未显式设置输出上限时，给 chat/completions 传递的默认 max_tokens（防止不同 provider 默认值差异过大）
 # Default max_tokens for chat/completions when not set (normalizes provider defaults).
 AI_DEFAULT_MAX_OUTPUT_TOKENS = int(os.getenv("EDGEOPS_AI_DEFAULT_MAX_OUTPUT_TOKENS", "16384"))
+# Kimi K3：顶层 reasoning_effort（low|high|max）。官方默认多为 max；Agent 默认 low 缩短空等。
+# 亦兼容 MOSS_KIMI_REASONING_EFFORT（与 Moss 侧命名对齐）。
+KIMI_REASONING_EFFORT = (
+    os.getenv("EDGEOPS_KIMI_REASONING_EFFORT")
+    or os.getenv("MOSS_KIMI_REASONING_EFFORT")
+    or "low"
+).strip().lower()
 # 后台定时/触发任务 Agent 单次 LLM 输出 max_tokens（默认与 AI_DEFAULT_MAX_OUTPUT_TOKENS 一致；原硬编码 4096 易截断长报告）
 TASK_AGENT_MAX_OUTPUT_TOKENS = int(os.getenv("EDGEOPS_TASK_AGENT_MAX_OUTPUT_TOKENS", str(AI_DEFAULT_MAX_OUTPUT_TOKENS)))
 # 任务运行记录列表中的 log_summary 最大字符（仅 UI 摘要，不是邮件正文）

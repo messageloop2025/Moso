@@ -104,6 +104,8 @@ from services.llm_adapter import (
     extract_stream_delta,
     merge_tool_call_deltas,
     finalize_tool_calls,
+    apply_provider_request_extensions,
+    build_assistant_history_message,
 )
 
 logger = logging.getLogger("edgeops.ai_agent")
@@ -1911,7 +1913,10 @@ async def _post_chat_with_vision_fallback(
         except Exception:
             pass
 
-    payload = dict(payload)  # 避免污染调用方
+    payload = apply_provider_request_extensions(
+        dict(payload),  # 避免污染调用方
+        model=(payload or {}).get("model") if isinstance(payload, dict) else None,
+    )
     # 工具产出的图（标注结果 / grid / probe 预览）默认只在 tool 文本里，视觉模型看不到；
     # 这里先把最新一条提升为标准 image_url user 段，确保模型能真正看到、据此自检修正。
     if _promote_recent_tool_image_to_user_message(messages):
@@ -2030,7 +2035,10 @@ async def _stream_chat_with_vision_fallback(
     剥离图片），只在首帧出现 4xx/5xx 时触发；一旦已经开始接收 200 流，就直接
     顺流读完，不再回退（流中错误由 httpx 抛出，由外层 catch）。
     """
-    payload = dict(payload)
+    payload = apply_provider_request_extensions(
+        dict(payload),
+        model=(payload or {}).get("model") if isinstance(payload, dict) else None,
+    )
     payload["stream"] = True
     # 工具产出的图（标注结果 / grid / probe 预览）默认只在 tool 文本里，视觉模型看不到；
     # 提升为标准 image_url user 段，模型才能看到并据此自检修正标注。
@@ -4658,7 +4666,12 @@ async def summarize_session_prompt(
             resp = await client.post(
                 api_url,
                 headers=headers,
-                json={"model": model, "messages": [{"role": "user", "content": ask}], "max_tokens": _resolve_request_max_tokens({}), "stream": False},
+                json=apply_provider_request_extensions({
+                    "model": model,
+                    "messages": [{"role": "user", "content": ask}],
+                    "max_tokens": _resolve_request_max_tokens({}),
+                    "stream": False,
+                }, model=model),
             )
         if resp.status_code != 200:
             err_detail = resp.text[:500] if resp.text else "未知错误"
@@ -4837,7 +4850,12 @@ async def summarize_host_prompt(
             resp = await client.post(
                 api_url,
                 headers=headers,
-                json={"model": model, "messages": [{"role": "user", "content": ask}], "max_tokens": _resolve_request_max_tokens({}), "stream": False},
+                json=apply_provider_request_extensions({
+                    "model": model,
+                    "messages": [{"role": "user", "content": ask}],
+                    "max_tokens": _resolve_request_max_tokens({}),
+                    "stream": False,
+                }, model=model),
             )
         if resp.status_code != 200:
             err_detail = resp.text[:500] if resp.text else "未知错误"
@@ -5889,7 +5907,7 @@ async def _call_assistant_ai(
             resp = await client.post(
                 api_url,
                 headers=headers,
-                json={
+                json=apply_provider_request_extensions({
                     "model": model,
                     "messages": [
                         {"role": "system", "content": system_prompt},
@@ -5897,7 +5915,7 @@ async def _call_assistant_ai(
                     ],
                     "max_tokens": _resolve_request_max_tokens({}),
                     "stream": False,
-                },
+                }, model=model),
             )
         if resp.status_code != 200:
             logger.warning("辅助 AI 调用失败: %s %s", resp.status_code, resp.text[:200])
@@ -5943,7 +5961,7 @@ async def _call_llm_nonstream(
             resp = await client.post(
                 api_url,
                 headers=headers,
-                json={
+                json=apply_provider_request_extensions({
                     "model": model,
                     "messages": [
                         {"role": "system", "content": system_content},
@@ -5951,7 +5969,7 @@ async def _call_llm_nonstream(
                     ],
                     "max_tokens": _resolve_request_max_tokens({}),
                     "stream": False,
-                },
+                }, model=model),
             )
         if resp.status_code != 200:
             err_detail = resp.text[:300]
@@ -6867,6 +6885,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                     short_final_retry_used = False
                     image_blind_tool_retry_used = False
                     spill_read_retry_used = False
+                    force_text_only_round = False
                     for round_idx in range(agent_max_steps):
                         if cached_round_tools is None:
                             _base_tools = await resolve_chat_tools(
@@ -6920,7 +6939,12 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                     force_tools_full,
                                     tools_allow_override is not None,
                                 )
-                        round_tools = cached_round_tools
+                        # 空终稿 / 截断再试：禁止工具，只要求文字总结（K3 官方对空 content 视为失败）
+                        if force_text_only_round:
+                            round_tools = []
+                            force_text_only_round = False
+                        else:
+                            round_tools = cached_round_tools
                         compact_turn_tool_messages(messages, turn_messages_start)
                         if messages and (messages[0].get("role") or "") == "system":
                             messages[0]["content"] = build_system_prompt_for_step(
@@ -7345,11 +7369,10 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                 except Exception:
                                     pass
                             batch_had_irreversible_success = False
-                            messages.append({
-                                "role": "assistant",
-                                "content": extract_message_content(msg) or "",
-                                "tool_calls": full_tool_calls,
-                            })
+                            # Kimi K3 Preserved Thinking：必须回传完整 assistant（含 reasoning_content）
+                            messages.append(
+                                build_assistant_history_message(msg, tool_calls=full_tool_calls)
+                            )
                             max_next_poll_seconds = 0
                             poll_wait_tool = None
                             terminal_poll_batch = TerminalPollBatchState()
@@ -8454,19 +8477,26 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                             and _looks_like_truncated_assistant_reply(content)
                         ):
                             short_final_retry_used = True
+                            force_text_only_round = True
                             logger.warning(
-                                "Agent final reply looks truncated after tools: session_id=%s content=%r",
+                                "Agent final reply looks truncated/empty after tools: session_id=%s content=%r",
                                 session_id,
                                 content[:80],
                             )
-                            messages.append({"role": "assistant", "content": content or ""})
-                            messages.append({
-                                "role": "user",
-                                "content": (
-                                    "你上一条回复明显不完整。请基于刚才已经获得的工具结果，"
-                                    "不要重复执行工具，直接用完整中文回答用户：说明结论、关键证据和下一步建议。"
-                                ),
-                            })
+                            messages.append(build_assistant_history_message(msg))
+                            if _output_locale == "en":
+                                _retry_nudge = (
+                                    "Your previous reply had no usable final text (empty or truncated). "
+                                    "Based on the tool results already obtained, do NOT call any tools again; "
+                                    "write a complete answer for the user: conclusions, key evidence, and next steps."
+                                )
+                            else:
+                                _retry_nudge = (
+                                    "你上一条没有给出可用的文字总结（content 为空或不完整）。"
+                                    "请基于刚才已经获得的工具结果，禁止再调用任何工具，"
+                                    "直接用完整中文回答用户：说明结论、关键证据和下一步建议。"
+                                )
+                            messages.append({"role": "user", "content": _retry_nudge})
                             continue
                         break
 
@@ -9350,6 +9380,8 @@ async def run_ops_integration_chat_complete(
             while assistant_rounds < assistant_max_rounds:
                 content: str | None = None
                 round_had_tool_call = False
+                short_final_retry_used_integ = False
+                force_text_only_round_integ = False
                 for _round_idx in range(agent_max_steps):
                     if cached_round_tools_integ is None:
                         _base_tools_integ = await resolve_chat_tools(
@@ -9392,7 +9424,11 @@ async def run_ops_integration_chat_complete(
                                 session_host_id=session_host_id,
                                 recent_context=_tier_recent_integ,
                             )
-                    round_tools = cached_round_tools_integ
+                    if force_text_only_round_integ:
+                        round_tools = []
+                        force_text_only_round_integ = False
+                    else:
+                        round_tools = cached_round_tools_integ
                     compact_turn_tool_messages(messages, turn_messages_start_integ)
                     if messages and (messages[0].get("role") or "") == "system":
                         messages[0]["content"] = build_system_prompt_for_step(
@@ -9409,17 +9445,19 @@ async def run_ops_integration_chat_complete(
                         reason="runtime_control",
                         output_locale=_output_locale,
                     )
+                    _integ_payload: dict = {
+                        "model": model,
+                        "max_tokens": _resolve_request_max_tokens(settings),
+                        "stream": False,
+                    }
+                    if round_tools:
+                        _integ_payload["tools"] = round_tools
+                        _integ_payload["tool_choice"] = "auto"
                     resp = await _post_chat_with_vision_fallback(
                         client,
                         api_url=api_url,
                         headers=headers,
-                        payload={
-                            "model": model,
-                            "tools": round_tools,
-                            "tool_choice": "auto",
-                            "max_tokens": _resolve_request_max_tokens(settings),
-                            "stream": False,
-                        },
+                        payload=_integ_payload,
                         messages=messages,
                         enable_vision_retries=not (
                             weak_network_integ
@@ -9492,11 +9530,9 @@ async def run_ops_integration_chat_complete(
                                 continue
                         round_had_tool_call = True
                         full_tool_calls, prepared_tool_calls = await _prepare_tool_calls_for_execution(tool_calls)
-                        messages.append({
-                            "role": "assistant",
-                            "content": extract_message_content(msg) or "",
-                            "tool_calls": full_tool_calls,
-                        })
+                        messages.append(
+                            build_assistant_history_message(msg, tool_calls=full_tool_calls)
+                        )
                         max_next_poll_seconds = 0
                         poll_wait_tool = None
                         terminal_poll_batch = TerminalPollBatchState()
@@ -9701,6 +9737,28 @@ async def run_ops_integration_chat_complete(
                         continue
 
                     content = extract_message_content(msg) or ""
+                    if (
+                        round_had_tool_call
+                        and not short_final_retry_used_integ
+                        and _looks_like_truncated_assistant_reply(content)
+                    ):
+                        short_final_retry_used_integ = True
+                        force_text_only_round_integ = True
+                        logger.warning(
+                            "Integration Agent final reply truncated/empty after tools: sid=%s content=%r",
+                            sid,
+                            content[:80],
+                        )
+                        messages.append(build_assistant_history_message(msg))
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "你上一条没有给出可用的文字总结（content 为空或不完整）。"
+                                "请基于刚才已经获得的工具结果，禁止再调用任何工具，"
+                                "直接用完整中文回答用户：说明结论、关键证据和下一步建议。"
+                            ),
+                        })
+                        continue
                     break
 
                 if content is None:

@@ -21,6 +21,8 @@ from services.user_mail import effective_scheduled_task_notify_email_to, parse_n
 from services.ai_skills import TOOLS, execute_tool, get_tools_for_scope
 from services.chat_tool_spill import spill_and_wrap_tool_message
 from services.llm_adapter import (
+    apply_provider_request_extensions,
+    build_assistant_history_message,
     detect_provider,
     ensure_chat_completions_url,
     extract_message_content,
@@ -234,11 +236,11 @@ async def _run_agent_loop(
     steps = 0
     while steps < agent_max_steps:
         steps += 1
-        payload = {
+        payload = apply_provider_request_extensions({
             "model": model,
             "messages": messages,
             "max_tokens": _max_out,
-        }
+        }, model=model)
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
@@ -256,11 +258,7 @@ async def _run_agent_loop(
             return "AI 返回非 JSON", []
         msg, tool_calls = parse_chat_response(result)
         if tool_calls:
-            messages.append({
-                "role": "assistant",
-                "content": extract_message_content(msg) or "",
-                "tool_calls": tool_calls,
-            })
+            messages.append(build_assistant_history_message(msg, tool_calls=tool_calls))
             for tc in tool_calls:
                 fn_name = tc["function"]["name"]
                 fn_id = tc["id"]

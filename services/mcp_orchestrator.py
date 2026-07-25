@@ -22,6 +22,8 @@ from config import AGENT_MAX_STEPS, AGENT_MAX_STEPS_CAP, SYSTEM_AI_USAGE_LIMIT
 from database import get_db
 from services.ai_skills import execute_tool, get_tools_for_scope
 from services.llm_adapter import (
+    apply_provider_request_extensions,
+    build_assistant_history_message,
     ensure_chat_completions_url,
     extract_message_content,
     normalize_model,
@@ -354,13 +356,13 @@ async def _run_sub_agent_task(task_id: int) -> None:
                 resp = await client.post(
                     api_url,
                     headers=headers,
-                    json={
+                    json=apply_provider_request_extensions({
                         "model": model,
                         "messages": messages,
                         "tools": get_tools_for_scope("task", user),
                         "tool_choice": "auto",
                         "stream": False,
-                    },
+                    }, model=model),
                 )
                 if resp.status_code != 200:
                     err_text = resp.text[:800]
@@ -374,11 +376,7 @@ async def _run_sub_agent_task(task_id: int) -> None:
 
                     full_tool_calls, prepared = await _prepare_tool_calls_for_execution(tool_calls)
                     messages.append(
-                        {
-                            "role": "assistant",
-                            "content": extract_message_content(msg) or "",
-                            "tool_calls": full_tool_calls,
-                        }
+                        build_assistant_history_message(msg, tool_calls=full_tool_calls)
                     )
                     for tc, fn_args, fn_preview in prepared:
                         fn_name = tc["function"]["name"]
@@ -536,7 +534,7 @@ async def run_mcp_orchestrate_chat(
         resp = await client.post(
             api_url,
             headers=headers,
-            json={
+            json=apply_provider_request_extensions({
                 "model": model,
                 "messages": [
                     {"role": "system", "content": planner_system},
@@ -544,7 +542,7 @@ async def run_mcp_orchestrate_chat(
                 ],
                 "stream": False,
                 "max_tokens": 4096,
-            },
+            }, model=model),
         )
         if resp.status_code != 200:
             return {
