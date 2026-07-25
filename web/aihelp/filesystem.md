@@ -83,13 +83,13 @@ temp/
 
 ## 3.6 聊天附件与 AI 成果物（`chats/`）
 
-AI 会话相关的文件会落在你的 `web/fs` 根目录下的 **`chats/`** 子树中（按**上传日期** `YYYY/MM/DD` 分目录，不是按会话 ID），与手工整理的 `scripts/`、`configs/` 等并列，但用途不同：
+AI 会话相关的文件落在你的 `web/fs` 根目录下：附件与临时会话文件在 **`chats/sessions/<会话ID>/`**（无会话时回退日期目录）；报告成果物在 **`reports/年/月/日/<示意名>/`**。与手工整理的 `scripts/`、`configs/` 等并列：
 
 | 内容 | 典型路径 | 说明 |
 |------|----------|------|
-| **聊天附件** | `chats/YYYY/MM/DD/<uuid>.<ext>` | 在 AI 输入框上传的文本、图片、**PDF / Office**（`.pdf`、`.docx`、`.pptx`、`.xlsx` 等）。元数据在表 `chat_attachments`；AI 通过 `read_chat_attachment` 读取。 |
+| **聊天附件** | `chats/sessions/<session_id>/<uuid>.<ext>` | 在 AI 输入框上传的文本、图片、**PDF / Office**。元数据在表 `chat_attachments`；AI 通过 `read_chat_attachment` 读取。旧日期路径只读兼容。 |
 | **MarkItDown 缓存** | 同目录 `<原文件名>.extracted.md` | 对 kind=`document` 的 Office/PDF，服务端用 [MarkItDown](https://github.com/microsoft/markitdown) 转为 Markdown 并旁路缓存；删除原附件时一并清理。 |
-| **AI 成果物** | `chats/YYYY/MM/DD/<短id>/` | AI 写入的导出（报告 HTML、csv、多文件 bundle 等），**子目录**形态，与同级「单文件附件」区分。 |
+| **AI 成果物** | `reports/YYYY/MM/DD/<示意名>/<uuid>.<ext>` | AI 写入的报告/可视化等；入口文件名为成果物 UUID；同目录可有 `libs/` 等资源。旧数据可能在 `chats/sessions/<id>/…`。 |
 | **工具溢出** | `chats/…/spill/` 等 | 单条工具返回过大时，完整内容落盘，聊天里仅保留摘要哨兵；需全量时用 `read_chat_data` 分段读。 |
 | **Agent Skills** | `skills/<name>/SKILL.md` | 个人 Agent Skills（须管理员开启）；与 `scripts/`、`chats/` 并列。 |
 
@@ -97,7 +97,7 @@ AI 会话相关的文件会落在你的 `web/fs` 根目录下的 **`chats/`** �
 
 - 单文件默认上限 **20 MB**，单会话附件累计约 **500 MB**（可由 `EDGEOPS_CHAT_ATTACHMENT_*` 配置）。
 - 富文档转 Markdown 可由 `EDGEOPS_MARKITDOWN_ENABLED` 关闭；输出长度受 `EDGEOPS_MARKITDOWN_MAX_OUTPUT_CHARS` 限制，超大文档可能只返回截断摘要。
-- 在「文件系统」页可浏览 `chats/`，但**不建议**手工改附件内容——优先在 AI 会话里重新上传或让 AI 生成成果物。
+- 在「文件系统」页可浏览 `chats/` 与 `reports/`，但**不建议**手工改附件内容——优先在 AI 会话里重新上传或让 AI 用 `create_chat_artifact` 生成报告。
 - 详细上传说明与限额见 [ai-assistant.md](ai-assistant.md) 中的「聊天附件」相关段落。
 
 ---
@@ -205,7 +205,7 @@ packages/pay/
 
 1. 确认远程路径存在
 2. 用 **`scp_pull`**（进度展示与 `scp_push` 相同；默认不限制体积；目录需 `recursive=true`）
-3. 默认落到 `chats/<UTC>/`；精确路径可设 `session_managed=false`
+3. 默认落到 `chats/sessions/<session_id>/`；精确路径可设 `session_managed=false`；报告用 `create_chat_artifact`→`reports/…`
 4. 在侧栏「文件系统」或 `fs_list` / `data_query` 继续处理
 
 ---

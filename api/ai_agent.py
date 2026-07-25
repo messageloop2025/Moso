@@ -145,7 +145,7 @@ def _host_dim_remote_data_processing_rules(session_host_id: int) -> str:
         f"**`ssh_execute(host_id={hid}, …)`**（单条命令）、**`ssh_channel_*`**（多步/交互）或 **Web SSH 控制台**（`send_to_terminal`，用户需边看时）在远端执行。\n"
         "脚本运行时的**大段输出、中间 CSV/JSON、临时下载、解压目录**等，**优先写到远端 `/tmp/`**"
         "（建议使用独占子目录，如 `/tmp/edgeops-work-<YYYYMMDD>-<任务简述>/`，避免污染业务数据目录；任务结束后可提醒用户按需清理）。\n"
-        f"若需拉回{_config.PRODUCT_DISPLAY}侧用 `data_query`/本地工具继续分析，用 **`scp_pull`**（大文件/目录均支持，调用卡显示传输进度）拉到用户 **`chats/<UTC>/`**。\n"
+        f"若需拉回{_config.PRODUCT_DISPLAY}侧用 `data_query`/本地工具继续分析，用 **`scp_pull`**（大文件/目录均支持，调用卡显示传输进度）拉到用户会话工作区（`chats/sessions/<id>/`，由工具归位；**勿手拼日期**）。\n"
     )
 
 
@@ -161,14 +161,16 @@ def _build_user_fs_workspace_block(user: dict) -> str:
 - **语义映射**：用户说「文件系统」「本地文件系统」「{brand}文件系统」或侧栏「文件系统」，均指你的**个人工作区**（`web/fs/{uname}/`；非远程主机磁盘、非 OS 目录）。**只能访问本用户根下路径**，不能越权到其它用户目录。
 - **路径规则**：`fs_*`、`scp_push`/`scp_pull` 的 `local_path` 等，一律传**相对工作区根**的路径；空或 `/` 表示根目录。
 - **长期 Memory**：`{mem}/`（hosts/topics/journal + INDEX.md）。用 `memory_*` 读写与搜索；勿归位到 chats。记忆可能过时，重要操作以实机为准。
-- **默认 `chats/<UTC年>/<月>/<日>/` 会话区**（系统自动归位，无需手拼日期）仅用于：
+- **会话工作区 `chats/sessions/<session_id>/`**（系统自动归位，**勿手拼日期**）仅用于：
   1. 用户在聊天中**上传的附件**（系统写入，非 fs_write）；
   2. **API 工具返回溢出**落盘（`read_chat_data` / spill，系统写入）；
-  3. AI 为生成复杂内容而**临时创建**的文件（`fs_write_*` / `scp_pull` 默认 `session_managed`，path 写逻辑短名如 `report.md`）。
-- **读写工作区其它路径**（须正常完成，不限于当日 chats）：
-  - **读取**：`fs_list` / `fs_read_file` / `fs_read_binary` 可读任意相对路径（`{mem}/`、`scripts/`、`exchange/`、任意 `chats/YYYY/MM/DD/…` 等）。
+  3. AI **临时**文件（`fs_write_*` / `scp_pull` 默认 `session_managed`，path 写逻辑短名）。
+- **报告/成果物**：用 `create_chat_artifact` → 系统落到 `reports/<UTC年>/<月>/<日>/<示意名>/<uuid>.<ext>`（及 libs 等资源）；旧 `chats/…` 报告仍可读。
+- **`scp_push`**：**不**自动补路径。`local_path` 必须是工作区**已存在**的精确相对路径（`fs_list` / 上一工具返回 / 用户指定）。**禁止**臆造 `chats/YYYY/MM/DD/…`。
+- **读写工作区其它路径**：
+  - **读取**：`fs_list` / `fs_read_file` / `fs_read_binary` 可读任意相对路径（`{mem}/`、`scripts/`、`exchange/`、`reports/…`、`chats/sessions/…` 等）。
   - **写入/修改**：用户明确要求、或**主机级/会话级提示词**/Memory 约定路径时，传**完整相对 path**（如 `{mem}/hosts/…`、`scripts/deploy.sh`）；系统自动识别为精确路径；也可显式 `session_managed=false`。
-- **禁止**：操作系统绝对路径；路径中写 `web/fs/` 或 `{uname}/` 前缀。
+- **禁止**：操作系统绝对路径；路径中写 `web/fs/` 或 `{uname}/` 前缀；为 scp_push **手拼** chats 日期目录。
 - 向用户说明位置时用相对路径，勿报服务器磁盘绝对路径。"""
 
 
@@ -5473,10 +5475,12 @@ def _build_system_prompt(*, user: dict | None = None) -> str:
 **【文件系统语义 · 必读】** 用户口中的「文件系统」「本地文件系统」「毛竹文件系统」均指**当前用户个人工作区**（侧栏「文件系统」页；根目录 `web/fs/<用户名>/`），不是远程主机磁盘，也不是操作系统目录。调用 `fs_*` 及 `local_path` 时，path **必须相对工作区根**（如 `scripts/a.sh`、`chats/2026/06/11/data.csv`、`exchange/pkg.tgz`），**禁止** OS 绝对路径与 `web/fs/` 前缀。**安全边界**：只能读写**当前用户**工作区内的相对路径，不能访问其它用户目录。
 
 **工作区目录约定**：
-- **默认 `chats/<UTC>/` 会话区**（系统自动，见 `get_chats_workspace_dir`）**仅用于**：① 聊天上传附件；② API 工具溢出 spill；③ AI 临时生成内容（`fs_write_*`/`scp_pull` 默认，path 写逻辑短名 → 归位并加 UUID）。
-- **读取工作区任意路径**：`fs_list` / `fs_read_file` / `fs_read_binary` 不限于当日 chats；用户指定、或主机/会话提示词中的路径，直接传完整相对 path。
-- **写入/修改指定路径**：用户明确要求、或**主机级/会话级提示词**约定目录时，传完整相对 path（如 `scripts/…`、`exchange/…`、`chats/2026/07/03/…`）；系统自动精确读写；须强制归位 chats 时显式 `session_managed=true`。
-- **例外 — Agent Skills**：`skills/<name>/` 须用 Skill 专用工具，**禁止** fs_write_file/fs_mkdir/fs_delete 操作 `skills/`。
+- **会话区 `chats/sessions/<session_id>/`**（系统自动，见 `get_chats_workspace_dir`；**勿手拼日期**）**仅用于**：① 聊天上传附件；② API 工具溢出 spill；③ AI 临时文件（`fs_write_*`/`scp_pull` 默认，path 写逻辑短名 → 归位并加 UUID）。旧 `chats/YYYY/MM/DD/` 仍可读。
+- **报告/成果物**：`create_chat_artifact` → `reports/<UTC年>/<月>/<日>/<示意名>/<uuid>.<ext>`（及 `libs/` 等资源）；用返回的 `fs_path` 再引用。
+- **`scp_push`**：不自动补路径；`local_path` 必须是已存在的精确相对路径（`fs_list` / 上一工具返回 / 用户指定）。**禁止**臆造 `chats/YYYY/MM/DD/…`。
+- **读取其它工作区路径**：`fs_list` / `fs_read_file` / `fs_read_binary` 可读 `reports/…`、`chats/sessions/…`、`scripts/` 等；用户指定或主机/会话提示词中的路径可直接传完整相对 path。
+- **写入/修改指定路径**：用户明确要求、或**主机级/会话级提示词**约定目录时，传完整相对 path（如 `scripts/…`、`exchange/…`）；系统自动按精确路径写；需强制归位会话区时显式 `session_managed=true`。
+- **用户 · Agent Skills**：`skills/<name>/` 仅用 Skill 专用工具；**禁止** fs_write_file/fs_mkdir/fs_delete 改写 `skills/`。
 
 **大数据与「下载 → 结构化 → 分析」**：对服务器上**大量**或**复杂**数据，优先在远端 **粗加工 / 聚合**（awk、grep、sort、python -c 等）重定向到文件，**scp_pull**（支持大文件/目录，有传输进度）到 `chats/今日/`，再在本地把它转成 **csv / jsonl / 规整列** 后再用 **data_query**、**fs_read_file(offset/size)**、小段 **regex_process** 分析；**非结构化 / 半结构化**日志与杂文本**先抽取字段**（时间、主机、级别、消息主体等）变结构化再统计，少吃 LLM 上下文。答复用户时用摘要 + **相对工作区路径**引用，避免把整文件粘进 assistant 正文。
 
@@ -5626,7 +5630,7 @@ def _build_system_prompt(*, user: dict | None = None) -> str:
 - **表格数据真实性**：输出 Markdown 表格前须遵守上文「数据清单 / 表格防编造」；表格行必须来自工具结果，不得补假数据；无依据单元格用「—」或省略列。
 - 对“漏洞修复/漏洞核对”类任务，回复中需包含覆盖核对信息：`总项数`、`已处理项数`、`失败/跳过项数`、`未覆盖项ID或名称`（若无则明确写“无”），避免遗漏。
 - 输出规范：当返回多项、多列数据（如主机列表、凭证列表、维护记录、分组与主机等）时，优先使用 Markdown 表格呈现，表头一行，每行一条记录，便于阅读。
-- 图形输出规范：当用户要求“流程图”“时序图”“网络关系图”“拓扑图”“依赖关系图”等图形化关系展示时，优先直接输出 ` ```mermaid ` 代码块；当用户要求“思维导图”“脑图”时，优先直接输出 ` ```markmap ` 代码块；当用户要求“图表”“柱状图”“折线图”“饼图”“趋势图”时，优先直接输出 ` ```echarts-option ` 代码块；当用户要求“SVG”“矢量图”“图标”“简单几何示意图”且 Mermaid 不合适时，优先直接输出 ` ```svg ` 代码块（完整 `<svg>...</svg>` 片段，含 xmlns）；当用户要求“三维”“立体示意”“爆炸图”“物理演示”“3D 报告片段”时，优先直接输出 ` ```three-scene ` JSON 代码块（声明式场景，可开 physics）。复杂可交互三维报告用 `create_chat_artifact` 且 `libs: ["three","cannon-es"]`（本地资源，禁止 CDN）。不要把这些图形源码放进普通代码块，也不要只返回普通列表文本。
+- 图形输出规范：当用户要求“流程图”“时序图”“网络关系图”“拓扑图”“依赖关系图”等图形化关系展示时，优先直接输出 ` ```mermaid ` 代码块；当用户要求“思维导图”“脑图”时，优先直接输出 ` ```markmap ` 代码块；当用户要求“图表”“柱状图”“折线图”“饼图”“趋势图”时，优先直接输出 ` ```echarts-option ` 代码块；当用户要求“SVG”“矢量图”“图标”“简单几何示意图”且 Mermaid 不合适时，优先直接输出 ` ```svg ` 代码块（完整 `<svg>...</svg>` 片段，含 xmlns）；当用户要求“三维”“立体示意”“爆炸图”“物理演示”“3D 报告片段”时，优先直接输出 ` ```three-scene ` JSON 代码块（声明式场景，可开 physics）。复杂可交互三维报告用 `create_chat_artifact` 且 `libs: ["three"]`（可选 cannon-es）；OrbitControls/CSS2D/GLTF 用本地 importmap：`"three"`→`./libs/three.module.js`，`"three/addons/"`→`./libs/jsm/`；禁止 CDN。不要把这些图形源码放进普通代码块，也不要只返回普通列表文本。
 - 三维与物理（```three-scene`）：JSON 对象，常用字段 `camera`/`lights`/`objects`/`physics`/`background`/`autoRotate`。`objects[].type` 支持 box/sphere/cylinder/cone/ground(plane)；需要刚体时设 `physics.enabled=true` 且物体 `physics:true` 或给 `mass`（地面 mass=0）。**禁止**在聊天 fence 里写可执行 JS；复杂交互进 HTML artifact。
 - 若用户已经明确要求图形化展示，则应优先返回可渲染代码块本身，文字说明尽量简短；除非用户额外要求，否则不要先解释一大段再给图。
 - 图形内容应尽量自包含，节点名、标题、数据直接写在代码块内，不依赖外部文件、外部接口或运行时变量。
@@ -5697,17 +5701,19 @@ Markdown / Skills / Memory 渐进阅读：
 
 AI 成果物（artifacts，让用户可直接下载你整理的报告/数据包/HTML 可视化）：
 - 何时用：用户要求导出 csv/markdown/json/html/pdf 等结果、或需要交付一份包含多个文件（html + images/ + js/ + data.json 等）的结构化成果时，**优先**调用 `create_chat_artifact`；不要把大段数据塞进聊天正文让用户自己复制。
-- **大段 HTML / 报表**（约 8KB+ 或含多段图表脚本）：避免把整页 HTML 挤在**单次**工具调用的 `content`/`files[].content` 里导致网关或序列化压力。优先 **`fs_write_file`** 写到 `chats/<UTC>/`（可用 `append=true` 分段追加），或 **artifact 多文件**（如 `index.html` + `chart.js` + `data.json`）；若必须单文件，可一轮写骨架、下一轮再读回并补全章节。
+- **落盘（系统自动，勿手拼）**：`reports/<UTC年>/<月>/<日>/<示意目录名>/<uuid>.<扩展名>`，资源在同目录 `libs/` 等；返回的 `fs_path` 供再次引用。
+- **大段 HTML / 报表**（约 8KB+ 或含多段图表脚本）：避免把整页 HTML 挤在**单次**工具调用的 `content`/`files[].content` 里导致网关或序列化压力。优先 **artifact 多文件**（如 `index.html` + `chart.js` + `data.json`），或先 `fs_write_file` 写逻辑短名再交 `create_chat_artifact`；**禁止**手拼 `chats/YYYY/MM/DD/`。
 - **`create_chat_artifact` 入参格式（必守，否则报 `files 必须是非空数组`）**：
   - `title`：**字符串**，必填。
   - `files`：**JSON 数组**（`[...]`），至少 1 项；**禁止**把 HTML/CSV 正文直接当作 `files` 的值（字符串），**禁止** `{}` 单对象代替数组，**禁止**空数组 `[]`。
   - 每项必须是对象：`{"path": "index.html", "content": "<!doctype html>..."}`；`path` 必带扩展名；二进制用 `"encoding": "base64"`。
   - **单文件 HTML 正确示例**：`{"title":"资源占用图","libs":["echarts"],"files":[{"path":"index.html","content":"<!doctype html>..."}]}` —— 注意 `files` 外层是 **方括号数组**。
   - **常见错误（会导致失败）**：`"files": "<html>..."`（字符串）、`"files": {"path":"index.html",...}`（缺外层数组）、`"files": []`、只传 `content` 不传 `files`、把整段 tool 参数写成未转义的裸 HTML 导致 JSON 解析失败。
-  - **JSON 易失败时的替代**：先用 `fs_write_file(path="chats/…/index.html", content=...)` 落盘，再 `create_chat_artifact(title=..., files=[{"path":"index.html","content":"<从 fs_read_file 读回的文本>"}])`；或拆成 `index.html` + `data.json` 两文件减小单次 content 体积。
+  - **JSON 易失败时的替代**：先用 `fs_write_file(path="<逻辑短名如 draft.html>", content=...)` 落盘，再 `create_chat_artifact(title=..., files=[{"path":"index.html","content":"<从 fs_read_file 读回的文本>"}])`；或拆成 `index.html` + `data.json` 两文件减小单次 content 体积。
   - 需要 echarts/mermaid 等：加 `"libs": ["echarts"]`，**不要**把 vendor JS 塞进 `files[].content`（见「本地资源包」）。
 - 入口文件：HTML 报告推荐 `entry_file: "index.html"`；纯数据可用 `report.md` / `data.csv`。
 - 调用成功后：把返回的 `markdown_link`（`[标题](artifact:UUID)`）**原样**贴到最终答复；不要改写链接。
+- **禁止编造** `artifact:UUID`：未成功调用 `create_chat_artifact` / `update_chat_artifact`、或工具返回 `success:false` 时，**不得**在答复中写 `artifact:` 链接，也不得手搓 UUID；只能粘贴工具返回的 `markdown_link`。
 - **修订已有报告（重要）**：用户要求改时间、改样式、修错字、补一小段等**局部修改**时，**禁止**再 `create_chat_artifact` 整份重生成。流程：`list_chat_artifacts` → `read_chat_artifact_file(uuid, path)` → **`update_chat_artifact(uuid, files=[...])`**，**保持同一 UUID**；答复说明「已在原报告上更新」，链接仍用原 `artifact:UUID`。
 - 读取已有成果：`list_chat_artifacts`、`read_chat_artifact_file(uuid, path)`；更新：`update_chat_artifact`。
 - 不要滥用：简单问答、一两行数据直接在正文展示即可。
@@ -8488,6 +8494,25 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                     # 切坏），仅作用于即将写入数据库的版本。
                     content = _strip_assistant_embedded_sentinels(content)
                     content = _sanitize_leaked_tool_markup(content)
+                    try:
+                        from api.ai_artifacts import sanitize_assistant_artifact_links
+
+                        _art_sanitized, _art_changed = await sanitize_assistant_artifact_links(
+                            content,
+                            db,
+                            int(user["id"]),
+                            tool_trace=pending_tool_trace,
+                        )
+                        if _art_changed:
+                            content = _art_sanitized
+                            if streamed_content_text != content:
+                                yield _sse({"content_refresh": content})
+                    except Exception as _art_san_exc:
+                        logger.warning(
+                            "assistant artifact link sanitize failed sid=%s: %s",
+                            session_id,
+                            _art_san_exc,
+                        )
                     try:
                         from services.mcp_result_fetch import rewrite_markdown_remote_images_in_text
 

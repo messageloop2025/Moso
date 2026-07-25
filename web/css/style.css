@@ -26,9 +26,10 @@
     --radius-lg: 12px;
     --shadow: 0 4px 24px rgba(0,0,0,0.3);
     --transition: all 0.2s ease;
-    --scrollbar-track: rgba(15, 23, 42, 0.48);
-    --scrollbar-thumb: rgba(100, 116, 139, 0.52);
-    --scrollbar-thumb-hover: rgba(148, 163, 184, 0.72);
+    /* 滚动条：空闲隐藏，悬停/滚动时仅细滑块（无轨道） */
+    --scrollbar-size: 5px;
+    --scrollbar-thumb: rgba(148, 163, 184, 0.36);
+    --scrollbar-thumb-active: rgba(148, 163, 184, 0.58);
     --edgeops-mobile-app-height: 100vh;
 }
 
@@ -94,72 +95,236 @@ body {
     color: var(--text-primary);
     min-height: 100vh;
     line-height: 1.6;
-    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
-    scrollbar-width: thin;
 }
 
-html {
-    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+/*
+ * 低存在感滚动条：
+ * - 默认滑块透明（几乎看不见）
+ * - 容器悬停或正在滚动（.edgeops-scrolling）时仅显示细滑块
+ * - 轨道始终透明
+ */
+html,
+body,
+.sidebar-nav,
+.main-content,
+.chat-messages,
+.chat-diagram-canvas,
+.chat-diagram-source,
+.edgeops-diagram-preview-scroll,
+.edgeops-diagram-preview-source,
+.host-ai-log-entries,
+.ai-log-entries,
+.fs-sidebar,
+.fs-content,
+.fs-editor-content,
+.fs-md-preview,
+.fs-lua-output-list,
+.table-container,
+.hosts-main-content,
+.modal-body,
+.ai-layout-history,
+.chat-history-panel,
+.edgeops-autohide-scroll {
     scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
 }
 
-body::-webkit-scrollbar,
+html:hover,
+body:hover,
+.sidebar-nav:hover,
+.main-content:hover,
+.chat-messages:hover,
+.chat-diagram-canvas:hover,
+.chat-diagram-source:hover,
+.edgeops-diagram-preview-scroll:hover,
+.edgeops-diagram-preview-source:hover,
+.host-ai-log-entries:hover,
+.ai-log-entries:hover,
+.fs-sidebar:hover,
+.fs-content:hover,
+.fs-editor-content:hover,
+.fs-md-preview:hover,
+.fs-lua-output-list:hover,
+.table-container:hover,
+.hosts-main-content:hover,
+.modal-body:hover,
+.ai-layout-history:hover,
+.chat-history-panel:hover,
+.edgeops-autohide-scroll:hover,
+html.edgeops-scrolling,
+body.edgeops-scrolling,
+.sidebar-nav.edgeops-scrolling,
+.main-content.edgeops-scrolling,
+.chat-messages.edgeops-scrolling,
+.chat-diagram-canvas.edgeops-scrolling,
+.chat-diagram-source.edgeops-scrolling,
+.edgeops-diagram-preview-scroll.edgeops-scrolling,
+.edgeops-diagram-preview-source.edgeops-scrolling,
+.host-ai-log-entries.edgeops-scrolling,
+.ai-log-entries.edgeops-scrolling,
+.fs-sidebar.edgeops-scrolling,
+.fs-content.edgeops-scrolling,
+.fs-editor-content.edgeops-scrolling,
+.fs-md-preview.edgeops-scrolling,
+.fs-lua-output-list.edgeops-scrolling,
+.table-container.edgeops-scrolling,
+.hosts-main-content.edgeops-scrolling,
+.modal-body.edgeops-scrolling,
+.ai-layout-history.edgeops-scrolling,
+.chat-history-panel.edgeops-scrolling,
+.edgeops-autohide-scroll.edgeops-scrolling {
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
 html::-webkit-scrollbar,
+body::-webkit-scrollbar,
 .sidebar-nav::-webkit-scrollbar,
+.main-content::-webkit-scrollbar,
 .chat-messages::-webkit-scrollbar,
 .chat-diagram-canvas::-webkit-scrollbar,
 .chat-diagram-source::-webkit-scrollbar,
 .edgeops-diagram-preview-scroll::-webkit-scrollbar,
 .edgeops-diagram-preview-source::-webkit-scrollbar,
 .host-ai-log-entries::-webkit-scrollbar,
-.ai-log-entries::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
+.ai-log-entries::-webkit-scrollbar,
+.fs-sidebar::-webkit-scrollbar,
+.fs-content::-webkit-scrollbar,
+.fs-editor-content::-webkit-scrollbar,
+.fs-md-preview::-webkit-scrollbar,
+.fs-lua-output-list::-webkit-scrollbar,
+.table-container::-webkit-scrollbar,
+.hosts-main-content::-webkit-scrollbar,
+.modal-body::-webkit-scrollbar,
+.ai-layout-history::-webkit-scrollbar,
+.chat-history-panel::-webkit-scrollbar,
+.edgeops-autohide-scroll::-webkit-scrollbar {
+    width: var(--scrollbar-size);
+    height: var(--scrollbar-size);
 }
 
-body::-webkit-scrollbar-track,
 html::-webkit-scrollbar-track,
+body::-webkit-scrollbar-track,
 .sidebar-nav::-webkit-scrollbar-track,
+.main-content::-webkit-scrollbar-track,
 .chat-messages::-webkit-scrollbar-track,
 .chat-diagram-canvas::-webkit-scrollbar-track,
 .chat-diagram-source::-webkit-scrollbar-track,
 .edgeops-diagram-preview-scroll::-webkit-scrollbar-track,
 .edgeops-diagram-preview-source::-webkit-scrollbar-track,
 .host-ai-log-entries::-webkit-scrollbar-track,
-.ai-log-entries::-webkit-scrollbar-track {
-    background: var(--scrollbar-track);
-    border-radius: 999px;
+.ai-log-entries::-webkit-scrollbar-track,
+.fs-sidebar::-webkit-scrollbar-track,
+.fs-content::-webkit-scrollbar-track,
+.fs-editor-content::-webkit-scrollbar-track,
+.fs-md-preview::-webkit-scrollbar-track,
+.fs-lua-output-list::-webkit-scrollbar-track,
+.table-container::-webkit-scrollbar-track,
+.hosts-main-content::-webkit-scrollbar-track,
+.modal-body::-webkit-scrollbar-track,
+.ai-layout-history::-webkit-scrollbar-track,
+.chat-history-panel::-webkit-scrollbar-track,
+.edgeops-autohide-scroll::-webkit-scrollbar-track,
+html::-webkit-scrollbar-corner,
+body::-webkit-scrollbar-corner,
+.sidebar-nav::-webkit-scrollbar-corner,
+.main-content::-webkit-scrollbar-corner,
+.chat-messages::-webkit-scrollbar-corner,
+.fs-sidebar::-webkit-scrollbar-corner,
+.fs-content::-webkit-scrollbar-corner,
+.edgeops-autohide-scroll::-webkit-scrollbar-corner {
+    background: transparent;
 }
 
-body::-webkit-scrollbar-thumb,
 html::-webkit-scrollbar-thumb,
+body::-webkit-scrollbar-thumb,
 .sidebar-nav::-webkit-scrollbar-thumb,
+.main-content::-webkit-scrollbar-thumb,
 .chat-messages::-webkit-scrollbar-thumb,
 .chat-diagram-canvas::-webkit-scrollbar-thumb,
 .chat-diagram-source::-webkit-scrollbar-thumb,
 .edgeops-diagram-preview-scroll::-webkit-scrollbar-thumb,
 .edgeops-diagram-preview-source::-webkit-scrollbar-thumb,
 .host-ai-log-entries::-webkit-scrollbar-thumb,
-.ai-log-entries::-webkit-scrollbar-thumb {
-    background: linear-gradient(180deg, var(--scrollbar-thumb), rgba(71, 85, 105, 0.92));
-    border: 2px solid transparent;
-    background-clip: padding-box;
+.ai-log-entries::-webkit-scrollbar-thumb,
+.fs-sidebar::-webkit-scrollbar-thumb,
+.fs-content::-webkit-scrollbar-thumb,
+.fs-editor-content::-webkit-scrollbar-thumb,
+.fs-md-preview::-webkit-scrollbar-thumb,
+.fs-lua-output-list::-webkit-scrollbar-thumb,
+.table-container::-webkit-scrollbar-thumb,
+.hosts-main-content::-webkit-scrollbar-thumb,
+.modal-body::-webkit-scrollbar-thumb,
+.ai-layout-history::-webkit-scrollbar-thumb,
+.chat-history-panel::-webkit-scrollbar-thumb,
+.edgeops-autohide-scroll::-webkit-scrollbar-thumb {
+    background-color: transparent;
     border-radius: 999px;
 }
 
-body::-webkit-scrollbar-thumb:hover,
-html::-webkit-scrollbar-thumb:hover,
-.sidebar-nav::-webkit-scrollbar-thumb:hover,
-.chat-messages::-webkit-scrollbar-thumb:hover,
-.chat-diagram-canvas::-webkit-scrollbar-thumb:hover,
-.chat-diagram-source::-webkit-scrollbar-thumb:hover,
-.edgeops-diagram-preview-scroll::-webkit-scrollbar-thumb:hover,
-.edgeops-diagram-preview-source::-webkit-scrollbar-thumb:hover,
-.host-ai-log-entries::-webkit-scrollbar-thumb:hover,
-.ai-log-entries::-webkit-scrollbar-thumb:hover {
-    background: linear-gradient(180deg, var(--scrollbar-thumb-hover), rgba(100, 116, 139, 0.96));
-    border: 2px solid transparent;
-    background-clip: padding-box;
+html:hover::-webkit-scrollbar-thumb,
+body:hover::-webkit-scrollbar-thumb,
+.sidebar-nav:hover::-webkit-scrollbar-thumb,
+.main-content:hover::-webkit-scrollbar-thumb,
+.chat-messages:hover::-webkit-scrollbar-thumb,
+.chat-diagram-canvas:hover::-webkit-scrollbar-thumb,
+.chat-diagram-source:hover::-webkit-scrollbar-thumb,
+.edgeops-diagram-preview-scroll:hover::-webkit-scrollbar-thumb,
+.edgeops-diagram-preview-source:hover::-webkit-scrollbar-thumb,
+.host-ai-log-entries:hover::-webkit-scrollbar-thumb,
+.ai-log-entries:hover::-webkit-scrollbar-thumb,
+.fs-sidebar:hover::-webkit-scrollbar-thumb,
+.fs-content:hover::-webkit-scrollbar-thumb,
+.fs-editor-content:hover::-webkit-scrollbar-thumb,
+.fs-md-preview:hover::-webkit-scrollbar-thumb,
+.fs-lua-output-list:hover::-webkit-scrollbar-thumb,
+.table-container:hover::-webkit-scrollbar-thumb,
+.hosts-main-content:hover::-webkit-scrollbar-thumb,
+.modal-body:hover::-webkit-scrollbar-thumb,
+.ai-layout-history:hover::-webkit-scrollbar-thumb,
+.chat-history-panel:hover::-webkit-scrollbar-thumb,
+.edgeops-autohide-scroll:hover::-webkit-scrollbar-thumb,
+html.edgeops-scrolling::-webkit-scrollbar-thumb,
+body.edgeops-scrolling::-webkit-scrollbar-thumb,
+.sidebar-nav.edgeops-scrolling::-webkit-scrollbar-thumb,
+.main-content.edgeops-scrolling::-webkit-scrollbar-thumb,
+.chat-messages.edgeops-scrolling::-webkit-scrollbar-thumb,
+.chat-diagram-canvas.edgeops-scrolling::-webkit-scrollbar-thumb,
+.chat-diagram-source.edgeops-scrolling::-webkit-scrollbar-thumb,
+.edgeops-diagram-preview-scroll.edgeops-scrolling::-webkit-scrollbar-thumb,
+.edgeops-diagram-preview-source.edgeops-scrolling::-webkit-scrollbar-thumb,
+.host-ai-log-entries.edgeops-scrolling::-webkit-scrollbar-thumb,
+.ai-log-entries.edgeops-scrolling::-webkit-scrollbar-thumb,
+.fs-sidebar.edgeops-scrolling::-webkit-scrollbar-thumb,
+.fs-content.edgeops-scrolling::-webkit-scrollbar-thumb,
+.fs-editor-content.edgeops-scrolling::-webkit-scrollbar-thumb,
+.fs-md-preview.edgeops-scrolling::-webkit-scrollbar-thumb,
+.fs-lua-output-list.edgeops-scrolling::-webkit-scrollbar-thumb,
+.table-container.edgeops-scrolling::-webkit-scrollbar-thumb,
+.hosts-main-content.edgeops-scrolling::-webkit-scrollbar-thumb,
+.modal-body.edgeops-scrolling::-webkit-scrollbar-thumb,
+.ai-layout-history.edgeops-scrolling::-webkit-scrollbar-thumb,
+.chat-history-panel.edgeops-scrolling::-webkit-scrollbar-thumb,
+.edgeops-autohide-scroll.edgeops-scrolling::-webkit-scrollbar-thumb {
+    background-color: var(--scrollbar-thumb);
+}
+
+html:hover::-webkit-scrollbar-thumb:hover,
+body:hover::-webkit-scrollbar-thumb:hover,
+.sidebar-nav:hover::-webkit-scrollbar-thumb:hover,
+.main-content:hover::-webkit-scrollbar-thumb:hover,
+.chat-messages:hover::-webkit-scrollbar-thumb:hover,
+.fs-sidebar:hover::-webkit-scrollbar-thumb:hover,
+.fs-content:hover::-webkit-scrollbar-thumb:hover,
+.modal-body:hover::-webkit-scrollbar-thumb:hover,
+.edgeops-autohide-scroll:hover::-webkit-scrollbar-thumb:hover,
+html.edgeops-scrolling::-webkit-scrollbar-thumb:hover,
+body.edgeops-scrolling::-webkit-scrollbar-thumb:hover,
+.sidebar-nav.edgeops-scrolling::-webkit-scrollbar-thumb:hover,
+.chat-messages.edgeops-scrolling::-webkit-scrollbar-thumb:hover,
+.fs-sidebar.edgeops-scrolling::-webkit-scrollbar-thumb:hover,
+.fs-content.edgeops-scrolling::-webkit-scrollbar-thumb:hover,
+.edgeops-autohide-scroll.edgeops-scrolling::-webkit-scrollbar-thumb:hover {
+    background-color: var(--scrollbar-thumb-active);
 }
 
 a { color: var(--accent); text-decoration: none; }

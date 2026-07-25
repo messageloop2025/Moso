@@ -129,9 +129,9 @@ var API = {
                             ? (detail.map(function(d) { return (d && d.msg) || ''; }).filter(Boolean).join('；') || defFail)
                             : (typeof detail === 'string' ? detail : (detail && typeof detail === 'object' && detail.message ? detail.message : defFail));
                         var err = new Error(msg);
+                        err.status = resp.status;
                         if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
                             err.apiDetail = detail;
-                            err.status = resp.status;
                         }
                         throw err;
                     }
@@ -528,6 +528,61 @@ var API = {
     },
     importUserSkills: function(data, overwrite) {
         return this.post('/user-skills/import', { data: data, overwrite: !!overwrite });
+    },
+    /** 导出个人 Skills 为 .tgz（gzip）；opts.ids 为数字数组时只导选中项。返回 Blob。 */
+    exportUserSkillsTgz: function(opts) {
+        opts = opts || {};
+        var self = this;
+        var q = [];
+        if (opts.include_disabled === false) q.push('include_disabled=false');
+        if (opts.ids && opts.ids.length) q.push('ids=' + encodeURIComponent(opts.ids.join(',')));
+        var url = '/api/user-skills/export-tgz' + (q.length ? '?' + q.join('&') : '');
+        var headers = {};
+        if (self.token) headers['Authorization'] = 'Bearer ' + self.token;
+        return fetch(url, { method: 'GET', headers: headers, credentials: 'same-origin' }).then(function(resp) {
+            if (resp.status === 401) {
+                return self._onHttp401(function() { return self.exportUserSkillsTgz(opts); }, {}).then(function(r) { return r; });
+            }
+            if (!resp.ok) {
+                return resp.json().catch(function() { return {}; }).then(function(data) {
+                    var detail = data && data.detail;
+                    var msg = typeof detail === 'string' ? detail : (typeof t === 'function' ? t('api.requestFailed') : 'Request failed');
+                    var err = new Error(msg);
+                    err.status = resp.status;
+                    throw err;
+                });
+            }
+            return resp.blob();
+        });
+    },
+    /** 上传 .tgz / .tar.gz 导入个人 Skills。 */
+    importUserSkillsTgz: function(file, overwrite) {
+        var self = this;
+        var fd = new FormData();
+        fd.append('file', file);
+        fd.append('overwrite', overwrite ? 'true' : 'false');
+        var headers = {};
+        if (self.token) headers['Authorization'] = 'Bearer ' + self.token;
+        return fetch('/api/user-skills/import-tgz', {
+            method: 'POST',
+            headers: headers,
+            body: fd,
+            credentials: 'same-origin',
+        }).then(function(resp) {
+            if (resp.status === 401) {
+                return self._onHttp401(function() { return self.importUserSkillsTgz(file, overwrite); }, {});
+            }
+            return resp.json().then(function(data) {
+                if (!resp.ok) {
+                    var detail = data && data.detail;
+                    var msg = typeof detail === 'string' ? detail : (typeof t === 'function' ? t('api.requestFailed') : 'Request failed');
+                    var err = new Error(msg);
+                    err.status = resp.status;
+                    throw err;
+                }
+                return data;
+            });
+        });
     },
 
     // 登录页公开开关（不带鉴权）：决定登录页是否展示「留言板」「公开留言区」

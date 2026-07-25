@@ -2512,7 +2512,8 @@ function edgeopsEnhanceArtifactLinks(rootEl) {
         if (!a || a.getAttribute('data-artifact-enhanced') === '1') return;
         var href = a.getAttribute('href') || '';
         var uuid = href.substring('artifact:'.length).trim();
-        if (!uuid || !/^[0-9a-fA-F]{8,}$/.test(uuid)) return;
+        // 成果物 UUID 为 32 位 hex（uuid4.hex）；过短/非 hex 多为模型误写，直接忽略
+        if (!uuid || !/^[0-9a-fA-F]{32}$/.test(uuid)) return;
 
         var rawTitle = (a.textContent || '').replace(/^[📦\s]+/, '').trim() || t('ui.attach.artifactDefault');
         var dlUrl = (API && API.buildArtifactDownloadUrl) ? API.buildArtifactDownloadUrl(uuid) : ('/api/ai/artifacts/' + encodeURIComponent(uuid) + '/download');
@@ -2561,9 +2562,19 @@ function edgeopsEnhanceArtifactLinks(rootEl) {
                     });
                     card.appendChild(pv);
                 }
-            }).catch(function() {
+            }).catch(function(err) {
+                card.classList.add('artifact-download-card--missing');
                 var metaEl = card.querySelector('.artifact-meta');
-                if (metaEl) metaEl.textContent = t('ui.attach.metaFailed');
+                var missing = err && (err.status === 404 || /不存在|not found/i.test(String(err.message || '')));
+                if (metaEl) metaEl.textContent = missing ? t('ui.attach.metaMissing') : t('ui.attach.metaFailed');
+                var dlBtn = card.querySelector('.artifact-dl-btn');
+                if (dlBtn) {
+                    dlBtn.removeAttribute('href');
+                    dlBtn.removeAttribute('download');
+                    dlBtn.setAttribute('aria-disabled', 'true');
+                    dlBtn.classList.add('is-disabled');
+                    dlBtn.addEventListener('click', function(ev) { ev.preventDefault(); });
+                }
             });
         }
     });
@@ -2689,7 +2700,7 @@ function edgeopsFetchArtifactText(uuid, relPath) {
  *  - srcdoc 没有 base URL，相对引用一律打不开 → 故对所有 HTML 预览统一调用
  */
 function edgeopsRewriteArtifactHtmlRefs(html, uuid) {
-    var tokenQuery = (API && API.token) ? ('?token=' + encodeURIComponent(API.token)) : '';
+    var token = (API && API.token) ? String(API.token) : '';
     function isRelativeAssetUrl(url) {
         var trimmed = String(url || '').trim();
         if (!trimmed) return false;
@@ -2716,16 +2727,25 @@ function edgeopsRewriteArtifactHtmlRefs(html, uuid) {
         var queryIdx = trimmed.indexOf('?');
         var query = '';
         if (queryIdx >= 0) { query = trimmed.slice(queryIdx); trimmed = trimmed.slice(0, queryIdx); }
-        // 规范化：吸收前导 ./，连续的 ./ 也清掉；`../` 直接返回原值（视为越界，浏览器会自己 404）
+        // 规范化：吸收前导 ./；保留尾 `/`（importmap 目录前缀如 ./libs/jsm/）
         var normalized = trimmed.replace(/\\/g, '/').replace(/^\/+/, '');
         while (normalized.indexOf('./') === 0) normalized = normalized.slice(2);
         if (normalized.indexOf('../') === 0 || normalized.indexOf('/../') !== -1) return url;
         if (!normalized) return url;
-        // 路径式 URL：与"新窗口打开"按钮一致，浏览器解析相对路径时 base 自然
-        var encoded = normalized.split('/').map(function(seg) { return encodeURIComponent(seg); }).join('/');
-        var out = '/api/ai/artifacts/' + encodeURIComponent(uuid) + '/files/' + encoded + tokenQuery;
-        // 业务用 query/hash 拼回去（不会影响 path）
-        if (query) out += (tokenQuery ? '&' : '?') + '_q=' + encodeURIComponent(query.slice(1));
+        var trailingSlash = normalized.charAt(normalized.length - 1) === '/';
+        var parts = normalized.split('/').filter(function(seg) { return seg && seg !== '.'; });
+        var encoded = parts.map(function(seg) { return encodeURIComponent(seg); }).join('/');
+        if (trailingSlash) encoded += '/';
+        // path 内嵌 token：避免 ?token= 破坏 importmap「前缀必须以 / 结尾」规则，且子模块解析不丢鉴权
+        var out;
+        if (token) {
+            out = '/api/ai/artifacts/' + encodeURIComponent(uuid)
+                + '/at/' + encodeURIComponent(token)
+                + '/files/' + encoded;
+        } else {
+            out = '/api/ai/artifacts/' + encodeURIComponent(uuid) + '/files/' + encoded;
+        }
+        if (query) out += (out.indexOf('?') >= 0 ? '&' : '?') + '_q=' + encodeURIComponent(query.slice(1));
         if (hash) out += hash;
         return out;
     }
@@ -16276,39 +16296,50 @@ function renderUserSkillsPage() {
     document.getElementById('skillAddBtn').onclick = function() { _showUserSkillForm(null); };
     document.getElementById('skillRefreshBtn').onclick = function() { loadUserSkillsPage({ autoSync: true }); };
     document.getElementById('skillExportBtn').onclick = function() {
-        API.exportUserSkills({}).then(function(res) {
-            var uname = (API.user && API.user.username) ? API.user.username : 'user';
-            downloadJsonFile('edgeops-skills-' + uname + '.json', res);
+        var uname = (API.user && API.user.username) ? API.user.username : 'user';
+        var ids = _userSkillsSelectedIds();
+        var opts = {};
+        if (ids && ids.length) opts.ids = ids;
+        API.exportUserSkillsTgz(opts).then(function(blob) {
+            edgeopsDownloadBlob('edgeops-skills-' + uname + '.tgz', blob);
         }).catch(function(err) { showToast(err.message || t('toast.loadFailed'), 'error'); });
     };
     document.getElementById('skillImportBtn').onclick = function() {
         var input = document.createElement('input');
         input.type = 'file';
-        input.accept = '.json,application/json';
+        input.accept = '.tgz,.tar.gz,.json,application/gzip,application/json';
         input.onchange = function() {
             var file = input.files && input.files[0];
             if (!file) return;
-            var reader = new FileReader();
-            reader.onload = function() {
-                try {
-                    var data = JSON.parse(reader.result || '{}');
-                    edgeopsConfirm(t('skills.importOverwriteConfirm')).then(function(ow) {
-                        API.importUserSkills(data, ow).then(function(res) {
-                            var msg = t('skills.importDone', {
-                                created: (res.created || []).length,
-                                updated: (res.updated || []).length,
-                                skipped: (res.skipped || []).length
-                            });
-                            showToast(msg);
-                            edgeopsInvalidateSlashCommandsCache();
-                            loadUserSkillsPage();
-                        }).catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); });
+            var lower = String(file.name || '').toLowerCase();
+            var isTgz = /\.tgz$/i.test(lower) || /\.tar\.gz$/i.test(lower);
+            edgeopsConfirm(t('skills.importOverwriteConfirm')).then(function(ow) {
+                var done = function(res) {
+                    var msg = t('skills.importDone', {
+                        created: (res.created || []).length,
+                        updated: (res.updated || []).length,
+                        skipped: (res.skipped || []).length
                     });
-                } catch (e) {
-                    showToast(t('skills.importInvalidJson'), 'error');
+                    showToast(msg);
+                    edgeopsInvalidateSlashCommandsCache();
+                    loadUserSkillsPage();
+                };
+                var fail = function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); };
+                if (isTgz) {
+                    API.importUserSkillsTgz(file, ow).then(done).catch(fail);
+                    return;
                 }
-            };
-            reader.readAsText(file, 'utf-8');
+                var reader = new FileReader();
+                reader.onload = function() {
+                    try {
+                        var data = JSON.parse(reader.result || '{}');
+                        API.importUserSkills(data, ow).then(done).catch(fail);
+                    } catch (e) {
+                        showToast(t('skills.importInvalidJson'), 'error');
+                    }
+                };
+                reader.readAsText(file, 'utf-8');
+            });
         };
         input.click();
     };

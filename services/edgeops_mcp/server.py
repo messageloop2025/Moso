@@ -793,7 +793,7 @@ async def edgeops_scp_push(
     session_id: int | None = None,
     ctx: Context | None = None,
 ) -> str:
-    """SFTP 推送到主机（与 Web AI scp_push 同一实现）。大文件/目录用 local_path（相对 web/fs）；小文本可用 content。"""
+    """SFTP 推送到主机（与 Web AI scp_push 同一实现）。大文件/目录用 local_path（相对 web/fs、**已存在**的精确路径，不会自动补 chats 日期目录）；小文本可用 content。"""
     sid = _session(session_id, ctx)
     return await _run(
         lambda c: c.scp_push(

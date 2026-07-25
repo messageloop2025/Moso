@@ -2288,8 +2288,13 @@ TOOLS = [
             "name": "scp_push",
             "description": (
                 "通过 **SFTP** 将文件或目录推送到主机（流式传输，支持大文件与目录树，调用卡会显示进度）。"
-                "二选一：1) **content** 文本字符串（适合小脚本）；2) **local_path** **相对工作区根**的路径（文件或目录，支持二进制）。"
+                "二选一：1) **content** 文本字符串（适合小脚本）；2) **local_path** **相对工作区根、且已存在**的路径（文件或目录，支持二进制）。"
                 "目录上传需 **recursive=true**。大文件/安装包优先 local_path，勿用 content。**禁止** OS 绝对路径。\n"
+                "**local_path 必守**：本工具**不会**自动补全、改写或猜测路径。"
+                "**禁止**手拼 `chats/YYYY/MM/DD/…` 或臆造日期目录。"
+                "必须使用：`fs_list` / 上一工具返回的 `path` / 用户给出的精确相对路径"
+                "（如工作区根下的 `edgeops-v1.8.6-sp2.tgz`、`scripts/deploy.sh`、`chats/sessions/<id>/…`）。"
+                "不确定时先 `fs_list` 再 push。\n"
                 "**remote_path**：可为完整远程文件路径（如 `/tmp/moss.tgz`），或**目录**（如 `/tmp/`、`~/moss/`，"
                 "会自动追加 local 文件名并创建父目录）。`~/…` 会展开为远端 home。"
             ),
@@ -2302,7 +2307,14 @@ TOOLS = [
                         "description": "远程路径：完整文件路径，或目录（末尾 / 或已存在目录，自动追加文件名），如 ~/moss/ 或 /tmp/pkg.tgz",
                     },
                     "content": {"type": "string", "description": "文本内容（与 local_path 二选一，仅适合小文本）"},
-                    "local_path": {"type": "string", "description": "相对工作区根的路径（文件或目录），与 content 二选一；例 scripts/deploy.sh"},
+                    "local_path": {
+                        "type": "string",
+                        "description": (
+                            "相对工作区根的**已存在**路径（与 content 二选一）。"
+                            "例：edgeops-v1.8.6-sp2.tgz、scripts/deploy.sh。"
+                            "禁止手拼 chats/日期目录；勿臆造路径。"
+                        ),
+                    },
                     "recursive": {"type": "boolean", "description": "local_path 为目录时必须 true"},
                     "timeout": {"type": "integer", "description": "超时秒数，默认 300，范围 30–3600"},
                 },
@@ -2317,9 +2329,10 @@ TOOLS = [
             "description": (
                 "通过 **SFTP** 从主机拉取**文件或目录**到**当前用户文件系统工作区**（流式落盘，调用卡显示进度）。"
                 "适合大日志、安装包、归档；目录拉取需 **recursive=true**。\n\n"
-                "**默认 session_managed（会话区）**：`local_path` 写逻辑名 → 归位 `chats/<UTC>/` 并加 UUID。\n"
-                "**精确路径**：`local_path` 为 `scripts/…`、`exchange/…`、`chats/YYYY/MM/DD/…` 等完整相对路径"
-                "（或用户/主机/会话提示词指定）→ 按路径精确落盘；可显式 session_managed=false。\n"
+                "**默认 session_managed（会话区）**：`local_path` 写逻辑名 → 归位 `chats/sessions/<session_id>/` 并加 UUID（无 session 时回退日期目录）。\n"
+                "**精确路径**：`local_path` 为 `scripts/…`、`exchange/…`、`chats/sessions/…`、`reports/…` 等完整相对路径"
+                "（或用户/主机/会话提示词指定）→ 按路径精确落盘；可显式 session_managed=false。"
+                "**禁止**手拼臆造的 `chats/YYYY/MM/DD/`。\n"
                 "**禁止** OS 绝对路径。"
                 "**默认不限制体积**（`max_bytes=0` 或不传；系统 `SCP_PULL_MAX_BYTES=0` 时亦然）。"
                 "若管理员配置了上限则生效（建议单文件 ≥ 2GiB）。"
@@ -2336,7 +2349,7 @@ TOOLS = [
                     "recursive": {"type": "boolean", "description": "远程为目录时必须 true"},
                     "session_managed": {
                         "type": "boolean",
-                        "description": "默认 true：归位 chats/<UTC>/；false：按 local_path 精确落盘",
+                        "description": "默认 true：归位 chats/sessions/<session_id>/；false：按 local_path 精确落盘",
                     },
                     "max_bytes": {
                         "type": "integer",
@@ -2455,7 +2468,7 @@ TOOLS = [
             "name": "http_download",
             "description": (
                 "从 **HTTP/HTTPS URL 下载文件**到**当前用户文件系统工作区**（流式落盘，调用卡显示进度，用户可点停止取消）。\n\n"
-                "**默认 session_managed**：`local_path` 写逻辑短名 → 归位 `chats/<UTC>/` 并加 UUID；"
+                "**默认 session_managed**：`local_path` 写逻辑短名 → 归位 `chats/sessions/<session_id>/` 并加 UUID；"
                 "完整相对路径（`scripts/…`、`exchange/…`）→ 精确落盘。\n"
                 "**默认不限制体积**（`max_bytes=0` 或不传）。\n"
                 "**分块下载**：设 `chunked=true` 或 `chunk_size`（字节）启用 HTTP Range 分块；"
@@ -2471,7 +2484,7 @@ TOOLS = [
                     "headers": {"type": "object", "description": "可选请求头"},
                     "session_managed": {
                         "type": "boolean",
-                        "description": "默认 true：归位 chats/<UTC>/；false：按 local_path 精确落盘",
+                        "description": "默认 true：归位 chats/sessions/<session_id>/；false：按 local_path 精确落盘",
                     },
                     "max_bytes": {"type": "integer", "description": "可选字节上限；0 或不传表示不限制"},
                     "chunked": {"type": "boolean", "description": "启用 Range 分块下载（默认块大小见系统配置）"},
@@ -2605,7 +2618,7 @@ TOOLS = [
         "function": {
             "name": "get_chats_workspace_dir",
             "description": (
-                "返回**当前 UTC 日期**的会话工作区目录前缀 `chats/年/月/日`（与附件、工具 spill、默认 fs_write 归位一致）。"
+                "返回当前会话工作区目录前缀 `chats/sessions/<session_id>/`（与附件、工具 spill、默认 fs_write/scp_pull 归位一致；无 session 时回退日期目录）。旧 `chats/YYYY/MM/DD/` 仍可读取。报告请用 `create_chat_artifact`（`reports/…`），勿手拼路径。"
                 "写**会话临时产物**（脚本、中间数据、scp 默认拉取）前若不确定日期路径可调用。"
                 "读取或修改工作区**其它已有目录**（scripts/、exchange/、历史 chats/…）时直接用 fs_* 传完整相对路径，"
                 "不必局限当日 chats。"
@@ -2641,7 +2654,7 @@ TOOLS = [
             "description": (
                 "向**当前用户文件系统工作区**写入文本文件（UTF-8）。path 为**相对工作区根**；支持 overwrite/append 及按字符 offset 定位写。\n"
                 "**默认 session_managed（会话区）**：用于 AI 临时脚本、中间数据、复杂内容落盘；"
-                "path 写逻辑名如 `report.md`、`data/raw.csv` → 自动归位 `chats/<UTC>/` 并加 UUID。\n"
+                "path 写逻辑名如 `report.md`、`data/raw.csv` → 自动归位 `chats/sessions/<session_id>/` 并加 UUID。\n"
                 "**精确路径（自动识别或 session_managed=false）**：path 以 `scripts/`、`exchange/`、"
                 "`chats/YYYY/MM/DD/…` 等完整相对路径开头，或用户/主机/会话提示词指定路径 → 按 path 精确读写。\n"
                 "本机管理会话且 session_managed=true 时归位到 `local/<UTC日期>/…`。\n"
@@ -2660,7 +2673,7 @@ TOOLS = [
                     "replace_length": {"type": "integer", "description": "可选，replace 模式下替换的字符数；默认 0"},
                     "session_managed": {
                         "type": "boolean",
-                        "description": "省略时：逻辑短路径→归位 chats/<UTC>/；完整相对路径→精确读写。true 强制归位；false 强制精确",
+                        "description": "省略时：逻辑短路径→归位 chats/sessions/<id>/；完整相对路径→精确读写。true 强制归位；false 强制精确",
                     },
                 },
                 "required": ["path", "content"],
@@ -2705,7 +2718,7 @@ TOOLS = [
                     "encoding": {"type": "string", "description": "content 编码：base64 或 hex，默认 base64"},
                     "session_managed": {
                         "type": "boolean",
-                        "description": "默认 true：归位 chats/<UTC>/；false：按 path 精确写入",
+                        "description": "默认 true：归位 chats/sessions/<session_id>/；false：按 path 精确写入",
                     },
                 },
                 "required": ["path", "content"],
@@ -3086,8 +3099,12 @@ TOOLS = [
             "name": "create_chat_artifact",
             "description": (
                 "创建一个**可下载的成果物**（artifact），用于把 AI 生成/整理好的报告、数据、"
-                "可视化页面等一次性交付给用户。成果物会保存在当前用户的 `chats/<日期>/<id>/` 目录下（与聊天附件共用 `chats/` 根），"
-                "并在当前对话里生成一张**下载卡片**，用户点击即可下载（bundle 自动打包成 .tgz）。\n\n"
+                "可视化页面等一次性交付给用户。"
+                "落盘布局（相对工作区根，系统自动分配，**勿手拼**）："
+                "`reports/<UTC年>/<月>/<日>/<示意目录名>/<uuid>.<扩展名>`，"
+                "依赖与其它资源在同目录下的 `libs/`、`images/` 等。"
+                "返回的 `fs_path` / `storage_subdir` 可供后续引用。"
+                "对话里生成**下载/预览卡片**（bundle 自动打包成 .tgz）。\n\n"
                 "**何时使用**：\n"
                 "- 用户要求导出报告（csv / markdown / json / html / pdf 等）；\n"
                 "- 需要交付一份包含多个文件的结果（html + images/ + js/ + data.json 等）；\n"
@@ -3110,20 +3127,24 @@ TOOLS = [
                 "总大小≤"
                 f"{int(getattr(__import__('config'), 'ARTIFACT_MAX_TOTAL_BYTES', 200 * 1024 * 1024)) // (1024 * 1024)} MB，"
                 "允许扩展名：md / txt / csv / json / yaml / html / css / js / png / jpg / gif / svg / pdf 等常见类型。\n\n"
-                "**HTML 自包含依赖**（重点）：当生成 HTML / 报表 / 可视化页面需要 echarts / mermaid / markmap / d3 / "
-                "html-to-image 时，**不要在 files 里塞 vendor JS 内容**，也**不要**写 `https://cdn.jsdelivr.net` 等外网 CDN；"
-                "在调用时增加 `libs: [\"echarts\", ...]`，后端会自动从 `web/res/` 把对应文件复制到 artifact 的 `libs/` 子目录，"
-                "你的 HTML 里直接用相对路径引用即可（如 `<script src=\"./libs/echarts.min.js\"></script>`）。"
-                "可用包名与默认 snippet 见系统提示「本地资源包」一节。返回值会附 `libs_provided.snippets` 数组，"
-                "若你怕拼错可直接复用其中字符串。\n\n"
-                "**调用结果**：成功后返回 `{success, artifact: {uuid, title, kind, download_url, markdown_link, libs_provided?, ...}}`。"
-                "请在随后的**最终答复里**把 `markdown_link` 字段**原样**贴出（形如 `[标题](artifact:UUID)`），"
+                "**HTML 自包含依赖**（重点）：需要 echarts / mermaid / markmap / d3 / html-to-image / **three** / cannon-es 时，"
+                "**不要**在 files 里塞 vendor JS，也**禁止** `cdn.jsdelivr.net` / `unpkg` 等外网 CDN；"
+                "调用时加 `libs: [\"three\", ...]`，后端从 `web/res/` 复制到 artifact 的 `libs/`。"
+                "three：简单场景用 `./libs/three.min.js`（全局 THREE）；需要 OrbitControls/CSS2D/GLTF 时用 "
+                "`importmap` 映射 `\"three\"`→`./libs/three.module.js`、`\"three/addons/\"`→`./libs/jsm/`，"
+                "再 `import { OrbitControls } from 'three/addons/controls/OrbitControls.js'`。"
+                "预览/新窗口由平台改写鉴权 URL，相对路径即可。snippet 见「本地资源包」或返回的 `libs_provided.snippets`。\n\n"
+                "**调用结果**：成功后返回 `{success, artifact: {uuid, title, kind, download_url, markdown_link, "
+                "fs_path, storage_subdir, entry_file, libs_provided?, ...}}`。"
+                "请在随后的**最终答复里**把 `markdown_link` 字段**原样**贴出（形如 `[标题](artifact:UUID)`）；"
+                "**禁止**在工具成功返回之前、或 success 为 false 时编造 `artifact:` 链接 / UUID。"
                 "前端会自动把它渲染为带大小/入口文件的下载按钮；不要改写链接格式、也不要附加其它 URL。"
+                "若需在工作区再次引用该报告，使用返回的 `fs_path`（勿臆造 chats 日期路径）。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "title": {"type": "string", "description": "成果物标题（必填）"},
+                    "title": {"type": "string", "description": "成果物标题（必填；同时用于示意目录名）"},
                     "description": {"type": "string", "description": "可选的简短描述"},
                     "entry_file": {"type": "string", "description": "可选的入口文件名（在 files 的 path 集合中）"},
                     "files": {
@@ -3180,10 +3201,12 @@ TOOLS = [
                 "2. `read_chat_artifact_file(uuid, path)` 读现有 `index.html` 等；\n"
                 "3. 只改必要片段后 `update_chat_artifact(uuid, files=[{path, content}])`；\n"
                 "4. 答复里**仍用同一** `[标题](artifact:原UUID)` 链接，说明「已在原报告上更新」。\n\n"
-                "小改动也可用 `fs_write_file(path=\"chats/…/index.html\", mode=\"replace\", offset=…)` 但需已知 storage 路径；"
-                "优先 uuid 流程。\n"
-                "参数：`uuid`（必填）；`files`（必填，至少 1 项 `{path, content}`）；"
-                "可选 `title` / `description` / `entry_file`。"
+                "若预览缺 `libs/jsm/...` 等 vendor：可 `update_chat_artifact(uuid, libs:[\"three\"])` 按当前 manifest 补拷（可与 files 同用；"
+                "仅补依赖时 files 可省略）。\n"
+                "小改动也可用 `fs_write_file` 写返回的 `fs_path`（`reports/…/<uuid>.<ext>`），但需已知精确路径；"
+                "优先 uuid 流程。**禁止**手拼 chats 日期目录。\n"
+                "参数：`uuid`（必填）；`files` 与 `libs` 至少其一；"
+                "可选 `title` / `description` / `entry_file` / `libs_subdir`。"
             ),
             "parameters": {
                 "type": "object",
@@ -3191,7 +3214,7 @@ TOOLS = [
                     "uuid": {"type": "string", "description": "要更新的 artifact UUID（与下载卡片相同）"},
                     "files": {
                         "type": "array",
-                        "description": "要覆盖或新增的文件列表，格式同 create_chat_artifact",
+                        "description": "要覆盖或新增的文件列表，格式同 create_chat_artifact；与 libs 至少提供其一",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -3202,11 +3225,20 @@ TOOLS = [
                             "required": ["path", "content"],
                         },
                     },
+                    "libs": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "按 manifest 补拷/更新 vendor 到 libs/（如 [\"three\"]），可与 files 同用",
+                    },
+                    "libs_subdir": {
+                        "type": "string",
+                        "description": "依赖复制子目录，默认 libs；传空串表示扁平到 artifact 根",
+                    },
                     "title": {"type": "string", "description": "可选，更新标题"},
                     "description": {"type": "string", "description": "可选，更新描述"},
                     "entry_file": {"type": "string", "description": "可选，更新入口文件路径（须已存在）"},
                 },
-                "required": ["uuid", "files"],
+                "required": ["uuid"],
             },
         },
     },
@@ -6933,7 +6965,7 @@ def _scheduled_task_dict_for_tool(row) -> dict:
 
 
 def _arg_session_managed(arguments: dict) -> bool:
-    """解析 session_managed：默认 True（会话产物归位 chats/<UTC>/）；False 则按 path 精确落盘。"""
+    """解析 session_managed：默认 True（会话产物归位 chats/sessions/<id>/）；False 则按 path 精确落盘。"""
     v = arguments.get("session_managed")
     if v is None:
         return True
@@ -12805,7 +12837,18 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 except ValueError as e:
                     return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
                 if not path_obj.exists():
-                    return json.dumps({"success": False, "error": f"本地路径不存在: {local_path}"}, ensure_ascii=False)
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "error": f"本地路径不存在: {local_path}",
+                            "hint": (
+                                "scp_push 不会自动补全路径。请用 fs_list 或上一工具返回的精确相对路径；"
+                                "禁止手拼 chats/YYYY/MM/DD/。工作区根下的文件可直接写文件名"
+                                "（如 edgeops-v1.8.6-sp2.tgz）。"
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
                 if path_obj.is_dir() and not recursive:
                     return json.dumps({"success": False, "error": "本地路径为目录，请设置 recursive=true"}, ensure_ascii=False)
                 if not path_obj.is_file() and not path_obj.is_dir():
@@ -16650,26 +16693,37 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
             uuid_s = (arguments.get("uuid") or "").strip()
             if not uuid_s:
                 return json.dumps({"success": False, "error": "uuid 不能为空"}, ensure_ascii=False)
-            files_arg = _normalize_create_chat_artifact_files(arguments.get("files"))
-            if not isinstance(files_arg, list) or not files_arg:
+            files_raw = arguments.get("files")
+            libs_arg = arguments.get("libs")
+            if libs_arg is not None and not isinstance(libs_arg, list):
+                return json.dumps({"success": False, "error": "libs 必须是字符串数组"}, ensure_ascii=False)
+            normalized_files = None
+            if files_raw is not None:
+                files_arg = _normalize_create_chat_artifact_files(files_raw)
+                if not isinstance(files_arg, list):
+                    return json.dumps({
+                        "success": False,
+                        "error": "files 必须是数组，每项为 {path, content}",
+                    }, ensure_ascii=False)
+                normalized_files = []
+                for idx, item in enumerate(files_arg):
+                    if not isinstance(item, dict):
+                        return json.dumps({
+                            "success": False,
+                            "error": f"files[{idx}] 必须是对象 {{path, content}}",
+                        }, ensure_ascii=False)
+                    path = (item.get("path") or "").strip()
+                    if not path or "content" not in item:
+                        return json.dumps({
+                            "success": False,
+                            "error": f"files[{idx}] 缺少 path 或 content",
+                        }, ensure_ascii=False)
+                    normalized_files.append(item)
+            if not normalized_files and not libs_arg:
                 return json.dumps({
                     "success": False,
-                    "error": "files 必须是非空数组，每项为 {path, content}",
+                    "error": "files 与 libs 至少提供其一",
                 }, ensure_ascii=False)
-            normalized_files = []
-            for idx, item in enumerate(files_arg):
-                if not isinstance(item, dict):
-                    return json.dumps({
-                        "success": False,
-                        "error": f"files[{idx}] 必须是对象 {{path, content}}",
-                    }, ensure_ascii=False)
-                path = (item.get("path") or "").strip()
-                if not path or "content" not in item:
-                    return json.dumps({
-                        "success": False,
-                        "error": f"files[{idx}] 缺少 path 或 content",
-                    }, ensure_ascii=False)
-                normalized_files.append(item)
             db = await get_db()
             try:
                 artifact = await _update_artifact(
@@ -16680,6 +16734,8 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     title=(arguments.get("title") or None),
                     description=arguments.get("description"),
                     entry_file=arguments.get("entry_file") or None,
+                    libs=libs_arg,
+                    libs_subdir=arguments.get("libs_subdir"),
                 )
             except ValueError as exc:
                 return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)
@@ -16717,21 +16773,29 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                          ORDER BY id DESC LIMIT ?""",
                     (user["id"], limit),
                 )
-            items = [
-                {
-                    "uuid": d["uuid"],
-                    "title": d.get("title") or "",
-                    "description": d.get("description") or "",
-                    "kind": d.get("kind") or "bundle",
-                    "entry_file": d.get("entry_file") or "",
-                    "file_count": int(d.get("file_count") or 0),
-                    "total_bytes": int(d.get("total_bytes") or 0),
-                    "created_at": d.get("created_at"),
-                    "download_url": f"/api/ai/artifacts/{d['uuid']}/download",
-                    "markdown_link": f"[{d.get('title') or '成果物'}](artifact:{d['uuid']})",
-                }
-                for d in (dict(r) for r in rows)
-            ]
+            from api.ai_artifacts import _workspace_relpath_for_artifact as _art_fs_path
+
+            items = []
+            for r in rows:
+                d = dict(r)
+                sub = d.get("storage_subdir") or ""
+                entry = d.get("entry_file") or ""
+                items.append(
+                    {
+                        "uuid": d["uuid"],
+                        "title": d.get("title") or "",
+                        "description": d.get("description") or "",
+                        "kind": d.get("kind") or "bundle",
+                        "storage_subdir": sub,
+                        "entry_file": entry,
+                        "fs_path": _art_fs_path(sub, entry),
+                        "file_count": int(d.get("file_count") or 0),
+                        "total_bytes": int(d.get("total_bytes") or 0),
+                        "created_at": d.get("created_at"),
+                        "download_url": f"/api/ai/artifacts/{d['uuid']}/download",
+                        "markdown_link": f"[{d.get('title') or '成果物'}](artifact:{d['uuid']})",
+                    }
+                )
             return json.dumps({"success": True, "artifacts": items}, ensure_ascii=False)
 
         if name == "read_chat_artifact_file":

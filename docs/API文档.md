@@ -492,7 +492,7 @@ token 来自解锁邮件链接。
 
 ## 11.1 聊天附件（/api/ai/attachments）
 
-用户在 AI 输入框上传或粘贴的参考材料；落盘 `web/fs/<username>/chats/YYYY/MM/DD/<uuid>.<ext>`，元数据表 `chat_attachments`。与「文件系统」菜单共用用户 fs 根，但路径隔离在 `chats/` 下。
+用户在 AI 输入框上传或粘贴的参考材料；落盘 `web/fs/<username>/chats/sessions/<session_id>/<uuid>.<ext>`（无会话时回退日期目录；旧日期路径只读兼容），元数据表 `chat_attachments`。与「文件系统」菜单共用用户 fs 根，路径隔离在 `chats/` 下；报告成果物在 `reports/`。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -520,15 +520,16 @@ token 来自解锁邮件链接。
 
 ## 11.2 AI 成果物（/api/ai/artifacts）
 
-AI 通过 `create_chat_artifact` 技能写入的报告/数据包/HTML 等；落盘 `web/fs/<username>/chats/YYYY/MM/DD/<artifact-uuid>/`（与附件共用 `chats/` 根，附件为单文件、成果物为子目录）。
+AI 通过 `create_chat_artifact` 技能写入的报告/数据包/HTML 等；落盘 `web/fs/<username>/reports/YYYY/MM/DD/<示意目录名>/<uuid>.<ext>`（同目录可有 `libs/` 等资源；与聊天附件的 `chats/` 分离）。元信息含 `fs_path`、`storage_subdir`、`entry_file`；旧数据可能仍在 `chats/sessions/…`。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | /ai/artifacts | 列出成果物（query: **session_id** 可选） |
-| GET | /ai/artifacts/{uuid}/meta | 元信息（title、file_count、entry_file 等） |
+| GET | /ai/artifacts | 列出成果物（query: **session_id** 可选；项含 `fs_path` / `storage_subdir` / `entry_file`） |
+| GET | /ai/artifacts/{uuid}/meta | 元信息（title、file_count、entry_file、fs_path、storage_subdir 等） |
 | GET | /ai/artifacts/{uuid}/download | 下载（单文件直传；bundle 打包为 `.tgz`） |
 | GET | /ai/artifacts/{uuid}/file | 读取入口或单文件内容/流（预览用，支持 `?download=1`） |
-| GET | /ai/artifacts/{uuid}/files/{path} | 读取 bundle 内指定相对路径 |
+| GET | /ai/artifacts/{uuid}/files/{path} | 读取 bundle 内指定相对路径（入口 HTML 可带 `?token=`，服务端改写子资源） |
+| GET | /ai/artifacts/{uuid}/at/{token}/files/{path} | 路径内嵌 token 读文件（供 importmap 目录前缀 / ESM 子模块树；预览与新窗口由服务端改写生成） |
 | POST | /ai/artifacts/{uuid}/bind | 绑定到会话 |
 | DELETE | /ai/artifacts/{uuid} | 删除成果物目录 |
 

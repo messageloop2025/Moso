@@ -38,7 +38,7 @@
 
 - 列出/查询主机、凭证、分组、维护历史、最佳实践。
 - 在指定主机上执行 SSH 命令（**ssh_execute**）、多步/交互任务（**ssh_channel_***：create → send → read_lines/has_new → close）、向已打开的 **Web 控制台**发送输入（**send_to_terminal**）。
-- 上传/下载文件：**scp_push** / **scp_pull**（SFTP 流式传输，支持大文件与目录 `recursive=true`；二者共用同一套调用卡进度条，默认不限制体积）。
+- 上传/下载文件：**scp_push** / **scp_pull**（SFTP 流式传输，支持大文件与目录 `recursive=true`；二者共用同一套调用卡进度条，默认不限制体积）。**scp_push** 的 `local_path` 必须是工作区**已存在**的精确相对路径（可用 `fs_list` 确认），**不会**自动补 `chats/日期` 目录。
 - **多系统转运**：主机 A ↔ 毛竹工作区 ↔ 主机 B 时，优先 **`scp_pull` →（可选整理）→ `scp_push`**；主机直连可用 `transfer_file_between_hosts`，失败再 `relay_file_between_hosts`。勿用对话/`cat`/`base64` 搬大文件。
 - 创建/管理批量任务（batch_create、list、detail、cancel、retry）。
 - 管理主机知识（get/update/append_host_knowledge）：记录路径、端口约定等非密码说明；**sudo/数据库等密码在凭证库开启时应存 `add_service_credential`，勿写明文进知识库**（见 [service-credentials.md](service-credentials.md)）。
@@ -56,7 +56,7 @@
 - **用户反馈与登录留言板**：登录后用户在侧边栏「反馈」菜单可向管理员提交 Markdown 反馈，AI 也能用 `submit_feedback` 代为提交、`list_my_feedback` 帮你查看进度。管理员侧通过 `list_user_feedback_admin`（支持 `status` / `unread` 过滤、`limit` / `offset` **分批查看**）、`get_user_feedback_detail`（查看单条**并自动标已读**）、`reply_user_feedback_admin`（写 Markdown 回复）、`ignore_user_feedback_admin`（忽略）、`mark_all_user_feedback_read`（一键标已读所有未读）等工具进行管理。登录页右下角的**匿名留言板**目前**没有**专用 AI 工具，管理员需直接在 `/feedback/admin/login-board` 后台审核 / 公开 / 回复 / 删除。管理员可在「系统设置 → 反馈邮件通知」开启**新反馈邮件通知**（默认关闭，开启后用全局 SMTP 推给所有绑定邮箱的管理员，带 30 秒去抖防刷屏）。详见 [feedback.md](feedback.md)。
 - **可点击的选择题**：AI 在需要你确认、选择或做二次风险确认时，会直接在聊天里渲染**一排按钮**（如 ABCD 多选、是/否同意、确认/取消、危险动作红色按钮）；你可以**直接点击**答复，也可以继续在输入框里用文字补充说明。点击和文字两种方式都能被 AI 理解。OpenClaw/API 集成通道与定时/触发任务没有按钮 UI，AI 会改用纯文本列出选项让你回复。**选择卡会持久展示**：后端把 `ask_user_choice` 的动作以哨兵注释嵌入 assistant 消息落库，切换会话 / 刷新页面后仍可还原；前端还额外对"最后一条 assistant"做了 localStorage 兜底，避免"闪一下就消失"。
 - **聊天中直接上传附件**：输入框 📎 支持多文件（粘贴/拖拽），含文本、图片与 **Office/PDF**；限额、落盘路径、MarkItDown 与排障见下文 **[聊天附件与富文档（Office / PDF）](#聊天附件与富文档office--pdf)**；流式排版见 **[流式分块渲染](#流式分块渲染)**。
-- **AI 生成数据 / 报告 / 可视化成果物（artifacts）**：当你让 AI「导出一份表格」「生成一份 HTML 报告」「把某段日志整理成 csv 下载」时，AI 会调用 `create_chat_artifact` 把结果写入你的 `web/fs/<你>/chats/YYYY/MM/DD/<短 id>/` 目录（与聊天附件共用 `chats/` 根——附件是文件、artifact 是子目录，互不冲突）。支持两种形态：**单文件**（直接 `.csv / .md / .txt / .json / .html / .svg` 等）和 **bundle**（多文件组合如 HTML + 子目录 images/、js/、data.json，下载时服务端流式打包为 `.tgz`）。写入后 AI 在回复里以 `[标题](artifact:UUID)` 形式插入一个链接，前端自动把它增强为一张**下载卡片**（显示标题、文件数、总大小、入口文件），带「下载」按钮和「预览」按钮。
+- **AI 生成数据 / 报告 / 可视化成果物（artifacts）**：当你让 AI「导出一份表格」「生成一份 HTML 报告」「把某段日志整理成 csv 下载」时，AI 会调用 `create_chat_artifact` 把结果写入你的 `web/fs/<你>/reports/YYYY/MM/DD/<示意目录名>/<uuid>.<扩展名>`（同目录可有 `libs/`、`images/` 等资源；与聊天附件的 `chats/` 分离）。支持两种形态：**单文件**（`.csv / .md / .txt / .json / .html / .svg` 等）和 **bundle**（多文件组合，下载时服务端流式打包为 `.tgz`）。写入后 AI 在回复里以 `[标题](artifact:UUID)` 形式插入一个链接，前端自动把它增强为一张**下载卡片**（显示标题、文件数、总大小、入口文件），带「下载」按钮和「预览」按钮。
 - **成果物站内模态预览**：点卡片上的"预览"按钮会在当前网页弹出模态窗（iframe 不跳转新窗口），按文件类型做对应渲染：
   - `.html / .htm` → iframe `srcdoc` 沙箱渲染（bundle 内部 `src=` / `href=` 相对资源会自动重写为带 token 的 artifact file URL）；
   - `.md / .markdown` → 使用聊天同款 Markdown 渲染器；
@@ -265,7 +265,7 @@ $$
 - 思维导图：使用 ```markmap
 - 统计图：使用 ```echarts-option
 - 矢量图 / 图标 / 简单几何示意图：使用 ```svg（完整 `<svg>...</svg>` 片段）
-- **三维 / 物理示意**：使用 ```three-scene（JSON 声明；`physics.enabled=true` 启用本地 Cannon）。示例字段：`camera`、`lights`、`objects`（box/sphere/cylinder/cone/ground）、`physics`、`autoRotate`。拖拽旋转、滚轮缩放。复杂可交互三维报告用 `create_chat_artifact` + `libs: ["three","cannon-es"]`（`web/res/manifest.json`），禁止外网 CDN。
+- **三维 / 物理示意**：使用 ```three-scene（JSON 声明；`physics.enabled=true` 启用本地 Cannon）。复杂可交互三维报告用 `create_chat_artifact` + `libs: ["three"]`（可选 `cannon-es`）。需要 OrbitControls/CSS2D/GLTF 时用本地 importmap：`"three"`→`./libs/three.module.js`，`"three/addons/"`→`./libs/jsm/`（平台会改写鉴权 URL，预览与新窗口均可加载），**禁止** CDN。
 
 这些能力都走本地资源；Mermaid 还会做预检查和常见语法修复。SVG 会过滤脚本与事件属性后再渲染。three-scene **只接受 JSON**，不在聊天围栏里执行任意 JS。
 
@@ -287,7 +287,7 @@ $$
 | 富文档 | pdf, docx, pptx, xlsx 等 | kind=`document`，服务端 **MarkItDown** 转 Markdown |
 
 - 单文件默认 **20 MB**，单会话累计约 **500 MB**
-- 落盘：`web/fs/<你>/chats/YYYY/MM/DD/<uuid>.<ext>`（详见 [filesystem.md](filesystem.md) §3.6）
+- 落盘（报告）：`web/fs/<你>/reports/YYYY/MM/DD/<示意名>/<uuid>.<ext>`；附件仍在 `chats/…`（详见 [filesystem.md](filesystem.md) §3.6）
 
 ### AI 如何读取
 
@@ -399,7 +399,7 @@ Docker 镜像需安装 `libmagic1` 与 Python 包 `markitdown`；依赖变更后
 - **清空聊天记录**：工具栏「清空聊天」会删除当前会话全部消息；若需「只保留最近 N 条、删除更早的消息」，可在对话中直接说明（例如「清空聊天记录，但保留最后 10 条」），由 AI 代为操作。
 - **活动主机**（主机详情页）：左侧可显示最近打开过的主机，点击快速切换；关闭某活动主机会清理该页缓存，下次从列表再打开为全新页面。
 - **图形化输出**：聊天中支持网络关系图、流程图、思维导图和图表等结构化输出，并可另存为图片；若要表达拓扑、流程或依赖关系，建议直接要求 AI 用图形化方式展示。
-- **管理你的成果物**：所有 AI 生成的 artifact 都会同时出现在侧边栏「文件系统」→ `chats/<日期>/<短 id>/` 目录下（与当日上传的聊天附件并列），可直接在文件面板里浏览、重命名、删除；也可通过 REST 接口 `GET /api/ai/artifacts?session_id=...` 列出当前会话的 artifact，`DELETE /api/ai/artifacts/{uuid}` 删除（同步删除磁盘目录）。AI 在对话中也能用 `list_chat_artifacts` / `read_chat_artifact_file` 回头引用自己之前的成果物做进一步加工。
+- **管理你的成果物**：所有 AI 生成的 artifact 都会同时出现在侧边栏「文件系统」→ `reports/<年>/<月>/<日>/<示意名>/` 目录下，可直接在文件面板里浏览、重命名、删除；也可通过 REST 接口 `GET /api/ai/artifacts?session_id=...` 列出当前会话的 artifact，`DELETE /api/ai/artifacts/{uuid}` 删除（同步删除磁盘目录）。旧数据可能仍在 `chats/sessions/…`。AI 在对话中也能用 `list_chat_artifacts` / `read_chat_artifact_file` 回头引用自己之前的成果物做进一步加工。
 
 ---
 

@@ -94,7 +94,7 @@ python -m services.edgeops_mcp          # stdio（Cursor 本地子进程模式�
 
 | 工具 | 说明 |
 |------|------|
-| `edgeops_scp_push` | 工作区 → 主机（`local_path` 或小文本 `content`；目录需 `recursive=true`） |
+| `edgeops_scp_push` | 工作区 → 主机（`local_path` 必须是**已存在**的精确相对路径，**不**自动补 `chats/日期`；小文本可用 `content`；目录需 `recursive=true`） |
 | `edgeops_scp_pull` | 主机 → 工作区（默认不限制体积；目录需 `recursive=true`） |
 
 多机转运推荐：`scp_pull` →（可选整理）→ `scp_push`。小文本预览仍用 `edgeops_remote_fs_*`（写 ≤2MB）。

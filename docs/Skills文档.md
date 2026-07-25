@@ -168,7 +168,7 @@
 | 名称 | 说明 | 主要参数 |
 |------|------|----------|
 | get_terminal_buffer | 获取指定控制台最近输出；默认 **tail_only=true** 仅返回末尾 **max_lines**（默认 40）行；`full_output=true` 返回全文。可选 `next_poll_in_seconds`（1～3600）做 batch 末 sleep；可选 **`until_contains`**（字面子串）在超时内工具内轮询，命中或超时即返回（超时取自 `next_poll_in_seconds`，默认 30；结果含 `until_wait_reason`；带 until 时不再二次 batch sleep）。batch 末等待时 Web CoT 可唤醒/停止；until 等待无橙色倒计时条，但 Agent 路径仍可被 `runtime-control: wake` 打断 | slot?, full_output?, tail_only?, max_lines?, next_poll_in_seconds?, until_contains? |
-| scp_push | 通过 SFTP 推送到主机：**content**（文本）或 **local_path**（web/fs 相对路径，支持二进制 .tgz/.zip 等）二选一；流式上传默认不限制体积 | host_id, remote_path, content? 或 local_path? |
+| scp_push | 通过 SFTP 推送到主机：**content**（文本）或 **local_path**（工作区**已存在**的精确相对路径，**不**自动补 chats 日期目录；支持二进制 .tgz/.zip 等）二选一；流式上传默认不限制体积 | host_id, remote_path, content? 或 local_path? |
 | scp_pull | 通过 SFTP 从主机拉取到工作区；调用卡进度与 scp_push 相同；默认不限制体积；多机转运优先 pull→push | host_id, remote_path, local_path, recursive?, max_bytes? |
 | build_scp_transfer_script | 生成在源主机 A 上执行的 `scp -C` 推送脚本（A→B），仅生成不执行；用于跨主机直连方案 | source_host_id, source_path, target_host_id, target_path, compress? |
 | transfer_file_between_hosts | 自动跨主机传输：先探测 A↔B 22 端口可达性，按 [scp, rsync, sshfs] 顺序尝试直连；全部失败时自动回退到 毛竹 `web/fs` 中转 | source_host_id, source_path, target_host_id, target_path, methods?, edgeops_base_url?, ttl_seconds?, keep_staging_for_multi_target?, auto_unpack_on_target?, transfer_timeout_seconds? |
@@ -199,7 +199,7 @@ MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_up
 
 ### 7.1 聊天附件、溢出与成果物
 
-> 附件落盘 `web/fs/<用户名>/chats/YYYY/MM/DD/`；仅可访问**当前用户**自己的 uuid。Office/PDF（kind=`document`）由 **MarkItDown** 转为 Markdown（`services/markitdown_convert.py`），缓存 `原文件名.extracted.md`。
+> 附件落盘 `web/fs/<用户名>/chats/sessions/<session_id>/`（无会话回退日期目录）；报告成果物落盘 `reports/YYYY/MM/DD/<示意名>/<uuid>.<ext>`。仅可访问**当前用户**自己的 uuid。Office/PDF（kind=`document`）由 **MarkItDown** 转为 Markdown（`services/markitdown_convert.py`），缓存 `原文件名.extracted.md`。
 
 | 名称 | 说明 | 主要参数 |
 |------|------|----------|
@@ -207,8 +207,8 @@ MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_up
 | save_image_description | 将图片识别结果写回附件行，后续轮次优先复用描述 | uuid, description |
 | list_chat_attachments | 列出当前用户已上传附件（可按 session_id 过滤） | session_id? |
 | read_chat_data | 读取工具大结果溢出文件（`[[EDGEOPS_CHAT_DATA ref=… subdir=…]]` 哨兵对应 `chats/<subdir>/spill/<ref>.data`） | spill_id, date_subdir, mode?, head_chars?, tail_chars?, range_start?, max_chars? |
-| create_chat_artifact | 写入 AI 成果物（单文件或 bundle）到 `chats/日期/<id>/`；返回 `markdown_link` 供回复中插入 | title, files[{path, content, encoding?}], entry_file?, description? |
-| list_chat_artifacts | 列出当前用户/会话的成果物 | session_id? |
+| create_chat_artifact | 写入 AI 成果物到 `reports/年/月/日/<示意名>/<uuid>.<ext>`（及 libs 等）；返回 `markdown_link`、`fs_path` | title, files[{path, content, encoding?}], entry_file?, description?, libs? |
+| list_chat_artifacts | 列出当前用户/会话的成果物（含 `fs_path` / `storage_subdir` / `markdown_link`） | session_id?, limit? |
 | read_chat_artifact_file | 读回成果物内某文本文件 | uuid, path |
 
 ---

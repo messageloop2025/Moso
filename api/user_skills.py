@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -11,7 +11,9 @@ from database import get_db
 from services.user_skills_export import (
     export_user_skills_bundle,
     export_user_skills_json,
+    export_user_skills_tgz,
     import_user_skills_bundle,
+    import_user_skills_tgz,
 )
 from services.markdown_sections import read_markdown_document, search_markdown_sections
 from services.user_skills_registry import (
@@ -171,6 +173,74 @@ async def import_my_skills(body: SkillImportBody, user=Depends(get_current_user)
             user,
             body.data,
             overwrite=body.overwrite,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    items = await list_user_skills(db, int(user["id"]), user)
+    return {"success": True, **result, "skills": items}
+
+
+@router.get("/export-tgz")
+async def export_my_skills_tgz(
+    include_disabled: bool = True,
+    ids: str = "",
+    user=Depends(get_current_user),
+):
+    """导出个人 Skills 为 gzip tar（.tgz），含目录树与二进制附属文件。"""
+    await _guard_skills(user)
+    db = await get_db()
+    skill_ids = None
+    raw_ids = (ids or "").strip()
+    if raw_ids:
+        try:
+            skill_ids = [int(x) for x in raw_ids.split(",") if str(x).strip()]
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="ids 须为逗号分隔的整数") from exc
+    try:
+        blob = await export_user_skills_tgz(
+            db,
+            int(user["id"]),
+            user,
+            skill_ids=skill_ids,
+            include_disabled=include_disabled,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    uname = (user.get("username") or "user").strip() or "user"
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in uname)[:64] or "user"
+    return Response(
+        content=blob,
+        media_type="application/gzip",
+        headers={
+            "Content-Disposition": f'attachment; filename="edgeops-skills-{safe}.tgz"',
+        },
+    )
+
+
+@router.post("/import-tgz")
+async def import_my_skills_tgz(
+    file: UploadFile = File(...),
+    overwrite: bool = Form(False),
+    user=Depends(get_current_user),
+):
+    """上传 .tgz / .tar.gz，自动解压并导入个人 Skills。"""
+    await _guard_skills(user)
+    filename = (file.filename or "").lower()
+    if filename and not (
+        filename.endswith(".tgz") or filename.endswith(".tar.gz")
+    ):
+        raise HTTPException(status_code=400, detail="请上传 .tgz 或 .tar.gz 文件")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="上传文件为空")
+    db = await get_db()
+    try:
+        result = await import_user_skills_tgz(
+            db,
+            int(user["id"]),
+            user,
+            raw,
+            overwrite=bool(overwrite),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

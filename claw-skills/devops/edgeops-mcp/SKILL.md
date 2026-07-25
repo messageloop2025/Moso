@@ -48,7 +48,7 @@ required_environment_variables:
 5. **复杂 / 耗时编排** → `edgeops_ops_orchestrate_chat` + `edgeops_ops_task_*`（**仅 MCP**）
 6. **简单一句话**（可接受阻塞 ≤330s）→ `edgeops_ops_chat`
 7. **远程小文本预览** → `edgeops_remote_fs_*`（写 ≤2MB）
-8. **大文件/目录转运** → `edgeops_scp_pull` / `edgeops_scp_push`（经 web/fs；多机：`pull`→`push`）
+8. **大文件/目录转运** → `edgeops_scp_pull` / `edgeops_scp_push`（经 web/fs；`scp_push` 的 local_path 须为已存在精确路径，勿手拼 chats 日期；多机：`pull`→`push`）
 9. **大输出 spill** → `edgeops_read_chat_data`
 
 ## 编排式 ops（MCP 专用）

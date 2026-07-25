@@ -510,10 +510,10 @@
                     <p>多 Tab 聊天、会话历史、AI 自动取名；Markdown 渲染 + Mermaid/Markmap/ECharts 图表渲染；<strong>可点按钮式选择卡</strong>（支持持久化与刷新还原）。用户可在「模型配置」中开关<strong>支持图像识别</strong>（多模态内联），便于对接仅文本或视觉模型。</p></div>
 
                 <div class="card reveal"><div class="icon">📎</div><h3>聊天附件上传</h3>
-                    <p>聊天输入框支持<strong>多文件 / 多图</strong>粘贴与上传（md/txt/json/csv/log/html + png/jpg/gif/svg 等），落到每用户 <code>web/fs/&lt;你&gt;/chats/YYYY/MM/DD/&lt;uuid&gt;.&lt;ext&gt;</code>；AI 通过 <code>read_chat_attachment</code> 读文本或取图；看图后可用 <code>save_image_description</code> 把要点写入附件<strong>扩展信息</strong>，多轮对话优先复用文字摘要，减轻上下文与网关长度压力。</p></div>
+                    <p>聊天输入框支持<strong>多文件 / 多图</strong>粘贴与上传（md/txt/json/csv/log/html + png/jpg/gif/svg 等），落到每用户 <code>web/fs/&lt;你&gt;/chats/sessions/&lt;会话ID&gt;/&lt;uuid&gt;.&lt;ext&gt;</code>；AI 通过 <code>read_chat_attachment</code> 读文本或取图；看图后可用 <code>save_image_description</code> 把要点写入附件<strong>扩展信息</strong>，多轮对话优先复用文字摘要，减轻上下文与网关长度压力。</p></div>
 
                 <div class="card reveal"><div class="icon">📊</div><h3>AI 成果物（生成 + 下载）</h3>
-                    <p>AI 可把结果写入 <code>web/fs/&lt;你&gt;/chats/YYYY/MM/DD/&lt;短 id&gt;/</code>（与附件共用 <code>chats/</code>，附件是文件、artifact 是子目录），支持<strong>单文件</strong>（csv/md/txt/json/html/svg）或<strong>多文件 bundle</strong>（HTML + images/js/css，下载自动打 <code>.tgz</code>）。聊天里直接渲染下载卡片，一键取回。</p></div>
+                    <p>AI 可把报告写入 <code>web/fs/&lt;你&gt;/reports/年/月/日/&lt;示意目录名&gt;/&lt;uuid&gt;.&lt;扩展名&gt;</code>（同目录可有 <code>libs/</code>；与附件 <code>chats/</code> 分离），支持<strong>单文件</strong>或<strong>多文件 bundle</strong>。聊天里渲染下载/预览卡片。</p></div>
 
                 <div class="card reveal"><div class="icon">👁️</div><h3>站内模态预览</h3>
                     <p>点成果物卡片的<strong>预览</strong>按钮，直接在当前页弹窗渲染：HTML 走 iframe 沙箱、Markdown 实时渲染、CSV 解析为表格（表头粘性置顶）、JSON 美化缩进、TXT/YAML 原样展示、图片/PDF 内嵌查看。bundle 内部相对资源会自动带 token 重写，不跳转新窗口、不弹下载。</p></div>

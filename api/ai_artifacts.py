@@ -1,16 +1,13 @@
 """AI 成果物（artifacts）API：AI 根据用户指令生成并保存的结构化产物（报告/数据包/可视化）。
 
-存储路径：web/fs/<username>/chats/YYYY/MM/DD/<shortid>/...
-- 与聊天附件共用同一个 `chats/` 根目录（`CHAT_ATTACHMENT_SUBDIR`），按日期子目录组织；
-  附件是文件（`<uuid>.<ext>`），artifact 是子目录（`<slug>-<shortid>/`），互不冲突。
-- 每个 artifact 对应一个独立目录（即使只有单文件也建目录，便于后续追加）。
-- 目录里按 AI 的意图组织文件：
-    - 单文件类 (csv / md / txt / json) → 直接落盘；kind='single_file'，entry_file=该文件名。
-    - 复合类 (html + images/ + js/ + css/ + data.json ...) → kind='bundle'，entry_file 可为 index.html 等。
-- 下载：
-    - single_file → 直接 FileResponse（保留原文件名）。
-    - bundle → 服务端流式打包 tar.gz，文件名 <slug>.tgz。
-- 数据库表 ai_artifacts 保存元信息；该文件目录同时对用户在 /api/fs 文件面板里可见。
+新布局（相对用户工作区根）：
+  reports/YYYY/MM/DD/<示意目录名>/<uuid>.<ext>
+  reports/YYYY/MM/DD/<示意目录名>/libs/…   # 及 images/ 等其它资源
+
+- `storage_subdir` 存完整前缀路径，如 `reports/2026/07/24/巡检报告`（便于 fs 面板检索）。
+- 入口文件名固定为 **DB uuid + 扩展名**（如 `a1b2….html`），便于再次引用。
+- 旧数据可能仍在 `chats/sessions/<id>/…` 或 `chats/YYYY/MM/DD/…`；读取时按路径兼容。
+- 下载：single_file → FileResponse；bundle → tar.gz。
 - AI 通过 create_chat_artifact 等工具使用（见 services/ai_skills.py）。
 """
 
@@ -49,8 +46,8 @@ logger = logging.getLogger("edgeops.ai_artifacts")
 router = APIRouter(prefix="/api/ai/artifacts", tags=["AI 助手·成果物"])
 
 
-# 所有 artifact 都放在每用户 fs 根目录下的这个子目录（默认与聊天附件共用 "chats/"）
-ARTIFACT_SUBDIR = str(getattr(config, "ARTIFACT_SUBDIR", "chats") or "chats").strip().strip("/\\") or "chats"
+# 新成果物根目录名（相对用户工作区）；旧 chats/… 成果物仍可读
+ARTIFACT_SUBDIR = str(getattr(config, "ARTIFACT_SUBDIR", "reports") or "reports").strip().strip("/\\") or "reports"
 MAX_FILES = int(getattr(config, "ARTIFACT_MAX_FILES", 200))
 MAX_FILE_BYTES = int(getattr(config, "ARTIFACT_MAX_FILE_BYTES", 50 * 1024 * 1024))
 MAX_TOTAL_BYTES = int(getattr(config, "ARTIFACT_MAX_TOTAL_BYTES", 200 * 1024 * 1024))
@@ -122,7 +119,8 @@ def load_html_libs_manifest(force_reload: bool = False) -> dict:
     if not isinstance(data, dict):
         data = {"version": 1, "packages": {}}
     pkgs = data.get("packages") if isinstance(data.get("packages"), dict) else {}
-    # 规范化：保留主要字段；去掉无效项；按文件存在性过滤
+    # 规范化：保留主要字段；去掉无效项。
+    # 允许包内相对子路径（如 three 的 jsm/controls/OrbitControls.js），禁止 .. 与绝对路径。
     norm_pkgs: dict[str, dict] = {}
     for name, meta in pkgs.items():
         if not isinstance(name, str) or not name.strip() or not isinstance(meta, dict):
@@ -134,9 +132,14 @@ def load_html_libs_manifest(force_reload: bool = False) -> dict:
         for fn in files:
             if not isinstance(fn, str):
                 continue
-            fn_clean = fn.strip().replace("\\", "/").lstrip("./")
-            if not fn_clean or "/" in fn_clean or ".." in fn_clean:
-                # 包内文件名不允许带路径分隔，避免越界
+            fn_clean = fn.strip().replace("\\", "/").lstrip("/")
+            while fn_clean.startswith("./"):
+                fn_clean = fn_clean[2:]
+            if not fn_clean or fn_clean.startswith("../") or "/../" in fn_clean or fn_clean.endswith("/.."):
+                continue
+            if any(part in ("", ".", "..") for part in fn_clean.split("/")):
+                continue
+            if _UNSAFE_PART_RE.search(fn_clean):
                 continue
             files_norm.append(fn_clean)
         if not files_norm:
@@ -251,32 +254,128 @@ def _provision_libs_into(dest_dir: Path, libs: list[str], libs_subdir: str) -> d
     }
 
 
+def _resolve_manifest_lib_fallback(rel: str) -> Optional[Path]:
+    """成果物目录缺文件时，若路径对应 manifest 已登记的 vendor，则回退到 `web/res/<pkg>/`。
+
+    兼容默认 `libs/<file>` 与扁平 `<file>`（libs_subdir=""）。
+    用于：创建后 manifest 增补了 addons（如 three/jsm），旧 artifact 未重拷仍可预览。
+    """
+    rel_norm = (rel or "").replace("\\", "/").strip().lstrip("/")
+    if not rel_norm or ".." in rel_norm.split("/"):
+        return None
+    under_libs = rel_norm[5:] if rel_norm.startswith("libs/") else rel_norm
+    if not under_libs:
+        return None
+    manifest = load_html_libs_manifest()
+    root = _HTML_LIBS_ROOT.resolve()
+    for key, meta in (manifest.get("packages") or {}).items():
+        files = meta.get("files") or []
+        if under_libs not in files:
+            continue
+        src = (root / key / under_libs).resolve()
+        try:
+            src.relative_to(root)
+        except ValueError:
+            continue
+        if src.is_file():
+            return src
+    return None
+
+
+def _artifact_error_response(status: int, detail: str) -> Response:
+    """带 CORS 的 JSON 错误（sandbox 预览 origin 为 null，404 也需 ACAO 才不会被误报成 CORS）。"""
+    return _with_artifact_file_cors(
+        Response(
+            content=json.dumps({"detail": detail}, ensure_ascii=False).encode("utf-8"),
+            status_code=status,
+            media_type="application/json; charset=utf-8",
+        )
+    )
+
+
 # ───────────────────────── 内部工具 ─────────────────────────
 
 
 def _today_subdir() -> str:
-    """'YYYY/MM/DD'（UTC），用于按日期组织 artifact 目录。"""
+    """'YYYY/MM/DD'（UTC），用于按日期组织报告目录。"""
     return datetime.utcnow().strftime("%Y/%m/%d")
 
 
 def _short_id() -> str:
-    """短 id（8 字符），附加到日期目录后，形成最终 storage_subdir。"""
+    """短 id（8 字符），目录名冲突时追加。"""
     return _uuid.uuid4().hex[:8]
 
 
 def _get_artifact_root(user: dict) -> Path:
-    """web/fs/<safe_username>/chats/（与聊天附件共用）"""
+    """web/fs/<safe_username>/reports/（新成果物根；与 chats 附件分离）"""
     root = get_user_fs_root(user) / ARTIFACT_SUBDIR
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
-def _slugify(s: str, default: str = "artifact") -> str:
+def _slugify(s: str, default: str = "report") -> str:
     """仅保留可放进目录名/文件名的字符。"""
     s = (s or "").strip()
     s = re.sub(r"\s+", "-", s)
     s = re.sub(r"[^A-Za-z0-9._\u4e00-\u9fff-]+", "", s)
     return (s[:60] or default)
+
+
+def _allocate_report_storage_subdir(reports_root: Path, title: str) -> str:
+    """分配相对用户工作区根的目录：`reports/YYYY/MM/DD/<示意名>`（冲突则追加短 id）。
+
+    `reports_root` 为 `web/fs/<user>/reports/`。
+    """
+    date_dir = _today_subdir()
+    slug = _slugify(title or "report", default="report")
+    rel_under_reports = f"{date_dir}/{slug}"
+    if not (reports_root / rel_under_reports).exists():
+        return f"{ARTIFACT_SUBDIR}/{rel_under_reports}"
+    for _ in range(16):
+        cand = f"{date_dir}/{slug}-{_short_id()}"
+        if not (reports_root / cand).exists():
+            return f"{ARTIFACT_SUBDIR}/{cand}"
+    return f"{ARTIFACT_SUBDIR}/{date_dir}/{slug}-{_uuid.uuid4().hex[:12]}"
+
+
+def _entry_disk_name(uuid_str: str, entry_file: str) -> str:
+    """入口文件落盘名：<uuid>.<原扩展名>。"""
+    ext = Path(entry_file or "").suffix.lower()
+    if not ext or ext not in _ALLOWED_EXTS:
+        ext = ".bin"
+    return f"{uuid_str}{ext}"
+
+
+def _workspace_relpath_for_artifact(storage_subdir: str, entry_file: str = "") -> str:
+    """拼出相对用户工作区的路径（目录或入口文件）。"""
+    sub = (storage_subdir or "").strip().strip("/").replace("\\", "/")
+    entry = (entry_file or "").strip().strip("/").replace("\\", "/")
+    if not sub:
+        return entry
+    if sub.startswith("reports/") or sub.startswith("chats/"):
+        prefix = sub
+    else:
+        # 旧行：相对 chats/ 的 sessions/… 或 YYYY/MM/DD/…
+        prefix = f"chats/{sub}"
+    return f"{prefix}/{entry}" if entry else prefix
+
+
+def _resolve_artifact_abs_dir(username: str, storage_subdir: str) -> Path:
+    """storage_subdir → 绝对目录；兼容 reports/… 新路径与 chats/… 旧路径。"""
+    user_root = get_user_fs_root({"username": username}).resolve()
+    sub = (storage_subdir or "").strip().strip("/\\").replace("\\", "/")
+    if not sub:
+        raise HTTPException(status_code=500, detail="artifact 目录元信息缺失")
+    if sub.startswith("reports/") or sub.startswith("chats/"):
+        path = (user_root / sub).resolve()
+    else:
+        # 旧：相对 chats/
+        path = (user_root / "chats" / sub).resolve()
+    try:
+        path.relative_to(user_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="artifact 路径越界") from exc
+    return path
 
 
 def _validate_relative_path(rel: str) -> str:
@@ -352,6 +451,18 @@ def _attachment_disposition(name: str) -> str:
 # ───────────────────────── 鉴权（header 或 ?token= 均可） ─────────────────────────
 
 
+async def _resolve_user_via_token(raw: str) -> dict:
+    """用显式 bearer/query/path token 解析用户。"""
+    token = (raw or "").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="未登录")
+    user = await authenticate_bearer_credentials(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Token已过期或无效")
+    assert_user_active(user)
+    return user
+
+
 async def _resolve_user_via_header_or_query(request: Request) -> dict:
     """让 `<a href="/api/ai/artifacts/.../download?token=...">` 等直接链接也能访问。"""
     raw = ""
@@ -364,13 +475,7 @@ async def _resolve_user_via_header_or_query(request: Request) -> dict:
             raw = auth_header.strip()
     if not raw:
         raw = (request.query_params.get("token") or "").strip()
-    if not raw:
-        raise HTTPException(status_code=401, detail="未登录")
-    user = await authenticate_bearer_credentials(raw)
-    if not user:
-        raise HTTPException(status_code=401, detail="Token已过期或无效")
-    assert_user_active(user)
-    return user
+    return await _resolve_user_via_token(raw)
 
 
 # ───────────────────────── db / 路径解析 ─────────────────────────
@@ -393,26 +498,21 @@ async def _load_username(db, user_id: int) -> str:
 
 def _artifact_dir_for(row: dict, username: str) -> Path:
     """根据行与 username 推出 artifact 的物理目录，并做边界校验。"""
-    root = _get_artifact_root({"username": username}).resolve()
-    subdir = (row.get("storage_subdir") or "").strip().strip("/\\").replace("\\", "/")
-    if not subdir:
-        raise HTTPException(status_code=500, detail="artifact 目录元信息缺失")
-    path = (root / subdir).resolve()
-    try:
-        path.relative_to(root)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="artifact 路径越界") from exc
-    return path
+    return _resolve_artifact_abs_dir(username, row.get("storage_subdir") or "")
 
 
 def _artifact_to_dict(row: dict) -> dict:
+    storage_subdir = row.get("storage_subdir") or ""
+    entry_file = row.get("entry_file") or ""
+    fs_path = _workspace_relpath_for_artifact(storage_subdir, entry_file)
     return {
         "uuid": row.get("uuid"),
         "title": row.get("title") or "",
         "description": row.get("description") or "",
         "kind": row.get("kind") or "bundle",
-        "storage_subdir": row.get("storage_subdir") or "",
-        "entry_file": row.get("entry_file") or "",
+        "storage_subdir": storage_subdir,
+        "entry_file": entry_file,
+        "fs_path": fs_path,
         "file_count": int(row.get("file_count") or 0),
         "total_bytes": int(row.get("total_bytes") or 0),
         "session_id": row.get("session_id"),
@@ -420,10 +520,122 @@ def _artifact_to_dict(row: dict) -> dict:
         "created_at": row.get("created_at"),
         "download_url": f"/api/ai/artifacts/{row.get('uuid')}/download",
         "preview_url": (
-            f"/api/ai/artifacts/{row.get('uuid')}/file?path=" + (row.get("entry_file") or "")
-            if row.get("entry_file") else ""
+            f"/api/ai/artifacts/{row.get('uuid')}/file?path=" + entry_file
+            if entry_file else ""
         ),
     }
+
+
+# 模型偶发编造 `[标题](artifact:<32hex>)` 而未真正 create；落库前校验并剔除无效链接。
+_ARTIFACT_MD_LINK_RE = re.compile(
+    r"\[([^\]]*)\]\(artifact:([0-9a-fA-F]{32})\)",
+    re.IGNORECASE,
+)
+
+
+def extract_artifact_markdown_links_from_tool_trace(trace_steps: Iterable[dict] | None) -> list[str]:
+    """从本轮 TOOL_TRACE 的 create/update 成功结果中提取 markdown_link。"""
+    out: list[str] = []
+    seen: set[str] = set()
+    for step in trace_steps or []:
+        if not isinstance(step, dict):
+            continue
+        if step.get("type") != "tool" or step.get("event") != "finished":
+            continue
+        if step.get("action") != "completed":
+            continue
+        tool = (step.get("tool") or "").strip()
+        if tool not in ("create_chat_artifact", "update_chat_artifact"):
+            continue
+        preview = step.get("result_preview") or ""
+        link = ""
+        try:
+            obj = json.loads(preview) if isinstance(preview, str) else preview
+            if isinstance(obj, dict):
+                art = obj.get("artifact") if isinstance(obj.get("artifact"), dict) else {}
+                link = str(art.get("markdown_link") or obj.get("markdown_link") or "").strip()
+        except (TypeError, ValueError):
+            m = re.search(r'"markdown_link"\s*:\s*"((?:\\.|[^"\\])*)"', str(preview))
+            if m:
+                try:
+                    link = json.loads(f'"{m.group(1)}"')
+                except (TypeError, ValueError):
+                    link = m.group(1).replace('\\"', '"')
+        if link and link not in seen and "artifact:" in link:
+            seen.add(link)
+            out.append(link)
+    return out
+
+
+async def sanitize_assistant_artifact_links(
+    content: str,
+    db,
+    user_id: int,
+    *,
+    tool_trace: Iterable[dict] | None = None,
+) -> tuple[str, bool]:
+    """剔除助手正文中不存在的 artifact 链接；若本轮工具已成功创建则补上真实 markdown_link。
+
+    返回 `(新正文, 是否有改动)`。改动后调用方应 content_refresh 以便前端与落库一致。
+    """
+    text = content or ""
+    if "artifact:" not in text and not tool_trace:
+        return text, False
+
+    known_links = extract_artifact_markdown_links_from_tool_trace(tool_trace)
+    known_uuids = {
+        m.group(2).lower()
+        for link in known_links
+        for m in [_ARTIFACT_MD_LINK_RE.search(link)]
+        if m
+    }
+
+    found = list(_ARTIFACT_MD_LINK_RE.finditer(text))
+    uuids = {m.group(2).lower() for m in found}
+    uuids |= known_uuids
+    existing: set[str] = set()
+    if uuids:
+        placeholders = ",".join("?" * len(uuids))
+        rows = await db.execute_fetchall(
+            f"SELECT uuid FROM ai_artifacts WHERE user_id = ? AND lower(uuid) IN ({placeholders})",
+            (int(user_id), *sorted(uuids)),
+        )
+        existing = {(r["uuid"] or "").lower() for r in rows if r["uuid"]}
+
+    changed = False
+
+    def _replace_one(match: re.Match) -> str:
+        nonlocal changed
+        title = (match.group(1) or "").strip() or "成果物"
+        uid = match.group(2).lower()
+        if uid in existing or uid in known_uuids:
+            return match.group(0)
+        changed = True
+        return f"**{title}**（成果物未成功创建，链接已移除）"
+
+    if found:
+        text = _ARTIFACT_MD_LINK_RE.sub(_replace_one, text)
+
+    # 本轮工具已成功但正文没有有效链接：补上真实 markdown_link（避免用户只看到「已生成」却无卡）
+    present_ok = {
+        m.group(2).lower()
+        for m in _ARTIFACT_MD_LINK_RE.finditer(text)
+        if m.group(2).lower() in existing or m.group(2).lower() in known_uuids
+    }
+    to_append: list[str] = []
+    for lnk in known_links:
+        m = _ARTIFACT_MD_LINK_RE.search(lnk)
+        if not m:
+            continue
+        if m.group(2).lower() in present_ok:
+            continue
+        to_append.append(lnk)
+        present_ok.add(m.group(2).lower())
+    if to_append:
+        text = text.rstrip() + "\n\n" + "\n".join(to_append) + "\n"
+        changed = True
+
+    return text, changed
 
 
 async def _ensure_session_owned(db, user_id: int, session_id: int) -> None:
@@ -517,25 +729,20 @@ async def create_artifact(
 
     kind = "single_file" if len(plan) == 1 else "bundle"
 
-    # 生成 storage_subdir：sessions/<id>/<slug>-<shortid>（无 session 则日期兼容）
-    from api.chat_attachments import session_storage_subdir as _session_storage_subdir
+    # 新布局：reports/YYYY/MM/DD/<示意名>/ + 入口文件 <uuid>.<ext>
+    uuid_str = _uuid.uuid4().hex
+    reports_root = _get_artifact_root(user)
+    user_root = get_user_fs_root(user).resolve()
+    storage_subdir = _allocate_report_storage_subdir(reports_root, title or "report")
+    dest = _resolve_artifact_abs_dir(user.get("username") or "default", storage_subdir)
+    disk_entry = _entry_disk_name(uuid_str, entry_file or plan[0][0])
 
-    short = _short_id()
-    slug = _slugify(title or "artifact")
-    leaf = f"{slug}-{short}" if slug and slug != "artifact" else short
-    storage_subdir = _session_storage_subdir(session_id, leaf=leaf)
-    root = _get_artifact_root(user)
-    dest = (root / storage_subdir).resolve()
-    try:
-        dest.relative_to(root.resolve())
-    except ValueError as exc:
-        raise ValueError("artifact 路径越界") from exc
-
-    # 落盘：先 mkdir，再写每个文件
+    # 落盘：入口文件强制用 uuid.扩展；其它资源保持相对路径（libs/、images/ 等）
     try:
         dest.mkdir(parents=True, exist_ok=True)
         for rel, data in plan:
-            target = (dest / rel).resolve()
+            out_rel = disk_entry if rel == entry_file else rel
+            target = (dest / out_rel).resolve()
             try:
                 target.relative_to(dest)
             except ValueError as exc:
@@ -544,12 +751,22 @@ async def create_artifact(
             target.write_bytes(data)
     except OSError as exc:
         logger.exception("写入 artifact 失败: %s", exc)
-        # 尝试回滚已写入的目录
         try:
             shutil.rmtree(dest, ignore_errors=True)
         except Exception:
             pass
         raise ValueError(f"保存 artifact 失败: {exc}") from exc
+
+    entry_file = disk_entry
+    # 边界再校验（dest 必须在用户根下）
+    try:
+        dest.relative_to(user_root)
+    except ValueError as exc:
+        try:
+            shutil.rmtree(dest, ignore_errors=True)
+        except Exception:
+            pass
+        raise ValueError("artifact 路径越界") from exc
 
     # 复制 HTML 自包含依赖（echarts / mermaid / markmap 等）。失败不打断主流程：
     # AI 写出的 HTML 文件已经落盘，缺依赖只会让浏览器引用 404；上层会在返回里
@@ -589,7 +806,6 @@ async def create_artifact(
     if libs_provision and int(libs_provision.get("files") or 0) > 0:
         kind = "bundle"
 
-    uuid_str = _uuid.uuid4().hex
     final_file_count = len(plan) + int((libs_provision or {}).get("files") or 0)
     await db.execute(
         """INSERT INTO ai_artifacts
@@ -686,8 +902,13 @@ async def update_artifact(
     title: str | None = None,
     description: str | None = None,
     entry_file: str | None = None,
+    libs: Optional[list[str]] = None,
+    libs_subdir: Optional[str] = None,
 ) -> dict:
-    """在原 artifact 目录内覆盖/追加文件，**不新建 UUID**。用于用户要求「改报告里的小问题」等增量修订。"""
+    """在原 artifact 目录内覆盖/追加文件，**不新建 UUID**。用于用户要求「改报告里的小问题」等增量修订。
+
+    可选 `libs`：按当前 manifest 再拷一份 vendor（补全创建后新增的 addons，如 three/jsm）。
+    """
     uuid_str = (uuid or "").strip()
     if not uuid_str:
         raise ValueError("uuid 不能为空")
@@ -700,19 +921,44 @@ async def update_artifact(
     if not dest.is_dir():
         raise ValueError("artifact 物理目录不存在，无法更新")
 
-    plan, seen_paths, _ = _build_artifact_write_plan(files)
-    try:
-        for rel, data in plan:
-            target = (dest / rel).resolve()
-            try:
-                target.relative_to(dest.resolve())
-            except ValueError as exc:
-                raise ValueError(f"文件路径越界: {rel}") from exc
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(data)
-    except OSError as exc:
-        logger.exception("更新 artifact 失败 uuid=%s: %s", uuid_str, exc)
-        raise ValueError(f"更新 artifact 失败: {exc}") from exc
+    libs_norm = [str(x).strip() for x in (libs or []) if str(x).strip()]
+    file_list = list(files or [])
+    if not file_list and not libs_norm:
+        raise ValueError("files 与 libs 不能同时为空")
+
+    plan: list[tuple[str, bytes]] = []
+    if file_list:
+        plan, _seen_paths, _ = _build_artifact_write_plan(file_list)
+        try:
+            for rel, data in plan:
+                target = (dest / rel).resolve()
+                try:
+                    target.relative_to(dest.resolve())
+                except ValueError as exc:
+                    raise ValueError(f"文件路径越界: {rel}") from exc
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+        except OSError as exc:
+            logger.exception("更新 artifact 失败 uuid=%s: %s", uuid_str, exc)
+            raise ValueError(f"更新 artifact 失败: {exc}") from exc
+
+    libs_provision: dict | None = None
+    if libs_norm:
+        try:
+            sub = _resolve_libs_subdir(libs_subdir)
+            libs_provision = _provision_libs_into(dest, libs_norm, sub)
+        except ValueError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("update_artifact provision_libs 失败 uuid=%s: %s", uuid_str, exc)
+            libs_provision = {
+                "copied": {},
+                "snippets": [],
+                "missing": libs_norm,
+                "bytes": 0,
+                "files": 0,
+                "error": str(exc),
+            }
 
     new_entry = (entry_file or "").strip() or (row.get("entry_file") or "")
     if entry_file:
@@ -750,6 +996,8 @@ async def update_artifact(
     out = _artifact_to_dict(updated or row)
     out["updated"] = True
     out["updated_paths"] = [rel for rel, _ in plan]
+    if libs_provision is not None:
+        out["libs_provided"] = libs_provision
     return out
 
 
@@ -913,18 +1161,39 @@ def _is_relative_asset_url(url: str) -> bool:
     return bool(_REL_ASSET_EXT_RE.search(norm.split("?", 1)[0].split("#", 1)[0]))
 
 
+def _artifact_file_url_with_token(uuid_str: str, rel_path: str, token: str) -> str:
+    """成果物子资源 URL：把 token 放进路径，避免 importmap 目录前缀被 `?token=` 破坏。
+
+    形如 `/api/ai/artifacts/<uuid>/at/<token>/files/<rel>`。
+    rel 若以 `/` 结尾（importmap 的 `three/addons/` → `./libs/jsm/`），保留尾斜杠，
+    以满足「specifierKey 以 / 结尾则 address 也必须以 / 结尾」，且子模块解析时 token 仍在 path 中。
+    """
+    enc_uuid = quote(uuid_str, safe="")
+    # JWT 含 `.` `_` `-`；勿过度 encode，否则部分客户端难还原
+    enc_token = quote(token, safe=".-_")
+    normalized = (rel_path or "").replace("\\", "/").lstrip("/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    trailing_slash = normalized.endswith("/")
+    parts = [seg for seg in normalized.split("/") if seg and seg != "."]
+    if any(seg == ".." for seg in parts):
+        return ""
+    encoded = "/".join(quote(seg, safe="") for seg in parts)
+    if trailing_slash:
+        encoded += "/"
+    return f"/api/ai/artifacts/{enc_uuid}/at/{enc_token}/files/{encoded}"
+
+
 def _rewrite_artifact_html_refs_for_token(html: str, uuid_str: str, token: str) -> str:
     """新窗口打开 `…/files/index.html?token=…` 时，浏览器解析相对子资源不会附带 query，
-    缺 token → 401。入口 HTML 带 ?token= 时，内联返回前把相对引用改写成带同一 token
-    的绝对路径（与站内 iframe 预览改写一致）。
+    缺 token → 401。入口 HTML 带 ?token= 时，内联返回前把相对引用改写成 **path 内嵌 token**
+    的绝对路径（`/at/<token>/files/...`），以兼容 importmap 目录前缀与 ESM 子模块树。
 
     覆盖：
     - `<script src>` / `<link href>` / `<img src>` 等属性
-    - `<script type="importmap">` 内相对 URL（three ESM 常用）
+    - `<script type="importmap">` 内相对 URL（three ESM / three/addons/ 常用）
     - `import './x.js'` / `from './x.js'` / `import('./x.js')` 相对模块说明符
     """
-    enc_uuid = quote(uuid_str, safe="")
-    token_q = "?token=" + quote(token, safe="")
 
     def rewrite_one(url: str) -> str:
         trimmed = url.strip()
@@ -951,10 +1220,12 @@ def _rewrite_artifact_html_refs_for_token(html: str, uuid_str: str, token: str) 
             return url
         if not normalized:
             return url
-        encoded = "/".join(quote(seg, safe="") for seg in normalized.split("/"))
-        out = f"/api/ai/artifacts/{enc_uuid}/files/{encoded}{token_q}"
+        out = _artifact_file_url_with_token(uuid_str, normalized, token)
+        if not out:
+            return url
         if query_part:
-            out += "&_q=" + quote(query_part[1:], safe="")
+            # 业务原 query 极少见；接到 path-token URL 后用 ? 拼回
+            out += ("&" if "?" in out else "?") + "_q=" + quote(query_part[1:], safe="")
         out += hash_part
         return out
 
@@ -1017,28 +1288,39 @@ async def _serve_artifact_file(
     request: Request,
     *,
     download: int = 0,
+    token_override: Optional[str] = None,
 ) -> Union[FileResponse, Response]:
-    """两种 URL 形式（`/file?path=...` 与 `/files/<rel>`) 共用的实际取文件逻辑。"""
-    user = await _resolve_user_via_header_or_query(request)
+    """`/file?path=`、`/files/<rel>`、`/at/<token>/files/<rel>` 共用的取文件逻辑。"""
+    rewrite_token = (token_override or "").strip()
+    if rewrite_token:
+        user = await _resolve_user_via_token(rewrite_token)
+    else:
+        user = await _resolve_user_via_header_or_query(request)
+        rewrite_token = (request.query_params.get("token") or "").strip()
     db = await get_db()
     row = await _load_artifact_row(db, uuid_str)
     if not row:
-        raise HTTPException(status_code=404, detail="成果物不存在")
+        return _artifact_error_response(404, "成果物不存在")
     if row["user_id"] != user["id"] and not _is_admin_role(user.get("role")):
-        raise HTTPException(status_code=403, detail="无权访问该成果物")
+        return _artifact_error_response(403, "无权访问该成果物")
     username = await _load_username(db, row["user_id"])
     root_dir = _artifact_dir_for(row, username)
     try:
         rel = _validate_relative_path(path)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"路径非法: {exc}") from exc
+        return _artifact_error_response(400, f"路径非法: {exc}")
     target = (root_dir / rel).resolve()
     try:
-        target.relative_to(root_dir)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="路径越界") from exc
-    if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=404, detail="文件不存在")
+        target.relative_to(root_dir.resolve())
+    except ValueError:
+        return _artifact_error_response(400, "路径越界")
+    # 目录内没有时：若是 manifest 登记的 libs vendor，回退 web/res（补旧成果物缺 addons）
+    if not target.is_file():
+        fallback = _resolve_manifest_lib_fallback(rel)
+        if fallback is not None:
+            target = fallback
+        else:
+            return _artifact_error_response(404, "文件不存在")
     import mimetypes as _mt
     mt, _ = _mt.guess_type(target.name)
     mt = mt or "application/octet-stream"
@@ -1051,14 +1333,13 @@ async def _serve_artifact_file(
         or target.suffix.lower() in (".js", ".mjs", ".cjs", ".wasm", ".map")
     )
     if want_inline:
-        q_token = (request.query_params.get("token") or "").strip()
-        if q_token and mt.startswith("text/html"):
+        if rewrite_token and mt.startswith("text/html"):
             try:
                 raw_html = target.read_text(encoding="utf-8")
             except OSError as exc:
                 logger.warning("读取 artifact HTML 失败 %s: %s", target, exc)
             else:
-                body = _rewrite_artifact_html_refs_for_token(raw_html, uuid_str, q_token)
+                body = _rewrite_artifact_html_refs_for_token(raw_html, uuid_str, rewrite_token)
                 disp = f'inline; filename="{re.sub(r"[^A-Za-z0-9._-]+", "_", target.name) or "index.html"}"'
                 return _with_artifact_file_cors(
                     Response(
@@ -1105,21 +1386,29 @@ async def artifact_file_by_path(
 ):
     """下载/预览 artifact 内的单个文件（路径形式）。
 
-    为什么需要这条路由：当用户/AI 在浏览器**新窗口**或外部直接打开
-    `…/files/index.html` 时，HTML 内的 `./libs/echarts.min.js` 会被浏览器
-    解析为 `…/files/libs/echarts.min.js`（裸子路径）；这正好命中本条路由。
-    若仅有 `?path=index.html` 形式，浏览器解析相对引用会得到 `…/libs/...`
-    一个不存在的兄弟路径，导致子资源 404。
-
-    新窗口 URL 常为 `…/files/index.html?token=…`：相对脚本不会继承 query，
-    子资源请求缺 token 会 401。对带 `?token=` 的 **HTML** 内联响应，服务端
-    会把相对 `src`/`href`、`importmap`、ESM `import './…'` 改写成带同一 token
-    的绝对路径（与站内 iframe 预览 `edgeopsRewriteArtifactHtmlRefs` 一致）。
-
-    `_validate_relative_path` 已经吸收 `./`、拒绝 `..`，越界路径会返回 400。
-    鉴权与 `/file` 完全一致（token 走 query，cookie 走 header）。
+    新窗口 URL 常为 `…/files/index.html?token=…`：相对脚本不会继承 query。
+    对带 token 的 **HTML**，服务端会把相对引用改写成
+    `/at/<token>/files/<rel>`（path 内嵌 token），以支持 importmap 目录前缀
+    （如 `three/addons/` → `./libs/jsm/`）与 ESM 子模块树。
     """
     return await _serve_artifact_file(uuid_str, path, request, download=download)
+
+
+@router.get("/{uuid_str}/at/{token}/files/{path:path}")
+async def artifact_file_by_path_token(
+    uuid_str: str,
+    token: str,
+    path: str,
+    request: Request,
+    download: int = 0,
+):
+    """路径内嵌 token 的文件访问（供 HTML rewrite / importmap / ESM 子模块使用）。
+
+    比 `?token=` 更适合目录前缀：address 可保留尾 `/`，且相对解析不会丢掉鉴权信息。
+    """
+    return await _serve_artifact_file(
+        uuid_str, path, request, download=download, token_override=token
+    )
 
 
 class BindArtifactBody(BaseModel):

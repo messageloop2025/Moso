@@ -2154,6 +2154,69 @@ function edgeopsBindPromptEditPreview(opts) {
     }
 }
 
+/**
+ * 滚动时给目标容器加上 .edgeops-scrolling，停止后延迟移除；
+ * 配合 style.css 实现「仅滚动/悬停时显示细滑块」。
+ */
+(function edgeopsInitAutohideScrollbars() {
+    if (typeof document === 'undefined') return;
+    var hideDelayMs = 900;
+    var timers = typeof WeakMap !== 'undefined' ? new WeakMap() : null;
+    var fallbackTimers = timers ? null : [];
+
+    function resolveScrollEl(target) {
+        if (!target) return null;
+        if (target === document || target === document.documentElement || target === document.body) {
+            return document.documentElement;
+        }
+        if (target.nodeType === 1) return target;
+        return null;
+    }
+
+    function clearTimer(el) {
+        if (!el) return;
+        if (timers) {
+            var t = timers.get(el);
+            if (t) clearTimeout(t);
+            timers.delete(el);
+            return;
+        }
+        for (var i = fallbackTimers.length - 1; i >= 0; i--) {
+            if (fallbackTimers[i].el === el) {
+                clearTimeout(fallbackTimers[i].id);
+                fallbackTimers.splice(i, 1);
+            }
+        }
+    }
+
+    function scheduleHide(el) {
+        clearTimer(el);
+        var id = setTimeout(function() {
+            if (el && el.classList) el.classList.remove('edgeops-scrolling');
+            clearTimer(el);
+        }, hideDelayMs);
+        if (timers) timers.set(el, id);
+        else fallbackTimers.push({ el: el, id: id });
+    }
+
+    function onScroll(ev) {
+        var el = resolveScrollEl(ev && ev.target);
+        if (!el || !el.classList) return;
+        el.classList.add('edgeops-scrolling');
+        // body 滚动时同步打在 html 上，方便选择器命中
+        if (el === document.documentElement || el === document.body) {
+            document.documentElement.classList.add('edgeops-scrolling');
+            if (document.body) document.body.classList.add('edgeops-scrolling');
+            scheduleHide(document.documentElement);
+            if (document.body) scheduleHide(document.body);
+            return;
+        }
+        scheduleHide(el);
+    }
+
+    document.addEventListener('scroll', onScroll, { capture: true, passive: true });
+})();
+
 if (typeof window !== 'undefined') {
     window.formatMarkdown = formatMarkdown;
     window.markdownToHtml = markdownToHtml;

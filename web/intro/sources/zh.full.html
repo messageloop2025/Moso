@@ -512,10 +512,10 @@
                     <p>多 Tab 聊天、会话历史、AI 自动取名；Markdown 与<strong>流式分块排版</strong>（代码块/表格闭合即渲染）；Mermaid/Markmap/ECharts；<strong>可点按钮式选择卡</strong>（持久化与刷新还原）。「模型配置」可开关<strong>支持图像识别</strong>（多模态内联），并支持多组 Profile 快速切换。</p></div>
 
                 <div class="card reveal"><div class="icon">📎</div><h3>聊天附件上传</h3>
-                    <p>输入框支持<strong>多文件</strong>粘贴/拖拽：文本与图片，以及 <strong>PDF / Office</strong>（docx/pptx/xlsx/pdf 等）。落盘 <code>web/fs/&lt;你&gt;/chats/YYYY/MM/DD/&lt;uuid&gt;.&lt;ext&gt;</code>；Office/PDF 由服务端 <strong>MarkItDown</strong> 转 Markdown，AI 经 <code>read_chat_attachment</code> 读取；图片可 <code>save_image_description</code> 写入摘要供多轮复用。</p></div>
+                    <p>输入框支持<strong>多文件</strong>粘贴/拖拽：文本与图片，以及 <strong>PDF / Office</strong>（docx/pptx/xlsx/pdf 等）。落盘 <code>web/fs/&lt;你&gt;/chats/sessions/&lt;会话ID&gt;/&lt;uuid&gt;.&lt;ext&gt;</code>；Office/PDF 由服务端 <strong>MarkItDown</strong> 转 Markdown，AI 经 <code>read_chat_attachment</code> 读取；图片可 <code>save_image_description</code> 写入摘要供多轮复用。</p></div>
 
                 <div class="card reveal"><div class="icon">📊</div><h3>AI 成果物（生成 + 下载）</h3>
-                    <p>AI 可把结果写入 <code>web/fs/&lt;你&gt;/chats/YYYY/MM/DD/&lt;短 id&gt;/</code>（与附件共用 <code>chats/</code>，附件是文件、artifact 是子目录），支持<strong>单文件</strong>（csv/md/txt/json/html/svg）或<strong>多文件 bundle</strong>（HTML + images/js/css，下载自动打 <code>.tgz</code>）。聊天里直接渲染下载卡片，一键取回。</p></div>
+                    <p>AI 可把报告写入 <code>web/fs/&lt;你&gt;/reports/年/月/日/&lt;示意目录名&gt;/&lt;uuid&gt;.&lt;扩展名&gt;</code>（同目录可有 <code>libs/</code> 等资源；与聊天附件的 <code>chats/</code> 分离），支持<strong>单文件</strong>（csv/md/txt/json/html/svg）或<strong>多文件 bundle</strong>（HTML + images/js/css，下载自动打 <code>.tgz</code>）。聊天里直接渲染下载/预览卡片，一键取回。</p></div>
 
                 <div class="card reveal"><div class="icon">👁️</div><h3>站内模态预览</h3>
                     <p>点成果物卡片的<strong>预览</strong>按钮，直接在当前页弹窗渲染：HTML 走 iframe 沙箱、Markdown 实时渲染、CSV 解析为表格（表头粘性置顶）、JSON 美化缩进、TXT/YAML 原样展示、图片/PDF 内嵌查看。bundle 内部相对资源会自动带 token 重写，不跳转新窗口、不弹下载。</p></div>

@@ -9,7 +9,7 @@ PRODUCT_NAME_ZH = "毛竹"
 PRODUCT_NAME_EN = "Moso"
 PRODUCT_DISPLAY = f"{PRODUCT_NAME_ZH}（{PRODUCT_NAME_EN}）"  # AI 提示词中的产品指称
 
-VERSION = os.getenv("EDGEOPS_VERSION", "1.8.6-sp2")
+VERSION = os.getenv("EDGEOPS_VERSION", "1.8.6-sp4")
 
 # 数据库 / Database
 DATABASE_PATH = os.getenv("EDGEOPS_DB", str(BASE_DIR / "edgeops.db"))
@@ -233,13 +233,11 @@ SCP_PULL_MAX_TREE_BYTES = int(os.getenv("EDGEOPS_SCP_PULL_MAX_TREE_BYTES", "0"))
 # AI SFTP 目录传输：最多文件数（防止恶意/误操作拉爆磁盘）。
 SCP_TRANSFER_MAX_FILES = int(os.getenv("EDGEOPS_SCP_TRANSFER_MAX_FILES", "5000"))
 
-# AI 成果物（artifacts）：AI 生成的报告 / 数据包 / HTML 可视化 等，落盘在 web/fs/<username>/<ARTIFACT_SUBDIR>/YYYY/MM/DD/<id>/
-# Artifacts (reports, bundles, HTML viz): web/fs/<username>/<ARTIFACT_SUBDIR>/YYYY/MM/DD/<id>/
-# 注意：与 CHAT_ATTACHMENT_SUBDIR 共用同一个 "chats" 根，按日期子目录区分；
-# Same "chats" root as attachments; date subdirs separate namespaces.
-# 附件落盘为文件（<uuid>.<ext>），artifact 落盘为子目录（<slug>-<shortid>/），命名空间互不冲突。
-# Attachments = files; artifacts = subdirs — no name collision.
-ARTIFACT_SUBDIR = "chats"
+# AI 成果物（artifacts）：报告 / 数据包 / HTML 可视化
+# 新布局：web/fs/<username>/reports/YYYY/MM/DD/<示意目录名>/<uuid>.<ext> + libs/ 等资源
+# 旧数据仍可能在 chats/sessions/<id>/… 或 chats/YYYY/MM/DD/…（读取兼容）
+# 聊天附件仍在 chats/（与报告分离）。
+ARTIFACT_SUBDIR = "reports"
 # 单个 artifact 文件数上限。防止 AI 一次写入成千上万个小文件。
 # Max files per artifact (avoid huge file counts).
 ARTIFACT_MAX_FILES = int(os.getenv("EDGEOPS_ARTIFACT_MAX_FILES", "200"))

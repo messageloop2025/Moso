@@ -47,9 +47,16 @@
       "title": "three.js",
       "version": "0.160.0",
       "global": "THREE",
-      "description": "WebGL 三维引擎。聊天内可用 ```three-scene``` JSON 声明式场景；HTML 报告用 libs:[\"three\"]（可选再加 cannon-es 做物理）。全局 `window.THREE`；复杂交互报告可同时引 `three.module.js` 用 type=module。",
-      "files": ["three.min.js", "three.module.js"],
-      "snippet": "<script src=\"./libs/three.min.js\"></script>"
+      "description": "WebGL 三维引擎。聊天内可用 ```three-scene``` JSON；HTML 用 libs:[\"three\"]。简单场景：`<script src=\"./libs/three.min.js\">` 用全局 THREE。需要 OrbitControls / CSS2D / GLTF 时用 type=module + importmap（见 snippet），禁止 CDN。本地已含 jsm/controls/OrbitControls、jsm/renderers/CSS2DRenderer、jsm/loaders/GLTFLoader（及 BufferGeometryUtils）。",
+      "files": [
+        "three.min.js",
+        "three.module.js",
+        "jsm/controls/OrbitControls.js",
+        "jsm/renderers/CSS2DRenderer.js",
+        "jsm/loaders/GLTFLoader.js",
+        "jsm/utils/BufferGeometryUtils.js"
+      ],
+      "snippet": "<script type=\"importmap\">\n{\n  \"imports\": {\n    \"three\": \"./libs/three.module.js\",\n    \"three/addons/\": \"./libs/jsm/\"\n  }\n}\n</script>\n<script type=\"module\">\nimport * as THREE from 'three';\nimport { OrbitControls } from 'three/addons/controls/OrbitControls.js';\n// 可选：import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';\n// 可选：import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';\n</script>\n<!-- 或简单场景：<script src=\"./libs/three.min.js\"></script> 后用全局 THREE（无 OrbitControls） -->"
     },
     "cannon-es": {
       "title": "Cannon / cannon-es 物理引擎",
