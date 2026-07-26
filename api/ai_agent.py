@@ -5476,6 +5476,8 @@ def _build_system_prompt(*, user: dict | None = None) -> str:
         "分组（create_group、add_hosts_to_group、remove_host_from_group、update_group、delete_group）；"
         "SSH（**ssh_execute**、**ssh_channel_***、**Web 控制台** send_to_terminal/get_terminal_buffer）；"
         "主机文件传输（**scp_push** / **scp_pull** 等）；"
+        "**联网检索（默认已装载，优先使用）**：**search_web**（阿里云 IQS）、**search_github**；"
+        "平台侧 HTTP：**http_request** / http_download 等——查网页/GitHub/文档时**禁止**默认改走主机 `ssh_execute`+`curl` 代替；"
         "维护历史；分享（share_host 等，只共享主机访问，不共享聊天记录）；"
         "标签；主机知识（机密，严禁回复展示）与主机级提示词；.edgeops 工作区；"
         "毛竹文件系统 fs_*（侧栏「文件系统」= 当前用户工作区）；"

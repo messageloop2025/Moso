@@ -111,6 +111,34 @@ HOST_MGMT_TOOL_NAMES: frozenset[str] = frozenset({
     "delete_credential",
 })
 
+# 任意分层（含纯 core）都始终下发：联网检索 / HTTP 客户端 / 高频读写与 SSH，
+# 避免「去网上查」「查 GitHub」时模型看不见 search_* / http_request 却去 ssh+curl。
+ALWAYS_ON_TOOL_NAMES: frozenset[str] = frozenset({
+    # 内置搜索（阿里云 IQS / GitHub）
+    "search_web",
+    "search_github",
+    "list_search_providers",
+    # HTTP 客户端（平台侧直连，勿默认改走主机 curl）
+    "http_request",
+    "http_download",
+    "http_upload",
+    "http_download_merge",
+    # 高频运维基础（减少 ensure_chat_tools 往返）
+    "ssh_execute",
+    "fs_list",
+    "fs_search",
+    "fs_read_file",
+    "fs_write_file",
+    "get_chats_workspace_dir",
+    "read_chat_data",
+    "list_chat_attachments",
+    "read_chat_attachment",
+    "list_chat_artifacts",
+    "read_chat_artifact_file",
+    "create_chat_artifact",
+    "update_chat_artifact",
+})
+
 CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "list_hosts",
     "search_hosts",
@@ -160,7 +188,7 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "get_aihelp_index",
     "list_aihelp_files",
     "get_aihelp_file",
-}) | HOST_MGMT_TOOL_NAMES
+}) | HOST_MGMT_TOOL_NAMES | ALWAYS_ON_TOOL_NAMES
 
 TERMINAL_TOOL_NAMES: frozenset[str] = frozenset({
     "send_to_terminal",
@@ -666,6 +694,8 @@ _HTTP_HINT_RE = re.compile(
     r"(http|https|url|wget|curl|下载|上传|scp|sftp|拉取|推送|api.?请求|"
     r"http_request|http_download|scp_push|scp_pull|连通性|探测|"
     r"拉回|推到|中转|relay|transfer_file|"
+    r"github|gitlab|gitee|网页|网上|联网|搜网|开源|搜索引擎|查一下.*网|"
+    r"search_web|search_github|"
     r"[a-z0-9][a-z0-9.-]*\.(com|cn|cc|io|net|org|local|dev|xyz|me|top)\b)",
     re.IGNORECASE,
 )

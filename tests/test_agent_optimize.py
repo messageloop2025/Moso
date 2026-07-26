@@ -165,6 +165,46 @@ def test_force_full_followup_when_user_insists_to_call_tool():
     assert resolve_tools_tier("工具列表没有添加主机？再调用试试") == "full"
 
 
+def test_always_on_search_and_http_in_core_tier():
+    """纯 core 分层也必须带上 IQS/GitHub 搜索与 http_request，避免模型改走 ssh+curl。"""
+    from services.agent_optimize import (
+        ALWAYS_ON_TOOL_NAMES,
+        CORE_TOOL_NAMES,
+        filter_tools_for_message,
+        resolve_tools_tier,
+    )
+
+    assert "search_web" in CORE_TOOL_NAMES
+    assert "search_github" in CORE_TOOL_NAMES
+    assert "http_request" in CORE_TOOL_NAMES
+    assert "ssh_execute" in ALWAYS_ON_TOOL_NAMES
+
+    tools = [
+        {"type": "function", "function": {"name": n, "parameters": {}}}
+        for n in [
+            "list_hosts",
+            "ask_user_choice",
+            "ensure_chat_tools",
+            "search_web",
+            "search_github",
+            "http_request",
+            "ssh_execute",
+            "fs_list",
+            "batch_create",
+        ]
+    ]
+    msg = "到GITHUB和网上看看有什么开源的agent项目"
+    # 即使未命中 http 关键词、落在较窄分层，ALWAYS_ON 也应保留
+    names = {t["function"]["name"] for t in filter_tools_for_message(tools, msg, lightweight=False)}
+    assert "search_web" in names
+    assert "search_github" in names
+    assert "http_request" in names
+    assert "ssh_execute" in names
+    assert "batch_create" not in names
+    # 关键词也应能识别为 http 层（辅助）
+    assert "http" in resolve_tools_tier(msg) or resolve_tools_tier(msg) == "full"
+
+
 def test_scp_tools_available_for_host_file_tasks_without_saying_scp():
     """用户说解压/分析主机文件时，不应因未写 scp 而从 tools 列表拿掉 scp_pull/scp_push。"""
     tools = [
