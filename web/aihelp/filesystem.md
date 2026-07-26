@@ -89,15 +89,23 @@ AI 会话相关的文件落在你的 `web/fs` 根目录下：附件与临时会�
 |------|----------|------|
 | **聊天附件** | `chats/sessions/<session_id>/<uuid>.<ext>` | 在 AI 输入框上传的文本、图片、**PDF / Office**。元数据在表 `chat_attachments`；AI 通过 `read_chat_attachment` 读取。旧日期路径只读兼容。 |
 | **MarkItDown 缓存** | 同目录 `<原文件名>.extracted.md` | 对 kind=`document` 的 Office/PDF，服务端用 [MarkItDown](https://github.com/microsoft/markitdown) 转为 Markdown 并旁路缓存；删除原附件时一并清理。 |
-| **AI 成果物** | `reports/YYYY/MM/DD/<示意名>/<uuid>.<ext>` | AI 写入的报告/可视化等；入口文件名为成果物 UUID；同目录可有 `libs/` 等资源。旧数据可能在 `chats/sessions/<id>/…`。 |
-| **工具溢出** | `chats/…/spill/` 等 | 单条工具返回过大时，完整内容落盘，聊天里仅保留摘要哨兵；需全量时用 `read_chat_data` 分段读。 |
-| **Agent Skills** | `skills/<name>/SKILL.md` | 个人 Agent Skills（须管理员开启）；与 `scripts/`、`chats/` 并列。 |
+| **AI 成果物** | `reports/YYYY/MM/DD/<示意名>/<uuid>.<ext>` | AI 用 `create_chat_artifact` 写入；**修订用 `update_chat_artifact`**；同目录可有 `libs/` 等。旧数据可能在 `chats/sessions/<id>/…`。 |
+| **工具溢出** | `chats/…/spill/` 等 | 单条工具返回过大时落盘 spill；全量用 `read_chat_data`。 |
+| **长期 Memory** | `memory/`（hosts/topics/journal 等） | 跨会话笔记；AI 用 `memory_*` 读写；**勿存密码**。 |
+| **Agent Skills** | `skills/<name>/SKILL.md` | 个人 Agent Skills（须管理员开启）。 |
+
+### AI 常用文件工具
+
+- 文本：`fs_list` / `fs_search` / `fs_read_file` / `fs_write_file` / `fs_mkdir` / `fs_delete` / `fs_copy` / pack·unpack
+- 二进制与截断：`fs_read_binary` / `fs_write_binary` / `fs_truncate`
+- 当前会话工作区前缀：`get_chats_workspace_dir`（`chats/sessions/<session_id>/`）
+- Markdown 按章节：`markdown_list_sections` / `markdown_read_section` / `markdown_replace_section` / `markdown_search_sections`
 
 ### 使用注意
 
 - 单文件默认上限 **20 MB**，单会话附件累计约 **500 MB**（可由 `EDGEOPS_CHAT_ATTACHMENT_*` 配置）。
 - 富文档转 Markdown 可由 `EDGEOPS_MARKITDOWN_ENABLED` 关闭；输出长度受 `EDGEOPS_MARKITDOWN_MAX_OUTPUT_CHARS` 限制，超大文档可能只返回截断摘要。
-- 在「文件系统」页可浏览 `chats/` 与 `reports/`，但**不建议**手工改附件内容——优先在 AI 会话里重新上传或让 AI 用 `create_chat_artifact` 生成报告。
+- 在「文件系统」页可浏览 `chats/` 与 `reports/`，但**不建议**手工改附件内容——优先在 AI 会话里重新上传或让 AI 用 `create_chat_artifact` / `update_chat_artifact` 生成与修订报告。
 - 详细上传说明与限额见 [ai-assistant.md](ai-assistant.md) 中的「聊天附件」相关段落。
 
 ---

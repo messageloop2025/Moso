@@ -64,7 +64,7 @@ Windows 加载配置：
 
 ### 方式 C · Cursor MCP（edgeops）— 功能最全
 
-适合 Cursor 等支持 MCP 的 IDE。**47 个工具**，含直连 SSH、编排式 ops、远程文件等。
+适合 Cursor 等支持 MCP 的 IDE。**58 个工具**，含直连 SSH、编排式 ops、远程文件等。
 
 1. 确保 毛竹 已启动（**默认** MCP：`http://127.0.0.1:8010/mcp/`）
 2. 在 Cursor MCP 配置中添加：
@@ -98,7 +98,7 @@ Windows 加载配置：
 |----------|------|----------|
 | OpenClaw Gateway | **claw-ops**（v1.1+ manifest 动态注册） | baseline **43**（可随 毛竹 扩展） |
 | Hermes / curl 脚本 | **claw-skills** ops-chat | 1 条 REST |
-| Cursor / MCP 客户端 | **毛竹 MCP** | **47 工具 + 编排** |
+| Cursor / MCP 客户端 | **毛竹 MCP** | **58 工具 + 编排** |
 
 ---
 

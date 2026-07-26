@@ -158,7 +158,7 @@ stdio MCP 用 `env.EDGEOPS_ACCESS_TOKEN`；本地开发可加 `EDGEOPS_API_BASE_
 
 | [edgeops-ssh-channel](./devops/edgeops-ssh-channel/SKILL.md) | 交互式 SSH REST |
 
-| [edgeops-mcp](./devops/edgeops-mcp/SKILL.md) | Moso **内置 MCP**（**47** 工具；编排 ops、ssh_execute） |
+| [edgeops-mcp](./devops/edgeops-mcp/SKILL.md) | Moso **内置 MCP**（**58** 工具；编排 ops、ssh_execute） |
 
 
 
@@ -166,7 +166,7 @@ stdio MCP 用 `env.EDGEOPS_ACCESS_TOKEN`；本地开发可加 `EDGEOPS_API_BASE_
 
 
 
-1. **MCP（47 工具，推荐 Cursor）** — Moso 内置，默认 `http://127.0.0.1:8010/mcp/`；含编排 ops、直连 ssh_execute（见 [edgeops-mcp](./devops/edgeops-mcp/SKILL.md)）
+1. **MCP（58 工具，推荐 Cursor）** — Moso 内置，默认 `http://127.0.0.1:8010/mcp/`；含编排 ops、直连 ssh_execute（见 [edgeops-mcp](./devops/edgeops-mcp/SKILL.md)）
 
 2. **ops-chat（一条 API）** — Moso 服务端代跑 ai_skills
 

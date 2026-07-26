@@ -520,7 +520,7 @@ token 来自解锁邮件链接。
 
 ## 11.2 AI 成果物（/api/ai/artifacts）
 
-AI 通过 `create_chat_artifact` 技能写入的报告/数据包/HTML 等；落盘 `web/fs/<username>/reports/YYYY/MM/DD/<示意目录名>/<uuid>.<ext>`（同目录可有 `libs/` 等资源；与聊天附件的 `chats/` 分离）。元信息含 `fs_path`、`storage_subdir`、`entry_file`；旧数据可能仍在 `chats/sessions/…`。
+AI 通过 `create_chat_artifact` 写入、**`update_chat_artifact` 同 UUID 修订**的报告/数据包/HTML 等；落盘 `web/fs/<username>/reports/YYYY/MM/DD/<示意目录名>/<uuid>.<ext>`（同目录可有 `libs/` 等；与聊天附件的 `chats/` 分离）。元信息含 `fs_path`、`storage_subdir`、`entry_file`；旧数据可能仍在 `chats/sessions/…`。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -533,15 +533,15 @@ AI 通过 `create_chat_artifact` 技能写入的报告/数据包/HTML 等；落�
 | POST | /ai/artifacts/{uuid}/bind | 绑定到会话 |
 | DELETE | /ai/artifacts/{uuid} | 删除成果物目录 |
 
-创建仅通过 AI 技能 `create_chat_artifact`，无独立 POST 上传接口。
+创建/修订仅通过 AI 技能 `create_chat_artifact` / `update_chat_artifact`，无独立 POST 上传接口。
 
 ---
 
 ## 12. Skills（仅读）
 
-**AI 工具列表（Function Calling）**：Agent 对话时使用的工具由 `services/ai_skills.py` 的 TOOLS 定义；以下接口供前端或外部展示用。
+**AI 工具列表（Function Calling）**：Agent 对话时使用的工具由 `services/ai_skills.py` 的 **TOOLS**（当前 **267** 个）定义；完整清单见《[Skills文档](Skills文档.md)》。以下接口供前端或外部展示用。
 
-当前工具集中包含通用只读数据处理能力：`regex_process`（正则处理）、`string_process`（字符串处理）、`math_calculate`（数学/科学计算与单位换算）、`data_query`（JSON/YAML 解析、路径读取、搜索与过滤）、`markup_query`（XML/HTML 摘要、标签/选择器/文本/属性/链接搜索与提取）。这些工具通过 `/ai/chat` 的 function calling 使用，`GET /ai/skills` 会返回其摘要。
+通用数据处理：`regex_process`、`string_process`、`math_calculate`、`data_query`、`markup_query`、**`crypto_toolkit`**。另含联网搜索（`search_web` / `search_github` 等，依赖用户搜索服务配置）、Memory、Markdown 章节工具等。均通过 `/ai/chat` 的 function calling 使用；`GET /ai/skills` 返回摘要。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -1041,7 +1041,7 @@ body：`tool`（edgeops_* 名）、`arguments`（对象）
 
 场景开关含义同 §20（`chat_enabled` + `chat_scope_web/host/integration`）。**渐进式披露**（默认，`EDGEOPS_USER_SKILLS_PROGRESSIVE_DISCLOSURE=true`）：system 仅注入各 Skill 的 `name`+`description` 目录；AI 按需 `get_user_skill` / `read_user_skill_file`；`always-apply: true` 或 `disable-model-invocation: false` 时内联正文。**斜杠 Command**：`/slash_name [args]` 强制加载并替换 `{{arg}}`/`$ARGUMENTS`/`{{argN}}`；`commands/*.md` 与组织 Skill 的菜单/resolve 对齐；详情含 `hooks_json`、`command_files`。填参建议：`GET /user-skills/slash-commands` 返回 `arg_suggestions` / `usage_examples`（由 frontmatter `slash-args`、正文「斜杠参数」列表或 `/name xxx` 示例抽取，约定见《Skills文档》）。AI 工具 `save_user_skill` 可直接传 `slash_name` / `hooks_enabled` / `pre_tool_use_matcher` / `pre_tool_use_decision` / `allowed_tools` / `hooks_json`；`write_user_skill_file` 可写 `hooks.json` 与 `commands/<alias>.md`（写 hooks.json 自动开 hooks_enabled）。**Hook**：`hooks.json`（或 DB matcher + `pre_tool_use_decision`）；`ask`/`deny`/`allow`；`ask` 独立确认；**`allowed_tools` 仅斜杠唤起当轮强制**；fail-open。
 
-AI 工具：`list_user_skills`、`get_user_skill`、`read_user_skill_file`、`save_user_skill`、`delete_user_skill`、`scan_user_skills`、`export_user_skills_config`、`import_user_skills_config`（须 `skills_enabled`）。
+AI 工具：`list_user_skills`、`get_user_skill`、`read_user_skill_file`、`list_user_skill_files`、`write_user_skill_file`、`delete_user_skill_file`、`run_skill_script`、`save_user_skill`、`delete_user_skill`、`scan_user_skills`、`export_user_skills_config`、`import_user_skills_config` 及分组相关工具（须 `skills_enabled`）。
 
 相关环境变量：`EDGEOPS_USER_SKILLS_BODY_MAX_CHARS`、`EDGEOPS_USER_SKILLS_TOTAL_MAX_CHARS`、`EDGEOPS_USER_SKILLS_DESC_MAX_CHARS`、`EDGEOPS_USER_SKILLS_RESOURCE_MAX_CHARS`、`EDGEOPS_USER_SKILLS_PROGRESSIVE_DISCLOSURE`。
 

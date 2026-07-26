@@ -80,6 +80,9 @@
 
 - `local_exec`
 - `local_run_script`
+- `local_fs_*`（列表/读写/建目录/删除/重命名/截断/二进制）
+- **推荐落盘**：先 `local_chat_data_paths` 取建议目录，再 `local_chat_write_file` / `local_chat_write_binary`（写入 `local/年/月/日/…` 结构）
+- `process_*`、`create_local_console` / `close_local_console`
 
 ### 推荐步骤
 
@@ -87,6 +90,7 @@
 2. 先执行只读命令
 3. 检查输出
 4. 确认结果后再执行修改类命令
+5. 生成脚本/产物前优先 `local_chat_data_paths`，避免随意写到盘根
 
 ### 示例
 

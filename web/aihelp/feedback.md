@@ -93,10 +93,10 @@
 - 用户可对 AI 说「帮我反馈一下：xxx 功能在 xxx 情况下报错 …」——AI 调 `submit_feedback` 即可。
 - 用户可对 AI 说「我之前的反馈处理到哪了」——AI 调 `list_my_feedback`。
 - 管理员可对 AI 说：
-  - 「列一下未读的用户反馈」「按批查看，最多 10 条」——`list_user_feedback_admin(status=unread, limit=10)`
-  - 「打开第 12 条看看」——`get_user_feedback_detail(id=12)`（自动标已读）
-  - 「用一句中文回复第 12 条，告诉用户已经修复了」——`reply_user_feedback_admin(id=12, content=...)`
-  - 「忽略第 7 条」——`ignore_user_feedback_admin(id=7)`
+  - 「列一下未读的用户反馈」「按批查看，最多 10 条」——`list_user_feedback_admin(filter=unread, limit=10)`
+  - 「打开第 12 条看看」——`get_user_feedback_detail(feedback_id=12)`（管理员打开时标已读）
+  - 「用一句中文回复第 12 条，告诉用户已经修复了」——`reply_user_feedback_admin(feedback_id=12, content=...)`
+  - 「忽略第 7 条」——`ignore_user_feedback_admin(feedback_id=7)`
   - 「把所有未读的标已读」——`mark_all_user_feedback_read()`
 - 详见下一节「AI 工具」。
 
@@ -113,8 +113,8 @@
 |---|---|---|
 | `submit_feedback` | 任意登录用户 | 提交一条新反馈 |
 | `list_my_feedback` | 任意登录用户 | 列我提交的反馈 |
-| `list_user_feedback_admin` | 仅管理员 | 列全员反馈，支持按 `status` / `unread` / `limit` / `offset` 过滤分批 |
-| `get_user_feedback_detail` | 仅管理员 | 取单条反馈详情（含管理员历次回复），**自动标已读** |
+| `get_user_feedback_detail` | 登录用户 / 管理员 | 取单条详情（参数 `feedback_id`）；**普通用户仅能看自己的**；管理员打开时标已读 |
+| `list_user_feedback_admin` | 仅管理员 | 列全员反馈；**`filter`**=all/unread/open/replied/ignored；`limit`/`offset` |
 | `reply_user_feedback_admin` | 仅管理员 | 给某条反馈写 Markdown 回复，状态变 `replied` |
 | `ignore_user_feedback_admin` | 仅管理员 | 把某条反馈标为 `ignored` |
 | `mark_all_user_feedback_read` | 仅管理员 | 把当前管理员未读的反馈一次性全部标已读 |

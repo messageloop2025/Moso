@@ -33,7 +33,7 @@ Moso 是 SSH 主机运维与 AI 编排平台。外部智能体通过 **Bearer To
 
 ## 路由（与 claw-ops 一致，按优先级）
 
-1. **已配置 Moso Python MCP** → 技能 `edgeops-mcp`，**47** 个 `edgeops_*` 工具（MCP 超集）
+1. **已配置 Moso Python MCP** → 技能 `edgeops-mcp`，**58** 个 `edgeops_*` 工具（MCP 超集）
 2. **复杂编排 / 非交互远程命令** → `edgeops-ops-chat` 或 MCP `edgeops_ops_chat`（服务端 ssh_execute 等）
 3. **名词 → host_id** → `edgeops-hosts` 或 MCP `edgeops_search_hosts` / `edgeops_search_hosts_by_prompt`
 4. **sudo / vi / 多步 TTY / Ctrl+C** → `edgeops-ssh-channel` 或 MCP `edgeops_ssh_channel_*`（**简单交互优先 ssh_channel**，勿本机 shell 模拟 SSH）

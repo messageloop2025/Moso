@@ -53,10 +53,12 @@
 - **内部 AI 递归**（`delegate_to_edgeops_ai` / `delegate_sub_tasks_batch`）：当任务需要"独立上下文 / 独立身份"时——比如「把刚才那堆告警整理成一份运维周报」「让另一个 AI 审查你刚写的这段 bash 脚本」「并行分析 5 段大日志再汇总」——主 AI 会用 `delegate_to_edgeops_ai` 起**单个子 AI**，或用 **`delegate_sub_tasks_batch` 一次并发多个子 AI**（默认并行 3）。子 AI 在本机运行（同 LLM 账号 + 独立 system_prompt + 工具白名单），跑完把 Markdown 结论回传；执行期间 CoT 面板可看到 `sub_ai_step` 等进度。默认只给读类工具（含 `read_chat_data` 读 spill 大数据），硬限制递归深度=2。和 `delegate_to_cli_agent`（远端 CLI）互补。
 - **多主机生命周期联动（开发 / 发布 / 运维 / 反馈）**：毛竹 的 AI 助手是**多主机原生**的——同一个会话里你可以一句话让 AI 同时驱动 N 台机器完成一次完整的「开发 → 发布 → 运维 → 反馈」闭环。典型说法：「让 dev-01 的 cursor-agent 按 SPEC.md 实现 jwt-login；过了就去 build-02 打 docker tag v2.3.0，把镜像推到 prod-03 热更新；等 5 秒让 monitor-04 拉 P99；最后让子 AI 写一份中文周报发 oncall@co.com」。AI 会：(1) 依次对涉及主机做能力画像；(2) 组装一条 `delegate_chain`（每步带 `host_id`，用 `when=on_success/on_failure` 做条件、`{prev_stdout}` / `{prev_stderr}` 喂数据），**整条链一次性弹按钮让你确认**（卡片标出每步在哪台机）；(3) 按台流式推进度；(4) 跑完顺势用 `delegate_to_edgeops_ai` 起子 AI 写 Markdown 报告，再 `send_email` 送 oncall；(5) 满意了对 AI 说「存成 `release-v2` 模板，branch/build_tag 变成 `${var}`」，以后一句 `run_workflow_template` 就能复现。跨机中继用 `transfer_file_between_hosts` / `relay_file_between_hosts` 直接机对机不绕本地。整条链丢给定时任务也行——task scope 视为已授权，凌晨无人值守一样跑。完整样例见 `docs/AI-Delegation-Cookbook.md` 的「★ 旗舰示例：开发 / 发布 / 运维 / 反馈 生命周期」。
 - 查阅操作帮助：用户问「如何操作」「帮助」时，AI 会读取 web/aihelp 下的帮助文档（如本目录）后回答。
-- **用户反馈与登录留言板**：登录后用户在侧边栏「反馈」菜单可向管理员提交 Markdown 反馈，AI 也能用 `submit_feedback` 代为提交、`list_my_feedback` 帮你查看进度。管理员侧通过 `list_user_feedback_admin`（支持 `status` / `unread` 过滤、`limit` / `offset` **分批查看**）、`get_user_feedback_detail`（查看单条**并自动标已读**）、`reply_user_feedback_admin`（写 Markdown 回复）、`ignore_user_feedback_admin`（忽略）、`mark_all_user_feedback_read`（一键标已读所有未读）等工具进行管理。登录页右下角的**匿名留言板**目前**没有**专用 AI 工具，管理员需直接在 `/feedback/admin/login-board` 后台审核 / 公开 / 回复 / 删除。管理员可在「系统设置 → 反馈邮件通知」开启**新反馈邮件通知**（默认关闭，开启后用全局 SMTP 推给所有绑定邮箱的管理员，带 30 秒去抖防刷屏）。详见 [feedback.md](feedback.md)。
+- **用户反馈与登录留言板**：登录后用户在侧边栏「反馈」菜单可向管理员提交 Markdown 反馈，AI 也能用 `submit_feedback` 代为提交、`list_my_feedback` / `get_user_feedback_detail` 查看进度。管理员侧通过 `list_user_feedback_admin`（**`filter`**=all/unread/open/replied/ignored，`limit`/`offset`）、`get_user_feedback_detail`（管理员打开时标已读）、`reply_user_feedback_admin`、`ignore_user_feedback_admin`、`mark_all_user_feedback_read` 管理。登录页**匿名留言板**无专用 AI 工具。详见 [feedback.md](feedback.md)。
+- **联网搜索**：在「系统设置 → 搜索服务」配置后，AI 可用 `search_web`（网页）、`search_github`（开源仓库/代码）检索；需要把仓库拉到主机时用 `git_clone_on_host`。优先用这些工具，不必默认改走主机 curl。
+- **长期 Memory**：跨会话可记路径/习惯等到 `memory/`（`memory_search` / `memory_write` 等）；**不要**把密码写进 Memory。
 - **可点击的选择题**：AI 在需要你确认、选择或做二次风险确认时，会直接在聊天里渲染**一排按钮**（如 ABCD 多选、是/否同意、确认/取消、危险动作红色按钮）；你可以**直接点击**答复，也可以继续在输入框里用文字补充说明。点击和文字两种方式都能被 AI 理解。OpenClaw/API 集成通道与定时/触发任务没有按钮 UI，AI 会改用纯文本列出选项让你回复。**选择卡会持久展示**：后端把 `ask_user_choice` 的动作以哨兵注释嵌入 assistant 消息落库，切换会话 / 刷新页面后仍可还原；前端还额外对"最后一条 assistant"做了 localStorage 兜底，避免"闪一下就消失"。
 - **聊天中直接上传附件**：输入框 📎 支持多文件（粘贴/拖拽），含文本、图片与 **Office/PDF**；限额、落盘路径、MarkItDown 与排障见下文 **[聊天附件与富文档（Office / PDF）](#聊天附件与富文档office--pdf)**；流式排版见 **[流式分块渲染](#流式分块渲染)**。
-- **AI 生成数据 / 报告 / 可视化成果物（artifacts）**：当你让 AI「导出一份表格」「生成一份 HTML 报告」「把某段日志整理成 csv 下载」时，AI 会调用 `create_chat_artifact` 把结果写入你的 `web/fs/<你>/reports/YYYY/MM/DD/<示意目录名>/<uuid>.<扩展名>`（同目录可有 `libs/`、`images/` 等资源；与聊天附件的 `chats/` 分离）。支持两种形态：**单文件**（`.csv / .md / .txt / .json / .html / .svg` 等）和 **bundle**（多文件组合，下载时服务端流式打包为 `.tgz`）。写入后 AI 在回复里以 `[标题](artifact:UUID)` 形式插入一个链接，前端自动把它增强为一张**下载卡片**（显示标题、文件数、总大小、入口文件），带「下载」按钮和「预览」按钮。
+- **AI 生成数据 / 报告 / 可视化成果物（artifacts）**：当你让 AI「导出一份表格」「生成一份 HTML 报告」「把某段日志整理成 csv 下载」时，AI 会调用 `create_chat_artifact` 把结果写入你的 `web/fs/<你>/reports/YYYY/MM/DD/<示意目录名>/<uuid>.<扩展名>`（同目录可有 `libs/`、`images/` 等；与 `chats/` 分离）。**同一份报告要改内容时用 `update_chat_artifact`（同 UUID），不要整份 recreate。** 支持单文件与 **bundle**（下载为 `.tgz`）。写入后回复里出现 `[标题](artifact:UUID)`，前端增强为下载/预览卡片。
 - **成果物站内模态预览**：点卡片上的"预览"按钮会在当前网页弹出模态窗（iframe 不跳转新窗口），按文件类型做对应渲染：
   - `.html / .htm` → iframe `srcdoc` 沙箱渲染（bundle 内部 `src=` / `href=` 相对资源会自动重写为带 token 的 artifact file URL）；
   - `.md / .markdown` → 使用聊天同款 Markdown 渲染器；
@@ -154,8 +156,10 @@ AI 也内置了一组轻量数据处理工具，适合在聊天中快速处理�
 - **数学与科学计算**：`math_calculate` 可安全计算常见数学表达式、数组统计、长度/质量/力/时间/温度等基本单位换算。
 - **JSON/YAML 分析**：`data_query` 可解析 JSON/YAML，做结构摘要、按路径读取、递归搜索 key/value、简单列表过滤。
 - **XML/HTML 分析**：`markup_query` 可解析 XML/HTML，做结构摘要、按标签或选择器查找、搜索文本、提取属性、链接和图片地址。
+- **密码学与证书**：`crypto_toolkit` 可做哈希、编解码、对称/非对称运算与证书解析等（**不是**整文件加密落盘）。
+- **Markdown 章节**：`markdown_list_sections` / `markdown_read_section` / `markdown_replace_section` / `markdown_search_sections` 可按标题树精读或改某一节（工作区 / 帮助 / Skill）。
 
-这些工具都是**只读处理**：它们不会直接修改文件或数据库。若需要把处理结果写回文件、批量替换或删除数据，应先按上一节的备份/确认策略执行。
+这些工具（除 Markdown 替换外）多为**只读处理**：不会直接改数据库。写回文件或批量删除前，仍按上一节备份/确认策略执行。
 
 ---
 
@@ -165,7 +169,7 @@ AI 也内置了一组轻量数据处理工具，适合在聊天中快速处理�
 - **编辑方式**：在聊天栏点击「会话提示词」打开弹窗，可直接编辑；内容**建议使用 Markdown 格式**（如 `## 小标题`、`- 列表`、`` `代码` ``），便于阅读。
 - **预览**：弹窗内提供「编辑」与「预览」切换，预览时按 Markdown 渲染显示，方便查看效果。
 - **由 AI 总结**：可点击「由 AI 总结（替换）」或「由 AI 总结（追加）」：系统会根据**最近对话中的用户要求与助手指令**（不含程序输出与日志）归纳出一段会话级提示词，并覆盖或追加到当前会话。总结过程中可随时关闭窗口，完成后会自动保存。
-- **通过对话更新**：用户可以说「把上述要求记到会话里」「更新会话提示词」等，AI 会调用 update_session_prompt 写入或追加内容；内容只应归纳用户要求与执行意图，不包含终端输出或日志原文。
+- **通过对话更新**：用户可以说「把上述要求记到会话里」「更新会话提示词」等，AI 会调用 `update_session_prompt` 写入或追加；需要核对现有内容时可用 `get_session_prompt`。内容只应归纳用户要求与执行意图，不包含终端输出或日志原文。
 
 ---
 
@@ -399,7 +403,7 @@ Docker 镜像需安装 `libmagic1` 与 Python 包 `markitdown`；依赖变更后
 - **清空聊天记录**：工具栏「清空聊天」会删除当前会话全部消息；若需「只保留最近 N 条、删除更早的消息」，可在对话中直接说明（例如「清空聊天记录，但保留最后 10 条」），由 AI 代为操作。
 - **活动主机**（主机详情页）：左侧可显示最近打开过的主机，点击快速切换；关闭某活动主机会清理该页缓存，下次从列表再打开为全新页面。
 - **图形化输出**：聊天中支持网络关系图、流程图、思维导图和图表等结构化输出，并可另存为图片；若要表达拓扑、流程或依赖关系，建议直接要求 AI 用图形化方式展示。
-- **管理你的成果物**：所有 AI 生成的 artifact 都会同时出现在侧边栏「文件系统」→ `reports/<年>/<月>/<日>/<示意名>/` 目录下，可直接在文件面板里浏览、重命名、删除；也可通过 REST 接口 `GET /api/ai/artifacts?session_id=...` 列出当前会话的 artifact，`DELETE /api/ai/artifacts/{uuid}` 删除（同步删除磁盘目录）。旧数据可能仍在 `chats/sessions/…`。AI 在对话中也能用 `list_chat_artifacts` / `read_chat_artifact_file` 回头引用自己之前的成果物做进一步加工。
+- **管理你的成果物**：所有 AI 生成的 artifact 都会同时出现在侧边栏「文件系统」→ `reports/<年>/<月>/<日>/<示意名>/` 目录下，可直接在文件面板里浏览、重命名、删除；也可通过 REST `GET /api/ai/artifacts?session_id=...` 列出、`DELETE /api/ai/artifacts/{uuid}` 删除。旧数据可能仍在 `chats/sessions/…`。对话中可用 `list_chat_artifacts` / `read_chat_artifact_file` / **`update_chat_artifact`** 引用或修订。
 
 ---
 

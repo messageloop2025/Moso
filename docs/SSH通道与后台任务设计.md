@@ -118,14 +118,18 @@
 
 ### 6.1 SSH Channel 相关
 
+完整参数以《[Skills文档](Skills文档.md)》§16 为准。
+
 - **ssh_channel_create**：创建 TTY SSH 通道；参数 host_id, input_timeout?, output_timeout?, idle_close_seconds?；返回 channel_id 及基本信息（主机 IP、主机名、类型、版本、BASH、是否存在）。
 - **ssh_channel_list**：列出当前会话/任务下自己创建的通道及基本信息。
+- **ssh_channel_info**：获取通道详情（主机信息、当前行号范围、缓冲行数等）；参数 channel_id。
+- **ssh_channel_get_status**：轻量查询通/断（connected）与闲/忙（buffer_idle）；**仅 connected=false 时禁止 ssh_channel_send**。
 - **ssh_channel_send**：向通道发送内容（支持控制字符）；参数 channel_id, content。
-- **ssh_channel_read_lines**：按行读；参数 channel_id, from_line?, to_line?, last_n?, since_line?；返回行列表（含行号、是否软换行）。
+- **ssh_channel_read_lines**：按行读；参数 channel_id, from_line?, to_line?, last_n?, since_line?；可选 wait_seconds / until_contains；返回行列表及 tail_text / pending_partial。
 - **ssh_channel_read_length**：读指定字符数；参数 channel_id, max_chars?。
 - **ssh_channel_has_new**：查询是否有新输出；参数 channel_id；返回 has_new, latest_line_no。
-- **ssh_channel_close**：关闭通道；参数 channel_id。
-- **ssh_channel_info**：获取通道详情（主机信息、当前行号范围、缓冲行数等）；参数 channel_id。
+- **ssh_channel_close** / **ssh_channel_close_batch**：关闭单通道或按 owner/session 批量关闭。
+- **ssh_channel_dump_output**：导出通道缓冲到 spill。
 
 ### 6.2 触发任务相关（供定时任务 AI 等调用）
 

@@ -25,6 +25,8 @@
 | delegate_sub_tasks_batch | **内部子 AI 批量并发**：一次 1–8 个子任务，`max_parallel` 默认 3（上限 5）。适合 Map-Reduce 大数据分析。SSE 推送 `sub_ai_batch_start` / `sub_ai_step` / `sub_ai_batch_end`。返回 `{total, succeeded, failed, results[{name, final_text, ...}]}` | tasks[], shared_system_prompt?, default_allowed_tools?, max_parallel?, max_steps?, timeout_sec? |
 | ssh_execute | 在指定主机上执行 SSH 命令；长任务可用 detach 后台写日志，再用 poll_log 读尾部 | host_id, command?, timeout?, detach?, poll_log?, log_path?, tail_lines? |
 | send_to_terminal | 向当前用户 SSH 终端注入输入（命令、控制键等）；**勿用于发送密码明文**——凭证库开启时用 send_service_password | text, slot? |
+| terminal_send_and_read | 向控制台发命令并等待/读取输出（弱网推荐，一次完成发送+读缓冲） | text, slot?, wait_seconds?, until_contains?, max_lines? |
+| get_terminal_status | 查询 AI 控制台通断（connected）与闲/忙（buffer_idle / session_state）；**仅 connected=false 时禁止 send_to_terminal** | slot?, host_id?, include_last_lines? |
 | connect_terminal | 请求前端自动连接指定主机终端 | host_id |
 | list_terminals | 查询当前 AI 助手页所有控制台列表（slot、host_id、created_by、connected） | — |
 | create_console | 在 AI 助手页动态创建新控制台并连接指定主机（多机协同） | host_id |
@@ -184,13 +186,29 @@
 | http_download | HTTP/HTTPS 下载到 web/fs；**默认不限制体积**；`chunked`/`chunk_size` 启用 Range 分块并自动合并 | url, local_path, headers?, chunked?, chunk_size?, chunk_index?, merge_chunks?, max_bytes?(0=不限) |
 | http_download_merge | 合并 `local_path.part000000` … 为最终文件 | local_path, part_paths?, delete_parts? |
 | http_upload | 从 web/fs 流式上传到 URL；**默认不限制体积** | url, local_path, method?, headers?, multipart?, max_bytes?(0=不限) |
+| git_clone_on_host | 在指定主机上 `git clone` 仓库到目标目录（需主机已装 git）；建议先 `search_github` 取 clone_url | host_id, repo_url, target_dir?, depth?, branch? |
 
 MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_upload`。默认禁止内网 SSRF；明文 HTTP 需 `EDGEOPS_HTTP_TOOL_ALLOW_INSECURE=true`。
+
+### 7.0.1 联网搜索（GitHub / 阿里云 IQS）
+
+须在「系统设置 → 搜索服务」为当前用户配置并启用。查网页/开源项目时**优先**用下列工具，勿默认改走主机 `ssh_execute`+`curl`。
+
+| 名称 | 说明 | 主要参数 |
+|------|------|----------|
+| list_search_providers | 列出可用搜索服务及当前用户配置状态（是否需 Key、是否已配置/启用）；不回显密钥 | — |
+| configure_search_provider | 配置某搜索服务的 API Key / 启用开关（密钥加密存储；勿编造 Key） | provider, api_key?, enabled?, extra? |
+| search_github | GitHub 官方 API 搜仓库/代码/Issue/用户；无 PAT 亦可（匿名限速）；支持高级语法如 `language:python stars:>1000` | query, type?, limit?, sort?, order? |
+| search_web | 通用网页搜索（阿里云 IQS UnifiedSearch）；须已配置个人 IQS Key | query, engine_type?, time_range?, limit?, with_main_text?, with_markdown?, with_summary? |
 
 | fs_list | 列出 **web/fs/当前用户名** 下某目录的文件与子目录（作用范围 per-user） | path? |
 | fs_search | 在用户工作区内搜索文件；**各条件可选**，可单独或组合（AND）；**每项含 id** 供后续引用 | path?、name_regex?、path_regex?、extensions?、min_bytes?、max_bytes?、min_mtime?、max_mtime?、modified_after?、modified_before?、recursive?、files_only?、limit? |
 | fs_read_file | 读取 **web/fs/当前用户名** 下文本文件内容 | path |
 | fs_write_file | 向 **web/fs/当前用户名** 写入文本文件 | path, content |
+| fs_read_binary | 读取工作区二进制文件（base64/hex）；支持 offset/size | path, offset?, size?, encoding? |
+| fs_write_binary | 写入工作区二进制（base64/hex）；session_managed 规则同 fs_write_file | path, content, offset?, truncate?, encoding?, session_managed? |
+| fs_truncate | 将工作区文件截断或扩展到指定字节大小 | path, size? |
+| get_chats_workspace_dir | 返回当前会话工作区前缀 `chats/sessions/<session_id>/`（附件/spill/默认落盘）；报告请用 `create_chat_artifact` | — |
 | fs_mkdir | 在 **web/fs/当前用户名** 中创建目录 | path |
 | fs_pack_tgz | 将 **web/fs/当前用户名** 下某目录打包为 .tgz | path |
 | fs_unpack_tgz | 解压 **web/fs/当前用户名** 下的 .tgz 文件 | path, dest? |
@@ -204,11 +222,13 @@ MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_up
 | 名称 | 说明 | 主要参数 |
 |------|------|----------|
 | read_chat_attachment | 读取聊天附件：**text/markdown** 返回 `content`；**image** 默认返回已缓存 `ai_description` 或 `data_url`（`force_reload` 强制原图）；**document**（及可识别的 Office/PDF）返回 MarkItDown 转换后的 Markdown（`converted_from_markitdown: true`） | uuid, max_chars?, as_data_url?, prefer_description?, force_reload? |
+| edit_chat_attachment_image | 对聊天图片附件做标注/裁剪/旋转等，保存为**新附件**（不覆盖原图） | uuid, output_name?, rotate?, crop?, scale?, annotations?, … |
 | save_image_description | 将图片识别结果写回附件行，后续轮次优先复用描述 | uuid, description |
 | list_chat_attachments | 列出当前用户已上传附件（可按 session_id 过滤） | session_id? |
 | read_chat_data | 读取工具大结果溢出文件（`[[EDGEOPS_CHAT_DATA ref=… subdir=…]]` 哨兵对应 `chats/<subdir>/spill/<ref>.data`） | spill_id, date_subdir, mode?, head_chars?, tail_chars?, range_start?, max_chars? |
 | create_chat_artifact | 写入 AI 成果物到 `reports/年/月/日/<示意名>/<uuid>.<ext>`（及 libs 等）；返回 `markdown_link`、`fs_path` | title, files[{path, content, encoding?}], entry_file?, description?, libs? |
-| list_chat_artifacts | 列出当前用户/会话的成果物（含 `fs_path` / `storage_subdir` / `markdown_link`） | session_id?, limit? |
+| update_chat_artifact | **在原成果物上修订**（同一 UUID，禁止整份 recreate）；可改 files / 补 libs | uuid, files?, libs?, libs_subdir?, title?, description?, entry_file? |
+| list_chat_artifacts | 列出当前用户/会话的成果物（含 `fs_path` / `storage_subdir` / `markdown_link`）；聊天 Agent 省略 session_id 时默认当前会话 | session_id?, limit? |
 | read_chat_artifact_file | 读回成果物内某文本文件 | uuid, path |
 
 ---
@@ -240,12 +260,16 @@ MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_up
 | local_fs_list | 列出本机目录。path 为空或 `/` 时：Windows 返回所有可用驱动器（C:、D: 等），Linux 返回根目录 `/`；全系统模式下可传绝对路径 | path? |
 | local_fs_read | 读取本机文本文件 | path |
 | local_fs_write | 向本机文件写入文本（覆盖） | path, content |
+| local_fs_write_file | 向本机文件写入文本（UTF-8；与 local_fs_write 同类） | path, content |
 | local_fs_mkdir | 在本机创建目录 | path |
 | local_fs_delete | 删除本机文件或空目录 | path |
 | local_fs_rename | 重命名本机文件或目录 | path, new_name |
 | local_fs_truncate | 将本机文件截断为指定字节长度 | path, length |
 | local_fs_read_binary | 读取本机二进制文件（返回 base64） | path |
 | local_fs_write_binary | 向本机写入二进制内容（base64） | path, content_base64 |
+| local_chat_data_paths | 返回本机管理推荐落盘目录（web/fs 下 `local/年/月/日/…`）与建议 cwd；生成脚本前宜先调 | preview_subdir? |
+| local_chat_write_file | 文本写入本机推荐结构 `local/YYYY/MM/DD/…/<uuid>-名.ext` | path, content |
+| local_chat_write_binary | 二进制写入本机推荐结构（base64/hex） | path, content, offset?, truncate?, encoding? |
 | process_start | 启动子进程，返回 pid | command, cwd?, env? |
 | process_terminate | 终止托管进程 | pid |
 | process_wait | 等待进程结束 | pid, timeout? |
@@ -286,6 +310,31 @@ MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_up
 | math_calculate | 安全数学/科学计算：表达式 eval（仅 math 常用函数与常量）、stats 数组统计、unit_convert 常见长度/质量/力/时间/温度换算 | operation, expression?, numbers?, value?, from_unit?, to_unit? |
 | data_query | JSON/YAML 数据搜索与分析：parse、summary、get_path（如 `items[0].name`）、search（key/value 递归搜索）、filter_list（简单列表过滤） | operation, data, format?, path?, query?, regex?, key?, op?, value?, max_results? |
 | markup_query | XML/HTML 搜索与提取：summary、find_tags、select（HTML CSS 选择器 / XML 简单路径）、search_text、get_text、extract_attrs、extract_links | operation, data, format?, tag?, selector?, query?, regex?, attrs?, max_results? |
+| crypto_toolkit | 密码与证书工具：哈希（MD5/SHA*）、编解码、AES/DES、RSA/ECC 签验、证书生成/解析/校验等（非文件加密） | operation, text?/hex?/data?, algorithm?, key?, … |
+
+### 10.6 Markdown 章节读写
+
+对工作区 / 帮助文档 / Skill 内的 Markdown 做章节级列表、精读、替换与搜索（`file_root=fs|aihelp|skill`）。
+
+| 名称 | 说明 | 主要参数 |
+|------|------|----------|
+| markdown_list_sections | 列出 Markdown 标题树（可限层级） | file_root?, path, skill_name?, max_level?, include_preamble? |
+| markdown_read_section | 按 section_path / section_index / heading 读一节 | file_root?, path, skill_name?, section_path?, section_index?, heading?, max_chars?, include_children? |
+| markdown_replace_section | 替换某节正文或整节并写回文件 | file_root?, path, skill_name?, section_path?/heading?, new_content, mode? |
+| markdown_search_sections | 按关键词搜章节（titles/content/all）；fs 下 path 可为目录（如 `memory`） | query, file_root?, path?, skill_name?, scope?, regex?, max_hits? |
+
+### 10.7 长期 Memory（`web/fs/<用户>/memory/`）
+
+跨会话可展示的路径/环境/习惯笔记；**禁止**写入密码/密钥。读用 search/list/read；写后默认可重建 INDEX。
+
+| 名称 | 说明 | 主要参数 |
+|------|------|----------|
+| memory_ensure | 确保 Memory 目录与 GUIDE.md / INDEX.md 存在 | — |
+| memory_list | 列出 Memory 条目（path/title/summary/host_id/tags） | kind? |
+| memory_search | 多文件搜索 Markdown 章节；命中后可用 memory_read 精读 | query, scope?, regex?, max_hits?, kind?, host_id? |
+| memory_read | 读全文或按章节精读；可用 path 或 host_id | path?, host_id?, host_name?, section_path?, heading?, max_chars? |
+| memory_write | 写入/更新 Memory（host_id 默认写 hosts/；状态变化时更新） | content, path?, kind?, title?, summary?, host_id?, host_name?, tags?, append?, rebuild_index? |
+| memory_rebuild_index | 扫描 md 重建 `memory/INDEX.md` | — |
 
 ---
 
@@ -314,6 +363,7 @@ MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_up
 | update_ai_session | 更新会话标题、低交互开关或聊天模式 `chat_mode`（`qa`/`strict`/`normal`） | session_id, title?, low_interaction_mode?, chat_mode? |
 | delete_ai_session | 删除会话及其消息 | session_id |
 | clear_ai_sessions | 清空当前用户所有 AI 会话 | — |
+| get_session_prompt | 读取指定会话的会话级提示词全文；已注入「会话级约束」时可不必重复调用 | session_id |
 | update_session_prompt | 更新或追加当前会话的会话级提示词（供「把上述要求记到会话里」等场景）。content 建议使用 Markdown 格式（## 标题、- 列表、\`代码\`）便于查看 | session_id, content, append? |
 | get_session_operations | 获取当前会话的「操作序列」：仅用户要求与助手指令，不含程序输出与工具轨迹。用于生成会话提示词或归纳最佳实践/经验时参考 | session_id, limit? |
 | get_session_chat_detail | 获取当前会话聊天详情。include_tool_results=false 时同 get_session_operations；true 时含可读正文与解码后的 tool_trace（工具名/参数/结果预览），供自查「怎么查到的」或分析报错 | session_id, include_tool_results?, limit? |
@@ -384,6 +434,10 @@ MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_up
 | assign_user_skills_to_group | 批量移入分组 | group_id/group_name, skill_names?/skill_ids?, all_ungrouped? |
 | get_user_skill | 按需加载 SKILL.md 正文（含 resources 列表） | name 或 skill_id |
 | read_user_skill_file | 读取 reference.md 等附属文件 | name, path |
+| list_user_skill_files | 列出 Skill 目录 `skills/<name>/` 下全部文件（含 SKILL.md、scripts/ 等） | name |
+| write_user_skill_file | 写入/追加附属文件（reference.md、hooks.json、commands/*.md、scripts/*）；**禁止**写 SKILL.md（须 save_user_skill） | name, path, content, append? |
+| delete_user_skill_file | 删除单个附属文件；**禁止**删 SKILL.md（须 delete_user_skill） | name, path |
+| run_skill_script | 在该 Skill 的 `scripts/` 内执行脚本（仅该目录、超时、清代理环境） | skill_name, script, args?, timeout_sec? |
 | save_user_skill | 按 name upsert；可设 slash/Hook/`allowed_tools`/`hooks_json`/分组 | name, content?/body?, description?, slash_name?, hooks_enabled?, pre_tool_use_matcher?, pre_tool_use_decision?, allowed_tools?, hooks_json?, chat_scope_*?, group_name? |
 | delete_user_skill | 删除 | name 或 skill_id, remove_files? |
 | scan_user_skills | 扫描磁盘与库**双向同步**：导入/更新 SKILL.md 元数据；磁盘已删除或改名的 Skill 从库移除（改名=删旧行+新增行，分组/启停不继承） | — |
@@ -509,6 +563,7 @@ write_user_skill_file(
 | ssh_channel_create | 创建属于当前会话或指定任务的 SSH TTY 通道 | host_id, owner_type?, owner_id?, input_timeout_sec?, output_timeout_sec?, idle_close_sec? |
 | ssh_channel_list | 列出 SSH 通道；`all_open=true` 列全部 open | owner_type?, owner_id?, all_open? |
 | ssh_channel_info | 获取指定通道详情（主机信息、行号范围） | channel_id |
+| ssh_channel_get_status | 轻量查询通道通/断（connected）与闲/忙（buffer_idle）；**仅 connected=false 时禁止 ssh_channel_send** | channel_id, include_tail_lines? |
 | ssh_channel_send | 向通道发送内容（含控制字符） | channel_id, content |
 | ssh_channel_read_lines | 按行读；返回 **tail_text**、**pending_partial**（password 等无换行提示）。无 until：可选 **wait_seconds=0～30**（batch 末短等待；0/省略=立即）。有 **`until_contains`**：工具内轮询至子串或超时（`wait_seconds` 为超时，默认 30）；结果含 `until_wait_reason`；不再二次 batch sleep | channel_id, from_line?/to_line?/last_n?/since_line?, wait_seconds?, until_contains? |
 | ssh_channel_read_length | 按字符数读取通道输出（最近 max_chars 字符）；可选 wait_seconds / until_contains（同 read_lines） | channel_id, max_chars?, wait_seconds?, until_contains? |
@@ -554,6 +609,18 @@ write_user_skill_file(
 | update_user_mail_settings | 更新个人 SMTP 与启用开关；不完整配置时不可开启发信 | mail_enabled?, smtp_host?, smtp_port?, smtp_user?, smtp_password?, smtp_from?, smtp_use_tls?, smtp_use_ssl? |
 | send_email | 使用**已启用的个人 SMTP**发送纯文本邮件 | to（逗号分隔）、subject、body |
 
+### 用户反馈
+
+| 名称 | 说明 | 主要参数 |
+|------|------|----------|
+| submit_feedback | 代当前用户向管理员提交技术反馈/建议（Markdown）；调用前宜先与用户确认内容 | content, title?, category?(bug/feature/tech/general) |
+| list_my_feedback | 列出当前用户自己提交的反馈（含状态与管理员回复链） | limit? |
+| get_user_feedback_detail | 查看一条反馈详情（含全部回复）；管理员可看任意条并顺带标已读；普通用户仅能看自己的 | feedback_id |
+| list_user_feedback_admin | **管理员**列出反馈；filter=all/unread/open/replied/ignored；含 unread_total | filter?, limit?, offset? |
+| reply_user_feedback_admin | **管理员**回复（Markdown）；状态变为 replied | feedback_id, content |
+| ignore_user_feedback_admin | **管理员**忽略一条反馈（状态 ignored） | feedback_id |
+| mark_all_user_feedback_read | **管理员**将全部未读反馈标为已读 | — |
+
 ---
 
 ## Skills 与 Web API 覆盖说明
@@ -568,20 +635,24 @@ write_user_skill_file(
 | 凭证 | /credentials CRUD、generate-key | list_credentials、get_credential_detail、create_credential、update_credential、delete_credential、cleanup_orphan_credentials、generate_key |
 | 维护历史 | /maintenance-history CRUD | list_maintenance_history、get_maintenance_item、create_maintenance、update_maintenance、delete_maintenance |
 | 最佳实践 | /best-practices CRUD、categories | get_best_practices、add_best_practice、update_best_practice、delete_best_practice |
-| 本地文件系统 | /fs list/search/read/write/mkdir/upload/download/pack-tgz/unpack-tgz/delete/copy | fs_list、**fs_search**、fs_read_file、fs_write_file、fs_mkdir、fs_pack_tgz、fs_unpack_tgz、**fs_delete**、**fs_copy**（上传为二进制可经 fs_write_file 写文本或由用户界面操作） |
+| 本地文件系统 | /fs list/search/read/write/mkdir/upload/download/pack-tgz/unpack-tgz/delete/copy | fs_list、**fs_search**、fs_read_file、fs_write_file、fs_read_binary、fs_write_binary、fs_truncate、get_chats_workspace_dir、fs_mkdir、fs_pack_tgz、fs_unpack_tgz、**fs_delete**、**fs_copy** |
 | 远程文件系统 | /remote-fs list/read/download/mkdir/upload/write/delete/rename/copy | **scp_push** 对应写/上传内容；列目录、读文件、删除/重命名/复制等可由 **ssh_execute** 执行相应命令实现，无独立 remote_fs_* 工具 |
-| 终端 | /terminal buffer/list/send、控制台创建/关闭 | get_terminal_buffer、send_to_terminal、list_terminals、create_console、close_console、connect_terminal |
+| 终端 | /terminal buffer/list/send、控制台创建/关闭 | get_terminal_buffer、send_to_terminal、terminal_send_and_read、get_terminal_status、list_terminals、create_console、close_console、connect_terminal |
+| 联网搜索 | 系统设置 → 搜索服务 | list_search_providers、configure_search_provider、search_web、search_github、git_clone_on_host |
 | 批量操作 | /batch POST/GET/cancel/retry/clear/export | batch_create、list_batch_operations、get_batch_detail、batch_cancel、batch_retry、**clear_batches** |
-| 本机管理 | /local fs/list\|read\|write\|mkdir、execute、run-script、sessions、ws、buffer | **local_exec**、**local_run_script**、**create_local_console**、**close_local_console**、**local_fs_list/read/write/mkdir/delete/rename/truncate/read_binary/write_binary**、**process_start/terminate/wait/stdin_write/stdin_close/stdout_read/stderr_read/process_list**（仅管理员） |
-| AI 助手 | /ai config/sessions/chat、prompt、summarize-title、profiles | get_ai_config、update_ai_config、**list/create/update/activate_ai_model_profile**、list_ai_sessions、get_ai_session、create_ai_session、update_ai_session、delete_ai_session、clear_ai_sessions、**update_session_prompt**、**get_session_operations**、**get_session_chat_detail** |
-| 聊天附件 | /ai/attachments POST/GET/DELETE、bind | read_chat_attachment、save_image_description、list_chat_attachments |
-| AI 成果物 | /ai/artifacts GET/download/file、bind、DELETE | create_chat_artifact、list_chat_artifacts、read_chat_artifact_file |
+| 本机管理 | /local fs/list\|read\|write\|mkdir、execute、run-script、sessions、ws、buffer | **local_exec**、**local_run_script**、**create_local_console**、**close_local_console**、**local_fs_***、**local_chat_***、**process_***（仅管理员） |
+| AI 助手 | /ai config/sessions/chat、prompt、summarize-title、profiles | get_ai_config、update_ai_config、**list/create/update/activate_ai_model_profile**、list_ai_sessions、get_ai_session、create_ai_session、update_ai_session、delete_ai_session、clear_ai_sessions、**get/update_session_prompt**、**get_session_operations**、**get_session_chat_detail**、ensure_chat_tools |
+| 聊天附件 | /ai/attachments POST/GET/DELETE、bind | read_chat_attachment、edit_chat_attachment_image、save_image_description、list_chat_attachments |
+| AI 成果物 | /ai/artifacts GET/download/file、bind、DELETE | create_chat_artifact、update_chat_artifact、list_chat_artifacts、read_chat_artifact_file |
+| Memory | web/fs/&lt;用户&gt;/memory/ | memory_ensure/list/search/read/write/rebuild_index |
+| Markdown | 章节读写（fs/aihelp/skill） | markdown_list/read/replace/search_sections |
+| 用户反馈 | /api/user-feedback | submit_feedback、list_my_feedback、get_user_feedback_detail；管理员：list/reply/ignore/mark_all_* |
 | 系统设置与日志 | /settings、/logs、/logs/export、/logs/clear | get_settings、update_setting、list_logs、**clear_logs** |
 | 操作帮助文档 | web/aihelp（index、各 .md） | get_aihelp_index、list_aihelp_files、get_aihelp_file、write_aihelp_file、update_aihelp_index |
 | Skills 表 | /skills GET | list_prompt_skills、get_prompt_skill |
 | 个人 MCP | /api/user-mcp-servers CRUD、import、export、test、refresh-tools | list/configure/import/export/test/refresh/delete_user_mcp_* |
-| 个人 Agent Skills | /api/user-skills（须 skills_enabled） | list/get/save/delete/scan_user_skills |
-| SSH Channel | /api/ssh-channel REST + WS；Web「SSH通道管理」只读 Tab | ssh_channel_create/list/info/send/read_lines/read_length/has_new/close/close_batch/dump_output |
+| 个人 Agent Skills | /api/user-skills（须 skills_enabled） | list/get/save/delete/scan_user_skills、list/write/delete_user_skill_file、run_skill_script、分组工具 |
+| SSH Channel | /api/ssh-channel REST + WS；Web「SSH通道管理」只读 Tab | ssh_channel_create/list/info/get_status/send/read_lines/read_length/has_new/close/close_batch/dump_output |
 | 触发任务 | /api/triggered-tasks CRUD、exposed、trigger、runs、runs/{run_id}/messages | triggered_task_list、triggered_task_list_exposed、triggered_task_status、triggered_task_get、triggered_task_create、triggered_task_update、triggered_task_delete、triggered_task_trigger、triggered_task_current_run_history |
 | 定时任务 | /api/scheduled-tasks CRUD、runs、run-now、triggered-list、runs/{run_id}/messages | scheduled_task_list、scheduled_task_status、scheduled_task_get、scheduled_task_create、scheduled_task_update、scheduled_task_delete、scheduled_task_current_run_history、scheduled_task_run_now |
 | 用户发信 | /api/user-mail-config GET/PUT | get_user_mail_settings、update_user_mail_settings、send_email（另：send_bind_email_code / verify_bind_email / unbind_email 为账户邮箱绑定，走**系统**SMTP） |
@@ -607,7 +678,7 @@ write_user_skill_file(
 |------|------|------|
 | **claw-ops** | OpenClaw 插件，**22 核心 + manifest 动态扩展 + invoke**（v1.1+；baseline 43） | [claw-ops/README.md](../claw-ops/README.md) |
 | **claw-skills** | Hermes REST 技能 + Token 配置 | [claw-skills/README.md](../claw-skills/README.md) |
-| **edgeops MCP** | 内置 FastMCP，**47** 工具；默认 `http://<host>:<port>/mcp`；含编排 ops | [services/edgeops_mcp/README.md](../services/edgeops_mcp/README.md) |
+| **edgeops MCP** | 内置 FastMCP，**58** 工具；默认 `http://<host>:<port>/mcp`；含编排 ops | [services/edgeops_mcp/README.md](../services/edgeops_mcp/README.md) |
 | **集成 REST** | `POST /integration/ops-chat/complete`、`/integration/mcp/*` 等 | [API文档.md](API文档.md) §16–§18 |
 
 总览：[外部集成与ClawOps.md](外部集成与ClawOps.md) · 用户帮助：[web/aihelp/external-integration.md](../web/aihelp/external-integration.md)
