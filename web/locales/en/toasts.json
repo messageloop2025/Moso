@@ -96,6 +96,7 @@
     "summarizingHostModal": "Summarizing host prompt… you can close the window; it will save when done",
     "hostPromptNoSummary": "Could not summarize a valid host prompt",
     "newSessionCreated": "New session created",
+    "alreadyEmptySession": "Already on an empty session",
     "attachUploading": "Attachments are still uploading; wait before sending",
     "aborted": "Stopped",
     "creatingAiConsole": "Creating a console and connecting for AI…",

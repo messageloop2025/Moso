@@ -1323,14 +1323,14 @@ function edgeopsBindSlashSkillMenu(inputEl, opts) {
             return;
         }
         if ((mode === 'pick' || mode === 'params') && visibleItems.length) {
-            if (ev.key === 'ArrowDown') {
+            if (ev.key === 'ArrowDown' || (mode === 'params' && ev.key === 'ArrowRight')) {
                 ev.preventDefault();
                 ev.stopPropagation();
                 activeIdx = (activeIdx + 1) % visibleItems.length;
                 if (mode === 'params') paintArgActive(); else paintActive();
                 return;
             }
-            if (ev.key === 'ArrowUp') {
+            if (ev.key === 'ArrowUp' || (mode === 'params' && ev.key === 'ArrowLeft')) {
                 ev.preventDefault();
                 ev.stopPropagation();
                 activeIdx = (activeIdx - 1 + visibleItems.length) % visibleItems.length;
@@ -4300,17 +4300,25 @@ function edgeopsRenderSessionMessages(box, msgs, formatter, sessionId, options) 
     } catch (_eps) {}
 }
 
-/** 打开会话：默认只渲染最近一窗；滚到顶部自动补更早消息。 */
+/** 打开会话：默认只渲染最近一窗；滚到顶部自动补更早消息。含代次校验，避免慢请求覆盖用户已切换/新建的会话。 */
 function edgeopsLoadChatSessionIntoBox(box, sessionId, opts) {
     opts = opts || {};
     if (!box || sessionId == null) return Promise.resolve(null);
     var formatter = opts.formatter;
     var onChoice = opts.onChoice;
     var pageSize = opts.pageSize || 12;
+    var gen = (box._edgeopsLoadGen = (box._edgeopsLoadGen || 0) + 1);
+    var myGen = gen;
+    box._edgeopsSessionLoading = true;
+    box._edgeopsLoadingSessionId = sessionId;
     return API.getAISession(sessionId, { limit: pageSize }).then(function(r) {
+        if (box._edgeopsLoadGen !== myGen) return null;
+        box._edgeopsSessionLoading = false;
         var session = (r && r.session) || {};
         if (typeof opts.applySessionMeta === 'function') opts.applySessionMeta(session);
         var msgs = session.messages || [];
+        box._edgeopsLoadedSessionId = sessionId;
+        box._edgeopsLoadedEmpty = !msgs.length;
         var page = session.messages_page || {};
         edgeopsRenderSessionMessages(box, msgs, formatter, sessionId, {
             onChoice: onChoice,
@@ -4331,7 +4339,46 @@ function edgeopsLoadChatSessionIntoBox(box, sessionId, opts) {
         try { edgeopsHydrateChatDiagrams(box); } catch (_h) {}
         edgeopsScheduleChatScrollToBottomAfterLayout(box);
         return r;
+    }).catch(function(err) {
+        if (box._edgeopsLoadGen === myGen) box._edgeopsSessionLoading = false;
+        throw err;
     });
+}
+
+/** 当前已确认是「无消息」的空会话时，点「新会话」应复用，勿再创建。 */
+function edgeopsChatIsReusableEmptySession(box, sessionId) {
+    if (sessionId == null || sessionId === '' || !box) return false;
+    // 界面上已有气泡（含刚发出、尚未落库回读）→ 非空
+    if (box.querySelector('.chat-message')) return false;
+    // 须已确认是本 session（含新建后的乐观标记），避免进页瞬间误当成空会话
+    return box._edgeopsLoadedSessionId != null && String(box._edgeopsLoadedSessionId) === String(sessionId);
+}
+
+/** 作废进行中的会话加载，避免慢请求覆盖新建/切换后的界面。 */
+function edgeopsInvalidateChatSessionLoad(box) {
+    if (!box) return;
+    box._edgeopsLoadGen = (box._edgeopsLoadGen || 0) + 1;
+    box._edgeopsSessionLoading = false;
+}
+
+/** 标记当前框已是指定空会话（创建后乐观更新，便于连点「新会话」复用）。 */
+function edgeopsMarkChatBoxEmptySession(box, sessionId) {
+    if (!box) return;
+    box._edgeopsLoadedSessionId = sessionId;
+    box._edgeopsLoadedEmpty = true;
+}
+
+function edgeopsFocusChatInput(inputId) {
+    var input = inputId ? document.getElementById(inputId) : null;
+    if (!input) return;
+    setTimeout(function() {
+        try {
+            if (input.disabled || input.offsetParent === null) return;
+            input.focus({ preventScroll: true });
+        } catch (_e) {
+            try { input.focus(); } catch (_e2) {}
+        }
+    }, 0);
 }
 
 function edgeopsEnsureChatHistoryScrollBinder(box) {
@@ -10428,7 +10475,17 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         setTimeout(function() { if (typeof openSessionPromptModal === 'function') openSessionPromptModal(); }, 150);
     }
     document.getElementById('hostAiExportMd').onclick = function() { exportChatToMarkdown(sessionId); };
+    var hostAiCreatingSession = false;
     function doHostAiNewSession() {
+        if (hostAiCreatingSession) return;
+        var box = document.getElementById('hostAiMessages');
+        if (edgeopsChatIsReusableEmptySession(box, sessionId)) {
+            showToast(t('toast.alreadyEmptySession'), 'info');
+            edgeopsFocusChatInput('hostAiInput');
+            return;
+        }
+        hostAiCreatingSession = true;
+        edgeopsInvalidateChatSessionLoad(box);
         var oldSessionId = sessionId;
         var mode = edgeopsCurrentChatModeFromSelect('hostAiChatModeSelect');
         API.createAISession('default', hostId, null, mode).then(function(r) {
@@ -10436,7 +10493,8 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
             if (id != null) {
                 sessionId = id;
                 try { sessionStorage.removeItem('edgeops_pending_chat_mode'); } catch (_e) {}
-                document.getElementById('hostAiMessages').innerHTML = '';
+                if (box) box.innerHTML = '';
+                edgeopsMarkChatBoxEmptySession(box, id);
                 loadSessions();
                 loadSession(id);
                 showToast(t('toast.newSessionCreated'));
@@ -10444,7 +10502,8 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
                     edgeopsTrySummarizeAISessionTitle(oldSessionId).then(function(res) { if (res && res.title) loadSessions(); }).catch(function() {});
                 }
             }
-        }).catch(function(err) { showToast(err.message || t('toast.createFailed'), 'error'); });
+        }).catch(function(err) { showToast(err.message || t('toast.createFailed'), 'error'); })
+        .finally(function() { hostAiCreatingSession = false; });
     }
     document.getElementById('hostAiNewSession').onclick = doHostAiNewSession;
     document.getElementById('hostAiNewSessionBtn').onclick = doHostAiNewSession;
@@ -12991,7 +13050,17 @@ function renderAIPage() {
         });
     }
     document.getElementById('aiSend').onclick = doSend;
+    var aiCreatingSession = false;
     function doAiNewSession() {
+        if (aiCreatingSession) return;
+        var box = document.getElementById('aiMessages');
+        if (edgeopsChatIsReusableEmptySession(box, sessionId)) {
+            showToast(t('toast.alreadyEmptySession'), 'info');
+            edgeopsFocusChatInput('aiInput');
+            return;
+        }
+        aiCreatingSession = true;
+        edgeopsInvalidateChatSessionLoad(box);
         var oldSessionId = sessionId;
         var mode = edgeopsCurrentChatModeFromSelect('aiChatModeSelect');
         API.createAISession('default', null, null, mode).then(function(r) {
@@ -12999,7 +13068,8 @@ function renderAIPage() {
             if (id != null) {
                 sessionId = id;
                 try { sessionStorage.removeItem('edgeops_pending_chat_mode'); } catch (_e) {}
-                document.getElementById('aiMessages').innerHTML = '';
+                if (box) box.innerHTML = '';
+                edgeopsMarkChatBoxEmptySession(box, id);
                 loadSessions();
                 loadSession(id);
                 showToast(t('toast.newSessionCreated'));
@@ -13007,7 +13077,8 @@ function renderAIPage() {
                     edgeopsTrySummarizeAISessionTitle(oldSessionId).then(function(res) { if (res && res.title) loadSessions(); }).catch(function() {});
                 }
             }
-        }).catch(function(err) { showToast(err.message || t('toast.createFailed'), 'error'); });
+        }).catch(function(err) { showToast(err.message || t('toast.createFailed'), 'error'); })
+        .finally(function() { aiCreatingSession = false; });
     }
     document.getElementById('aiNewSessionBtn').onclick = doAiNewSession;
     document.getElementById('aiNewSessionTop').onclick = doAiNewSession;
@@ -17533,22 +17604,35 @@ function renderLocalPage() {
             showToast(t('toast.copiedLogLines', {n: localAiLogBuffer.length}));
         } catch (err) { showToast(t('toast.copyFailed'), 'error'); }
     }
-    document.getElementById('localNewSession').onclick = function() {
+    var localCreatingSession = false;
+    function doLocalNewSession() {
+        if (localCreatingSession) return;
+        var box = document.getElementById('localMessages');
+        if (edgeopsChatIsReusableEmptySession(box, currentSessionId)) {
+            showToast(t('toast.alreadyEmptySession'), 'info');
+            edgeopsFocusChatInput('localInput');
+            return;
+        }
+        localCreatingSession = true;
+        edgeopsInvalidateChatSessionLoad(box);
         var mode = edgeopsCurrentChatModeFromSelect('localChatModeSelect');
         API.createAISession('default', null, 'local', mode).then(function(r) {
             var id = r.session_id || (r.session && r.session.id);
             if (id != null) {
                 currentSessionId = id;
                 try { sessionStorage.removeItem('edgeops_pending_chat_mode'); } catch (_e) {}
-                document.getElementById('localMessages').innerHTML = '';
+                if (box) box.innerHTML = '';
+                edgeopsMarkChatBoxEmptySession(box, id);
                 localAiLogBuffer = [];
                 renderLocalAiLog();
                 loadLocalSessions();
                 loadLocalSession(id);
                 showToast(t('toast.newSessionCreated'));
             }
-        }).catch(function(err) { showToast(err.message || t('toast.createFailed'), 'error'); });
-    };
+        }).catch(function(err) { showToast(err.message || t('toast.createFailed'), 'error'); })
+        .finally(function() { localCreatingSession = false; });
+    }
+    document.getElementById('localNewSession').onclick = doLocalNewSession;
     document.getElementById('localRefreshSessions').onclick = function() { loadLocalSessions(); showToast(t('toast.refreshed')); };
     loadLocalSessions();
     var localAbortController = null;
@@ -17576,8 +17660,8 @@ function renderLocalPage() {
         });
     };
     document.getElementById('localAiExportMd').onclick = function() { exportChatToMarkdown(currentSessionId); };
-    document.getElementById('localAiNewSession').onclick = document.getElementById('localNewSession').onclick;
-    document.getElementById('localNewSessionBtn').onclick = document.getElementById('localNewSession').onclick;
+    document.getElementById('localAiNewSession').onclick = doLocalNewSession;
+    document.getElementById('localNewSessionBtn').onclick = doLocalNewSession;
     (function() {
         var sidebar = document.getElementById('localLeftSidebar');
         var tab = document.getElementById('localSidebarTabSessions');

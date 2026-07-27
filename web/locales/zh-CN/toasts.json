@@ -96,6 +96,7 @@
     "summarizingHostModal": "正在总结主机级提示词… 可关闭窗口，完成后自动保存",
     "hostPromptNoSummary": "未能从对话中归纳出有效的主机级提示词",
     "newSessionCreated": "已创建新会话",
+    "alreadyEmptySession": "当前已是空会话，无需再建",
     "attachUploading": "附件正在上传，请稍候再发送",
     "aborted": "已中断",
     "creatingAiConsole": "正在为 AI 创建控制台并连接…",

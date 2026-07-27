@@ -115,6 +115,6 @@
         "confirmDelete": "确定删除 Skill「{{name}}」？",
         "confirmDeleteFiles": "同时删除磁盘目录 skills/{{name}}/"
     },
-    "slashParamsPickHint": "可点击下方参数建议，或继续键盘输入；↑↓ 选择 · Enter 填入",
+    "slashParamsPickHint": "可点击下方参数建议，或继续键盘输入；←→ / ↑↓ 选择 · Enter 填入",
     "slashParamsNoSuggestions": "该命令暂无内置参数建议（可在 SKILL.md 写「斜杠参数」列表，或 frontmatter slash-args）"
 }

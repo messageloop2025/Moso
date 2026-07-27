@@ -115,6 +115,6 @@
         "confirmDelete": "Delete skill \"{{name}}\"?",
         "confirmDeleteFiles": "Also remove directory skills/{{name}}/"
     },
-    "slashParamsPickHint": "Click a suggestion below, or keep typing; ↑↓ select · Enter to fill",
+    "slashParamsPickHint": "Click a suggestion below, or keep typing; ←→ / ↑↓ select · Enter to fill",
     "slashParamsNoSuggestions": "No built-in arg suggestions (add a “Commands/Usage” list or slash-args in SKILL.md)"
 }
