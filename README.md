@@ -2,8 +2,9 @@
 
 # 毛竹（Moso）
 
-**面向小团队与个人开发者的 SSH 远程 AI 运维系统 **
-不再向hub.docker.com更新镜像。开源版未来一段时间将停止更新。
+**面向小团队与个人开发者的 SSH 远程 AI 运维系统**
+
+> 不再向 [Docker Hub](https://hub.docker.com/r/messageloop/moso) 推送新镜像；开源版在未来一段时间内将暂停功能更新。
 
 *主机树 · Web 终端 · AI 助手（Function Calling）· 批量 / 定时任务 · 个人 MCP & Agent Skills · OpenClaw / Hermes 集成*
 
@@ -99,7 +100,7 @@ AI 汇总会话上下文，生成交互式 HTML 看板：网络关系图、主�
 - **每用户 AI 配置**：DashScope / Ollama / OpenAI 兼容接口；上下文长度、系统提示词、自动审批、**图像识别**开关。
 - **主机级 / 会话级提示词**、**主机知识库**、**跨主机 `search_hosts_by_prompt`**。
 - **聊天附件**（图片、文本、Office/PDF → MarkItDown）与 **AI 成果物**（单文件或 bundle，站内预览/下载）。
-- **系统共享 Key 配额**（默认 2000 次，可配置）；用户配置自有 Key 后不计入共享配额。
+- **系统共享 Key 配额**（默认 2000 次；管理员可在**系统设置**调整 `system_ai_usage_limit`，新注册用户按当前配置生效）；用户配置自有 Key 后不计入共享配额。
 - **编排**：`delegate_chain`、`delegate_to_edgeops_ai`、**工作流模板**（保存/复用/dry_run）；详见 [AI-Delegation-Cookbook](docs/AI-Delegation-Cookbook.md)。
 
 ### 自动化与批量
@@ -126,7 +127,7 @@ AI 汇总会话上下文，生成交互式 HTML 看板：网络关系图、主�
 - **文件系统**：`web/fs/<用户名>` 私有空间；远程 SFTP 浏览与编辑。
 - **本机管理**（管理员）：宿主机 shell、进程、文件。
 - **API Token**、**个人 SMTP**、**网页/代码搜索**配置、**仪表盘**、**操作日志**（按角色过滤）。
-- **系统设置**：全局项（显示语言、站点 SMTP 占位、搜索服务等）；**模型配置**（`/model-config`，每用户多组 AI Profile）；管理员管理用户、邮件模板、共享 Key 配额等。
+- **系统设置**：全局项（显示语言、站点 SMTP 占位、搜索服务等）；**模型配置**（`/model-config`，每用户多组 AI Profile）；管理员管理用户、邮件模板、**系统共享 Key 试用次数**等。
 
 ## 技术栈
 
@@ -134,7 +135,7 @@ AI 汇总会话上下文，生成交互式 HTML 看板：网络关系图、主�
 |----|------|
 | 后端 | FastAPI、aiosqlite、Paramiko（SSH/SFTP）、OpenAI 兼容 LLM 客户端 |
 | 前端 | 原生 JS SPA（无打包器）、深色主题 CSS、xterm.js、ECharts / Mermaid / Markmap |
-| 数据 | SQLite（WAL）、`database/migrations/` 版本化升级（当前 **schema v32**，脚本 **000–031**） |
+| 数据 | SQLite（WAL）、`database/migrations/` 版本化升级（当前 **schema v43**，脚本 **000–042**） |
 | 默认端口 | **8010**（与常见 8000 区分） |
 
 ## 快速开始
@@ -142,12 +143,12 @@ AI 汇总会话上下文，生成交互式 HTML 看板：网络关系图、主�
 **方式一：本地运行**
 
 ```bash
-cd 毛竹
+cd Moso
 pip install -r requirements.txt
 python app.py
 ```
 
-Windows 可直接双击 **start.bat**。
+Windows 可直接双击 **start.bat**；Linux / macOS 可运行 **start.sh**。
 
 **方式二：Docker Hub 镜像（推荐部署）**
 
@@ -188,7 +189,7 @@ docker compose -f docker/docker-compose.yml up -d --build
 
 | 场景 | 命令 |
 |------|------|
-| **全新空库**（含默认 admin，schema v32） | `python scripts/bootstrap_fresh_db.py`（已有库加 `--force`） |
+| **全新空库**（含默认 admin，schema v43） | `python scripts/bootstrap_fresh_db.py`（已有库加 `--force`） |
 | **已有库升级** | `python scripts/migrate_db.py` 或**直接启动应用**（启动时自动迁移） |
 | **应用启动策略** | 无库 / 空库 → 完整初始化；已识别 毛竹 库 → 仅跑未执行的迁移；指向含陌生表的 SQLite → **拒绝启动** |
 | **重新生成 fresh_install.sql** | 修改 `database/migrations/` 后：`python scripts/regenerate_fresh_install_sql.py` |
@@ -208,7 +209,7 @@ docker compose -f docker/docker-compose.yml up -d --build
 | `EDGEOPS_WORKERS` | 默认 `0` 单进程（推荐）；多 worker 可能重复跑定时任务 |
 | `EDGEOPS_SQLITE_BUSY_TIMEOUT_MS` / `EDGEOPS_SQLITE_WAL` | 并发与 WAL |
 | `AI_API_KEY` / `AI_BASE_URL` / `AI_MODEL` | 全局 AI 默认 |
-| `EDGEOPS_SYSTEM_AI_USAGE_LIMIT` | 共享 Key 每用户次数上限，默认 **2000** |
+| `EDGEOPS_SYSTEM_AI_USAGE_LIMIT` | 共享 Key 每用户次数上限（**首次安装默认**）；运行中可在系统设置 `system_ai_usage_limit` 覆盖，默认 **2000** |
 | `EDGEOPS_AGENT_MAX_STEPS` / `EDGEOPS_ASSISTANT_MAX_ROUNDS` | Agent 步数上限 |
 | `EDGEOPS_AI_CONTEXT_SIZE` | 聊天上下文字符上限，0=不限制 |
 | `EDGEOPS_MCP_ENABLED` / `EDGEOPS_MCP_HTTP_PATH` | 内置 MCP，默认开启、路径 `/mcp` |

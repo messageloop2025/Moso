@@ -4,11 +4,13 @@
 
 **SSH-native remote AI operations for small teams and solo developers**
 
+> New images are no longer published to [Docker Hub](https://hub.docker.com/r/messageloop/moso); the open-source edition will pause feature updates for a while.
+
 *Host tree · Web terminal · AI assistant (Function Calling) · Batch & scheduled tasks · Per-user MCP & Agent Skills · OpenClaw / Hermes integration*
 
 <br>
 
-[![version](https://img.shields.io/badge/version-1.3.8--sp1-blue)](config.py)
+[![version](https://img.shields.io/badge/version-1.8.8-blue)](config.py)
 [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#quick-start)
 [![stack](https://img.shields.io/badge/built%20with-FastAPI-009688)](#tech-stack)
 [![db](https://img.shields.io/badge/database-SQLite%20WAL-003B57)](#tech-stack)
@@ -98,7 +100,7 @@ The assistant synthesizes session context into an interactive HTML dashboard: ne
 - **Per-user AI config:** DashScope / Ollama / OpenAI-compatible APIs; context length, system prompt, auto-approve, **vision** toggle.
 - **Host- and session-level prompts**, **host knowledge base**, **`search_hosts_by_prompt`** across hosts.
 - **Chat attachments** (images, text, Office/PDF via MarkItDown) and **AI artifacts** (single file or bundle; in-app preview/download).
-- **Shared system API key quota** (default 2000 calls, configurable); users with their own key are not counted against the shared quota.
+- **Shared system API key quota** (default 2000 calls; admins can change `system_ai_usage_limit` in **System Settings**; new users follow the current limit); users with their own key are not counted against the shared quota.
 - **Orchestration:** `delegate_chain`, `delegate_to_edgeops_ai`, **workflow templates** (save/reuse/dry_run); see [AI-Delegation-Cookbook](docs/AI-Delegation-Cookbook.md).
 
 ### Automation and batch
@@ -125,7 +127,7 @@ The assistant synthesizes session context into an interactive HTML dashboard: ne
 - **Filesystem:** `web/fs/<username>` private space; remote SFTP browse and edit.
 - **Local host management** (admin): host shell, processes, files.
 - **API tokens**, **personal SMTP**, **web/code search** config, **dashboard**, **audit logs** (filtered by role).
-- **Settings:** global options (display language, search, etc.); **Model config** (`/model-config`, multiple AI profiles per user); admin manages users, mail templates, shared key quota, etc.
+- **Settings:** global options (display language, site SMTP placeholders, search services, etc.); **Model config** (`/model-config`, multiple AI profiles per user); admin manages users, mail templates, **shared Key trial quota**, and more.
 
 ## Tech stack
 
@@ -133,7 +135,7 @@ The assistant synthesizes session context into an interactive HTML dashboard: ne
 |-------|--------|
 | Backend | FastAPI, aiosqlite, Paramiko (SSH/SFTP), OpenAI-compatible LLM client |
 | Frontend | Vanilla JS SPA (no bundler), dark theme CSS, xterm.js, ECharts / Mermaid / Markmap |
-| Data | SQLite (WAL), versioned `database/migrations/` (currently **schema v32**, scripts **000–031**) |
+| Data | SQLite (WAL), versioned `database/migrations/` (currently **schema v43**, scripts **000–042**) |
 | Default port | **8010** (distinct from common 8000) |
 
 ## Quick start
@@ -146,7 +148,7 @@ pip install -r requirements.txt
 python app.py
 ```
 
-On Windows, double-click **start.bat** or run **start.sh** on Linux/macOS.
+On Windows, double-click **start.bat**; on Linux / macOS, run **start.sh**.
 
 **Option 2: Docker Hub image (recommended for deployment)**
 
@@ -187,7 +189,7 @@ After login, open **Model config** (`/model-config`) in the sidebar and set Base
 
 | Scenario | Command |
 |----------|---------|
-| **Fresh empty DB** (default admin, schema v32) | `python scripts/bootstrap_fresh_db.py` (use `--force` if a DB file already exists) |
+| **Fresh empty DB** (default admin, schema v43) | `python scripts/bootstrap_fresh_db.py` (use `--force` if a DB file already exists) |
 | **Upgrade existing DB** | `python scripts/migrate_db.py` or **start the app** (migrations run on startup) |
 | **Startup behavior** | No DB / empty → full init; recognized Moso DB → pending migrations only; SQLite with unknown tables → **refuse to start** |
 | **Regenerate fresh_install.sql** | After editing `database/migrations/`: `python scripts/regenerate_fresh_install_sql.py` |
@@ -207,7 +209,7 @@ Full list: [docs/技术栈说明.md](docs/技术栈说明.md) (Chinese).
 | `EDGEOPS_WORKERS` | Default `0` single process (recommended); multiple workers may duplicate scheduled jobs |
 | `EDGEOPS_SQLITE_BUSY_TIMEOUT_MS` / `EDGEOPS_SQLITE_WAL` | Concurrency and WAL |
 | `AI_API_KEY` / `AI_BASE_URL` / `AI_MODEL` | Global AI defaults |
-| `EDGEOPS_SYSTEM_AI_USAGE_LIMIT` | Shared key per-user cap, default **2000** |
+| `EDGEOPS_SYSTEM_AI_USAGE_LIMIT` | Shared key per-user cap (**default on first install**); override at runtime via System Settings `system_ai_usage_limit`, default **2000** |
 | `EDGEOPS_AGENT_MAX_STEPS` / `EDGEOPS_ASSISTANT_MAX_ROUNDS` | Agent step limits |
 | `EDGEOPS_AI_CONTEXT_SIZE` | Chat context char limit; `0` = unlimited |
 | `EDGEOPS_MCP_ENABLED` / `EDGEOPS_MCP_HTTP_PATH` | Built-in MCP, default on, path `/mcp` |
