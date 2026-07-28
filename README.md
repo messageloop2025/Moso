@@ -2,13 +2,13 @@
 
 # 毛竹（Moso）
 
-**面向小团队与个人开发者的 SSH 远程 AI 运维系统**
+**面向小团队与个人开发者的 SSH 远程 AI 运维系统 **不再向hub.docker.com更新镜像。开源版未来一段时间将停止更新。
 
 *主机树 · Web 终端 · AI 助手（Function Calling）· 批量 / 定时任务 · 个人 MCP & Agent Skills · OpenClaw / Hermes 集成*
 
 <br>
 
-[![version](https://img.shields.io/badge/version-1.3.8--sp1-blue)](config.py)
+[![version](https://img.shields.io/badge/version-1.8.8-blue)](config.py)
 [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#快速开始)
 [![stack](https://img.shields.io/badge/built%20with-FastAPI-009688)](#技术栈)
 [![db](https://img.shields.io/badge/database-SQLite%20WAL-003B57)](#技术栈)
