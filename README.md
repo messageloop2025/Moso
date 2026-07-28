@@ -2,7 +2,8 @@
 
 # 毛竹（Moso）
 
-**面向小团队与个人开发者的 SSH 远程 AI 运维系统 **不再向hub.docker.com更新镜像。开源版未来一段时间将停止更新。
+**面向小团队与个人开发者的 SSH 远程 AI 运维系统 **
+不再向hub.docker.com更新镜像。开源版未来一段时间将停止更新。
 
 *主机树 · Web 终端 · AI 助手（Function Calling）· 批量 / 定时任务 · 个人 MCP & Agent Skills · OpenClaw / Hermes 集成*
 
