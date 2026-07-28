@@ -26,8 +26,19 @@ if not defined DOCKERHUB_USER (
 
 if not defined DOCKERHUB_REPO set "DOCKERHUB_REPO=moso"
 
-for /f "delims=" %%v in ('python -c "import sys; sys.path.insert(0, '.'); import config; print(config.VERSION)" 2^>nul') do set "VERSION=%%v"
-if not defined VERSION set "VERSION=dev"
+call "%~dp0scripts\win_find_python.bat"
+if errorlevel 1 (
+    pause
+    exit /b 1
+)
+call "%~dp0scripts\win_read_version.bat"
+if errorlevel 1 (
+    echo.
+    echo ERROR: Cannot read VERSION from config.py ^(Python: %PYTHON%^)
+    pause
+    exit /b 1
+)
+if not defined VERSION set "VERSION=0.0.0"
 
 set "EDGEOPS_VERSION=%VERSION%"
 set "LOCAL_TAG=edgeops:%VERSION%"
@@ -36,6 +47,8 @@ set "REMOTE_TAG=%REMOTE%:%VERSION%"
 
 echo.
 echo Moso - publish Docker image to Docker Hub
+echo   version:         %VERSION%
+echo   Python:          %PYTHON%
 echo   build local tag: %LOCAL_TAG%
 echo   push remote tag: %REMOTE_TAG%
 if "%PUSH_LATEST%"=="1" echo   also push:       %REMOTE%:latest

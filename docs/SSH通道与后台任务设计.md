@@ -14,7 +14,7 @@
 ### 2.1 能力要求
 
 - 完全由 AI 控制、支持交互（如 sudo 密码、vi）、支持 Ctrl+C 等控制字符。
-- **sudo 密码**：出现 `[sudo] password for` 等提示时，凭证库开启后应调用 **`send_service_password`**（target=`ssh_channel`），勿在 `ssh_channel_send` 中发送明文密码。见 `web/aihelp/service-credentials.md`。
+- **sudo 密码**：出现 `[sudo] password for` 等提示时，**优先** **`send_service_password`**（target=`ssh_channel`）；无凭证且用户/知识库有密码时 read 确认后可直接 send。见 `web/aihelp/service-credentials.md`。
 - 具有“控制台效果”的 TTY 通道；与现有 **Web SSH 控制台**不同，本通道**以后台 PTY 为主**，AI 经工具链直接读写；可选 **WebSocket 挂接**（断线后可重连同一 Channel）。Web **「SSH通道管理」** Tab 对该通道**只读监视**，不向 stdin 发送（见 §7.4）。
 - 以**用户会话**或**后台任务**为边界：
   - **Web 会话**：本机管理 / AI 助手 / 主机详情 的 AI 各自可创建仅属于当前会话的 Channel。

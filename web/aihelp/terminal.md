@@ -19,7 +19,7 @@
 
 ## AI 与控制台配合
 
-- **send_to_terminal**：向某个 **AI 创建** 的控制台槽位发送文本（命令、控制键等）。支持 `<Ctrl+C>`、`<Ctrl+Z>`、`<Ctrl+D>`、`<Ctrl+L>` 等占位符。
+- **send_to_terminal**：向某个 **AI 创建** 的控制台槽位发送文本（命令、TUI 控制键等）。支持完整占位符语法：`<Ctrl+A>`…`<Ctrl+Z>`、`<Alt+M>`、`<Shift+Tab>`、`<Enter>`、方向键、`<F1>`…`<F12>` 等（详见下方「控制键占位符」）。
 - **get_terminal_status**：轻量查询控制台 **通/断**（`connected`）与 **闲/忙**（`buffer_idle` / `session_state`）。`connected=false` 时**禁止** `send_to_terminal`；`session_state=busy` 时勿发新 shell 命令，应 `get_terminal_buffer` 轮询。
 - **get_terminal_buffer**：获取 **AI 创建** 控制台的最近输出（**末尾**即最新状态），并附带与 `get_terminal_status` 相同的状态字段。默认 `tail_only=true`：超长时仅返回最后 40 行；`tail_only=false` 为前 2+后 33 行；`full_output=true` 为全量。**仅供 AI 内部使用**。
 - **条件返回（until_contains）**：可传字面子串 `until_contains`；工具在超时内轮询，**命中或超时即返回**（`until_wait_reason`）。超时取自 `next_poll_in_seconds`（默认 30、最长 3600）。适合脚本 `echo` 标记串、等 `password:`；带此参数时**不再**额外 batch 末 sleep。**无** CoT 橙色倒计时条，但仍可被 runtime **唤醒/停止**打断。
@@ -74,6 +74,24 @@ PTY 没有标准「就绪」协议，服务端通过输出末尾启发式判断�
 - 若用户手动切到 **用户创建** 的控制台，自动切换会暂停，避免影响用户手工操作。
 - 当用户再次切回 **AI 创建** 的控制台后，自动切换恢复。
 - 界面提供「**不自动切换**」选项，勾选后不再随 AI 输入自动切台。
+
+- **sudo 与密码**：sudo **不总是**要密码（常见 NOPASSWD）。流程：先 send 仅 sudo → **必须** read 尾部 → **仅当**出现 password 提示才注入。**优先** `send_service_password`（凭证库或 `use_host_login`）；无凭证且用户已提供密码、或密码在主机知识/记忆中时，read 确认提示后可用 send 发「密码+<Enter>」。详见 [service-credentials.md](service-credentials.md)。
+
+---
+
+## 控制键占位符（AI send 语法）
+
+`send_to_terminal` / `ssh_channel_send` 的 text/content 支持 `<…>` 占位符（由 `services/terminal_input.py` 展开）：
+
+| 类别 | 示例 |
+|------|------|
+| Ctrl 全字母 | `<Ctrl+C>` 中断、`<Ctrl+X>` nano 退出、`<Ctrl+O>` nano 保存 |
+| Alt / 组合 | `<Alt+M>`、`<Ctrl+Alt+X>` |
+| 命名键 | `<Enter>` `<Tab>` `<Esc>` `<Up>` `<Down>` `<Home>` `<End>` `<Delete>` |
+| 功能键 | `<F1>`…`<F12>`（可叠加 Ctrl/Alt/Shift） |
+| TUI 组合 | vi 退出 `<Esc>:wq<Enter>`；nano 保存退出 `<Ctrl+O><Enter><Ctrl+X>` |
+
+纯控制键/方向键不会自动补换行；普通命令末尾无换行时会自动补 `\n`。
 
 ---
 

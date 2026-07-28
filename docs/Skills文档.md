@@ -24,7 +24,7 @@
 | delegate_to_edgeops_ai | **内部 AI 递归（单任务）**：起一个 毛竹 子 AI 对话（独立 system_prompt + `allowed_tools` 白名单 + 短生命周期），跑完返回最终 Markdown。不走 SSH，只消耗主 AI 的 LLM 账号。执行期间 SSE 推送 `sub_ai_step` / `sub_ai_tool` / `sub_ai_done`。硬限制递归深度=2。典型用途：写报告 / 代码 reviewer。返回 `{final_text, steps_used, duration_sec, depth, tool_calls_summary, truncated}` | task, system_prompt, allowed_tools?, max_steps?, max_depth?, timeout_sec?, context_hint? |
 | delegate_sub_tasks_batch | **内部子 AI 批量并发**：一次 1–8 个子任务，`max_parallel` 默认 3（上限 5）。适合 Map-Reduce 大数据分析。SSE 推送 `sub_ai_batch_start` / `sub_ai_step` / `sub_ai_batch_end`。返回 `{total, succeeded, failed, results[{name, final_text, ...}]}` | tasks[], shared_system_prompt?, default_allowed_tools?, max_parallel?, max_steps?, timeout_sec? |
 | ssh_execute | 在指定主机上执行 SSH 命令；长任务可用 detach 后台写日志，再用 poll_log 读尾部 | host_id, command?, timeout?, detach?, poll_log?, log_path?, tail_lines? |
-| send_to_terminal | 向当前用户 SSH 终端注入输入（命令、控制键等）；**勿用于发送密码明文**——凭证库开启时用 send_service_password | text, slot? |
+| send_to_terminal | 向当前用户 SSH 终端注入输入（命令、TUI 控制键等）；密码优先 send_service_password，无凭证且用户/知识库有密码时 read 确认后可 send | text, slot? |
 | terminal_send_and_read | 向控制台发命令并等待/读取输出（弱网推荐，一次完成发送+读缓冲） | text, slot?, wait_seconds?, until_contains?, max_lines? |
 | get_terminal_status | 查询 AI 控制台通断（connected）与闲/忙（buffer_idle / session_state）；**仅 connected=false 时禁止 send_to_terminal** | slot?, host_id?, include_last_lines? |
 | connect_terminal | 请求前端自动连接指定主机终端 | host_id |
@@ -68,7 +68,7 @@
 | delete_service_credential | 删除 | credential_id |
 | send_service_password | 按 service/address/port/username 匹配并注入 | target, service?, address?, port?, service_username?, credential_id?, host_id?（terminal 注入目标）, slot?, channel_id? |
 
-**sudo 流程**：`terminal_send_and_read` 发命令并读输出（弱网推荐）；或 `send_to_terminal` → `get_terminal_buffer` → `send_service_password`。`ssh_execute` 非交互，不能注入。
+**sudo 流程**：`terminal_send_and_read` 发命令并读输出（弱网推荐）；或 `send_to_terminal` → `get_terminal_buffer` → **优先** `send_service_password`；无凭证且用户/知识库有密码时 read 确认后可 send 密码+<Enter>。`ssh_execute` 非交互，不能注入。
 
 ---
 

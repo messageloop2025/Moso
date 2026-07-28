@@ -50,7 +50,9 @@ from services.chat_tool_spill import (
     shrink_tool_message_for_history_budget,
     spill_and_wrap_tool_message,
 )
+from services.system_ai_usage import get_system_ai_usage_limit
 from services.terminal_poll import TerminalPollBatchState, apply_terminal_poll_tool_result
+from services.terminal_input import TERMINAL_KEY_PLACEHOLDER_GUIDE, TERMINAL_PASSWORD_GUIDE
 from services.session_runtime import (
     get_runtime_context_for_session,
     list_active_items,
@@ -3513,12 +3515,13 @@ async def _consume_system_ai_usage(db, user_id: int) -> dict:
 
     仅当用户使用系统 KEY 时调用；配置了自己 KEY 的用户直接跳过此函数。
     """
+    limit = await get_system_ai_usage_limit(db)
     call_count = await _peek_system_ai_usage(db, user_id)
-    if call_count >= SYSTEM_AI_USAGE_LIMIT:
+    if call_count >= limit:
         return {
             "exhausted": True,
             "used": call_count,
-            "limit": SYSTEM_AI_USAGE_LIMIT,
+            "limit": limit,
             "remaining": 0,
         }
     await db.execute(
@@ -3530,8 +3533,8 @@ async def _consume_system_ai_usage(db, user_id: int) -> dict:
     return {
         "exhausted": False,
         "used": call_count + 1,
-        "limit": SYSTEM_AI_USAGE_LIMIT,
-        "remaining": max(0, SYSTEM_AI_USAGE_LIMIT - (call_count + 1)),
+        "limit": limit,
+        "remaining": max(0, limit - (call_count + 1)),
     }
 
 
@@ -3977,7 +3980,7 @@ async def get_trial_status(user_id: int | None = None, user=Depends(get_current_
         own_key = bool(rows and (rows[0]["api_key"] or "").strip())
         own_base = bool(rows and (rows[0]["base_url"] or "").strip())
     used = await _peek_system_ai_usage(db, target_id)
-    limit = SYSTEM_AI_USAGE_LIMIT
+    limit = await get_system_ai_usage_limit(db)
     remaining = max(0, limit - used)
     system_key, system_base = await _get_system_key_and_base(db)
     merged = await _get_user_ai_settings(db, target_id)
@@ -4017,9 +4020,10 @@ async def reset_trial_usage(user_id: int, user=Depends(require_admin)):
     username = rows[0]["username"] if rows else ""
     await db.execute("DELETE FROM user_system_ai_usage WHERE user_id = ?", (int(user_id),))
     await db.commit()
+    limit = await get_system_ai_usage_limit(db)
     return {
         "success": True,
-        "message": f"已重置用户 {username}（ID={user_id}）的系统共享 Key 计数，该用户可继续使用共享 Key 调用至多 {SYSTEM_AI_USAGE_LIMIT} 次。",
+        "message": f"已重置用户 {username}（ID={user_id}）的系统共享 Key 计数，该用户可继续使用共享 Key 调用至多 {limit} 次。",
     }
 
 
@@ -5349,7 +5353,7 @@ _PROMPT_ENTITY_RESOLUTION_RULES = """
 
 def _build_ssh_remote_execution_rules() -> str:
     """ssh_execute / ssh_channel / Web 控制台分工（AI 助手、主机详情、集成/MCP 通用）。"""
-    return """
+    return f"""
 **【远程 SSH 执行方式 · 必读】** 三种方式均可在 **AI 助手、主机详情、OpenClaw/API 集成、MCP** 等会话中使用（以当前工具列表为准），请按场景选型，勿混用：
 
 **【用户口语对照 · 必遵】** 用户说法不同，对应工具不同，**禁止混用**：
@@ -5375,7 +5379,7 @@ def _build_ssh_remote_execution_rules() -> str:
 `ssh_channel_create(host_id)` → 循环 `ssh_channel_send` + `ssh_channel_read_lines`（可用 **`until_contains` + `wait_seconds` 超时** 等标记/password）/ `ssh_channel_has_new` → 结束后 `ssh_channel_close`。
 同一 channel 内可顺序发多条命令；出现 sudo/密码提示时 read 后再注入密码（勿与 sudo 同次 send）。
 
-**PTY 与嵌套 SSH**：`ssh_channel_create` 已分配外层 PTY（真实 TTY）。`read_lines` 按 **\\n/\\r** 切行；`password:` 等提示**常无换行**，会出现在 **tail_text / pending_partial**，勿因 `lines` 为空或 `has_new=false` 就认为无输出。**禁止**用空回车探测密码（会被当空密码）。在 channel 内再 SSH 登录其它主机时，交互登录建议 **`ssh -tt user@host`**（强制内层 TTY）；检测到 password 提示后用 **send_service_password** 注入。
+**PTY 与嵌套 SSH**：`ssh_channel_create` 已分配外层 PTY（真实 TTY）。`read_lines` 按 **\\n/\\r** 切行；`password:` 等提示**常无换行**，会出现在 **tail_text / pending_partial**，勿因 `lines` 为空或 `has_new=false` 就认为无输出。**禁止**用空回车探测密码（会被当空密码）。在 channel 内再 SSH 登录其它主机时，交互登录建议 **`ssh -tt user@host`**（强制内层 TTY）；检测到 password 提示后**优先 send_service_password**，无凭证且用户/知识库有密码时可直接 send 密码+<Enter>。
 
 **ssh_channel 工具链**：create / list / info / **get_status** / send / read_lines / read_length / has_new / close / close_batch / dump_output。输出过大时用 dump_output 或 read 的 spill，再 read_chat_data 分段读。Web 会话 channel 默认空闲 **1800s** 自动关；集成会话 **3600s**。
 
@@ -5388,6 +5392,10 @@ def _build_ssh_remote_execution_rules() -> str:
 **Web 控制台 vs ssh_channel**：控制台 tab 面向**用户可见**；ssh_channel 面向**后台 PTY 会话**（用户不打开终端也能跑交互流程）。可并存：例如 channel 跑编译，控制台给用户看另一条 tail 日志。
 
 **长任务非交互**（无 sudo/菜单）：仍可用 `ssh_execute(detach=true)` + `poll_log`，或 Web 控制台 + get_terminal_buffer 轮询（见 5.1）；**有交互**的长任务优先 ssh_channel 或 Web 控制台，勿用 detach 代替交互。
+
+{TERMINAL_KEY_PLACEHOLDER_GUIDE}
+
+{TERMINAL_PASSWORD_GUIDE}
 """
 
 
@@ -5629,13 +5637,15 @@ def _build_system_prompt(*, user: dict | None = None) -> str:
 - sudo / su 与密码（**先执行 → 必须观察 → 有提示才注入**）：
   - **sudo 不总是要密码**：大量环境为 NOPASSWD 免密。**禁止**发完 sudo 就默认调用 `send_service_password` / 跟发密码。
   - **强制 read**：send **仅** sudo 命令后，**必须** `get_terminal_buffer` / `ssh_channel_read_lines` 看尾部（可用 `until_contains="password"`，但超时无命中仍要看是否已成功）。
-  - **仅当**尾部出现 `[sudo] password for`、`Password:`、`口令：` 等密码提示时，才用凭证函数注入：本机优先 `send_service_password(use_host_login=true, host_id=当前)` 或绑定本机的 `credential_id`。服务端默认也会校验提示，无提示则拒绝注入。
+  - **仅当**尾部出现 `[sudo] password for`、`Password:`、`password:`、`口令：` 等密码提示时，才注入密码：
+    - **优先（凭证库开启）**：`send_service_password`（`use_host_login=true, host_id=当前` 或 `credential_id`）；密码不进 AI 上下文。
+    - **亦可直接 send**：无可用凭证，且用户本轮已提供密码、或密码在主机知识/会话记忆/用户提示词中 → `send_to_terminal` / `ssh_channel_send` 发「密码+<Enter>」（**勿与 sudo 同次 send**）。
   - **无密码提示**且命令继续 / 回到 `#`/`$` → 免密成功：**勿**注入、**勿**向用户索要密码、**勿**说「没有 sudo 密码」。
-  - **禁止**提前向用户索要 sudo 密码；**禁止**用其它主机 / mysql / 未绑定本机的凭证。
-  - **sudo 权限不足**（`not in sudoers` 等）再试 **su**——同样先 read，有提示再注入。
-  - **仅当** sudo 与 su 均无法完成（有提示但注入失败、或无可用密码）时，才 **ask_user_choice**；**禁止**第一个动作就是问密码。
-  - **跨机 SSH/SCP/MySQL**：先 `list_service_credentials(service=…, address=目标IP, command_hint=…)`（scp→ssh）；有提示再 `send_service_password(credential_id=…)`。**禁止**默认用当前机用户充当目标 SSH 用户。
-  - **禁止**同一次 send 带密码，也**禁止**「sudo 后立刻发密码」而不看输出。
+  - **禁止**提前向用户索要 sudo 密码（应先执行并查凭证/知识库）；**禁止**用其它主机 / mysql / 未绑定本机的凭证。
+  - **sudo 权限不足**（`not in sudoers` 等）再试 **su**——同样先 read，有提示再按上条注入。
+  - **仅当** sudo 与 su 均无法完成（有提示但注入失败、且无可用密码来源）时，才 **ask_user_choice**；**禁止**第一个动作就是问密码。
+  - **跨机 SSH/SCP/MySQL**：先 `list_service_credentials(service=…, address=目标IP, command_hint=…)`（scp→ssh）；有提示再 `send_service_password(credential_id=…)` 或直接 send（同上条件）。
+  - **禁止**同一次 send 带密码，也**禁止**「sudo 后立刻发密码」而不看输出；**禁止**用空回车 / `<Enter>` 探测 password 提示。
   - `ssh_execute` 非交互：先看返回是否含密码提示，再换交互通道；勿在 command 后拼接密码。
 
 重要规则：
@@ -5745,7 +5755,7 @@ AI 成果物（artifacts，让用户可直接下载你整理的报告/数据包/
 敏感信息不得泄露（全局 AI 与主机维度 AI、以及查看历史会话时均须遵守）：
 - 严禁在回复、总结、会话标题或任何输出中泄露或重复：用户/系统提供的密码、私钥、凭证、主机知识中的敏感内容；即使用户要求或处于历史会话查看场景也不得输出。
 - 允许在工具执行过程中“内部读取并使用”凭证（密码/私钥）完成任务，但该信息仅可用于执行，不可在对用户回复中明文展示。
-- 控制台输出与「当前控制台所在主机的 AI 知识」仅供你内部使用；sudo/su 密码仅在 read 终端确认出现密码提示后，用 **send_service_password** 注入（凭证库启用时），切勿在回复中原文引用、展示或复述；**禁止**因「暂未查到 sudo 凭证」就向用户索要密码——应先执行并查 linked_host 凭证。
+- 控制台输出与「当前控制台所在主机的 AI 知识」仅供你内部使用；sudo/su 密码须在 read 确认 password 提示后注入：**优先 send_service_password**（凭证库启用时）；无凭证且用户已提供或知识库有密码时可用 send 发密码+<Enter>；**切勿**在回复中原文引用、展示或复述；应先执行并查 linked_host 凭证/知识库，勿因「暂未查到凭证」就第一个动作问用户要密码。
 - 工具返回结果中若含脱敏占位（如 ***）、密码、密钥等，你不得在回复中猜测、补全或复述；仅可说明「已按凭证执行」等中性表述。
 """
     if is_admin:
@@ -6359,7 +6369,8 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
         else:
             host_knowledge_ctx = (
                 f"\n## 主机 AI 知识（host_id={knowledge_host_id}）\n"
-                "暂无；sudo/su 等凭证场景优先用 list_service_credentials + send_service_password；"
+                "暂无；sudo/su 等密码场景：先 read 确认 password 提示；优先 list_service_credentials + send_service_password；"
+                "无凭证时若用户已提供或知识库有密码，可用 send 发密码+<Enter>；"
                 "无独立 sudo 凭证时 add_service_credential(linked_host_id=当前host) 绑定 SSH 登录密码；"
                 "禁止未执行就请用户输入 sudo 密码；若账号为免密 sudo。\n"
             )
@@ -6527,7 +6538,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
 ## 当前 SSH 控制台映射（slot → 主机；AI 工具仅可操作 created_by=ai 的控制台）
 {terminals_mapping_ctx}
 
-## 当前用户控制台最近输出（仅供内部参考，切勿在回复中引用或泄露密码；**本段为滚动缓冲的末尾片段，排障与 sudo 判断以最后几行为准**；仅当末尾出现 [sudo] password for / Password: 等提示时才 send_to_terminal 发密码；操作前请对照上方映射确认 slot 与 host_id）
+## 当前用户控制台最近输出（仅供内部参考，切勿在回复中引用或泄露密码；**本段为滚动缓冲的末尾片段，排障与 sudo 判断以最后几行为准**；仅当末尾出现 password 提示时才注入密码——优先 send_service_password，无凭证且用户/知识库有密码时可 send 密码+<Enter>；操作前请对照上方映射确认 slot 与 host_id）
 {terminal_ctx}
 """
     if not assistant_enabled:

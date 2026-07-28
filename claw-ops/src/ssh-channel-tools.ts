@@ -84,10 +84,12 @@ export function registerSshChannelTools(
   api.registerTool({
     name: "edgeops_ssh_channel_send",
     label: "Moso · SSH 通道写入",
-    description: `${channelDesc} 向通道 stdin 发送文本或控制键（如 Ctrl+C）。`,
+    description: `${channelDesc} 向通道 stdin 发送文本、TUI 控制键占位符（<Ctrl+X>、<Esc>、方向键、<F1> 等）或密码（优先 send_service_password）。`,
     parameters: Type.Object({
       channel_id: Type.Integer(),
-      content: Type.String({ description: "Text to send; supports control sequences" }),
+      content: Type.String({
+        description: "Text; supports <Ctrl+A>…<Ctrl+Z>, <Alt+M>, <Enter>, arrows, <F1>…<F12>, etc.",
+      }),
     }),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async execute(_id: string, params: any) {

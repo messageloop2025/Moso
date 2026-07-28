@@ -36,9 +36,9 @@ export function buildClawOpsPrependSystemContext(baseUrl: string): string {
 
     `- **edgeops_ssh_channel_list(all_open=true)**：列出全部 open 通道（含 IP/别名/用途/提示词摘要）。`,
 
-    `- **edgeops_ssh_channel_send / read_lines / read / has_new / dump / close / close_batch**：读写管道；大输出 spill 后用 **edgeops_read_chat_data** 分段读全量。`,
+    `- **edgeops_ssh_channel_send / read_lines / read / has_new / dump / close / close_batch**：读写管道；content 支持 <Ctrl+X>、<Esc>、方向键、<F1> 等占位符；大输出 spill 后用 **edgeops_read_chat_data** 分段读全量。`,
 
-    `- **服务凭证（需 credentials_vault_enabled）**：channel 内嵌套 SSH/sudo 出现 password 提示 → **edgeops_list_service_credentials**（command_hint / service+address / keyword）→ **edgeops_send_service_password**（target=ssh_channel + channel_id）；禁止 ssh_channel_send 发明文。`,
+    `- **服务凭证（需 credentials_vault_enabled）**：password 提示 → **优先 edgeops_send_service_password**；无凭证且用户/知识库有密码时 read 确认后可 channel_send 密码+<Enter>。`,
 
     `- **edgeops_ops_chat**：复杂编排仍可用集成 Agent；简单交互优先直连 ssh_channel 工具链。`,
 

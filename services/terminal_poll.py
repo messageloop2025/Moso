@@ -36,9 +36,9 @@ _LONG_CMD_RE = re.compile(
 
 _SUDO_RE = re.compile(r"(?:^|[;&|]\s*|\n)\s*sudo\s+", re.IGNORECASE | re.MULTILINE)
 
-# 仅控制键、空输入 — 不等待
+# 仅控制键占位符、空输入 — 不等待
 _CTRL_ONLY_RE = re.compile(
-    r"^\s*(?:<Ctrl\+[A-Za-z]>)\s*$",
+    r"^\s*(?:<[^<>]+(?:\+[^<>]+)*>)\s*$",
     re.IGNORECASE,
 )
 

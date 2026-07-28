@@ -5,6 +5,10 @@ from pydantic import BaseModel
 
 from database import get_db
 from api.auth import get_current_user, require_admin, _is_admin_role
+from services.system_ai_usage import (
+    SETTINGS_KEY_SYSTEM_AI_USAGE_LIMIT,
+    parse_system_ai_usage_limit_value,
+)
 
 router = APIRouter(prefix="/api", tags=["系统设置"])
 # 公开（不鉴权）端点：仅暴露登录页等无需登录的页面所需的少量开关位
@@ -84,6 +88,11 @@ async def update_setting(req: SettingRequest, user=Depends(require_admin)):
         if not ok:
             raise HTTPException(status_code=400, detail=err_or_val)
         req = SettingRequest(key=req.key, value=err_or_val)
+    if (req.key or "").strip() == SETTINGS_KEY_SYSTEM_AI_USAGE_LIMIT:
+        ok, parsed = parse_system_ai_usage_limit_value(req.value)
+        if not ok:
+            raise HTTPException(status_code=400, detail=parsed)
+        req = SettingRequest(key=req.key, value=str(parsed))
     db = await get_db()
     await db.execute(
         "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=?, updated_at=CURRENT_TIMESTAMP",

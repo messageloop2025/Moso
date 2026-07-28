@@ -350,7 +350,7 @@ async def edgeops_ssh_channel_send(
     content: str,
     ctx: Context | None = None,
 ) -> str:
-    """向 SSH 通道 stdin 发送内容。"""
+    """向 SSH 通道 stdin 发送内容。content 支持 <Ctrl+X>、<Esc>、方向键、<F1> 等占位符；密码优先 send_service_password。"""
     return await _run(
         lambda c: c.ssh_channel_send(channel_id, content),
         ctx=ctx,

@@ -1,6 +1,6 @@
 {
   "name": "@edgeops/claw-ops",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "ClawOps: OpenClaw plugin for Moso — manifest 动态注册扩展工具，服务端管理提示词",
   "type": "module",
   "license": "MIT-0",

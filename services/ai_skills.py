@@ -141,6 +141,12 @@ from services.output_wait import (
     normalize_until_contains,
     poll_until_contains,
 )
+from services.terminal_input import (
+    TERMINAL_KEY_PLACEHOLDER_GUIDE,
+    TERMINAL_KEY_PLACEHOLDER_HINT,
+    TERMINAL_PASSWORD_GUIDE,
+    TERMINAL_PASSWORD_HINT,
+)
 from services.terminal_poll import attach_ssh_channel_wait_fields, resolve_terminal_poll_seconds
 from services.workflow_templates import (
     save_template as _save_workflow_template,
@@ -863,14 +869,24 @@ TOOLS = [
                 "向指定 **Web 界面 AI 控制台**注入输入（用户可在 tab 中实时看到）。"
                 "仅可操作 AI 创建的 SSH 控制台。**仅 connected=false / pending 时服务端会拒绝发送**；"
                 "buffer_idle、session_state、can_send_command **仅为参考**（见 terminal_advisory），不拦截命令。"
-                "busy 时仍可直接 send；发完后用 get_terminal_buffer 看结果，长任务可轮询，需中断用 <Ctrl+C>。"
+                "busy 时仍可直接 send；发完后用 get_terminal_buffer 看结果，长任务可轮询。"
+                f"{TERMINAL_KEY_PLACEHOLDER_HINT} "
+                f"{TERMINAL_PASSWORD_HINT} "
                 "同一 host 可有多个 slot；并行任务可 create_console 新开。"
                 "**多条顺序/交互任务**且用户不必看界面时，优先 ssh_channel_*，不必强开 Web tab。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string", "description": "命令或输入；可含 <Ctrl+C>、<Enter>（空回车探测假 busy）；勿与 sudo 同次发密码"},
+                    "text": {
+                        "type": "string",
+                        "description": (
+                            "命令或输入。"
+                            f"{TERMINAL_KEY_PLACEHOLDER_HINT} "
+                            "空回车用 <Enter>（勿用于探测 password 提示）。"
+                            "密码优先 send_service_password；无凭证且用户已提供或知识库有密码时，read 确认提示后可发密码+<Enter>。"
+                        ),
+                    },
                     "slot": {"type": "integer", "description": "控制台槽位（0、1、2…）；不传则按 host_id 或默认 AI slot"},
                     "host_id": {"type": "integer", "description": "可选：按主机 ID 自动选择 AI 控制台 slot"},
                 },
@@ -885,12 +901,16 @@ TOOLS = [
             "description": (
                 "向 **Web AI 控制台**发送命令并**在同一工具调用内等待后读取缓冲**（减少弱网下的 LLM 往返）。"
                 "等价于 send_to_terminal + 等待 wait_seconds + get_terminal_buffer。"
-                "适合 sudo 交互、短命令、安装脚本单步执行。**密码仍用 send_service_password**，勿在 text 里发明文。"
+                "适合 sudo 交互、短命令、TUI 单步（nano/vi 等）。"
+                f"{TERMINAL_PASSWORD_HINT}"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string", "description": "要发送的命令或输入"},
+                    "text": {
+                        "type": "string",
+                        "description": f"要发送的命令或输入。{TERMINAL_KEY_PLACEHOLDER_HINT}",
+                    },
                     "slot": {"type": "integer", "description": "控制台槽位"},
                     "host_id": {"type": "integer", "description": "按主机 ID 选择 slot"},
                     "wait_seconds": {"type": "integer", "description": "发送后等待秒数再读缓冲，默认 1，范围 0～30"},
@@ -1099,7 +1119,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "send_service_password",
-            "description": "向 PTY stdin 注入密码（结果不含明文）。**sudo/su 不总是要密码**：须先 read 确认尾部有 password 提示再调用；无提示则勿调用（免密成功）。默认服务端校验密码提示，无提示会拒绝。方式：① `credential_id`（本机 sudo 须绑定当前 host）；② 本机 sudo/su 推荐 `use_host_login=true`+`host_id`。禁止 send 发明文，禁止 sudo 后默认注入。",
+            "description": (
+                "向 PTY stdin 注入密码（工具返回不含明文，**优先使用**）。"
+                "**sudo/su 不总是要密码**：须先 read 确认尾部有 password 提示再调用；无提示则勿调用（免密成功）。"
+                "方式：① `credential_id`；② 本机 sudo/su 推荐 `use_host_login=true`+`host_id`。"
+                "无可用凭证时：若用户本轮已提供密码或密码在主机知识/记忆中，read 确认提示后可用 send_to_terminal/ssh_channel_send 直接发密码+<Enter>。"
+                "禁止 sudo 后未 read 就注入；禁止空回车探测密码。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1759,7 +1785,8 @@ TOOLS = [
                 "创建 **SSH 通道**（后台 PTY，**不是** Web 控制台 tab）。"
                 "用户说「打开通道」「打开 SSH 通道」「建通道」「用 ssh_channel」时用本工具。"
                 "用户只说「打开终端/打开某主机」且未提「通道」时，应改用 connect_terminal/create_console，**禁止**用本工具。"
-                "用于多条顺序命令、编译、安装、sudo 密码、菜单、vi、Ctrl+C 等。"
+                "用于多条顺序命令、编译、安装、sudo 密码、菜单、vi/nano/less 等 TUI 交互。"
+                f"{TERMINAL_KEY_PLACEHOLDER_HINT} "
                 "流程：create → send → read_lines/has_new → … → close；列表在侧栏「SSH通道管理」。"
                 "Web 会话默认空闲 1800s 关断；集成会话默认 3600s。"
             ),
@@ -1835,12 +1862,22 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "ssh_channel_send",
-            "description": "向 SSH 通道发送内容（命令、控制字符如 Ctrl+C）。**密码须用 send_service_password，勿发明文**。**禁止**用空行/回车「探测」是否等待密码（会被当成空密码提交）。在 channel 内再 SSH 到其它主机时，交互登录建议 `ssh -tt user@host`（强制内层 TTY）；读输出用 read_lines 的 tail_text/pending_partial 判断 password 提示。",
+            "description": (
+                "向 SSH 通道发送内容（命令、TUI 控制键、交互输入）。"
+                f"{TERMINAL_KEY_PLACEHOLDER_HINT} "
+                f"{TERMINAL_PASSWORD_HINT} "
+                "**禁止**用空行/回车「探测」是否等待密码（会被当成空密码提交）。"
+                "channel 内再 SSH 到其它主机时，交互登录建议 `ssh -tt user@host`；"
+                "读输出用 read_lines 的 tail_text/pending_partial 判断 password 提示。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "channel_id": {"type": "integer"},
-                    "content": {"type": "string", "description": "要发送的字符串"},
+                    "content": {
+                        "type": "string",
+                        "description": f"要发送的字符串。{TERMINAL_KEY_PLACEHOLDER_HINT} {TERMINAL_PASSWORD_HINT}",
+                    },
                 },
                 "required": ["channel_id", "content"],
             },
@@ -3531,7 +3568,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_settings",
-            "description": "获取系统设置键值列表（含 ai_api_key、ai_base_url、site_timezone（IANA 显示时区）、ai_model、ai_system_prompt、self_register、login_announcement_md 登录页公告等）。需管理员。",
+            "description": "获取系统设置键值列表（含 ai_api_key、ai_base_url、site_timezone（IANA 显示时区）、ai_model、ai_system_prompt、self_register、system_ai_usage_limit（未配自有 Key 用户的系统共享 Key 试用次数）、login_announcement_md 登录页公告等）。需管理员。",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -3539,7 +3576,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "update_setting",
-            "description": "更新系统设置项（key、value）。需管理员。敏感键（如 ai_api_key）传空值不会覆盖原值。设置 **site_timezone** 时用合法 IANA 名称（如 Asia/Shanghai、Europe/Berlin、UTC），用于全站列表与界面按此时区显示时间。可用 **login_announcement_md** 写入登录页右侧顶部公告，内容支持 Markdown。",
+            "description": "更新系统设置项（key、value）。需管理员。敏感键（如 ai_api_key）传空值不会覆盖原值。设置 **site_timezone** 时用合法 IANA 名称（如 Asia/Shanghai、Europe/Berlin、UTC），用于全站列表与界面按此时区显示时间。**system_ai_usage_limit** 为非负整数，表示未配置自有 Key 用户可使用系统共享 Key 的调用次数上限（新注册用户按当前值生效）。可用 **login_announcement_md** 写入登录页右侧顶部公告，内容支持 Markdown。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -13478,6 +13515,13 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 if not ok_tz:
                     return json.dumps({"success": False, "error": msg_tz}, ensure_ascii=False)
                 value_ = msg_tz
+            if key_ == "system_ai_usage_limit":
+                from services.system_ai_usage import parse_system_ai_usage_limit_value
+
+                ok_lim, parsed_lim = parse_system_ai_usage_limit_value(value_)
+                if not ok_lim:
+                    return json.dumps({"success": False, "error": parsed_lim}, ensure_ascii=False)
+                value_ = str(parsed_lim)
             if (key_.lower().count("key") or key_.lower().count("secret") or key_.lower().count("password")) and (value_ is None or str(value_).strip() in ("", "***")):
                 return json.dumps({"success": True}, ensure_ascii=False)
             db = await get_db()

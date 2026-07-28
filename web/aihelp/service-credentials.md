@@ -118,14 +118,15 @@ add_service_credential(
 4. 有提示时：`list_service_credentials(service=sudo, host_id=当前)`；有本机绑定 id 用它，否则 `send_service_password(use_host_login=true, host_id=当前, target=…)`  
 5. 服务端默认校验密码提示，无提示会拒绝注入  
 6. **禁止** sudo 后默认发密码；**禁止**用其它主机 / 未绑定凭证  
+7. **无凭证时的备选**：用户本轮已提供密码，或密码在主机知识/会话记忆中 → read 确认提示后，可用 `send_to_terminal` / `ssh_channel_send` 发「密码+<Enter>」（勿与 sudo 同次 send）
 
 **跨机 SSH / MySQL 等**
 
 1. send 命令 → read 确认提示  
 2. `list_service_credentials(service=…, address=目标IP, command_hint=…)`  
-3. **有密码提示后**再 `send_service_password(credential_id=…, target=…)`  
+3. **有密码提示后**再 `send_service_password(credential_id=…, target=…)`，或无凭证时按上条直接 send  
 
-**禁止**：`send_to_terminal` / `ssh_channel_send` 发明文密码；向用户索要已保存的密码。
+**禁止**：未 read 就注入；用空回车探测 password；在回复中展示密码。
 
 ---
 

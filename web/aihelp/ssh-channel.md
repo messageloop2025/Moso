@@ -30,7 +30,8 @@
 
 - **PTY**：外层 channel 已分配真实 TTY；channel 内再 SSH 其它主机时，交互登录建议 **`ssh -tt user@host`**。
 - **无换行输出**：`password:`、`Password:` 等提示**常无 `\n`**，会出现在 **`tail_text` / `pending_partial`**，不要因 `lines` 为空就认为无输出。
-- **禁止**用空回车探测密码；检测到密码提示后用 **`send_service_password`**（`target=ssh_channel`，`channel_id=…`），勿 `ssh_channel_send` 发明文。详见 [service-credentials.md](service-credentials.md)。
+- **禁止**用空回车探测密码；检测到 password 提示后**优先** **`send_service_password`**（`target=ssh_channel`，`channel_id=…`）；无凭证且用户/知识库有密码时，read 确认后可 `ssh_channel_send` 发密码+<Enter>。详见 [service-credentials.md](service-credentials.md)。
+- **TUI 控制键**：`ssh_channel_send` 的 `content` 支持 `<Ctrl+X>`、`<Esc>`、方向键、`<F1>` 等占位符（与 Web 控制台相同，见 [terminal.md](terminal.md#控制键占位符ai-send-语法)）。
 - **列表与关闭**：`ssh_channel_list(all_open=true)`；`ssh_channel_get_status` 轻量查 **通/断/闲/忙**；`ssh_channel_close` / `ssh_channel_close_batch`。
 
 ### 通/断与闲/忙（与 Web 控制台一致）

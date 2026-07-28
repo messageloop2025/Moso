@@ -1895,6 +1895,7 @@ def default_application_settings_items() -> list[tuple[str, str]]:
             "login_widget_public_messages_enabled": "true",
             "ai_output_locale": "",
             "credentials_vault_enabled": "false",
+            "system_ai_usage_limit": str(int(getattr(cfg, "SYSTEM_AI_USAGE_LIMIT", 2000))),
         }.items()
     )
 

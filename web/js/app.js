@@ -17105,6 +17105,18 @@ function renderSettings() {
                 + ' <button type="button" class="btn btn-sm btn-primary" id="settingCredentialsVaultEnabledSave" style="margin-left:12px">' + esc(t('settings.admin.save')) + '</button>'
                 + '<p class="text-muted" style="margin:10px 0 0;font-size:12px">' + t('settings.admin.credentialsVaultHint') + '</p>'
                 + '</div></div>';
+            var trialLimitRaw = (keyVal.system_ai_usage_limit || '').trim();
+            if (!trialLimitRaw) trialLimitRaw = '2000';
+            html += '<div class="card" style="margin-bottom:16px"><div class="card-header"><h3>' + esc(t('settings.admin.sharedKeyTrialTitle')) + '</h3></div>'
+                + '<div style="padding:0 16px 16px;font-size:13px">'
+                + '<p class="text-muted" style="margin:0 0 8px">' + t('settings.admin.sharedKeyTrialIntro') + '</p>'
+                + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+                + '<label for="settingSystemAiUsageLimit" style="margin:0">' + esc(t('settings.admin.sharedKeyTrialLabel')) + '</label>'
+                + '<input type="number" class="form-control" id="settingSystemAiUsageLimit" min="0" max="1000000" step="1" value="' + esc(trialLimitRaw) + '" style="max-width:140px">'
+                + '<button type="button" class="btn btn-sm btn-primary" id="settingSystemAiUsageLimitSave">' + esc(t('settings.admin.save')) + '</button>'
+                + '</div>'
+                + '<p class="text-muted" style="margin:10px 0 0;font-size:12px">' + t('settings.admin.sharedKeyTrialHint') + '</p>'
+                + '</div></div>';
             html += '<div class="card" style="margin-bottom:16px"><div class="card-header"><h3>' + esc(t('settings.admin.loginAnnouncementTitle')) + '</h3></div>'
                 + '<div style="padding:0 16px 16px;font-size:13px">'
                 + '<p class="text-muted" style="margin:0 0 8px">' + t('settings.admin.loginAnnouncementIntro') + '</p>'
@@ -17128,6 +17140,7 @@ function renderSettings() {
                 if (emailKeys.indexOf(s.key) !== -1) return false;
                 if (s.key === 'notify_admin_on_user_feedback') return false;
                 if (s.key === 'credentials_vault_enabled') return false;
+                if (s.key === 'system_ai_usage_limit') return false;
                 if (s.key === 'login_announcement_md') return false;
                 return true;
             });
@@ -17285,6 +17298,22 @@ function renderSettings() {
                         .then(function() { showToast(t('toast.saved')); })
                         .catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); })
                         .finally(function() { vaultSave.disabled = false; });
+                };
+            }
+            var trialLimitSave = document.getElementById('settingSystemAiUsageLimitSave');
+            if (trialLimitSave) {
+                trialLimitSave.onclick = function() {
+                    var inp = document.getElementById('settingSystemAiUsageLimit');
+                    var raw = inp ? String(inp.value || '').trim() : '';
+                    if (raw === '' || isNaN(parseInt(raw, 10)) || parseInt(raw, 10) < 0) {
+                        showToast(t('toast.invalidInput') || '请输入非负整数', 'error');
+                        return;
+                    }
+                    trialLimitSave.disabled = true;
+                    API.updateSetting('system_ai_usage_limit', String(parseInt(raw, 10)))
+                        .then(function() { showToast(t('toast.saved')); })
+                        .catch(function(err) { showToast(err.message || t('toast.saveFailed'), 'error'); })
+                        .finally(function() { trialLimitSave.disabled = false; });
                 };
             }
             var annPreviewBtn = document.getElementById('settingLoginAnnouncementPreviewBtn');
