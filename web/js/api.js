@@ -585,6 +585,18 @@ var API = {
         });
     },
 
+    // 事件规则
+    listEventRules: function() { return this.get('/user-skills/event-rules'); },
+    manageEventRule: function(data) { return this.post('/user-skills/event-rules', data); },
+    deleteEventRule: function(id) { return this.delete('/user-skills/event-rules/' + id); },
+    enableEventRule: function(id, enabled) { return this.put('/user-skills/event-rules/' + id + '/toggle', { enabled: !!enabled }); },
+    exportEventRules: function() { return this.get('/user-skills/event-rules/export'); },
+    importEventRules: function(data, overwrite) { return this.post('/user-skills/event-rules/import', { rules: data, overwrite: !!overwrite }); },
+
+    // 中间件配置
+    listMiddlewareConfig: function() { return this.get('/user-skills/middleware-config'); },
+    configureMiddleware: function(data) { return this.post('/user-skills/middleware-config', data); },
+
     // 登录页公开开关（不带鉴权）：决定登录页是否展示「留言板」「公开留言区」
     getPublicLoginWidgets: function() { return this.get('/public/login-widgets'); },
     // 登录页匿名留言板（公开接口，不带鉴权）
@@ -833,6 +845,17 @@ var API = {
                 else if (data.content) onEvent({ content: data.content });
                 else if (data.tool_stream != null) onEvent({ tool_stream: data.tool_stream, tool: data.tool });
                 else if (data.cot) onEvent({ cot: data.cot });
+                else if (data.hook_ask) onEvent({
+                    hook_ask: data.hook_ask,
+                    waiting_for_user: data.waiting_for_user,
+                    stream_status: data.stream_status,
+                });
+                else if (data.strict_confirm) onEvent({
+                    strict_confirm: data.strict_confirm,
+                    ui_action: data.ui_action,
+                    waiting_for_user: data.waiting_for_user,
+                    stream_status: data.stream_status,
+                });
                 else if (data.action) onEvent({
                     action: data.action,
                     tool: data.tool,
@@ -1133,5 +1156,37 @@ var API = {
                 return d;
             });
         });
+    },
+
+    /** Event Rules API */
+    listEventRules: function(opts) {
+        opts = opts || {};
+        var q = [];
+        if (opts.event_name) q.push('event_name=' + encodeURIComponent(opts.event_name));
+        if (typeof opts.enabled === 'boolean') q.push('enabled=' + (opts.enabled ? '1' : '0'));
+        var url = '/user-skills/event-rules' + (q.length ? '?' + q.join('&') : '');
+        return this.get(url);
+    },
+    manageEventRule: function(data) {
+        return this.post('/user-skills/event-rules', data);
+    },
+    enableEventRule: function(id, enabled) {
+        return this.put('/user-skills/event-rules/' + id + '/toggle', { enabled: !!enabled });
+    },
+    deleteEventRule: function(id) {
+        return this.delete('/user-skills/event-rules/' + id);
+    },
+    exportEventRules: function() {
+        return this.get('/user-skills/event-rules/export');
+    },
+    importEventRules: function(configJson, overwrite) {
+        return this.post('/user-skills/event-rules/import', { config_json: configJson, overwrite: !!overwrite });
+    },
+    /** Middleware config */
+    listMiddlewareConfig: function() {
+        return this.get('/user-skills/middleware-config');
+    },
+    configureMiddleware: function(data) {
+        return this.post('/user-skills/middleware-config', data);
     }
 };

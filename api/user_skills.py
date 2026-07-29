@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
@@ -602,6 +604,211 @@ async def read_skill_markdown(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"success": True, "name": slug, "path": rel, **payload}
+# === Event Rules API ===
+
+@router.get("/event-rules")
+async def list_event_rules(
+    event_name: str | None = None,
+    enabled: bool | None = None,
+    user=Depends(get_current_user),
+):
+    """列出当前用户的 Event 规则。"""
+    await _guard_skills(user)
+    db = await get_db()
+    sql = "SELECT * FROM event_rules WHERE user_id = ?"
+    params: list = [int(user["id"])]
+    if event_name:
+        sql += " AND event_name = ?"
+        params.append(event_name)
+    if enabled is not None:
+        sql += " AND enabled = ?"
+        params.append(1 if enabled else 0)
+    sql += " ORDER BY priority DESC, id ASC"
+    rows = [dict(r) for r in (await db.execute_fetchall(sql, tuple(params)) or [])]
+    return {"success": True, "rules": rows, "count": len(rows)}
+
+
+@router.post("/event-rules")
+async def create_or_update_event_rule(
+    body: dict,
+    user=Depends(get_current_user),
+):
+    """新增/更新 Event 规则。"""
+    await _guard_skills(user)
+    db = await get_db()
+    uid = int(user["id"])
+    rid = body.get("id")
+    delete = bool(body.get("delete", False))
+    if delete and rid:
+        await db.execute("DELETE FROM event_rules WHERE id = ? AND user_id = ?", (int(rid), uid))
+        await db.commit()
+        return {"success": True, "deleted": True}
+    event_name = str(body.get("event_name") or "").strip()
+    if not event_name:
+        raise HTTPException(status_code=400, detail="event_name 不能为空")
+    matcher = str(body.get("matcher") or "*").strip()
+    decision = str(body.get("decision") or "allow").strip().lower()
+    if decision not in ("allow", "deny", "ask"):
+        decision = "allow"
+    reason = str(body.get("reason") or "")[:500]
+    priority = int(body.get("priority", 0))
+    ac = body.get("action_config") or {}
+    action_config = json.dumps(ac, ensure_ascii=False) if isinstance(ac, dict) else str(ac)
+    skill_id = body.get("skill_id")
+    enabled = 1 if body.get("enabled", True) is not False else 0
+    if rid:
+        existing = await db.execute_fetchall("SELECT id FROM event_rules WHERE id = ? AND user_id = ?", (int(rid), uid))
+        if not existing:
+            raise HTTPException(status_code=404, detail="规则不存在")
+        await db.execute(
+            "UPDATE event_rules SET event_name=?, matcher=?, decision=?, reason=?, priority=?, action_config=?, enabled=?, skill_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?",
+            (event_name, matcher, decision, reason, priority, action_config, enabled, skill_id, int(rid), uid),
+        )
+    else:
+        existing = await db.execute_fetchall(
+            "SELECT id FROM event_rules WHERE user_id=? AND event_name=? AND matcher=?", (uid, event_name, matcher)
+        )
+        if existing:
+            await db.execute(
+                "UPDATE event_rules SET decision=?, reason=?, priority=?, action_config=?, enabled=?, skill_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (decision, reason, priority, action_config, enabled, skill_id, existing[0]["id"]),
+            )
+            rid = existing[0]["id"]
+        else:
+            cur = await db.execute(
+                "INSERT INTO event_rules (user_id, skill_id, event_name, matcher, decision, reason, priority, action_config, enabled) VALUES (?,?,?,?,?,?,?,?,?)",
+                (uid, skill_id, event_name, matcher, decision, reason, priority, action_config, enabled),
+            )
+            rid = cur.lastrowid
+    await db.commit()
+    return {"success": True, "id": rid}
+
+
+@router.put("/event-rules/{rule_id}/toggle")
+async def toggle_event_rule(
+    rule_id: int,
+    body: dict,
+    user=Depends(get_current_user),
+):
+    """启用/禁用 Event 规则。"""
+    await _guard_skills(user)
+    db = await get_db()
+    uid = int(user["id"])
+    enabled = 1 if body.get("enabled", True) is not False else 0
+    await db.execute("UPDATE event_rules SET enabled=? WHERE id=? AND user_id=?", (enabled, rule_id, uid))
+    await db.commit()
+    return {"success": True, "id": rule_id, "enabled": bool(enabled)}
+
+
+@router.delete("/event-rules/{rule_id}")
+async def delete_event_rule(rule_id: int, user=Depends(get_current_user)):
+    """删除 Event 规则。"""
+    await _guard_skills(user)
+    db = await get_db()
+    uid = int(user["id"])
+    await db.execute("DELETE FROM event_rules WHERE id = ? AND user_id = ?", (rule_id, uid))
+    await db.commit()
+    return {"success": True, "deleted": True}
+
+
+@router.get("/event-rules/export")
+async def export_event_rules(user=Depends(get_current_user)):
+    """导出 Event 规则为 JSON。"""
+    await _guard_skills(user)
+    db = await get_db()
+    uid = int(user["id"])
+    rows = [dict(r) for r in (await db.execute_fetchall(
+        "SELECT event_name, matcher, decision, reason, priority, action_config, enabled FROM event_rules WHERE user_id = ? ORDER BY priority DESC, id ASC",
+        (uid,),
+    ) or [])]
+    return {"success": True, "rules": rows, "count": len(rows)}
+
+
+@router.post("/event-rules/import")
+async def import_event_rules(body: dict, user=Depends(get_current_user)):
+    """从 JSON 导入 Event 规则。"""
+    await _guard_skills(user)
+    db = await get_db()
+    uid = int(user["id"])
+    raw = body.get("config_json", "")
+    try:
+        rules = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        raise HTTPException(status_code=400, detail="config_json 格式不正确")
+    if not isinstance(rules, list):
+        raise HTTPException(status_code=400, detail="config_json 必须是数组")
+    overwrite = bool(body.get("overwrite", False))
+    imported = 0
+    skipped = 0
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        ev = str(rule.get("event_name") or "").strip()
+        if not ev:
+            continue
+        matcher = str(rule.get("matcher") or "*").strip()
+        decision = str(rule.get("decision") or "allow").strip().lower()
+        if decision not in ("allow", "deny", "ask"):
+            decision = "allow"
+        existing = await db.execute_fetchall(
+            "SELECT id FROM event_rules WHERE user_id=? AND event_name=? AND matcher=?", (uid, ev, matcher)
+        )
+        if existing:
+            if overwrite:
+                await db.execute(
+                    "UPDATE event_rules SET decision=?, reason=?, priority=?, action_config=?, enabled=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (decision, str(rule.get("reason", ""))[:500], int(rule.get("priority", 0)),
+                     str(rule.get("action_config", "{}")), 1 if rule.get("enabled", True) is not False else 0,
+                     existing[0]["id"]),
+                )
+                imported += 1
+            else:
+                skipped += 1
+        else:
+            await db.execute(
+                "INSERT INTO event_rules (user_id, event_name, matcher, decision, reason, priority, action_config, enabled) VALUES (?,?,?,?,?,?,?,?)",
+                (uid, ev, matcher, decision, str(rule.get("reason", ""))[:500],
+                 int(rule.get("priority", 0)), str(rule.get("action_config", "{}")),
+                 1 if rule.get("enabled", True) is not False else 0),
+            )
+            imported += 1
+    await db.commit()
+    return {"success": True, "imported": imported, "skipped": skipped}
+
+
+# === Middleware Config API ===
+
+@router.get("/middleware-config")
+async def list_middleware_config(user=Depends(get_current_user)):
+    """列出当前用户的中间件配置。"""
+    await _guard_skills(user)
+    db = await get_db()
+    uid = int(user["id"])
+    rows = [dict(r) for r in (await db.execute_fetchall(
+        "SELECT * FROM user_middleware_config WHERE user_id = ? ORDER BY middleware_name", (uid,)
+    ) or [])]
+    return {"success": True, "configs": rows, "count": len(rows)}
+
+
+@router.post("/middleware-config")
+async def configure_middleware(body: dict, user=Depends(get_current_user)):
+    """配置中间件。"""
+    await _guard_skills(user)
+    db = await get_db()
+    uid = int(user["id"])
+    mw_name = str(body.get("middleware_name") or "").strip()
+    if not mw_name:
+        raise HTTPException(status_code=400, detail="middleware_name 不能为空")
+    enabled = 1 if body.get("enabled", True) is not False else 0
+    conf = body.get("config_json") or {}
+    config_json = json.dumps(conf, ensure_ascii=False) if isinstance(conf, dict) else str(conf)
+    await db.execute(
+        "INSERT INTO user_middleware_config (user_id, middleware_name, enabled, config_json) VALUES (?,?,?,?) ON CONFLICT(user_id, middleware_name) DO UPDATE SET enabled=?, config_json=?",
+        (uid, mw_name, enabled, config_json, enabled, config_json),
+    )
+    await db.commit()
+    return {"success": True, "middleware_name": mw_name, "enabled": bool(enabled)}
+    return {"success": True, "middleware_name": mw_name, "enabled": bool(enabled)}
 
 
 @router.get("/{skill_id}")
@@ -660,3 +867,5 @@ async def delete_my_skill(skill_id: int, remove_files: bool = False, user=Depend
     if not ok:
         raise HTTPException(status_code=404, detail="Skill 不存在")
     return {"success": True}
+
+

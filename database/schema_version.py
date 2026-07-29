@@ -1,4 +1,5 @@
-"""数据库结构版本管理：单行表记录当前 schema 版本，供升级模块使用。"""
+"""数据库结构版本管理：单行表记录当前 schema 版本，供升级模块使用。
+当前最新版本：44（迁移 043 新增 event_rules / user_middleware_config 表）"""
 import aiosqlite
 
 SCHEMA_VERSION_TABLE = """

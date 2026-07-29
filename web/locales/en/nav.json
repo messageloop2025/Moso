@@ -21,6 +21,7 @@
     "mcpConfig": "MCP Servers",
     "modelConfig": "Model Config",
     "skills": "SKILLS Config",
+    "events": "Event Rules",
     "logs": "Audit Log",
     "securityAudit": "Security Audit",
     "productIntro": "Product Tour",

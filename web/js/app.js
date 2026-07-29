@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 毛竹（Moso）主应用 - 页面渲染（参考 IOTHub 布局与交互）
  */
 /** 与 config.EDGEOPS_TEMP_SESSION_PREFIX 一致；服务端自动生成的默认会话名以前缀识别（自动总结标题等） */
@@ -81,6 +81,7 @@ function edgeopsBuildLayoutHtml() {
         + '<div class="nav-item" data-href="/hosts"><span class="icon">&#9881;</span><span class="nav-item-text">' + t('nav.hosts') + '</span></div>'
         + '<div class="nav-item" data-href="/mcp-servers"><span class="icon">&#9889;</span><span class="nav-item-text">' + t('nav.mcpConfig') + '</span></div>'
         + (userSkillsEnabled() ? '<div class="nav-item" data-href="/skills"><span class="icon">&#9734;</span><span class="nav-item-text">' + t('nav.skills') + '</span></div>' : '')
+        + (userSkillsEnabled() ? '<div class="nav-item" data-href="/events"><span class="icon">&#9889;</span><span class="nav-item-text">' + t('nav.events') + '</span></div>' : '')
         + '<div class="nav-item" data-href="/maintenance-history"><span class="icon">&#128203;</span><span class="nav-item-text">' + t('nav.maintenanceHistory') + '</span></div>'
         + '<div class="nav-item" data-href="/best-practices"><span class="icon">&#128211;</span><span class="nav-item-text">' + t('nav.bestPractices') + '</span></div>'
         + '<div class="nav-item" data-href="/files"><span class="icon">&#128193;</span><span class="nav-item-text">' + t('nav.filesystem') + '</span></div>'
@@ -1772,6 +1773,195 @@ function edgeopsShowStrictConfirmModal(ua, sessionId, opts) {
     return overlay;
 }
 
+/** ──────────────── Event Hook 确认模态（独立弹窗，不经 AI 聊天通道） ──────────────── */
+
+/**
+ * 关闭 Hook 确认模态
+ */
+function edgeopsCloseHookAskModal() {
+    var el = document.getElementById('edgeopsHookAskOverlay');
+    if (el) {
+        if (typeof el._edgeopsHookAskKeyHandler === 'function') {
+            try { document.removeEventListener('keydown', el._edgeopsHookAskKeyHandler, true); } catch (_k) {}
+            el._edgeopsHookAskKeyHandler = null;
+        }
+        try { el.remove(); } catch (_e) {}
+    }
+}
+
+/**
+ * 清除 Hook 等待状态
+ */
+function edgeopsClearHookAskAwaitingState(replyWrap, setStreamingUI, resumeActive) {
+    if (replyWrap) {
+        replyWrap._edgeopsPausedForHookAsk = false;
+        if (replyWrap._edgeopsStreamPhase === 'awaiting_hook_confirm') {
+            replyWrap._edgeopsStreamPhase = resumeActive ? 'active' : '';
+        }
+    }
+    if (typeof setStreamingUI === 'function') {
+        setStreamingUI(resumeActive ? true : false);
+    }
+}
+
+/**
+ * 弹出 Hook 确认模态（独立于 AI 聊天的弹出框）。
+ * ua: { tool, reason, message }
+ */
+function edgeopsShowHookAskModal(ua, sessionId, opts) {
+    opts = opts || {};
+    if (!ua) return null;
+    edgeopsCloseHookAskModal();
+    var tool = (ua.tool || '').toString();
+    var reason = (ua.reason || ua.message || '').toString().trim();
+
+    var overlay = document.createElement('div');
+    overlay.id = 'edgeopsHookAskOverlay';
+    overlay.className = 'modal-overlay edgeops-strict-confirm-overlay';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-labelledby', 'edgeopsHookAskTitle');
+
+    var modal = document.createElement('div');
+    modal.className = 'modal edgeops-strict-confirm-modal';
+
+    var header = document.createElement('div');
+    header.className = 'modal-header edgeops-strict-confirm-header';
+    var title = document.createElement('h3');
+    title.id = 'edgeopsHookAskTitle';
+    title.textContent = typeof t === 'function' ? t('hostAi.hookAskTitle') : 'Event Hook \u00b7 \u6267\u884C\u786E\u8BA4';
+    header.appendChild(title);
+    modal.appendChild(header);
+
+    var body = document.createElement('div');
+    body.className = 'edgeops-strict-confirm-body';
+    function addRow(label, value, isInline) {
+        var row = document.createElement('div');
+        row.className = 'edgeops-strict-confirm-row';
+        if (isInline) row.className += ' edgeops-strict-confirm-inline';
+        var lbl = document.createElement('span');
+        lbl.className = 'edgeops-strict-confirm-label';
+        lbl.textContent = label;
+        row.appendChild(lbl);
+        var val = document.createElement(isInline ? 'code' : 'span');
+        val.className = isInline ? 'edgeops-strict-confirm-command' : 'edgeops-strict-confirm-value';
+        val.textContent = value;
+        row.appendChild(val);
+        body.appendChild(row);
+    }
+    addRow(
+        typeof t === 'function' ? t('hostAi.strictConfirmTool') : '\u5DE5\u5177',
+        tool,
+        true
+    );
+    if (reason) addRow(typeof t === 'function' ? t('hostAi.strictConfirmReason') : '\u539F\u56E0', reason);
+
+    modal.appendChild(body);
+
+    var actions = document.createElement('div');
+    actions.className = 'edgeops-strict-confirm-actions';
+    var locked = false;
+    function submit(choice) {
+        if (locked) return;
+        locked = true;
+        edgeopsCloseHookAskModal();
+        edgeopsClearHookAskAwaitingState(opts.replyWrap, opts.setStreamingUI, true);
+        if (sessionId && typeof API !== 'undefined' && API.pushAIRuntimeControl) {
+            API.pushAIRuntimeControl(sessionId, { action: 'hook_choice', message: choice })
+                .catch(function(err) {
+                    if (typeof showToast === 'function') {
+                        showToast((err && err.message) || (typeof t === 'function' ? t('toast.requestFailed') : '\u8BF7\u6C42\u5931\u8D25'), 'error');
+                    }
+                });
+        }
+        if (typeof opts.onDone === 'function') opts.onDone(choice);
+    }
+
+    var allowLabel = typeof t === 'function' ? t('hostAi.hookAskAllow') : '\u5141\u8BB8';
+    var denyLabel = typeof t === 'function' ? t('hostAi.hookAskDeny') : '\u62D2\u7EDD';
+
+    var allowBtn = document.createElement('button');
+    allowBtn.type = 'button';
+    allowBtn.className = 'btn btn-primary edgeops-strict-confirm-btn style-primary';
+    allowBtn.textContent = allowLabel;
+    allowBtn.title = allowLabel + ' (Enter)';
+    allowBtn.onclick = function() { submit('allow'); };
+    actions.appendChild(allowBtn);
+
+    var denyBtn = document.createElement('button');
+    denyBtn.type = 'button';
+    denyBtn.className = 'btn btn-danger edgeops-strict-confirm-btn style-danger';
+    denyBtn.textContent = denyLabel;
+    denyBtn.title = denyLabel + ' (Esc)';
+    denyBtn.onclick = function() { submit('deny'); };
+    actions.appendChild(denyBtn);
+
+    modal.appendChild(actions);
+    overlay.appendChild(modal);
+
+    function onHookKey(ev) {
+        if (locked || !document.getElementById('edgeopsHookAskOverlay')) return;
+        if (ev.isComposing || ev.keyCode === 229) return;
+        var key = ev.key || '';
+        if (key === 'Escape' || ev.keyCode === 27) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            submit('deny');
+            return;
+        }
+        if (key === 'Enter' || ev.keyCode === 13) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            submit('allow');
+        }
+    }
+    overlay._edgeopsHookAskKeyHandler = onHookKey;
+    document.addEventListener('keydown', onHookKey, true);
+    document.body.appendChild(overlay);
+    try {
+        allowBtn.focus();
+    } catch (_f) {}
+    return overlay;
+}
+
+/**
+ * 处理 SSE 中的 Hook 确认事件。命中则弹独立模态并进入等待态，返回 true。
+ */
+function edgeopsHandleHookAskStreamEvent(ev, sessionId, setStreamingUI, replyWrap) {
+    if (!ev) return false;
+    // 用户已选择：后端回执后清等待态
+    if (ev.runtime_control && ev.runtime_control.accepted && ev.runtime_control.action === 'hook_choice') {
+        if (replyWrap && replyWrap._edgeopsPausedForHookAsk) {
+            edgeopsClearHookAskAwaitingState(replyWrap, setStreamingUI, true);
+        }
+        return false;
+    }
+    var ua = null;
+    if (ev.hook_ask && typeof ev.hook_ask === 'object') {
+        ua = ev.hook_ask;
+    }
+    if (!ua && ev.waiting_for_user && ev.waiting_for_user.kind === 'hook_ask_confirm') {
+        ua = {
+            tool: ev.waiting_for_user.tool || '',
+            reason: ev.waiting_for_user.reason || '',
+        };
+    }
+    if (ua) {
+        edgeopsShowHookAskModal(ua, sessionId, {
+            replyWrap: replyWrap,
+            setStreamingUI: setStreamingUI
+        });
+        if (replyWrap) {
+            replyWrap._edgeopsPausedForHookAsk = true;
+            replyWrap._edgeopsStreamPhase = 'awaiting_hook_confirm';
+        }
+        if (typeof setStreamingUI === 'function') setStreamingUI('awaiting');
+        return true;
+    }
+    return false;
+}
+
+/* ──────────────── 严格确认流程续 ──────────────── */
 /**
  * 处理 SSE 中的严格确认事件。命中则弹独立模态并进入等待态，返回 true。
  */
@@ -10575,7 +10765,9 @@ function initHostAIPanel(hostId, hostName, panel, hostInfo) {
         API.chatStream(msg, sessionId, function(ev) {
             if (ev.session_id != null) { sessionId = ev.session_id; edgeopsSetMessagePersistenceMeta(replyMsgEl, sessionId, null, replyMsgEl && replyMsgEl._edgeopsPersistContent); }
             edgeopsOnChatStreamRunStats(replyMsgEl, ev);
-            if (edgeopsHandleStrictConfirmStreamEvent(ev, sessionId, setStreamingUI, replyWrap)) {
+            if (edgeopsHandleHookAskStreamEvent(ev, sessionId, setStreamingUI, replyWrap)) {
+                // Event Hook 确认模态已处理
+            } else if (edgeopsHandleStrictConfirmStreamEvent(ev, sessionId, setStreamingUI, replyWrap)) {
                 // 严格模式独立确认模态已处理
             } else if (ev.ui_action) {
                 if (ev.ui_action.type === 'pending_command' || ev.ui_action.action === 'pending_command') {
@@ -12903,7 +13095,9 @@ function renderAIPage() {
         API.chatStream(msg, sessionId, function(ev) {
             if (ev.session_id != null) { sessionId = ev.session_id; edgeopsSetMessagePersistenceMeta(replyMsgEl, sessionId, null, replyMsgEl && replyMsgEl._edgeopsPersistContent); }
             edgeopsOnChatStreamRunStats(replyMsgEl, ev);
-            if (edgeopsHandleStrictConfirmStreamEvent(ev, sessionId, setStreamingUI, replyWrap)) {
+            if (edgeopsHandleHookAskStreamEvent(ev, sessionId, setStreamingUI, replyWrap)) {
+                // Event Hook 确认模态已处理
+            } else if (edgeopsHandleStrictConfirmStreamEvent(ev, sessionId, setStreamingUI, replyWrap)) {
                 // 严格模式独立确认模态已处理
             } else if (ev.ui_action) {
                 if (ev.ui_action.type === 'pending_command' || ev.ui_action.action === 'pending_command') {
@@ -16432,6 +16626,261 @@ function renderUserSkillsPage() {
     loadUserSkillsPage({ autoSync: true });
 }
 
+// ── 事件规则页 ──
+var _eventRulesCache = [];
+var _eventFilterGroup = 'all';
+
+var EVENT_GROUP_LABELS = {};
+(function() {
+    var labels = {};
+    labels.agent_lifecycle = t('events.groupAgent');
+    labels.step_turn = t('events.groupStep');
+    labels.tool = t('events.groupTool');
+    labels.llm = t('events.groupLLM');
+    labels.session = t('events.groupSession');
+    labels.mcp = t('events.groupMCP');
+    EVENT_GROUP_LABELS = labels;
+})();
+
+var EVENT_TO_GROUP_MAP = {
+    'agent:start': 'agent_lifecycle', 'agent:complete': 'agent_lifecycle', 'agent:error': 'agent_lifecycle',
+    'agent:cancel': 'agent_lifecycle', 'agent:pause': 'agent_lifecycle', 'agent:resume': 'agent_lifecycle',
+    'agent:step:start': 'step_turn', 'agent:step:end': 'step_turn',
+    'agent:turn:start': 'step_turn', 'agent:turn:end': 'step_turn',
+    'agent:tool:pre': 'tool', 'agent:tool:post': 'tool', 'agent:tool:error': 'tool',
+    'agent:llm:pre': 'llm', 'agent:llm:post': 'llm', 'agent:llm:chunk': 'llm', 'agent:token': 'llm',
+    'session:create': 'session', 'session:delete': 'session',
+    'mcp:pre': 'mcp'
+};
+
+function _showEventRuleForm(rule) {
+    var isEdit = !!rule;
+    var title = isEdit ? t('events.editRule') : t('events.addRule');
+    var body = ''
+        + '<div class="form-group"><label>' + esc(t('events.eventName')) + '</label>'
+        + '<select id="evFormEvent" class="form-control">'
+        + '<option value="">' + esc(t('events.selectEvent')) + '</option>';
+
+    var groups = {
+        'AgentLifecycle': t('events.groupAgent'),
+        'StepTurn': t('events.groupStep'),
+        'Tool': t('events.groupTool'),
+        'LLM': t('events.groupLLM'),
+        'Session': t('events.groupSession'),
+        'MCP': t('events.groupMCP')
+    };
+    Object.keys(groups).forEach(function(g) {
+        body += '<optgroup label="' + esc(groups[g]) + '">';
+        var events = [];
+        if (g === 'AgentLifecycle') events = ['agent:start', 'agent:complete', 'agent:error', 'agent:cancel', 'agent:pause', 'agent:resume'];
+        else if (g === 'StepTurn') events = ['agent:step:start', 'agent:step:end', 'agent:turn:start', 'agent:turn:end'];
+        else if (g === 'Tool') events = ['agent:tool:pre', 'agent:tool:post', 'agent:tool:error'];
+        else if (g === 'LLM') events = ['agent:llm:pre', 'agent:llm:post', 'agent:llm:chunk', 'agent:token'];
+        else if (g === 'Session') events = ['session:create', 'session:delete'];
+        else if (g === 'MCP') events = ['mcp:pre'];
+        events.forEach(function(ev) {
+            var sel = (rule && rule.event_name === ev) ? ' selected' : '';
+            body += '<option value="' + esc(ev) + '"' + sel + '>' + esc(ev) + '</option>';
+        });
+        body += '</optgroup>';
+    });
+    body += '</select></div>'
+        + '<div class="form-group"><label>' + esc(t('events.ruleName')) + '</label>'
+        + '<input id="evFormName" class="form-control" placeholder="' + esc(t('events.ruleNamePlaceholder')) + '" value="' + esc(rule ? rule.event_name || '' : '') + '">'
+        + '</div>'
+        + '<div class="form-group"><label>' + esc(t('events.description')) + '</label>'
+        + '<textarea id="evFormDesc" class="form-control" rows="2">' + esc(rule ? rule.reason || '' : '') + '</textarea>'
+        + '</div>'
+        + '<div class="form-group"><label>' + esc(t('events.action')) + '</label>'
+        + '<select id="evFormAction" class="form-control">';
+    var actions = ['allow', 'ask', 'deny'];
+    actions.forEach(function(a) {
+        var sel = (rule && rule.decision === a) ? ' selected' : '';
+        body += '<option value="' + esc(a) + '"' + sel + '>' + esc(a) + '</option>';
+    });
+    body += '</select></div>'
+        + '<div class="form-group"><label>' + esc(t('events.matcher')) + ' (Regex)</label>'
+        + '<input id="evFormMatcher" class="form-control" placeholder=".*" value="' + esc(rule ? rule.matcher || '' : '') + '">'
+        + '</div>'
+        + '<div class="form-group"><label>' + esc(t('events.enabled')) + '</label>'
+        + '<input type="checkbox" id="evFormEnabled"' + (rule ? (rule.enabled !== false ? ' checked' : '') : ' checked') + '>'
+        + '</div>';
+
+    showModal(title, body, function(modalEl) {
+        document.getElementById('evFormEvent').focus();
+    }, function() {
+        var ev = document.getElementById('evFormEvent').value.trim();
+        if (!ev) { showToast(t('events.eventRequired'), 'warning'); return false; }
+        var data = {
+            event_name: ev,
+            name: document.getElementById('evFormName').value.trim() || ev,
+            description: document.getElementById('evFormDesc').value.trim(),
+            decision: document.getElementById('evFormAction').value,
+            matcher: document.getElementById('evFormMatcher').value.trim() || '*',
+            enabled: document.getElementById('evFormEnabled').checked,
+            priority: 0
+        };
+        if (isEdit) data.id = rule.id;
+        API.manageEventRule(data).then(function() {
+            showToast(isEdit ? t('events.ruleUpdated') : t('events.ruleAdded'));
+            renderEventsPage();
+        }).catch(function(err) { showToast(err.message || t('api.requestFailed'), 'error'); });
+    });
+}
+
+function importEventRules() {
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = function() {
+        var file = input.files[0];
+        if (!file) return;
+        var reader = new FileReader();
+        reader.onload = function() {
+            try {
+                var data = JSON.parse(reader.result);
+                var rules = Array.isArray(data) ? data : (data.rules || []);
+                if (!rules.length) { showToast(t('events.noRulesInFile'), 'warning'); return; }
+                var ow = confirm(t('events.importOverwriteConfirm'));
+                API.importEventRules(rules, ow).then(function() {
+                    showToast(t('events.importSuccess'));
+                    renderEventsPage();
+                }).catch(function(err) { showToast(err.message || t('api.requestFailed'), 'error'); });
+            } catch (e) { showToast(t('events.invalidJson'), 'error'); }
+        };
+        reader.readAsText(file);
+    };
+    input.click();
+}
+
+function renderEventsPage() {
+    renderLayout();
+    var el = getPageEl();
+    var groupOpts = '';
+    Object.keys(EVENT_GROUP_LABELS).forEach(function(k) {
+        var sel = (_eventFilterGroup === k) ? ' selected' : '';
+        groupOpts += '<option value="' + esc(k) + '"' + sel + '>' + esc(EVENT_GROUP_LABELS[k]) + '</option>';
+    });
+    el.innerHTML = '<div class="topbar"><h2>' + esc(t('events.title')) + '</h2><div class="topbar-actions">'
+        + '<button type="button" class="btn btn-primary" id="evAddBtn">' + esc(t('events.addRule')) + '</button>'
+        + '<button type="button" class="btn" id="evImportBtn">' + esc(t('events.importRules')) + '</button>'
+        + '<button type="button" class="btn" id="evExportBtn">' + esc(t('events.exportRules')) + '</button>'
+        + '</div></div>'
+        + '<div class="page-content">'
+        + '<div class="card"><div class="card-header" style="display:flex;align-items:center;gap:12px">'
+        + '<h3 style="margin:0">' + esc(t('events.filterGroup')) + '</h3>'
+        + '<select id="evFilterGroup" class="form-control form-control-sm" style="width:auto">'
+        + '<option value="all">' + esc(t('events.allGroups')) + '</option>'
+        + groupOpts
+        + '</select></div>'
+        + '<div class="card-body">'
+        + '<div id="evRulesTable"><p>' + esc(t('common.loading')) + '</p></div>'
+        + '</div></div></div>';
+
+    document.getElementById('evAddBtn').onclick = function() { _showEventRuleForm(null); };
+    document.getElementById('evImportBtn').onclick = importEventRules;
+    document.getElementById('evExportBtn').onclick = function() {
+        API.exportEventRules().then(function(data) {
+            var blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            var a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'event-rules.json';
+            a.click();
+            URL.revokeObjectURL(a.href);
+        }).catch(function(err) { showToast(err.message || t('api.requestFailed'), 'error'); });
+    };
+
+    document.getElementById('evFilterGroup').onchange = function() {
+        _eventFilterGroup = this.value;
+        _renderEventRulesTable();
+    };
+
+    API.listEventRules().then(function(rules) {
+        _eventRulesCache = Array.isArray(rules) ? rules : (rules && rules.rules ? rules.rules : []);
+        _renderEventRulesTable();
+    }).catch(function(err) {
+        document.getElementById('evRulesTable').innerHTML = '<p class="text-muted">' + esc(err.message || t('api.requestFailed')) + '</p>';
+    });
+}
+
+function _renderEventRulesTable() {
+    var container = document.getElementById('evRulesTable');
+    if (!container) return;
+    var rules = _eventRulesCache;
+    if (_eventFilterGroup !== 'all') {
+        rules = rules.filter(function(r) {
+            var ev = r.event_name || '';
+            return (EVENT_TO_GROUP_MAP[ev] || '') === _eventFilterGroup;
+        });
+    }
+
+    if (!rules.length) {
+        container.innerHTML = '<p class="empty-state">' + esc(t('events.noRules')) + '</p>';
+        return;
+    }
+
+    var html = '<table class="table"><thead><tr>'
+        + '<th>' + esc(t('events.name')) + '</th>'
+        + '<th>' + esc(t('events.event')) + '</th>'
+        + '<th>' + esc(t('events.action')) + '</th>'
+        + '<th>' + esc(t('events.matcher')) + '</th>'
+        + '<th>' + esc(t('events.enabledCol')) + '</th>'
+        + '<th>' + esc(t('events.actions')) + '</th>'
+        + '</tr></thead><tbody>';
+
+    rules.forEach(function(r) {
+        var enabled = (r.enabled === 1 || r.enabled === true);
+        html += '<tr>'
+            + '<td>' + esc(r.event_name || '') + (r.reason ? '<br><small class="text-muted">' + esc(r.reason) + '</small>' : '') + '</td>'
+            + '<td><code>' + esc(r.event_name || '') + '</code></td>'
+            + '<td><span class="badge badge-' + (r.decision === 'deny' ? 'danger' : r.decision === 'allow' ? 'success' : 'info') + '">' + esc(r.decision || '') + '</span></td>'
+            + '<td><code>' + esc(r.matcher || '*') + '</code></td>'
+            + '<td><label class="switch"><input type="checkbox" class="evToggle" data-id="' + r.id + '"' + (enabled ? ' checked' : '') + '><span class="slider"></span></label></td>'
+            + '<td>'
+            + '<button type="button" class="btn btn-xs evEditBtn" data-id="' + r.id + '">' + esc(t('common.edit') || 'Edit') + '</button> '
+            + '<button type="button" class="btn btn-xs btn-outline evDelBtn" data-id="' + r.id + '">' + esc(t('common.delete') || 'Delete') + '</button>'
+            + '</td>'
+            + '</tr>';
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
+
+    container.querySelectorAll('.evToggle').forEach(function(cb) {
+        cb.onchange = function() {
+            var id = parseInt(this.getAttribute('data-id'), 10);
+            var en = this.checked;
+            API.enableEventRule(id, en).then(function() {
+                var rule = _eventRulesCache.find(function(r) { return r.id === id; });
+                if (rule) rule.enabled = en;
+            }).catch(function(err) {
+                showToast(err.message || t('api.requestFailed'), 'error');
+                cb.checked = !en;
+            });
+        };
+    });
+
+    container.querySelectorAll('.evEditBtn').forEach(function(btn) {
+        btn.onclick = function() {
+            var id = parseInt(this.getAttribute('data-id'), 10);
+            var rule = _eventRulesCache.find(function(r) { return r.id === id; });
+            if (rule) _showEventRuleForm(rule);
+        };
+    });
+
+    container.querySelectorAll('.evDelBtn').forEach(function(btn) {
+        btn.onclick = function() {
+            var id = parseInt(this.getAttribute('data-id'), 10);
+            var rule = _eventRulesCache.find(function(r) { return r.id === id; });
+            var name = rule ? (rule.event_name || '#' + id) : '#' + id;
+            if (!confirm(t('events.deleteConfirm').replace('{name}', name))) return;
+            API.deleteEventRule(id).then(function() {
+                _eventRulesCache = _eventRulesCache.filter(function(r) { return r.id !== id; });
+                _renderEventRulesTable();
+            }).catch(function(err) { showToast(err.message || t('api.requestFailed'), 'error'); });
+        };
+    });
+}
+
 // ── 模型配置（多 Profile + 快速切换）──
 var _mcConfigMeta = null;
 var _aiProfileQuickSwitchBusy = false;
@@ -17798,7 +18247,9 @@ function renderLocalPage() {
         API.chatStream(msg, currentSessionId, function(ev) {
             if (ev.session_id != null) { currentSessionId = ev.session_id; edgeopsSetMessagePersistenceMeta(replyMsgEl, currentSessionId, null, replyMsgEl && replyMsgEl._edgeopsPersistContent); }
             edgeopsOnChatStreamRunStats(replyMsgEl, ev);
-            if (edgeopsHandleStrictConfirmStreamEvent(ev, currentSessionId, setLocalStreamingUI, replyWrap)) {
+            if (edgeopsHandleHookAskStreamEvent(ev, currentSessionId, setLocalStreamingUI, replyWrap)) {
+                // Event Hook 确认模态已处理
+            } else if (edgeopsHandleStrictConfirmStreamEvent(ev, currentSessionId, setLocalStreamingUI, replyWrap)) {
                 // 严格模式独立确认模态已处理
             } else if (ev.ui_action && (ev.ui_action.type === 'pending_command' || ev.ui_action.action === 'pending_command')) {
                 var _pc3 = edgeopsRenderPendingCommandCard(ev.ui_action);
@@ -20235,6 +20686,7 @@ Router.register('/logs', renderLogs);
 Router.register('/security-audit', renderSecurityAuditPage);
 Router.register('/triggered-tasks', renderTriggeredTasksPage);
 Router.register('/scheduled-tasks', renderScheduledTasksPage);
+Router.register('/events', renderEventsPage);
 
 document.addEventListener('edgeops-page-restored', function(e) {
     var path = e.detail && e.detail.path;

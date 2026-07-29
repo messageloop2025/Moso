@@ -9,7 +9,7 @@ PRODUCT_NAME_ZH = "毛竹"
 PRODUCT_NAME_EN = "Moso"
 PRODUCT_DISPLAY = f"{PRODUCT_NAME_ZH}（{PRODUCT_NAME_EN}）"  # AI 提示词中的产品指称
 
-VERSION = os.getenv("EDGEOPS_VERSION", "1.8.8")
+VERSION = os.getenv("EDGEOPS_VERSION", "1.9.0")
 
 # 数据库 / Database
 DATABASE_PATH = os.getenv("EDGEOPS_DB", str(BASE_DIR / "edgeops.db"))
@@ -334,3 +334,19 @@ HTTP_TOOL_DOWNLOAD_CHUNK_SIZE = int(os.getenv("EDGEOPS_HTTP_TOOL_DOWNLOAD_CHUNK_
 # 反向代理后保留 X-Forwarded-Proto（避免 /mcp 等重定向降级为 http）
 TRUST_PROXY_HEADERS = os.getenv("EDGEOPS_TRUST_PROXY_HEADERS", "true").strip().lower() in ("1", "true", "yes")
 TRUSTED_PROXY_HOSTS = os.getenv("EDGEOPS_TRUSTED_PROXY_HOSTS", "*").strip() or "*"
+
+# === EventBus 事件总线 ===
+EVENTBUS_ENABLED = os.getenv("EDGEOPS_EVENTBUS_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+EVENTBUS_MAX_LISTENERS = int(os.getenv("EDGEOPS_EVENTBUS_MAX_LISTENERS", "50"))
+
+# === Middleware 中间件管道 ===
+MIDDLEWARE_ENABLED = os.getenv("EDGEOPS_MIDDLEWARE_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+MIDDLEWARE_RATE_LIMIT_PER_SESSION = max(0, int(os.getenv("EDGEOPS_MIDDLEWARE_RATE_LIMIT_PER_SESSION", "0")))
+
+# === Agent 状态机 ===
+AGENT_STATE_MACHINE_ENABLED = os.getenv("EDGEOPS_AGENT_STATE_MACHINE_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+AGENT_STEP_TIMEOUT_SEC = max(10, int(os.getenv("EDGEOPS_AGENT_STEP_TIMEOUT_SEC", "300")))
+AGENT_TOTAL_TIMEOUT_SEC = max(60, int(os.getenv("EDGEOPS_AGENT_TOTAL_TIMEOUT_SEC", "3600")))
+
+# === 流式回调 ===
+STREAMING_CALLBACK_ENABLED = os.getenv("EDGEOPS_STREAMING_CALLBACK_ENABLED", "true").strip().lower() in ("1", "true", "yes")

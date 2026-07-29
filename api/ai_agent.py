@@ -94,6 +94,35 @@ _USER_MCP_SYSTEM_HINT = (
     "向用户展示图片须用 `fetched_assets[].local_url` 或 `markdown_image`（形如 `![描述](/api/ai/attachments/<uuid>)`）；前端会自动加鉴权并内联显示，勿直接贴 OSS source_url。"
 )
 
+_EVENT_MIDDLEWARE_SYSTEM_HINT = (
+    "\n\n**Event 事件引擎与 Middleware 中间件**："
+    "可在「Events」管理页或对话中通过工具全面配置 Agent 的事件规则和中间件管线。\n"
+    "- **查看可用 Hook 点**（list_available_events）：列出所有事件及分组，`active=true` 表示该事件当前有实际触发（规则生效）；"
+    "`active=false` 表示 Phase 2 规划中（规则暂不触发）。新建规则务必只选 active=true 的事件。\n"
+    "- **Event 规则**（manage_event_rule / list_event_rules / enable_event_rule / export_event_config / import_event_config）："
+    "按事件名+matcher 配置 allow/deny/ask 规则。**必须先调用 list_available_events** 确认事件名和 active 状态。"
+    "每条规则可附加 action_config（如 webhook_url 实现事件回调通知）。\n"
+    "- **当前生效的 hook 类型**：agent:tool:pre（工具执行前）、agent:tool:post/error（工具执行后）、"
+    "mcp:pre（MCP 工具执行前）、agent:step:start/end（每步开始/结束）、agent:start/complete/error（生命周期）、"
+    "session:create/delete（会话创建/删除）。"
+    "工具执行前后的 hook 同时支持 DB event_rules 表 + Skill hooks.json + DB matcher 三种规则来源。\n\n"
+    "**Skill Hook 配置指南（重要）**："
+    "Skill 的 Hook 必须通过 hooks.json 文件或 DB matcher 字段才能生效，仅在 SKILL.md 描述中写 hook 意图是无效的。\n"
+    "两种配置方式（可同时使用）：\n"
+    "  方式 1（推荐/通用）: 写 hooks.json 文件 → write_user_skill_file path=hooks.json，或 save_user_skill 传 hooks_json 字符串。\n"
+    "    支持 6 种事件：preToolUse / postToolUse / postToolUseFailure / sessionStart / sessionEnd / beforeMCPExecution\n"
+    "    格式：{\"<事件名>\": {\"matcher\": \"<glob>\", \"decision\": \"<allow|deny|ask>\", \"reason\": \"<说明>\"}}\n"
+    "    decision: allow(放行) / deny(拒绝) / ask(弹出确认框，用户点击同意后放行)\n"
+    "  方式 2（仅 preToolUse）: 设置 DB 字段 → save_user_skill 传 hooks_enabled=true + pre_tool_use_matcher=<glob> + pre_tool_use_decision=<ask|deny|allow>\n"
+    "    无需 hooks.json 文件，简单场景适用。\n"
+    "  请注意：hooks.json 中的事件名**必须用旧格式**（preToolUse 而非 agent:tool:pre）；DB event_rules 表则用新格式。\n"
+    "用户说「加个拦截」「执行前确认」「禁止某工具」时，必须同时创建 SKILL.md + hooks.json（或设置 DB matcher），不能只在 SKILL.md 写描述。\n\n"
+    "- **Middleware 配置**（configure_middleware / list_middleware_config）："
+    "启用/禁用中间件管线（auth_check / rate_limit / qa_gate / strict_gate / audit_log）并配置参数。\n"
+    "- **运行时状态**（list_agent_states）：查看当前会话的 Agent 状态机状态、步数、耗时、Token 用量。"
+    "AI 在用户要求「配置事件规则」「加个 webhook 回调」「设置速率限制」「查看 Agent 状态」「有哪些 Hook 点」时应主动使用这些工具。"
+)
+
 from services.llm_adapter import (
     detect_provider,
     normalize_model,
@@ -229,7 +258,7 @@ TOOL_TRACE_PERSIST_PREVIEW_CHARS = 1200
 # 运行中会话控制：支持在 tool_call 执行期间插入 stop/pause/supplement/choice 指令。
 _SESSION_RUNTIME_CONTROL_QUEUES: dict[int, asyncio.Queue] = {}
 _SESSION_RUNTIME_CONTROL_LOCK = asyncio.Lock()
-_RUNTIME_ACTIONS = {"supplement", "pause", "resume", "stop", "choice", "wake"}
+_RUNTIME_ACTIONS = {"supplement", "pause", "resume", "stop", "choice", "wake", "hook_choice"}
 
 
 def _strip_ui_action_sentinels(content: str) -> str:
@@ -4230,6 +4259,16 @@ async def create_session(
         run_hooks_for_skills(_hook_skills, "sessionStart", chat_mode=mode_val)
     except Exception:
         pass
+    # EventBus session:create + 初始化状态机
+    try:
+        from services.event_bus import event_bus, TraceContext
+        from services.event_types import SessionEvent
+        from services.agent_state_machine import get_state_machine
+        trace = TraceContext(user_id=int(user["id"]), session_id=new_sid, step_num=0)
+        event_bus.emit(SessionEvent.CREATE, trace_ctx=trace, chat_mode=mode_val, scope=scope_val)
+        sm = get_state_machine(new_sid, user=user)
+    except Exception:
+        pass
     return {"success": True, "session_id": new_sid}
 
 
@@ -4413,7 +4452,7 @@ async def push_session_runtime_control(
         raise HTTPException(status_code=404, detail="会话不存在")
     action = (req.action or "supplement").strip().lower()
     if action not in _RUNTIME_ACTIONS:
-        raise HTTPException(status_code=400, detail="action 仅支持 supplement/pause/resume/stop/choice/wake")
+        raise HTTPException(status_code=400, detail="action 仅支持 supplement/pause/resume/stop/choice/wake/hook_choice")
     message = (req.message or "").strip()
     await _push_runtime_control(session_id, action, message)
     return {"success": True, "session_id": session_id, "action": action}
@@ -5060,6 +5099,18 @@ async def delete_session(session_id: int, user=Depends(get_current_user)):
             run_hooks_for_skills(
                 _hook_skills, "sessionEnd", chat_mode=str(sr.get("chat_mode") or "normal")
             )
+    except Exception:
+        pass
+    # EventBus session:delete + 清理状态机与中间件
+    try:
+        from services.event_bus import event_bus, TraceContext
+        from services.event_types import SessionEvent
+        from services.agent_state_machine import remove_state_machine
+        from services.middleware_chain import remove_middleware_chain
+        trace = TraceContext(user_id=int(user["id"]), session_id=session_id)
+        event_bus.emit(SessionEvent.DELETE, trace_ctx=trace)
+        remove_state_machine(session_id)
+        remove_middleware_chain(session_id)
     except Exception:
         pass
     await db.execute(
@@ -6576,8 +6627,10 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
             "大结果用 read_chat_data 按需分页，勿要求模型复述全文。\n"
         )
     full_system += _USER_MCP_SYSTEM_HINT
+    full_system += _EVENT_MIDDLEWARE_SYSTEM_HINT
     try:
         from services.user_skills_runtime import build_user_skills_system_section
+        ...
 
         _skills_sec = await build_user_skills_system_section(
             user,
@@ -6916,7 +6969,19 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                     image_blind_tool_retry_used = False
                     spill_read_retry_used = False
                     force_text_only_round = False
+                    # EventBus + StateMachine agent:start
+                    try:
+                        from services.agent_integration import agent_start
+                        agent_start(session_id=session_id, user=user, chat_mode=session_chat_mode)
+                    except Exception:
+                        pass
                     for round_idx in range(agent_max_steps):
+                        # EventBus + StateMachine agent:step:start
+                        try:
+                            from services.agent_integration import agent_step_start
+                            agent_step_start(session_id=session_id, user=user, round_idx=round_idx, chat_mode=session_chat_mode)
+                        except Exception:
+                            pass
                         if cached_round_tools is None:
                             _base_tools = await resolve_chat_tools(
                                 get_tools_for_scope(session_scope, user),
@@ -7584,7 +7649,123 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                 # 否则 yield/断流/取消会被误判为 gate_error（用户看到 fail-closed、无弹窗）。
                                 _chat_mode_gate_skip_exec = False
                                 _strict_user_decision: str | None = None
-                                if not skip_stale_ask_ui and fn_name != "ask_user_choice":
+                                # —— EventBus + Hook Engine 工具执行前 ——
+                                if not _chat_mode_gate_skip_exec and not skip_stale_ask_ui and fn_name != "ask_user_choice":
+                                    try:
+                                        from services.agent_integration import agent_tool_pre
+                                        _hook_pre = await agent_tool_pre(
+                                            tool_name=fn_name,
+                                            args=fn_args if isinstance(fn_args, dict) else {},
+                                            session_id=session_id,
+                                            user=user,
+                                            chat_mode=session_chat_mode,
+                                            assistant_note=(pre_tool_text_streamed or "")[:500],
+                                            hook_skills=hook_skills_for_gate,
+                                        )
+                                        _hook_dec = _hook_pre.get("decision", "allow")
+                                        if _hook_dec == "deny":
+                                            _result_obj = _hook_pre.get("tool_result") or {"success": False, "error": _hook_pre.get("reason", "Hook 规则拒绝")}
+                                            tool_result = _result_obj if isinstance(_result_obj, str) else json.dumps(_result_obj, ensure_ascii=False)
+                                            _chat_mode_gate_skip_exec = True
+                                            try:
+                                                from services.chat_mode_runtime import audit_chat_mode_decision
+                                                await audit_chat_mode_decision(
+                                                    user_id=user["id"],
+                                                    session_id=session_id,
+                                                    mode=session_chat_mode,
+                                                    tool_name=fn_name,
+                                                    args=fn_args if isinstance(fn_args, dict) else {},
+                                                    decision="hook_deny",
+                                                    intent="",
+                                                    source="event_hook_engine",
+                                                )
+                                            except Exception as _aud_exc:
+                                                logger.warning("audit hook_deny 失败: %s", _aud_exc)
+                                        elif _hook_dec == "ask":
+                                            _ask_reason = _hook_pre.get("reason", "Hook 规则请求确认")
+                                            _ask_tool = _hook_pre.get("tool", fn_name)
+                                            # 生成 SSE 事件让前端弹出独立确认框
+                                            yield _sse({
+                                                "hook_ask": {
+                                                    "tool": _ask_tool,
+                                                    "reason": _ask_reason[:500],
+                                                    "message": f"Event Hook 请求确认: {_ask_reason[:200]}",
+                                                },
+                                                "stream_status": {"phase": "hook_ask_blocked"},
+                                                "waiting_for_user": {
+                                                    "kind": "hook_ask_confirm",
+                                                    "tool": _ask_tool,
+                                                    "reason": _ask_reason[:500],
+                                                },
+                                            })
+                                            try:
+                                                from services.chat_mode_runtime import audit_chat_mode_decision
+                                                await audit_chat_mode_decision(
+                                                    user_id=user["id"],
+                                                    session_id=session_id,
+                                                    mode=session_chat_mode,
+                                                    tool_name=fn_name,
+                                                    args=fn_args if isinstance(fn_args, dict) else {},
+                                                    decision="hook_ask",
+                                                    intent="",
+                                                    source="event_hook_engine",
+                                                )
+                                            except Exception as _aud_exc:
+                                                logger.warning("audit hook_ask 失败: %s", _aud_exc)
+                                            # ── 等待用户确认（while True 轮询 runtime-control 队列）──
+                                            _hook_wait_ticks = 0
+                                            while True:
+                                                _ctrl = await _consume_runtime_control()
+                                                if _ctrl:
+                                                    _a = _ctrl["action"]
+                                                    _m = _ctrl["message"]
+                                                    if _a == "stop":
+                                                        yield _sse({
+                                                            "runtime_control": {
+                                                                "action": "stop",
+                                                                "accepted": True,
+                                                                "during_wait": "hook_ask",
+                                                            }
+                                                        })
+                                                        yield "data: [DONE]\n\n"
+                                                        return
+                                                    if _a == "hook_choice" and _m:
+                                                        _hook_choice = (_m or "").strip().lower()
+                                                        if _hook_choice == "allow":
+                                                            yield _sse({
+                                                                "runtime_control": {
+                                                                    "action": "hook_choice",
+                                                                    "accepted": True,
+                                                                    "message": "allow",
+                                                                    "during_wait": "hook_ask",
+                                                                }
+                                                            })
+                                                            # 不设置 _chat_mode_gate_skip_exec，允许工具继续执行
+                                                            break
+                                                        elif _hook_choice == "deny":
+                                                            tool_result = json.dumps({
+                                                                "success": False,
+                                                                "error": _ask_reason or "用户拒绝 Hook 确认",
+                                                                "decision": "deny",
+                                                                "source": "event_hook_engine",
+                                                            }, ensure_ascii=False)
+                                                            _chat_mode_gate_skip_exec = True
+                                                            yield _sse({
+                                                                "runtime_control": {
+                                                                    "action": "hook_choice",
+                                                                    "accepted": True,
+                                                                    "message": "deny",
+                                                                    "during_wait": "hook_ask",
+                                                                }
+                                                            })
+                                                            break
+                                                await asyncio.sleep(1)
+                                                _hook_wait_ticks += 1
+                                                if _hook_wait_ticks % 10 == 0:
+                                                    yield _sse_keepalive()
+                                    except Exception as _hook_pre_exc:
+                                        logger.debug("agent_tool_pre fail-open: %s", _hook_pre_exc)
+                                if not _chat_mode_gate_skip_exec and not skip_stale_ask_ui and fn_name != "ask_user_choice":
                                     from services.chat_mode_runtime import (
                                         annotate_tool_result_with_strict_decision,
                                         audit_chat_mode_decision,
@@ -7884,6 +8065,52 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                         logger.warning(
                                             "beforeMCPExecution fail-open: %s", _mcp_hook_exc
                                         )
+                                    # MCP 新引擎（DB event_rules + hooks.json）
+                                    if not _chat_mode_gate_skip_exec:
+                                        try:
+                                            # EventBus emit mcp:pre
+                                            try:
+                                                from services.event_bus import event_bus, TraceContext
+                                                from services.event_types import MCPEvent
+                                                _trace = TraceContext(user_id=int(user["id"]), session_id=session_id, step_num=0)
+                                                event_bus.emit(MCPEvent.PRE, trace_ctx=_trace, tool_name=fn_name,
+                                                               args=fn_args if isinstance(fn_args, dict) else {},
+                                                               chat_mode=session_chat_mode)
+                                            except Exception:
+                                                pass
+                                            # Hook 规则评估
+                                            from services.event_hook_engine import resolve_hook_decision
+                                            _mcp_new = await resolve_hook_decision(
+                                                event="mcp:pre",
+                                                tool_name=fn_name,
+                                                args=fn_args if isinstance(fn_args, dict) else {},
+                                                hook_skills=hook_skills_for_gate,
+                                                user_id=int(user["id"]),
+                                                chat_mode=session_chat_mode,
+                                            )
+                                            if _mcp_new and _mcp_new.get("decision") == "deny":
+                                                tool_result = json.dumps(
+                                                    {
+                                                        "success": False,
+                                                        "error": _mcp_new.get("reason", "MCP Hook 拒绝"),
+                                                        "decision": "deny",
+                                                        "source": _mcp_new.get("source", "mcp_pre"),
+                                                    },
+                                                    ensure_ascii=False,
+                                                )
+                                                _chat_mode_gate_skip_exec = True
+                                                await audit_chat_mode_decision(
+                                                    user_id=user["id"],
+                                                    session_id=session_id,
+                                                    mode=session_chat_mode,
+                                                    tool_name=fn_name,
+                                                    args=fn_args if isinstance(fn_args, dict) else {},
+                                                    decision="hook_deny",
+                                                    intent="",
+                                                    source="mcp_pre",
+                                                )
+                                        except Exception as _mcp2_exc:
+                                            logger.debug("mcp:pre new engine fail-open: %s", _mcp2_exc)
                                 if _chat_mode_gate_skip_exec:
                                     pass
                                 elif skip_stale_ask_ui:
@@ -7914,16 +8141,25 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
 
                                         async def _run_tool():
                                             try:
-                                                return await execute_tool(
-                                                    fn_name, fn_args, user,
-                                                    scope=session_scope,
-                                                    terminal_scope_id=terminal_scope_id,
-                                                    default_terminal_slot=preferred_terminal_slot,
-                                                    stream_callback=_sc,
+                                                from services.agent_integration import wrap_tool_execution
+                                                return await wrap_tool_execution(
+                                                    tool_executor=lambda: execute_tool(
+                                                        fn_name, fn_args, user,
+                                                        scope=session_scope,
+                                                        terminal_scope_id=terminal_scope_id,
+                                                        default_terminal_slot=preferred_terminal_slot,
+                                                        stream_callback=_sc,
+                                                        session_id=session_id,
+                                                        ui_locale=_ui_raw,
+                                                        transfer_cancel_event=_transfer_cancel,
+                                                        chat_mode=session_chat_mode,
+                                                    ),
+                                                    tool_name=fn_name,
+                                                    args=fn_args if isinstance(fn_args, dict) else {},
                                                     session_id=session_id,
-                                                    ui_locale=_ui_raw,
-                                                    transfer_cancel_event=_transfer_cancel,
+                                                    user=user,
                                                     chat_mode=session_chat_mode,
+                                                    session_scope=session_scope,
                                                 )
                                             finally:
                                                 _stream_q.put_nowait(_stream_done)
@@ -8066,6 +8302,27 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                     from services.chat_mode_enforce import clear_strict_tool_approval
 
                                     clear_strict_tool_approval(fn_name)
+                                except Exception:
+                                    pass
+                                # —— EventBus 工具执行后 ——
+                                _tool_success = False
+                                try:
+                                    _ro = json.loads(tool_result) if isinstance(tool_result, str) else tool_result
+                                    _tool_success = _ro.get("success", not _ro.get("error")) if isinstance(_ro, dict) else False
+                                except Exception:
+                                    _tool_success = "error" not in str(tool_result).lower()[:200]
+                                try:
+                                    from services.agent_integration import agent_tool_post
+                                    agent_tool_post(
+                                        tool_name=fn_name,
+                                        success=_tool_success,
+                                        args=fn_args if isinstance(fn_args, dict) else {},
+                                        result=tool_result if isinstance(tool_result, str) else json.dumps(tool_result, ensure_ascii=False),
+                                        error=None if _tool_success else str(tool_result)[:500],
+                                        session_id=session_id,
+                                        user=user,
+                                        chat_mode=session_chat_mode,
+                                    )
                                 except Exception:
                                     pass
                                 # 严格确认：把用户同意/拒绝写入 tool 返回，供模型继续或改问用户
@@ -8214,6 +8471,25 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                         tool_result = json.dumps(result_obj, ensure_ascii=False)
                                 except Exception as _post_exc:
                                     logger.debug("postToolUse hook skip: %s", _post_exc)
+                                # postToolUse 新引擎（DB event_rules + hooks.json）
+                                try:
+                                    from services.agent_integration import agent_tool_post_hook
+                                    _post_obj, _post_ok = await agent_tool_post_hook(
+                                        tool_name=fn_name,
+                                        success=is_success,
+                                        args=fn_args if isinstance(fn_args, dict) else {},
+                                        result_obj=result_obj if isinstance(result_obj, dict) else None,
+                                        session_id=session_id,
+                                        user=user,
+                                        chat_mode=session_chat_mode,
+                                        hook_skills=hook_skills_for_gate,
+                                    )
+                                    if _post_obj is not None:
+                                        result_obj = _post_obj
+                                        is_success = _post_ok
+                                        tool_result = json.dumps(result_obj, ensure_ascii=False)
+                                except Exception as _post2_exc:
+                                    logger.debug("agent_tool_post_hook skip: %s", _post2_exc)
                                 result_cache_id = None
                                 try:
                                     result_cache_id = await _store_tool_result_cache(
@@ -8400,6 +8676,12 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                 pending_user_msg = {"text": runtime_injected_user_message, "saved": False}
                                 await _persist_pending_user_msg()
                                 messages.append({"role": "user", "content": runtime_injected_user_message})
+                                # —— EventBus + StateMachine agent:step:end ——
+                                try:
+                                    from services.agent_integration import agent_step_end
+                                    agent_step_end(session_id=session_id, user=user, round_idx=round_idx, chat_mode=session_chat_mode, had_tool_call=round_had_tool_call)
+                                except Exception:
+                                    pass
                                 continue
                             if max_next_poll_seconds > 0:
                                 last_poll_wait_seconds = int(max_next_poll_seconds)
@@ -8422,6 +8704,12 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                     await _persist_pending_user_msg()
                                     messages.append({"role": "user", "content": _sup_msg})
                                     runtime_injected_user_message = None
+                                    # —— EventBus + StateMachine agent:step:end ——
+                                    try:
+                                        from services.agent_integration import agent_step_end
+                                        agent_step_end(session_id=session_id, user=user, round_idx=round_idx, chat_mode=session_chat_mode, had_tool_call=round_had_tool_call)
+                                    except Exception:
+                                        pass
                                     continue
                                 if _wait_out[0] != "continue":
                                     abort_body = _format_poll_wait_aborted_message(
@@ -8447,6 +8735,12 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                     yield _sse({"stream_status": {"phase": "completed"}})
                                     yield "data: [DONE]\n\n"
                                     return
+                            # —— EventBus + StateMachine agent:step:end ——
+                            try:
+                                from services.agent_integration import agent_step_end
+                                agent_step_end(session_id=session_id, user=user, round_idx=round_idx, chat_mode=session_chat_mode, had_tool_call=round_had_tool_call)
+                            except Exception:
+                                pass
                             continue
 
                         content = extract_message_content(msg) or ""
@@ -8906,6 +9200,12 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                         except Exception as e:
                             logger.warning("保存继续确认消息失败: %s", e)
                         yield "data: [DONE]\n\n"
+                        # —— EventBus + StateMachine agent:complete ——
+                        try:
+                            from services.agent_integration import agent_complete
+                            agent_complete(session_id=session_id, user=user, chat_mode=session_chat_mode, reason="awaiting_user_confirm")
+                        except Exception:
+                            pass
                         return
                     yield _sse({"stream_status": {"phase": "auto_continuing"}})
                     yield _sse({"assistant_continue": continuation, "requires_user_confirm": False})
@@ -8917,6 +9217,12 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
 
                 yield _sse({"stream_status": {"phase": "completed"}})
                 yield "data: [DONE]\n\n"
+                # —— EventBus + StateMachine agent:complete ——
+                try:
+                    from services.agent_integration import agent_complete
+                    agent_complete(session_id=session_id, user=user, chat_mode=session_chat_mode, reason="completed")
+                except Exception:
+                    pass
                 return
         except httpx.ConnectError as e:
             err_full = f"无法连接 AI 服务: {api_url} ({e})"
@@ -8931,6 +9237,12 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
             err_full = f"Agent 异常: {type(e).__name__}: {e}"
             await _persist_assistant_error(err_full, tool_trace=list(pending_tool_trace))
             yield _sse({"error": err_full})
+        # —— EventBus + StateMachine agent:error ——
+        try:
+            from services.agent_integration import agent_error
+            agent_error(session_id=session_id, user=user, chat_mode=session_chat_mode, error_str=err_full)
+        except Exception:
+            pass
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
@@ -9423,8 +9735,10 @@ async def run_ops_integration_chat_complete(
             "必须先明确征求用户确认；提出选择或确认问题后本轮结束，等待用户回复后才能继续。"
         )
     full_system += _USER_MCP_SYSTEM_HINT
+    full_system += _EVENT_MIDDLEWARE_SYSTEM_HINT
     try:
         from services.user_skills_runtime import build_user_skills_system_section
+        ...
 
         _skills_sec = await build_user_skills_system_section(
             user,

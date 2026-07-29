@@ -21,6 +21,7 @@
     "mcpConfig": "MCP 配置",
     "modelConfig": "模型配置",
     "skills": "SKILLS配置",
+    "events": "事件规则",
     "logs": "操作日志",
     "securityAudit": "安全审计",
     "productIntro": "产品介绍",

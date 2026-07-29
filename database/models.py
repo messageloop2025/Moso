@@ -1765,6 +1765,9 @@ _REQUIRED_TABLES: tuple[str, ...] = (
     "user_skill_groups",
     "org_skills",
     "host_service_credentials",
+    # EventBus / Middleware（043）
+    "event_rules",
+    "user_middleware_config",
 )
 
 

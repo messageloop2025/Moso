@@ -10,7 +10,7 @@
 
 <br>
 
-[![version](https://img.shields.io/badge/version-1.8.8-blue)](config.py)
+[![version](https://img.shields.io/badge/version-1.9.0-blue)](config.py)
 [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#快速开始)
 [![stack](https://img.shields.io/badge/built%20with-FastAPI-009688)](#技术栈)
 [![db](https://img.shields.io/badge/database-SQLite%20WAL-003B57)](#技术栈)
@@ -114,6 +114,7 @@ AI 汇总会话上下文，生成交互式 HTML 看板：网络关系图、主�
 - **内置 MCP**（默认同端口 `/mcp`，`edgeops_*` 工具，含编排类 ops）。
 - **每用户 MCP**（`/mcp-servers`）：stdio / SSE / Streamable HTTP；导入导出 Cursor 风格 `mcp.json`；按聊天场景开关。
 - **每用户 Agent Skills**（`/skills`）：`web/fs/<user>/skills/` 目录 + 元数据表；扫描、导入导出、渐进式披露（管理员可关）。
+- **事件引擎与中间件**：EventBus（20 种生命周期事件）、Event Rules 管理页（`/events`）、Middleware 管线（auth/rate_limit/qa_gate/strict_gate/audit_log）、Agent 状态机；Hook 确认/拦截支持独立模态弹窗。
 - **外部智能体**：OpenClaw（`claw-ops/`）、Hermes（`claw-skills/`）、REST + `eop_` API Token；集成专用聊天通道防长会话压缩。
 
 ### 协作、登录页与国际化

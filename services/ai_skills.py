@@ -5388,7 +5388,10 @@ TOOLS = [
             "description": (
                 "新增或更新 Agent Skill（同名 upsert，Cursor Agent Skills 格式）。"
                 "路径：web/fs/<用户>/skills/<name>/SKILL.md（不是 chats/）。"
-                "用户说「创建/编写 Skill」「加斜杠命令」「加 Hook 确认」时必须调用本工具落地。"
+                "用户说「创建/编写 Skill」「加斜杠命令」「加 Hook 确认/拦截/禁止」时必须调用本工具落地。\n"
+                "**Hook 须知**：仅在 SKILL.md 写描述无法使 Hook 生效！"
+                "必须同时写入 hooks.json（用 hooks_json 参数或 write_user_skill_file）或设置 DB matcher（hooks_enabled+pre_tool_use_matcher+pre_tool_use_decision）。"
+                "hooks.json 事件名用旧格式：preToolUse / postToolUse / postToolUseFailure / sessionStart / sessionEnd / beforeMCPExecution。\n"
                 "frontmatter：name、description（第三人称 WHAT+WHEN）；默认 disable-model-invocation: true。"
                 "可同时配置斜杠名、Hook（matcher/decision 或 hooks_json）、allowed_tools。"
                 "正文可用 {{arg}}/$ARGUMENTS 供用户 `/name 参数` 替换；子命令用 write_user_skill_file 写 commands/<alias>.md。"
@@ -5446,9 +5449,27 @@ TOOLS = [
                         "description": "工具白名单 glob（逗号分隔）；仅用户本轮斜杠唤起本 Skill 时强制",
                     },
                     "hooks_json": {
+                        "type": "string",
                         "description": (
-                            "hooks.json 内容：JSON 字符串或对象。"
-                            "例：{\"preToolUse\":{\"matcher\":\"ssh_*\",\"decision\":\"ask\",\"reason\":\"需确认\"}}"
+                            "hooks.json 完整 JSON 字符串。Skill 目录下的 hooks.json 文件是 Hook 规则生效的必要条件。\n"
+                            "格式：以事件名为 key 的对象，value 是规则对象或规则对象数组。\n"
+                            "规则对象字段：matcher（fnmatch glob，默认 *）、decision（allow|deny|ask）、reason（说明）。\n\n"
+                            "**支持的事件名（必须用旧格式名）**：\n"
+                            "  preToolUse — 工具执行前（最常用）\n"
+                            "  postToolUse — 工具执行成功后\n"
+                            "  postToolUseFailure — 工具执行失败后\n"
+                            "  sessionStart — 会话创建时\n"
+                            "  sessionEnd — 会话删除时\n"
+                            "  beforeMCPExecution — MCP 工具执行前\n\n"
+                            "decision 合法值：\n"
+                            "  allow — 放行（默认）\n"
+                            "  deny — 拒绝，返回 tool_result {\"success\":false,\"error\":\"...\"}\n"
+                            "  ask — 弹出确认框，用户确认后放行，拒绝则跳过工具\n\n"
+                            "示例 1（单条规则）：\n"
+                            "{\"preToolUse\":{\"matcher\":\"ssh_*\",\"decision\":\"ask\",\"reason\":\"执行 SSH 命令前确认\"}}\n\n"
+                            "示例 2（多条规则列表）：\n"
+                            "{\"preToolUse\":[{\"matcher\":\"ssh_*,send_*\",\"decision\":\"ask\",\"reason\":\"高危工具确认\"},{\"matcher\":\"search_hosts\",\"decision\":\"deny\",\"reason\":\"禁止搜索主机\"}]}\n\n"
+                            "重要：写入 hooks_json 后必须同时设置 hooks_enabled=true 或 pre_tool_use_matcher 非空，否则 Hook 不会生效。"
                         ),
                     },
                 },
@@ -5533,7 +5554,8 @@ TOOLS = [
             "description": (
                 "写入或追加 Skill 目录 skills/<name>/ 下的附属文件。"
                 "常用：reference.md、examples.md、scripts/*.py；"
-                "**Hook**：path=`hooks.json`（须合法 JSON；建议同时 save_user_skill hooks_enabled=true）；"
+                "**Hook**：path=`hooks.json`（须合法 JSON；建议同时 save_user_skill hooks_enabled=true）。"
+                "hooks.json 格式参考 save_user_skill 工具的 hooks_json 参数说明；事件名必须用旧格式（preToolUse/postToolUse/...）。"
                 "**斜杠子命令**：path=`commands/<alias>.md`（用户可用 /alias 唤起，正文支持 {{arg}}；"
                 "有固定参数时同样写 slash-args 或 ## 斜杠参数，供填参浮层提示）。"
                 "禁止写 SKILL.md（须 save_user_skill）。勿用 fs_write_file。"
@@ -5755,6 +5777,163 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "manage_event_rule",
+            "description": (
+                "新增/更新/删除当前用户的 Event 规则（upsert 模式）。Event 规则是对事件总线（18+ 种事件）的配置，"
+                "每条规则决定特定事件发生时是 allow/deny/ask。支持 webhook 回调。"
+                "传 id 则更新已有规则；不传 id 则按 (event_name, matcher) 去重创建。delete=true 则删除。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer", "description": "更新/删除时必传；不传则新建"},
+                    "skill_id": {"type": "integer", "description": "关联的 Skill id（可选）"},
+                    "event_name": {
+                        "type": "string",
+                        "enum": [
+                            "agent:start", "agent:complete", "agent:error", "agent:cancel", "agent:pause", "agent:resume",
+                            "agent:step:start", "agent:step:end",
+                            "agent:tool:pre", "agent:tool:post", "agent:tool:error",
+                            "agent:llm:pre", "agent:llm:post", "agent:llm:chunk",
+                            "agent:token",
+                            "agent:turn:start", "agent:turn:end",
+                            "session:create", "session:delete",
+                            "mcp:pre",
+                        ],
+                        "description": "事件名。先调用 list_available_events 查看完整分组和描述",
+                    },
+                    "matcher": {"type": "string", "description": "fnmatch glob 匹配器（逗号分隔），如 ssh_execute,*channel*。默认 *"},
+                    "decision": {"type": "string", "enum": ["allow", "deny", "ask"], "description": "allow=放行 deny=拒绝 ask=确认"},
+                    "reason": {"type": "string", "description": "决策说明（deny/ask 时建议填写）"},
+                    "priority": {"type": "integer", "description": "优先级（数字越大越先评估），默认 0"},
+                    "action_config": {"type": "object", "description": "JSON 对象，如 {\"webhook_url\":\"...\"} 表示命中时回调"},
+                    "enabled": {"type": "boolean", "description": "是否启用，默认 true"},
+                    "delete": {"type": "boolean", "description": "设为 true 则删除指定 id 的规则"},
+                },
+                "required": ["event_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_event_rules",
+            "description": "列出当前用户的所有 Event 规则（含启用/禁用状态）。按优先级降序。可按事件名筛选。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "event_name": {"type": "string", "description": "可选的筛选事件名（如 agent:tool:pre）"},
+                    "enabled": {"type": "boolean", "description": "可选，只查启用/禁用"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "enable_event_rule",
+            "description": "启用/禁用某条 Event 规则。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer", "description": "规则 id"},
+                    "enabled": {"type": "boolean", "description": "true=启用 false=禁用"},
+                },
+                "required": ["id", "enabled"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "configure_middleware",
+            "description": (
+                "配置当前用户的中间件（Middleware）开关与参数。中间件是工具执行前后的拦截管线。"
+                "内置中间件：auth_check（身份验证）、rate_limit（速率限制）、qa_gate（QA 模式门禁）、"
+                "strict_gate（Strict 模式门禁）、audit_log（审计日志）。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "middleware_name": {"type": "string", "description": "中间件名称：auth_check / rate_limit / qa_gate / strict_gate / audit_log"},
+                    "enabled": {"type": "boolean", "description": "是否启用"},
+                    "config_json": {"type": "object", "description": "中间件参数 JSON，如 rate_limit 的 {\"calls_per_session\": 50}"},
+                },
+                "required": ["middleware_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_middleware_config",
+            "description": "列出当前用户的所有中间件配置（含启用状态和参数）。",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_agent_states",
+            "description": "查看当前会话的 Agent 运行时状态（状态机状态、步数、耗时、Token 用量等）。",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "export_event_config",
+            "description": "导出当前用户的 Event 规则为 JSON 字符串。",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "import_event_config",
+            "description": "从 JSON 字符串导入 Event 规则（批量 upsert，按 event_name+matcher 去重）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "config_json": {"type": "string", "description": "JSON 字符串，数组格式 [{\"event_name\":\"...\",\"matcher\":\"*\",\"decision\":\"allow\"}, ...]"},
+                    "overwrite": {"type": "boolean", "description": "是否覆盖已有同名规则，默认 false"},
+                },
+                "required": ["config_json"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_available_events",
+            "description": (
+                "列出系统中所有可用的 Agent 事件（Hook 点），按分组返回。"
+                "调用此工具可了解 Agent 生命周期中有哪些位置可以挂载 Hook 规则。"
+                "返回结果包含 event_name、group（分组名）、description（事件说明）。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
 ]
 
 # 仅在本机管理会话中可用、且仅管理员可调用的工具（AI 助手与主机详情 AI 不可见、不可用）
@@ -5811,6 +5990,16 @@ USER_SKILLS_AI_TOOLS = frozenset({
     "export_user_skills_config",
     "import_user_skills_config",
     "run_skill_script",
+    # Event/Middleware 配置
+    "manage_event_rule",
+    "list_event_rules",
+    "enable_event_rule",
+    "configure_middleware",
+    "list_middleware_config",
+    "list_agent_states",
+    "export_event_config",
+    "import_event_config",
+    "list_available_events",
 })
 
 
@@ -17795,6 +17984,237 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 "stderr": stderr,
                 "exit_code": code,
                 "git_version": (stdout_chk or "").strip(),
+            }, ensure_ascii=False)
+
+        # === Event/Middleware 管理工具 ===
+        if name == "list_event_rules":
+            db = await get_db()
+            sql = "SELECT * FROM event_rules WHERE user_id = ?"
+            params: list[Any] = [int(user["id"])]
+            if "event_name" in arguments and arguments.get("event_name"):
+                sql += " AND event_name = ?"
+                params.append(str(arguments["event_name"]))
+            if "enabled" in arguments and arguments.get("enabled") is not None:
+                sql += " AND enabled = ?"
+                params.append(1 if arguments["enabled"] else 0)
+            sql += " ORDER BY priority DESC, id ASC"
+            rows = [dict(r) for r in (await db.execute_fetchall(sql, tuple(params)) or [])]
+            return json.dumps({"success": True, "rules": rows, "count": len(rows)}, ensure_ascii=False)
+
+        if name == "manage_event_rule":
+            db = await get_db()
+            uid = int(user["id"])
+            delete = bool(arguments.get("delete", False))
+            rid = arguments.get("id")
+            if delete and rid:
+                await db.execute("DELETE FROM event_rules WHERE id = ? AND user_id = ?", (int(rid), uid))
+                await db.commit()
+                return json.dumps({"success": True, "deleted": True, "id": rid}, ensure_ascii=False)
+            event_name = str(arguments.get("event_name") or "").strip()
+            if not event_name:
+                return json.dumps({"success": False, "error": "event_name 不能为空"}, ensure_ascii=False)
+            matcher = str(arguments.get("matcher") or "*").strip()
+            decision = str(arguments.get("decision") or "allow").strip().lower()
+            if decision not in ("allow", "deny", "ask"):
+                decision = "allow"
+            reason = str(arguments.get("reason") or "")[:500]
+            priority = int(arguments.get("priority", 0))
+            ac = arguments.get("action_config") or {}
+            action_config = json.dumps(ac, ensure_ascii=False) if isinstance(ac, dict) else str(ac)
+            skill_id = arguments.get("skill_id")
+            enabled = 1 if arguments.get("enabled", True) is not False else 0
+            if rid:
+                # 更新
+                existing = await db.execute_fetchall("SELECT id FROM event_rules WHERE id = ? AND user_id = ?", (int(rid), uid))
+                if not existing:
+                    return json.dumps({"success": False, "error": "规则不存在"}, ensure_ascii=False)
+                await db.execute(
+                    "UPDATE event_rules SET event_name=?, matcher=?, decision=?, reason=?, priority=?, action_config=?, enabled=?, skill_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?",
+                    (event_name, matcher, decision, reason, priority, action_config, enabled, skill_id, int(rid), uid),
+                )
+                await db.commit()
+                return json.dumps({"success": True, "updated": True, "id": int(rid)}, ensure_ascii=False)
+            else:
+                # 新建：去重检查
+                existing = await db.execute_fetchall(
+                    "SELECT id FROM event_rules WHERE user_id=? AND event_name=? AND matcher=?",
+                    (uid, event_name, matcher),
+                )
+                if existing:
+                    dup_id = existing[0]["id"]
+                    await db.execute(
+                        "UPDATE event_rules SET decision=?, reason=?, priority=?, action_config=?, enabled=?, skill_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                        (decision, reason, priority, action_config, enabled, skill_id, dup_id),
+                    )
+                    await db.commit()
+                    return json.dumps({"success": True, "updated": True, "id": dup_id, "upserted": True}, ensure_ascii=False)
+                cur = await db.execute(
+                    "INSERT INTO event_rules (user_id, skill_id, event_name, matcher, decision, reason, priority, action_config, enabled) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (uid, skill_id, event_name, matcher, decision, reason, priority, action_config, enabled),
+                )
+                await db.commit()
+                return json.dumps({"success": True, "created": True, "id": cur.lastrowid}, ensure_ascii=False)
+
+        if name == "enable_event_rule":
+            db = await get_db()
+            uid = int(user["id"])
+            rid = int(arguments.get("id", 0))
+            enabled = 1 if arguments.get("enabled", True) is not False else 0
+            await db.execute("UPDATE event_rules SET enabled=? WHERE id=? AND user_id=?", (enabled, rid, uid))
+            await db.commit()
+            return json.dumps({"success": True, "id": rid, "enabled": bool(enabled)}, ensure_ascii=False)
+
+        if name == "configure_middleware":
+            db = await get_db()
+            uid = int(user["id"])
+            mw_name = str(arguments.get("middleware_name") or "").strip()
+            if not mw_name:
+                return json.dumps({"success": False, "error": "middleware_name 不能为空"}, ensure_ascii=False)
+            enabled = 1 if arguments.get("enabled", True) is not False else 0
+            conf = arguments.get("config_json") or {}
+            config_json = json.dumps(conf, ensure_ascii=False) if isinstance(conf, dict) else str(conf)
+            await db.execute(
+                "INSERT INTO user_middleware_config (user_id, middleware_name, enabled, config_json) VALUES (?,?,?,?) ON CONFLICT(user_id, middleware_name) DO UPDATE SET enabled=?, config_json=?",
+                (uid, mw_name, enabled, config_json, enabled, config_json),
+            )
+            await db.commit()
+            return json.dumps({"success": True, "middleware_name": mw_name, "enabled": bool(enabled)}, ensure_ascii=False)
+
+        if name == "list_middleware_config":
+            db = await get_db()
+            uid = int(user["id"])
+            rows = [dict(r) for r in (await db.execute_fetchall("SELECT * FROM user_middleware_config WHERE user_id = ? ORDER BY middleware_name", (uid,)) or [])]
+            return json.dumps({"success": True, "configs": rows, "count": len(rows)}, ensure_ascii=False)
+
+        if name == "list_agent_states":
+            if session_id is None:
+                return json.dumps({"success": False, "error": "缺少 session_id 参数"}, ensure_ascii=False)
+            try:
+                from services.agent_runtime_control import get_agent_runtime_info
+                info = await get_agent_runtime_info(session_id)
+                return json.dumps({"success": True, **info}, ensure_ascii=False)
+            except Exception as e:
+                return json.dumps({"success": False, "error": f"无法获取状态: {e}"}, ensure_ascii=False)
+
+        if name == "export_event_config":
+            db = await get_db()
+            uid = int(user["id"])
+            rows = [dict(r) for r in (await db.execute_fetchall("SELECT * FROM event_rules WHERE user_id = ? ORDER BY priority DESC, id ASC", (uid,)) or [])]
+            # 精简字段
+            export = []
+            for r in rows:
+                export.append({
+                    "event_name": r["event_name"],
+                    "matcher": r["matcher"],
+                    "decision": r["decision"],
+                    "reason": r["reason"],
+                    "priority": r["priority"],
+                    "action_config": r["action_config"],
+                    "enabled": bool(r["enabled"]),
+                })
+            return json.dumps({"success": True, "rules": export, "count": len(export)}, ensure_ascii=False)
+
+        if name == "import_event_config":
+            db = await get_db()
+            uid = int(user["id"])
+            raw = arguments.get("config_json", "")
+            try:
+                rules = json.loads(raw) if isinstance(raw, str) else raw
+            except (json.JSONDecodeError, TypeError):
+                return json.dumps({"success": False, "error": "config_json 必须是合法的 JSON 字符串或数组"}, ensure_ascii=False)
+            if not isinstance(rules, list):
+                return json.dumps({"success": False, "error": "config_json 必须是数组格式"}, ensure_ascii=False)
+            overwrite = bool(arguments.get("overwrite", False))
+            imported = 0
+            skipped = 0
+            for rule in rules:
+                if not isinstance(rule, dict):
+                    continue
+                ev = str(rule.get("event_name") or "").strip()
+                if not ev:
+                    continue
+                matcher = str(rule.get("matcher") or "*").strip()
+                decision = str(rule.get("decision") or "allow").strip().lower()
+                if decision not in ("allow", "deny", "ask"):
+                    decision = "allow"
+                existing = await db.execute_fetchall(
+                    "SELECT id FROM event_rules WHERE user_id=? AND event_name=? AND matcher=?",
+                    (uid, ev, matcher),
+                )
+                if existing:
+                    if overwrite:
+                        await db.execute(
+                            "UPDATE event_rules SET decision=?, reason=?, priority=?, action_config=?, enabled=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                            (decision, str(rule.get("reason", ""))[:500], int(rule.get("priority", 0)),
+                             str(rule.get("action_config", "{}")), 1 if rule.get("enabled", True) is not False else 0,
+                             existing[0]["id"]),
+                        )
+                        imported += 1
+                    else:
+                        skipped += 1
+                else:
+                    await db.execute(
+                        "INSERT INTO event_rules (user_id, event_name, matcher, decision, reason, priority, action_config, enabled) VALUES (?,?,?,?,?,?,?,?)",
+                        (uid, ev, matcher, decision, str(rule.get("reason", ""))[:500],
+                         int(rule.get("priority", 0)), str(rule.get("action_config", "{}")),
+                         1 if rule.get("enabled", True) is not False else 0),
+                    )
+                    imported += 1
+            await db.commit()
+            return json.dumps({"success": True, "imported": imported, "skipped": skipped}, ensure_ascii=False)
+
+        if name == "list_available_events":
+            from services.event_types import ALL_EVENTS, EVENT_GROUPS
+            result_events = []
+            # 为每个事件生成描述
+            _desc_map = {
+                "agent:start": "Agent 开始执行",
+                "agent:complete": "Agent 正常完成",
+                "agent:error": "Agent 执行异常",
+                "agent:cancel": "Agent 被取消（通过 StateMachine 触发）",
+                "agent:pause": "Agent 暂停（通过 StateMachine 触发）",
+                "agent:resume": "Agent 恢复（通过 StateMachine 触发）",
+                "agent:step:start": "每一步开始",
+                "agent:step:end": "每一步结束",
+                "agent:tool:pre": "工具执行前（规则评估生效）",
+                "agent:tool:post": "工具执行成功后（规则评估生效）",
+                "agent:tool:error": "工具执行失败（规则评估生效）",
+                "agent:llm:pre": "LLM 调用前（Phase 2：暂未触发，规则不生效）",
+                "agent:llm:post": "LLM 返回后（Phase 2：暂未触发，规则不生效）",
+                "agent:llm:chunk": "LLM 流式片段（Phase 2：暂未触发，规则不生效）",
+                "agent:token": "Token 流式输出（Phase 2：暂未触发，规则不生效）",
+                "agent:turn:start": "每轮对话开始（Phase 2：暂未触发，规则不生效）",
+                "agent:turn:end": "每轮对话结束（Phase 2：暂未触发，规则不生效）",
+                "session:create": "会话创建",
+                "session:delete": "会话删除",
+                "mcp:pre": "MCP 工具执行前（规则评估生效）",
+            }
+            # 标记哪些事件当前有实际的 emit 触发（即 Hook 规则对它们生效）
+            _active_events = {
+                "agent:start", "agent:complete", "agent:error", "agent:cancel", "agent:pause", "agent:resume",
+                "agent:step:start", "agent:step:end",
+                "agent:tool:pre", "agent:tool:post", "agent:tool:error",
+                "session:create", "session:delete",
+                "mcp:pre",
+            }
+            for ev in ALL_EVENTS:
+                group = ""
+                for g, evs in EVENT_GROUPS.items():
+                    if ev in evs:
+                        group = g
+                        break
+                result_events.append({
+                    "event_name": ev,
+                    "group": group,
+                    "description": _desc_map.get(ev, ""),
+                    "active": ev in _active_events,
+                })
+            return json.dumps({
+                "success": True,
+                "events": result_events,
+                "count": len(result_events),
+                "active_count": len([e for e in result_events if e["active"]]),
+                "groups": {g: len(evs) for g, evs in EVENT_GROUPS.items()},
             }, ensure_ascii=False)
 
         return json.dumps({"success": False, "error": f"未知工具: {name}"}, ensure_ascii=False)

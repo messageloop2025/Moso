@@ -86,7 +86,7 @@
 |------|----------|-------------|
 | 斜杠 Command | 聊天输入 `/` 选命令，或 `/name 参数` | `save_user_skill(slash_name=...)`；正文写 `{{arg}}`；子命令 `write_user_skill_file(path=commands/别名.md)` |
 | 填参建议 | 选命令后浮层出现可点选参数 chips | frontmatter `slash-args: [...]`，或正文 `## 斜杠参数` 列表 / `/name xxx` 示例 |
-| Hook 确认/拒绝 | 配置后，AI 调匹配工具前弹确认或直接拒绝 | `save_user_skill(hooks_enabled=true, pre_tool_use_matcher=..., pre_tool_use_decision=ask/deny/allow)` 或写 `hooks.json` |
+| Hook 确认/拒绝 | 配置后，AI 调匹配工具前弹确认或直接拒绝 | 两种方式：<br>**方式 1**：`save_user_skill(hooks_enabled=true, pre_tool_use_matcher=..., pre_tool_use_decision=ask/deny/allow)`（最简单）<br>**方式 2**：写 `hooks.json` 文件（更灵活，支持 6 种事件：`preToolUse`/`postToolUse`/`postToolUseFailure`/`sessionStart`/`sessionEnd`/`beforeMCPExecution`）<br>也可在 Events 管理页配置 Event Rules（支持 20 种事件） |
 | 工具白名单 | 斜杠唤起该 Skill 的当轮才限制可用工具 | `allowed_tools="ssh_execute,list_hosts"` |
 
 #### 斜杠参数建议约定（写 Skill 时遵守）
@@ -116,6 +116,15 @@ slash-args:
 - 「做一个 `/aliyun-ops`，子命令 balance / ecs list，要能在填参时提示。」
 - 「做一个 safe-ssh Skill：执行 ssh_execute 前必须让我确认。」
 - 「给现有 Skill 加 hooks.json：禁止 scp，SSH 要确认。」
+
+## Events 事件管理页
+
+页面路径：导航栏 → **Events**。在此可以查看和配置 Event Rules（事件规则），支持 20 种 Agent 生命周期事件（如 `agent:tool:pre` 工具执行前、`session:create` 会话创建时等）。
+
+- **新增规则**：选择事件名 → 填写工具 matcher（如 `ssh_*,send_to_terminal`）→ 选择 decision（`allow` 放行 / `deny` 拒绝 / `ask` 确认）→ 填写原因说明。
+- **ask 确认**：规则设为 `ask` 时，AI 调用匹配的工具前会弹出独立确认模态（类似严格模式弹窗，但由 Event Hook 引擎驱动），用户点击允许后工具继续执行。普通/问答/严格模式均生效。
+- **导入导出**：支持 JSON 格式导入导出规则。
+- **活跃事件**：`list_available_events` 工具返回的事件列表中，仅 `active=true` 的事件才会实际触发规则评估。
 
 
 ## 推荐提问方式
@@ -175,7 +184,7 @@ AI 也内置了一组轻量数据处理工具，适合在聊天中快速处理�
 
 ## 聊天模式
 
-- **普通（默认）**：与以往一致；Skills 的 `preToolUse` Hook 仍会评估（默认失败放行）。
+- **普通（默认）**：与以往一致；Skills 的 `preToolUse` Hook 与 EventBus Event Rules 均会评估。当 Hook 规则决策为 `ask` 时，弹出**独立确认模态**（Enter=允许，Esc=拒绝），弹窗不经 AI 聊天通道。`deny` 规则直接拒绝工具执行。
 - **问答**：只能分析与推荐，**禁止向终端发送任何命令**。AI 可只读检查用户手工打开的控制台输出（如 `get_terminal_buffer`），并给出 bash/Python 等代码块（界面一键复制，由用户自行粘贴执行）。写类工具在服务端硬拒。
 - **严格**（平台门禁，不加重模型负担）：
   - AI **与普通模式一样直接发起 tool call**；系统提示中**不注入**「当前为严格模式」等说明，避免模型编造确认框或假执行。

@@ -301,21 +301,27 @@ async def evaluate_pre_tool_gate(
             "decision": "hook_deny",
             "source": "hook",
         }
+    # hook ask → confirm 仅在严格模式下弹出确认框；
+    # 普通/问答模式下 EventBus 新引擎已独立处理 ask 流程（while True 等待+独立模态），
+    # 此处降级为 allow 避免重复弹出严格确认对话框。
     if hook_dec.get("decision") == "ask":
-        intent = build_strict_confirm_body(name, a, assistant_note=assistant_note or "")
-        return {
-            "action": "confirm",
-            "ui_action": build_strict_confirm_ui_action(
-                tool_name=name,
-                args=a,
-                intent=intent,
-                reason=str(hook_dec.get("reason") or "Skill Hook 要求确认"),
-                assistant_note=assistant_note or "",
-            ),
-            "intent": intent,
-            "reason": hook_dec.get("reason") or "",
-            "source": "hook",
-        }
+        if mode == "strict":
+            intent = build_strict_confirm_body(name, a, assistant_note=assistant_note or "")
+            return {
+                "action": "confirm",
+                "ui_action": build_strict_confirm_ui_action(
+                    tool_name=name,
+                    args=a,
+                    intent=intent,
+                    reason=str(hook_dec.get("reason") or "Skill Hook 要求确认"),
+                    assistant_note=assistant_note or "",
+                ),
+                "intent": intent,
+                "reason": hook_dec.get("reason") or "",
+                "source": "hook",
+            }
+        # 非严格模式：EventBus 已处理，放行
+        return {"action": "execute", "decision": "hook_ask_allow", "source": "hook"}
 
     if mode == "strict" and needs_strict_confirm(name):
         if is_strict_allow_cached(

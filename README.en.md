@@ -10,7 +10,7 @@
 
 <br>
 
-[![version](https://img.shields.io/badge/version-1.8.8-blue)](config.py)
+[![version](https://img.shields.io/badge/version-1.9.0-blue)](config.py)
 [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#quick-start)
 [![stack](https://img.shields.io/badge/built%20with-FastAPI-009688)](#tech-stack)
 [![db](https://img.shields.io/badge/database-SQLite%20WAL-003B57)](#tech-stack)
@@ -114,6 +114,7 @@ The assistant synthesizes session context into an interactive HTML dashboard: ne
 - **Built-in MCP** (same port `/mcp` by default, `edgeops_*` tools including orchestration ops).
 - **Per-user MCP** (`/mcp-servers`): stdio / SSE / Streamable HTTP; import/export Cursor-style `mcp.json`; per chat-scene toggles.
 - **Per-user Agent Skills** (`/skills`): `web/fs/<user>/skills/` plus metadata table; scan, import/export, progressive disclosure (admin can disable).
+- **Event Engine & Middleware**: EventBus (20 lifecycle events), Event Rules management page (`/events`), Middleware pipeline (auth/rate_limit/qa_gate/strict_gate/audit_log), Agent State Machine; hook confirmations via standalone modal dialogs.
 - **External agents:** OpenClaw (`claw-ops/`), Hermes (`claw-skills/`), REST + `eop_` API tokens; integration chat channel avoids long-session compression.
 
 ### Collaboration, login page, and i18n

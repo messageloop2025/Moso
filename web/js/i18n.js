@@ -9,7 +9,7 @@
 
     var LOCALE_KEY = "edgeops.uiLocale";
     var SUPPORTED = ["en", "zh-CN"];
-    var MANIFEST = ["meta", "nav", "common", "layout", "auth", "settings", "model-config", "mcp", "skills", "pages", "toasts", "api", "ai", "host", "batch", "files", "feedback", "misc"];
+    var MANIFEST = ["meta", "nav", "common", "layout", "auth", "settings", "model-config", "mcp", "skills", "pages", "toasts", "api", "ai", "host", "batch", "files", "feedback", "misc", "events"];
 
     function normalizeTag(tag) {
         if (!tag) return "zh-CN";

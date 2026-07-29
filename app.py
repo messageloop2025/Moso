@@ -208,6 +208,7 @@ async def get_version():
 @app.get("/mcp-servers")
 @app.get("/model-config")
 @app.get("/skills")
+@app.get("/events")
 @app.get("/users")
 @app.get("/logs")
 @app.get("/security-audit")

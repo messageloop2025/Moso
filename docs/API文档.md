@@ -1049,6 +1049,27 @@ AI 工具：`list_user_skills`、`get_user_skill`、`read_user_skill_file`、`li
 
 ---
 
+## 21.5 Event Rules API（/user-skills/event-rules）
+
+Event Rules 对 Agent 生命周期事件（20 种）按 `event_name + matcher + decision` 配置 `allow/deny/ask` 规则，支持 `action_config`（webhook_url 回调）。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/user-skills/event-rules` | 列出当前用户的 Event 规则 |
+| POST | `/user-skills/event-rules` | 新增/更新规则（upsert）；body：`id?`、`event_name`（必填）、`matcher?`、`decision?`(allow/deny/ask)、`reason?`、`priority?`、`action_config?`、`enabled?`、`delete?` |
+| PUT | `/user-skills/event-rules/{id}/toggle` | 启停规则；body：`enabled` |
+| GET | `/user-skills/event-rules/export` | 导出 JSON（规则 + middleware 配置 + skill hooks 摘要） |
+| POST | `/user-skills/event-rules/import` | 导入 JSON；body：`data`、`overwrite?` |
+
+## 21.6 Middleware Config API（/user-skills/middleware-config）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/user-skills/middleware-config` | 列出当前用户的中间件配置 |
+| POST | `/user-skills/middleware-config` | 配置中间件；body：`name`（auth_check/rate_limit/qa_gate/strict_gate/audit_log）、`enabled`、`config?`(JSON 参数） |
+
+---
+
 ## 错误与状态码
 
 - **401**：未登录或 Token 无效/过期；body 中 `detail` 为说明。  

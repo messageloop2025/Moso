@@ -1,4 +1,5 @@
-"""User Skills Hooks：preToolUse / postToolUse / postToolUseFailure / sessionStart|End / beforeMCPExecution。"""
+"""User Skills Hooks：preToolUse / postToolUse / postToolUseFailure / sessionStart|End / beforeMCPExecution。
+（向后兼容层：内部委托给 event_hook_engine.py 的新事件引擎。）"""
 from __future__ import annotations
 
 import fnmatch

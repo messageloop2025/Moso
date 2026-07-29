@@ -444,6 +444,20 @@ MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_up
 | export_user_skills_config | 导出 JSON 包 | include_disabled? |
 | import_user_skills_config | 导入 JSON 包 | data, overwrite? |
 
+### Event Rules & Middleware 工具
+
+| 工具名 | 说明 | 主要参数 |
+|--------|------|----------|
+| list_available_events | 列出所有可挂载 Hook 规则的事件（20 种）及分组，`active=true/false` 标记 | — |
+| manage_event_rule | 新增/更新/删除 Event 规则（upsert）；`event_name` + `matcher` + `decision`(allow/deny/ask)，支持 `action_config`（webhook_url） | id?, event_name, matcher?, decision?, reason?, priority?, action_config?, enabled?, delete? |
+| list_event_rules | 列出当前用户的 Event 规则 | — |
+| enable_event_rule | 按 id 启停规则 | id, enabled |
+| export_event_config | 导出 JSON（规则+中间件+skill hooks 摘要） | — |
+| import_event_config | 导入 JSON 包 | data, overwrite? |
+| configure_middleware | 启用/禁用中间件（auth_check/rate_limit/qa_gate/strict_gate/audit_log） | name, enabled, config? |
+| list_middleware_config | 列出当前用户的中间件配置 | — |
+| list_agent_states | 查看当前会话的 Agent 状态机（状态/步数/耗时/Token） | — |
+
 
 ### 斜杠参数建议约定（编写 Skill / Command 必读）
 
