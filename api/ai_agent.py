@@ -102,9 +102,10 @@ _EVENT_MIDDLEWARE_SYSTEM_HINT = (
     "- **Event 规则**（manage_event_rule / list_event_rules / enable_event_rule / export_event_config / import_event_config）："
     "按事件名+matcher 配置 allow/deny/ask 规则。**必须先调用 list_available_events** 确认事件名和 active 状态。"
     "每条规则可附加 action_config（如 webhook_url 实现事件回调通知）。\n"
-    "- **当前生效的 hook 类型**：agent:tool:pre（工具执行前）、agent:tool:post/error（工具执行后）、"
-    "mcp:pre（MCP 工具执行前）、agent:step:start/end（每步开始/结束）、agent:start/complete/error（生命周期）、"
-    "session:create/delete（会话创建/删除）。"
+    "- **当前生效的 hook 类型**（全部 active=true）：agent:tool:pre（工具执行前）、agent:tool:post/error（工具执行后）、"
+    "mcp:pre（MCP 工具执行前）、agent:step:start/end（每步开始/结束）、agent:turn:start/end（每轮对话开始/结束）、"
+    "agent:llm:pre/post/chunk（LLM 调用前/后/流式）、agent:token（Token 用量）、"
+    "agent:start/complete/error（生命周期）、session:create/delete（会话创建/删除）。"
     "工具执行前后的 hook 同时支持 DB event_rules 表 + Skill hooks.json + DB matcher 三种规则来源。\n\n"
     "**Skill Hook 配置指南（重要）**："
     "Skill 的 Hook 必须通过 hooks.json 文件或 DB matcher 字段才能生效，仅在 SKILL.md 描述中写 hook 意图是无效的。\n"
@@ -6989,6 +6990,14 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                             agent_step_start(session_id=session_id, user=user, round_idx=round_idx, chat_mode=session_chat_mode)
                         except Exception:
                             pass
+                        # EventBus agent:turn:start
+                        try:
+                            from services.event_bus import event_bus, TraceContext
+                            from services.event_types import AgentEvent
+                            _turn_trace = TraceContext(user_id=int(user["id"]), session_id=session_id, step_num=round_idx + 1)
+                            event_bus.emit(AgentEvent.TURN_START, trace_ctx=_turn_trace, round_idx=round_idx, chat_mode=session_chat_mode)
+                        except Exception:
+                            pass
                         if cached_round_tools is None:
                             _base_tools = await resolve_chat_tools(
                                 get_tools_for_scope(session_scope, user),
@@ -7120,6 +7129,14 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                 finally:
                                     await _q.put(("end", None))
 
+                            # EventBus agent:llm:pre
+                            try:
+                                from services.event_bus import event_bus, TraceContext
+                                from services.event_types import AgentEvent
+                                _llm_trace = TraceContext(user_id=int(user["id"]), session_id=session_id, step_num=round_idx + 1)
+                                event_bus.emit(AgentEvent.LLM_PRE, trace_ctx=_llm_trace, round_idx=round_idx, model=model, chat_mode=session_chat_mode)
+                            except Exception:
+                                pass
                             stream_task = asyncio.create_task(_stream_producer())
                             done_event: dict | None = None
                             http_err_event: dict | None = None
@@ -7195,6 +7212,14 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                         saw_first_byte = True
                                         txt = _sanitize_leaked_tool_markup(ev.get("text") or "")
                                         if txt:
+                                            # EventBus agent:llm:chunk（低频 emit，仅 content/reasoning）
+                                            try:
+                                                from services.event_bus import event_bus, TraceContext
+                                                from services.event_types import AgentEvent
+                                                _chunk_trace = TraceContext(user_id=int(user["id"]), session_id=session_id, step_num=round_idx + 1)
+                                                event_bus.emit(AgentEvent.LLM_CHUNK, trace_ctx=_chunk_trace, chunk_kind=ev_kind, text_len=len(txt), round_idx=round_idx)
+                                            except Exception:
+                                                pass
                                             # 第一次出现可见正文：先关闭仍开着的 reasoning 段
                                             if cot_streaming_started:
                                                 yield _sse({"cot": {"phase": "pre_tool", "kind": "reasoning_end"}})
@@ -7246,6 +7271,23 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                         await stream_task
                                     except (asyncio.CancelledError, Exception):
                                         pass
+                                # EventBus agent:llm:post + agent:token
+                                try:
+                                    from services.event_bus import event_bus, TraceContext
+                                    from services.event_types import AgentEvent
+                                    _post_trace = TraceContext(user_id=int(user["id"]), session_id=session_id, step_num=round_idx + 1)
+                                    _finish_reason = (done_event or {}).get("finish_reason", "") if done_event else ""
+                                    _usage = (done_event or {}).get("usage", {}) if done_event else {}
+                                    event_bus.emit(AgentEvent.LLM_POST, trace_ctx=_post_trace,
+                                                   finish_reason=_finish_reason, round_idx=round_idx,
+                                                   error=str(stream_exc) if stream_exc else None,
+                                                   http_error=http_err_event is not None,
+                                                   chat_mode=session_chat_mode)
+                                    if _usage:
+                                        event_bus.emit(AgentEvent.TOKEN, trace_ctx=_post_trace,
+                                                       usage=_usage, round_idx=round_idx)
+                                except Exception:
+                                    pass
                                 llm_ms_total += max(0, int((time.monotonic() - _llm_t0) * 1000))
 
                             if llm_runtime_pause_injected is not None:
@@ -8626,6 +8668,14 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                 await _persist_pending_user_msg()
                                 messages.append({"role": "user", "content": runtime_injected_user_message})
                                 # —— EventBus + StateMachine agent:step:end ——
+                                # EventBus agent:turn:end
+                                try:
+                                    from services.event_bus import event_bus, TraceContext
+                                    from services.event_types import AgentEvent
+                                    _tend_trace = TraceContext(user_id=int(user["id"]), session_id=session_id, step_num=round_idx + 1)
+                                    event_bus.emit(AgentEvent.TURN_END, trace_ctx=_tend_trace, round_idx=round_idx, chat_mode=session_chat_mode)
+                                except Exception:
+                                    pass
                                 try:
                                     from services.agent_integration import agent_step_end
                                     agent_step_end(session_id=session_id, user=user, round_idx=round_idx, chat_mode=session_chat_mode, had_tool_call=round_had_tool_call)
@@ -8654,6 +8704,14 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                     messages.append({"role": "user", "content": _sup_msg})
                                     runtime_injected_user_message = None
                                     # —— EventBus + StateMachine agent:step:end ——
+                                    # EventBus agent:turn:end
+                                    try:
+                                        from services.event_bus import event_bus, TraceContext
+                                        from services.event_types import AgentEvent
+                                        _tend_trace = TraceContext(user_id=int(user["id"]), session_id=session_id, step_num=round_idx + 1)
+                                        event_bus.emit(AgentEvent.TURN_END, trace_ctx=_tend_trace, round_idx=round_idx, chat_mode=session_chat_mode)
+                                    except Exception:
+                                        pass
                                     try:
                                         from services.agent_integration import agent_step_end
                                         agent_step_end(session_id=session_id, user=user, round_idx=round_idx, chat_mode=session_chat_mode, had_tool_call=round_had_tool_call)
@@ -8685,6 +8743,14 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                     yield "data: [DONE]\n\n"
                                     return
                             # —— EventBus + StateMachine agent:step:end ——
+                            # EventBus agent:turn:end
+                            try:
+                                from services.event_bus import event_bus, TraceContext
+                                from services.event_types import AgentEvent
+                                _tend_trace = TraceContext(user_id=int(user["id"]), session_id=session_id, step_num=round_idx + 1)
+                                event_bus.emit(AgentEvent.TURN_END, trace_ctx=_tend_trace, round_idx=round_idx, chat_mode=session_chat_mode)
+                            except Exception:
+                                pass
                             try:
                                 from services.agent_integration import agent_step_end
                                 agent_step_end(session_id=session_id, user=user, round_idx=round_idx, chat_mode=session_chat_mode, had_tool_call=round_had_tool_call)

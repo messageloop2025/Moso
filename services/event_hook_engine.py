@@ -301,3 +301,55 @@ event_bus.on(AgentEvent.TOOL_POST, _on_tool_post)
 event_bus.on(AgentEvent.TOOL_ERROR, _on_tool_post)
 event_bus.on(AgentEvent.START, _on_agent_lifecycle)
 event_bus.on(AgentEvent.COMPLETE, _on_agent_lifecycle)
+
+
+# —— Turn / LLM 监听器（Phase 2 → 已激活）——
+
+def _on_turn_start(event: str, **payload: Any) -> None:
+    trace_ctx = payload.get("trace_ctx")
+    round_idx = payload.get("round_idx", "?")
+    logger.debug("Agent turn start [%s] round=%s", getattr(trace_ctx, "session_id", "?"), round_idx)
+
+
+def _on_turn_end(event: str, **payload: Any) -> None:
+    trace_ctx = payload.get("trace_ctx")
+    round_idx = payload.get("round_idx", "?")
+    logger.debug("Agent turn end [%s] round=%s", getattr(trace_ctx, "session_id", "?"), round_idx)
+
+
+def _on_llm_pre(event: str, **payload: Any) -> None:
+    trace_ctx = payload.get("trace_ctx")
+    round_idx = payload.get("round_idx", "?")
+    logger.debug("Agent LLM pre [%s] round=%s", getattr(trace_ctx, "session_id", "?"), round_idx)
+
+
+def _on_llm_post(event: str, **payload: Any) -> None:
+    trace_ctx = payload.get("trace_ctx")
+    finish_reason = payload.get("finish_reason", "")
+    logger.debug("Agent LLM post [%s] finish=%s", getattr(trace_ctx, "session_id", "?"), finish_reason)
+
+
+def _on_llm_chunk(event: str, **payload: Any) -> None:
+    trace_ctx = payload.get("trace_ctx")
+    kind = payload.get("chunk_kind", "")
+    # 高频事件，不单独打日志；由注册方按需处理
+
+
+def _on_token(event: str, **payload: Any) -> None:
+    trace_ctx = payload.get("trace_ctx")
+    usage = payload.get("usage", {})
+    logger.debug(
+        "Agent token [%s] prompt=%s completion=%s total=%s",
+        getattr(trace_ctx, "session_id", "?"),
+        usage.get("prompt_tokens", "?"),
+        usage.get("completion_tokens", "?"),
+        usage.get("total_tokens", "?"),
+    )
+
+
+event_bus.on(AgentEvent.TURN_START, _on_turn_start)
+event_bus.on(AgentEvent.TURN_END, _on_turn_end)
+event_bus.on(AgentEvent.LLM_PRE, _on_llm_pre)
+event_bus.on(AgentEvent.LLM_POST, _on_llm_post)
+event_bus.on(AgentEvent.LLM_CHUNK, _on_llm_chunk)
+event_bus.on(AgentEvent.TOKEN, _on_token)
