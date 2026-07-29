@@ -20,8 +20,6 @@ from services.chat_mode_gate import (
 )
 from services.user_skills_hooks import (
     check_allowed_tools,
-    run_hooks_for_skills,
-    run_pre_tool_use_hooks_for_skills,
 )
 
 logger = logging.getLogger("edgeops.chat_mode_runtime")
@@ -248,6 +246,7 @@ async def evaluate_pre_tool_gate(
     args: dict | None,
     strict_allow_cache_json: str = "",
     hook_skills: list[dict] | None = None,
+    hook_pre: dict[str, Any] | None = None,
     assistant_note: str = "",
     strict_allow_glob: bool = False,
     force_skill_allowed_tools: str | list | None = None,
@@ -257,6 +256,9 @@ async def evaluate_pre_tool_gate(
       {action: execute}
       {action: block, tool_result: dict}
       {action: confirm, ui_action: dict, intent: str, reason: str, source: str}
+
+    hook_pre: 新引擎 (agent_tool_pre → resolve_hook_decision) 的决策结果。
+    若提供则直接使用，不再调用旧引擎；若为 None 则回退旧引擎以保持兼容。
     """
     mode = normalize_chat_mode(chat_mode)
     name = (tool_name or "").strip()
@@ -281,13 +283,22 @@ async def evaluate_pre_tool_gate(
                 "source": "allowed_tools",
             }
 
-    # Hooks（所有模式）
-    hook_dec = run_pre_tool_use_hooks_for_skills(
-        hook_skills or [],
-        name,
-        a,
-        chat_mode=mode,
-    )
+    # Hooks（所有模式）—— 优先用新引擎 hook_pre，否则回退旧引擎
+    hook_dec: dict[str, Any] = {}
+    if hook_pre is not None:
+        hook_dec = hook_pre
+    else:
+        # 旧引擎回退（保持兼容：无新引擎上下文时使用）
+        try:
+            from services.user_skills_hooks import run_pre_tool_use_hooks_for_skills as _legacy_hooks
+            hook_dec = _legacy_hooks(
+                hook_skills or [],
+                name,
+                a,
+                chat_mode=mode,
+            )
+        except Exception:
+            hook_dec = {}
     if hook_dec.get("decision") == "deny":
         return {
             "action": "block",

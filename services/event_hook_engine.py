@@ -116,9 +116,11 @@ async def resolve_hook_decision(
     except Exception:
         pass
 
-    # === 2. Skill hooks.json ===
+    # === 2. Skill hooks.json（仅 hooks_enabled=True 时生效） ===
     for sk in (hook_skills or []):
         try:
+            if not sk.get("hooks_enabled"):
+                continue
             skill_dir_raw = sk.get("skill_dir") or sk.get("dir") or sk.get("path") or ""
             hj: dict[str, Any] = {}
             if skill_dir_raw:

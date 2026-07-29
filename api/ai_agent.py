@@ -108,6 +108,8 @@ _EVENT_MIDDLEWARE_SYSTEM_HINT = (
     "工具执行前后的 hook 同时支持 DB event_rules 表 + Skill hooks.json + DB matcher 三种规则来源。\n\n"
     "**Skill Hook 配置指南（重要）**："
     "Skill 的 Hook 必须通过 hooks.json 文件或 DB matcher 字段才能生效，仅在 SKILL.md 描述中写 hook 意图是无效的。\n"
+    "**前置条件**：无论哪种方式，都必须设置 hooks_enabled=true（save_user_skill 传 hooks_enabled: true）；\n"
+    "hooks_enabled=false 时即使有 hooks.json 文件也不会生效，这是 Hook 的总开关。\n"
     "两种配置方式（可同时使用）：\n"
     "  方式 1（推荐/通用）: 写 hooks.json 文件 → write_user_skill_file path=hooks.json，或 save_user_skill 传 hooks_json 字符串。\n"
     "    支持 6 种事件：preToolUse / postToolUse / postToolUseFailure / sessionStart / sessionEnd / beforeMCPExecution\n"
@@ -116,7 +118,7 @@ _EVENT_MIDDLEWARE_SYSTEM_HINT = (
     "  方式 2（仅 preToolUse）: 设置 DB 字段 → save_user_skill 传 hooks_enabled=true + pre_tool_use_matcher=<glob> + pre_tool_use_decision=<ask|deny|allow>\n"
     "    无需 hooks.json 文件，简单场景适用。\n"
     "  请注意：hooks.json 中的事件名**必须用旧格式**（preToolUse 而非 agent:tool:pre）；DB event_rules 表则用新格式。\n"
-    "用户说「加个拦截」「执行前确认」「禁止某工具」时，必须同时创建 SKILL.md + hooks.json（或设置 DB matcher），不能只在 SKILL.md 写描述。\n\n"
+    "用户说「加个拦截」「执行前确认」「禁止某工具」时，必须同时创建 SKILL.md + hooks.json（或设置 DB matcher）+ hooks_enabled=true，不能只在 SKILL.md 写描述。\n\n"
     "- **Middleware 配置**（configure_middleware / list_middleware_config）："
     "启用/禁用中间件管线（auth_check / rate_limit / qa_gate / strict_gate / audit_log）并配置参数。\n"
     "- **运行时状态**（list_agent_states）：查看当前会话的 Agent 状态机状态、步数、耗时、Token 用量。"
@@ -4233,21 +4235,19 @@ async def create_session(
     cur = await db.execute("SELECT last_insert_rowid()")
     row = await cur.fetchone()
     new_sid = row[0]
-    # sessionStart hooks（fail-open）
+    # sessionStart hooks（fail-open）—— 新引擎统一评估
     try:
-        from services.user_skills_hooks import run_hooks_for_skills
         from services.user_skills_registry import list_chat_enabled_skills_for_context, skill_md_path
+        from services.event_hook_engine import resolve_hook_decision
 
         _sk_rows = await list_chat_enabled_skills_for_context(
             db, int(user["id"]), user, scope_val, host_id
         )
         _hook_skills = []
         for _r in _sk_rows:
-            if not (
-                _r.get("hooks_enabled")
-                or (_r.get("pre_tool_use_matcher") or "").strip()
-                or _r.get("has_hooks_json")
-            ):
+            _hooks_enabled = _r.get("hooks_enabled")
+            _matcher = (_r.get("pre_tool_use_matcher") or "").strip()
+            if not (_hooks_enabled or _matcher):
                 continue
             _p = skill_md_path(user, _r["name"])
             _hook_skills.append(
@@ -4256,7 +4256,12 @@ async def create_session(
                     "skill_dir": str(_p.parent) if _p else "",
                 }
             )
-        run_hooks_for_skills(_hook_skills, "sessionStart", chat_mode=mode_val)
+        await resolve_hook_decision(
+            event="sessionStart",
+            hook_skills=_hook_skills,
+            user_id=int(user["id"]),
+            chat_mode=mode_val,
+        )
     except Exception:
         pass
     # EventBus session:create + 初始化状态机
@@ -5085,8 +5090,8 @@ async def delete_session(session_id: int, user=Depends(get_current_user)):
             (session_id, user["id"]),
         )
         if rows:
-            from services.user_skills_hooks import run_hooks_for_skills
             from services.user_skills_registry import list_chat_enabled_skills_for_context, skill_md_path
+            from services.event_hook_engine import resolve_hook_decision
 
             sr = dict(rows[0])
             _sk_rows = await list_chat_enabled_skills_for_context(
@@ -5094,10 +5099,15 @@ async def delete_session(session_id: int, user=Depends(get_current_user)):
             )
             _hook_skills = []
             for _r in _sk_rows:
+                if not (_r.get("hooks_enabled") or (_r.get("pre_tool_use_matcher") or "").strip()):
+                    continue
                 _p = skill_md_path(user, _r["name"])
                 _hook_skills.append({**_r, "skill_dir": str(_p.parent) if _p else ""})
-            run_hooks_for_skills(
-                _hook_skills, "sessionEnd", chat_mode=str(sr.get("chat_mode") or "normal")
+            await resolve_hook_decision(
+                event="sessionEnd",
+                hook_skills=_hook_skills,
+                user_id=int(user["id"]),
+                chat_mode=str(sr.get("chat_mode") or "normal"),
             )
     except Exception:
         pass
@@ -6800,18 +6810,15 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
             )
             for _hr in _hook_rows or []:
                 _nm = _hr.get("name") or ""
-                _has_hooks_file = bool(_hr.get("has_hooks_json"))
-                if not (
-                    _hr.get("hooks_enabled")
-                    or (_hr.get("pre_tool_use_matcher") or "").strip()
-                    or _has_hooks_file
-                ):
+                _hooks_enabled = _hr.get("hooks_enabled")
+                _matcher = (_hr.get("pre_tool_use_matcher") or "").strip()
+                if not (_hooks_enabled or _matcher):
                     continue
                 hook_skills_for_gate.append(
                     {
                         "name": _nm,
-                        "hooks_enabled": bool(_hr.get("hooks_enabled")) or _has_hooks_file,
-                        "pre_tool_use_matcher": _hr.get("pre_tool_use_matcher") or "",
+                        "hooks_enabled": bool(_hooks_enabled),
+                        "pre_tool_use_matcher": _matcher,
                         "pre_tool_use_decision": _hr.get("pre_tool_use_decision") or "ask",
                         "allowed_tools": _hr.get("allowed_tools") or "",
                         "skill_dir": str(_usk_root(user) / _nm) if _nm else "",
@@ -7789,6 +7796,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                             args=fn_args if isinstance(fn_args, dict) else {},
                                             strict_allow_cache_json=session_strict_allow_cache,
                                             hook_skills=hook_skills_for_gate,
+                                            hook_pre=_hook_pre,
                                             assistant_note=(pre_tool_text_streamed or "")[:500],
                                             strict_allow_glob=session_strict_allow_glob,
                                             force_skill_allowed_tools=_slash_force_allowed_tools,
@@ -8022,31 +8030,40 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                             _strict_user_decision = _decision
                                             grant_strict_tool_approval(fn_name)
                                         # allow / always_allow → 继续执行
-                                # P2-2：MCP 调用前 beforeMCPExecution（fail-open；deny 则跳过执行）
+                                # P2-2：MCP 调用前 — 新引擎统一评估
                                 if (
                                     not _chat_mode_gate_skip_exec
                                     and not skip_stale_ask_ui
                                     and (fn_name or "").startswith("user_mcp_")
                                 ):
                                     try:
-                                        from services.user_skills_hooks import run_hooks_for_skills
-                                        from services.chat_mode_runtime import audit_chat_mode_decision
-
-                                        _mcp_dec = run_hooks_for_skills(
-                                            hook_skills_for_gate,
-                                            "beforeMCPExecution",
+                                        # EventBus emit mcp:pre
+                                        try:
+                                            from services.event_bus import event_bus, TraceContext
+                                            from services.event_types import MCPEvent
+                                            _trace = TraceContext(user_id=int(user["id"]), session_id=session_id, step_num=0)
+                                            event_bus.emit(MCPEvent.PRE, trace_ctx=_trace, tool_name=fn_name,
+                                                           args=fn_args if isinstance(fn_args, dict) else {},
+                                                           chat_mode=session_chat_mode)
+                                        except Exception:
+                                            pass
+                                        # Hook 规则评估
+                                        from services.event_hook_engine import resolve_hook_decision
+                                        _mcp_new = await resolve_hook_decision(
+                                            event="mcp:pre",
                                             tool_name=fn_name,
                                             args=fn_args if isinstance(fn_args, dict) else {},
+                                            hook_skills=hook_skills_for_gate,
+                                            user_id=int(user["id"]),
                                             chat_mode=session_chat_mode,
                                         )
-                                        if _mcp_dec.get("decision") == "deny":
+                                        if _mcp_new and _mcp_new.get("decision") == "deny":
                                             tool_result = json.dumps(
                                                 {
                                                     "success": False,
-                                                    "error": _mcp_dec.get("reason")
-                                                    or "beforeMCPExecution 拒绝",
+                                                    "error": _mcp_new.get("reason", "MCP Hook 拒绝"),
                                                     "decision": "deny",
-                                                    "source": "beforeMCPExecution",
+                                                    "source": _mcp_new.get("source", "mcp_pre"),
                                                 },
                                                 ensure_ascii=False,
                                             )
@@ -8059,58 +8076,10 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                                 args=fn_args if isinstance(fn_args, dict) else {},
                                                 decision="hook_deny",
                                                 intent="",
-                                                source="beforeMCPExecution",
+                                                source="mcp_pre",
                                             )
-                                    except Exception as _mcp_hook_exc:
-                                        logger.warning(
-                                            "beforeMCPExecution fail-open: %s", _mcp_hook_exc
-                                        )
-                                    # MCP 新引擎（DB event_rules + hooks.json）
-                                    if not _chat_mode_gate_skip_exec:
-                                        try:
-                                            # EventBus emit mcp:pre
-                                            try:
-                                                from services.event_bus import event_bus, TraceContext
-                                                from services.event_types import MCPEvent
-                                                _trace = TraceContext(user_id=int(user["id"]), session_id=session_id, step_num=0)
-                                                event_bus.emit(MCPEvent.PRE, trace_ctx=_trace, tool_name=fn_name,
-                                                               args=fn_args if isinstance(fn_args, dict) else {},
-                                                               chat_mode=session_chat_mode)
-                                            except Exception:
-                                                pass
-                                            # Hook 规则评估
-                                            from services.event_hook_engine import resolve_hook_decision
-                                            _mcp_new = await resolve_hook_decision(
-                                                event="mcp:pre",
-                                                tool_name=fn_name,
-                                                args=fn_args if isinstance(fn_args, dict) else {},
-                                                hook_skills=hook_skills_for_gate,
-                                                user_id=int(user["id"]),
-                                                chat_mode=session_chat_mode,
-                                            )
-                                            if _mcp_new and _mcp_new.get("decision") == "deny":
-                                                tool_result = json.dumps(
-                                                    {
-                                                        "success": False,
-                                                        "error": _mcp_new.get("reason", "MCP Hook 拒绝"),
-                                                        "decision": "deny",
-                                                        "source": _mcp_new.get("source", "mcp_pre"),
-                                                    },
-                                                    ensure_ascii=False,
-                                                )
-                                                _chat_mode_gate_skip_exec = True
-                                                await audit_chat_mode_decision(
-                                                    user_id=user["id"],
-                                                    session_id=session_id,
-                                                    mode=session_chat_mode,
-                                                    tool_name=fn_name,
-                                                    args=fn_args if isinstance(fn_args, dict) else {},
-                                                    decision="hook_deny",
-                                                    intent="",
-                                                    source="mcp_pre",
-                                                )
-                                        except Exception as _mcp2_exc:
-                                            logger.debug("mcp:pre new engine fail-open: %s", _mcp2_exc)
+                                    except Exception as _mcp2_exc:
+                                        logger.debug("mcp:pre new engine fail-open: %s", _mcp2_exc)
                                 if _chat_mode_gate_skip_exec:
                                     pass
                                 elif skip_stale_ask_ui:
@@ -8449,29 +8418,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                                 "via": "ensure_chat_tools",
                                             }
                                         })
-                                # Skills postToolUse / postToolUseFailure（fail-open；deny 则拒绝采纳结果）
-                                try:
-                                    from services.user_skills_hooks import (
-                                        apply_post_tool_hook_decision,
-                                        run_hooks_for_skills,
-                                    )
-
-                                    _post_ev = "postToolUse" if is_success else "postToolUseFailure"
-                                    _post_dec = run_hooks_for_skills(
-                                        hook_skills_for_gate,
-                                        _post_ev,
-                                        tool_name=fn_name,
-                                        args=fn_args if isinstance(fn_args, dict) else {},
-                                        chat_mode=session_chat_mode,
-                                    )
-                                    if isinstance(result_obj, dict) and _post_dec:
-                                        result_obj, is_success = apply_post_tool_hook_decision(
-                                            result_obj, _post_dec
-                                        )
-                                        tool_result = json.dumps(result_obj, ensure_ascii=False)
-                                except Exception as _post_exc:
-                                    logger.debug("postToolUse hook skip: %s", _post_exc)
-                                # postToolUse 新引擎（DB event_rules + hooks.json）
+                                # postToolUse / postToolUseFailure 新引擎（DB event_rules + hooks.json）
                                 try:
                                     from services.agent_integration import agent_tool_post_hook
                                     _post_obj, _post_ok = await agent_tool_post_hook(
