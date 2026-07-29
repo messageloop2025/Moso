@@ -20,7 +20,7 @@ PyYAML
 # 聊天附件：Office/PDF → Markdown（AI read_chat_attachment）
 markitdown[pdf,docx,pptx,xlsx]>=0.1.5
 # MCP 内置（services/edgeops_mcp；默认同进程 /mcp，与 claw-ops 同 REST 工具）
-mcp>=1.6.0
+mcp>=2.0,<3.0
 # AI 通用数学：NumPy 数值批量、SymPy 符号
 numpy>=1.26.0
 sympy>=1.13.0

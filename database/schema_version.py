@@ -1,5 +1,5 @@
 """数据库结构版本管理：单行表记录当前 schema 版本，供升级模块使用。
-当前最新版本：44（迁移 043 新增 event_rules / user_middleware_config 表）"""
+当前最新版本：45（迁移 044 删除 pre_tool_use_matcher / pre_tool_use_decision 列）"""
 import aiosqlite
 
 SCHEMA_VERSION_TABLE = """

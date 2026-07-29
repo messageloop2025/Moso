@@ -420,7 +420,7 @@ MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_up
 
 **填参自动补全（slash-args 约定）**：选中命令后，浮层会展示可点选的参数建议（并按已输入前缀过滤）。建议值由平台从 SKILL.md / `commands/*.md` 抽取，**不会**由模型临时猜测。编写 Skill 时若有固定子命令或常用参数，须按下方约定声明，否则用户只会看到「暂无内置参数建议」。详见本节「斜杠参数建议约定」。
 
-**Hooks**：Skill 可启用 Hook；管理页可编辑 `hooks.json`（仅磁盘有该文件也会进入门控），事件含 `preToolUse` / `postToolUse` / `postToolUseFailure` / `sessionStart` / `sessionEnd` / `beforeMCPExecution`（decision=`allow`/`deny`/`ask`）。亦可用 DB `pre_tool_use_matcher` + `pre_tool_use_decision`（默认 ask；无 hooks.json 规则时生效）。**`allowed_tools` 仅在本轮斜杠显式唤起该 Skill 时强制**。`postToolUse`/`postToolUseFailure` 若 `deny`：工具结果标为失败并省略正文，模型不得继续采信。失败默认 **fail-open**。`ask` 走独立确认模态。`run_skill_script` 仅执行该 Skill `scripts/` 下脚本。
+**Hooks**：Skill 可启用 Hook；管理页可编辑 `hooks.json`（仅磁盘有该文件也会进入门控），事件含 `preToolUse` / `postToolUse` / `postToolUseFailure` / `sessionStart` / `sessionEnd` / `beforeMCPExecution`（decision=`allow`/`deny`/`ask`/`eval`）。**`allowed_tools` 仅在本轮斜杠显式唤起该 Skill 时强制**。`postToolUse`/`postToolUseFailure` 若 `deny`：工具结果标为失败并省略正文，模型不得继续采信。失败默认 **fail-open**。`ask` 走独立确认模态。`run_skill_script` 仅执行该 Skill `scripts/` 下脚本。
 
 **会话聊天模式门禁**（与 TOOLS 正交，见 `services/chat_mode_gate.py` / `chat_mode_runtime.py` / `chat_mode_enforce.py`）：`qa` 禁止写类工具并返回待执行命令卡；`strict` 写类工具由平台独立弹窗确认（允许/总是=本会话同工具名/拒绝；创建打开终端豁免），模型系统提示与 `normal` 相同、不注入「严格」说明，确认结果以 `user_decision` 写入 tool 返回；`normal` 默认行为仍走 Hook 骨架。
 
@@ -438,7 +438,7 @@ MCP 同名：`edgeops_http_request` / `edgeops_http_download` / `edgeops_http_up
 | write_user_skill_file | 写入/追加附属文件（reference.md、hooks.json、commands/*.md、scripts/*）；**禁止**写 SKILL.md（须 save_user_skill） | name, path, content, append? |
 | delete_user_skill_file | 删除单个附属文件；**禁止**删 SKILL.md（须 delete_user_skill） | name, path |
 | run_skill_script | 在该 Skill 的 `scripts/` 内执行脚本（仅该目录、超时、清代理环境） | skill_name, script, args?, timeout_sec? |
-| save_user_skill | 按 name upsert；可设 slash/Hook/`allowed_tools`/`hooks_json`/分组 | name, content?/body?, description?, slash_name?, hooks_enabled?, pre_tool_use_matcher?, pre_tool_use_decision?, allowed_tools?, hooks_json?, chat_scope_*?, group_name? |
+| save_user_skill | 按 name upsert；可设 slash/Hook/`allowed_tools`/`hooks_json`/分组 | name, content?/body?, description?, slash_name?, hooks_enabled?, allowed_tools?, hooks_json?, chat_scope_*?, group_name? |
 | delete_user_skill | 删除 | name 或 skill_id, remove_files? |
 | scan_user_skills | 扫描磁盘与库**双向同步**：导入/更新 SKILL.md 元数据；磁盘已删除或改名的 Skill 从库移除（改名=删旧行+新增行，分组/启停不继承） | — |
 | export_user_skills_config | 导出 JSON 包 | include_disabled? |
@@ -540,8 +540,7 @@ save_user_skill(
   description="SSH with confirm. Use when user wants guarded remote commands.",
   slash_name="safe-ssh",
   hooks_enabled=true,
-  pre_tool_use_matcher="ssh_execute,send_to_terminal",
-  pre_tool_use_decision="ask",
+  hooks_json='{"preToolUse":{"matcher":"ssh_execute,send_to_terminal","decision":"ask","reason":"SSH 操作需确认"}}',
   allowed_tools="ssh_execute,send_to_terminal,get_terminal_buffer,list_hosts",
   body="# Safe SSH\n\n主机：`{{arg}}`\n\n仅在用户确认后执行写操作。\n"
 )
@@ -692,7 +691,7 @@ write_user_skill_file(
 |------|------|------|
 | **claw-ops** | OpenClaw 插件，**22 核心 + manifest 动态扩展 + invoke**（v1.1+；baseline 43） | [claw-ops/README.md](../claw-ops/README.md) |
 | **claw-skills** | Hermes REST 技能 + Token 配置 | [claw-skills/README.md](../claw-skills/README.md) |
-| **edgeops MCP** | 内置 FastMCP，**58** 工具；默认 `http://<host>:<port>/mcp`；含编排 ops | [services/edgeops_mcp/README.md](../services/edgeops_mcp/README.md) |
+| **edgeops MCP** | 内置 MCPServer，**58** 工具；默认 `http://<host>:<port>/mcp`；含编排 ops | [services/edgeops_mcp/README.md](../services/edgeops_mcp/README.md) |
 | **集成 REST** | `POST /integration/ops-chat/complete`、`/integration/mcp/*` 等 | [API文档.md](API文档.md) §16–§18 |
 
 总览：[外部集成与ClawOps.md](外部集成与ClawOps.md) · 用户帮助：[web/aihelp/external-integration.md](../web/aihelp/external-integration.md)

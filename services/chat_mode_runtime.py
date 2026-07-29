@@ -1,6 +1,7 @@
 """聊天模式门禁 + 严格确认 + Hook 的运行时辅助。"""
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 import re
@@ -18,13 +19,54 @@ from services.chat_mode_gate import (
     qa_blocked_tool_result,
     strict_allow_cache_key,
 )
-from services.user_skills_hooks import (
-    check_allowed_tools,
-)
 
 logger = logging.getLogger("edgeops.chat_mode_runtime")
 
 _SLASH_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+
+
+def _parse_matcher_list(raw: str | None) -> list[str]:
+    s = (raw or "").strip()
+    if not s:
+        return ["*"]
+    parts: list[str] = []
+    for line in s.replace(",", "\n").splitlines():
+        p = line.strip()
+        if p:
+            parts.append(p)
+    return parts or ["*"]
+
+
+def tool_matches(matcher: str | list[str] | None, tool_name: str) -> bool:
+    patterns = matcher if isinstance(matcher, list) else _parse_matcher_list(matcher)
+    name = (tool_name or "").strip()
+    for pat in patterns:
+        if fnmatch.fnmatch(name, pat):
+            return True
+    return False
+
+
+def check_allowed_tools(
+    allowed_tools_raw: str | list[str] | None,
+    tool_name: str,
+) -> dict[str, Any]:
+    """Skill 级工具白名单；空 = 不限制。"""
+    name = (tool_name or "").strip()
+    if not allowed_tools_raw:
+        return {"allowed": True, "reason": "no_whitelist"}
+    if isinstance(allowed_tools_raw, list):
+        patterns = [str(x).strip() for x in allowed_tools_raw if str(x).strip()]
+    else:
+        patterns = _parse_matcher_list(str(allowed_tools_raw))
+    if not patterns or patterns == ["*"]:
+        return {"allowed": True, "reason": "wildcard"}
+    if tool_matches(patterns, name):
+        return {"allowed": True, "reason": "match"}
+    return {
+        "allowed": False,
+        "reason": f"tool `{name}` 不在本 Skill allowed_tools 白名单内",
+        "patterns": patterns,
+    }
 
 
 def build_strict_confirm_ui_action(
@@ -283,22 +325,8 @@ async def evaluate_pre_tool_gate(
                 "source": "allowed_tools",
             }
 
-    # Hooks（所有模式）—— 优先用新引擎 hook_pre，否则回退旧引擎
-    hook_dec: dict[str, Any] = {}
-    if hook_pre is not None:
-        hook_dec = hook_pre
-    else:
-        # 旧引擎回退（保持兼容：无新引擎上下文时使用）
-        try:
-            from services.user_skills_hooks import run_pre_tool_use_hooks_for_skills as _legacy_hooks
-            hook_dec = _legacy_hooks(
-                hook_skills or [],
-                name,
-                a,
-                chat_mode=mode,
-            )
-        except Exception:
-            hook_dec = {}
+    # Hooks（所有模式）—— 使用 event_hook_engine 新引擎
+    hook_dec: dict[str, Any] = hook_pre if hook_pre is not None else {}
     if hook_dec.get("decision") == "deny":
         return {
             "action": "block",
@@ -528,8 +556,6 @@ async def resolve_slash_skill_force_load(
         "content": content,
         "skill_dir": str(root),
         "hooks_enabled": bool(hit.get("hooks_enabled")),
-        "pre_tool_use_matcher": hit.get("pre_tool_use_matcher") or "",
-        "pre_tool_use_decision": hit.get("pre_tool_use_decision") or "ask",
         "allowed_tools": hit.get("allowed_tools") or "",
         "source": "skill",
     }

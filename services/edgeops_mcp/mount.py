@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, AsyncIterator
 
 import config
+from mcp.server.transport_security import TransportSecuritySettings
 from services.edgeops_mcp.server import mcp
 
 if TYPE_CHECKING:
@@ -58,14 +59,20 @@ def install_mcp_http_middleware(app) -> None:
 
 
 def _ensure_session_manager() -> None:
-    """懒初始化 StreamableHTTP session manager（FastMCP 要求先调 streamable_http_app）。"""
-    mcp.streamable_http_app()
+    """懒初始化 StreamableHTTP session manager（MCPServer 要求先调 streamable_http_app）。"""
+    mcp.streamable_http_app(
+        streamable_http_path="/",
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )
 
 
 def get_mcp_http_handler_app() -> Starlette:
     """返回 MCP Streamable HTTP 子应用（内部路由为 `/`，供 Mount 使用）。"""
     _ensure_session_manager()
-    return mcp.streamable_http_app()
+    return mcp.streamable_http_app(
+        streamable_http_path="/",
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )
 
 
 def build_standalone_http_app(*, mount_path: str | None = None) -> Starlette:

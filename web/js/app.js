@@ -16364,15 +16364,6 @@ function _showUserSkillForm(skill) {
         + '<div class="form-group"><label><input type="checkbox" id="skillFormEnabled"> ' + esc(t('skills.enabled')) + '</label></div>'
         + '<div class="form-group"><label><input type="checkbox" id="skillFormHooks"> ' + esc(t('skills.hooksEnabled')) + '</label>'
         + '<div class="field-hint">' + esc(t('skills.hooksHint')) + '</div></div>'
-        + '<div class="form-group"><label>' + esc(t('skills.fieldPreToolUseMatcher')) + '</label><input id="skillFormPreToolUse" class="form-control" placeholder="ssh_execute,send_to_terminal,*">'
-        + '<div class="field-hint">' + esc(t('skills.preToolUseHint')) + '</div></div>'
-        + '<div class="form-group"><label>' + esc(t('skills.fieldPreToolUseDecision')) + '</label>'
-        + '<select id="skillFormPreToolUseDecision" class="form-control form-control-sm">'
-        + '<option value="ask">' + esc(t('skills.decisionAsk')) + '</option>'
-        + '<option value="deny">' + esc(t('skills.decisionDeny')) + '</option>'
-        + '<option value="allow">' + esc(t('skills.decisionAllow')) + '</option>'
-        + '</select>'
-        + '<div class="field-hint">' + esc(t('skills.preToolUseDecisionHint')) + '</div></div>'
         + '<div class="form-group"><label>' + esc(t('skills.fieldHooksJson')) + '</label>'
         + '<textarea id="skillFormHooksJson" class="form-control" rows="8" style="font-family:monospace;font-size:12px" placeholder=\'{"preToolUse":{"matcher":"ssh_*","decision":"deny","reason":"..."}}\'></textarea>'
         + '<div class="field-hint">' + esc(t('skills.hooksJsonHint')) + '</div></div>'
@@ -16399,9 +16390,6 @@ function _showUserSkillForm(skill) {
     document.getElementById('skillFormContent').value = s.content || '';
     document.getElementById('skillFormEnabled').checked = s.enabled !== false;
     document.getElementById('skillFormHooks').checked = !!s.hooks_enabled;
-    document.getElementById('skillFormPreToolUse').value = s.pre_tool_use_matcher || '';
-    var decSel = document.getElementById('skillFormPreToolUseDecision');
-    if (decSel) decSel.value = (s.pre_tool_use_decision || 'ask');
     document.getElementById('skillFormHooksJson').value = s.hooks_json || '';
     document.getElementById('skillFormAllowedTools').value = s.allowed_tools || '';
     var cmdList = document.getElementById('skillFormCommandsList');
@@ -16444,8 +16432,6 @@ function _showUserSkillForm(skill) {
             chat_scope_integration: document.getElementById('skillFormScopeIntegration').checked,
             slash_name: (document.getElementById('skillFormSlash').value || '').trim(),
             hooks_enabled: document.getElementById('skillFormHooks').checked,
-            pre_tool_use_matcher: (document.getElementById('skillFormPreToolUse').value || '').trim(),
-            pre_tool_use_decision: (document.getElementById('skillFormPreToolUseDecision') || {}).value || 'ask',
             hooks_json: (document.getElementById('skillFormHooksJson').value || ''),
             allowed_tools: (document.getElementById('skillFormAllowedTools').value || '').trim(),
             group_id: grpVal ? parseInt(grpVal, 10) : null

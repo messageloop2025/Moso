@@ -30,7 +30,7 @@ async def agent_tool_pre(
     返回: {'decision': 'allow'|'deny'|'ask', 'reason': str, 'tool_result': dict|None}
     fail-open: 异常时返回 allow。
 
-    hook_skills: 当前会话激活的 Skill hooks 列表（含 hooks.json 和 DB matcher 信息）。
+    hook_skills: 当前会话激活的 Skill hooks 列表（含 hooks.json 信息）。
     """
     result: dict[str, Any] = {"decision": "allow", "reason": "", "tool_result": None}
     args = args or {}
@@ -52,7 +52,7 @@ async def agent_tool_pre(
     except Exception:
         pass
 
-    # 2) Hook Engine 规则评估（DB event_rules + hooks.json + Skill matcher）
+    # 2) Hook Engine 规则评估（DB event_rules + hooks.json）
     try:
         from services.event_hook_engine import resolve_hook_decision
 
@@ -178,6 +178,7 @@ async def agent_tool_post_hook(
             user_id=uid,
             chat_mode=chat_mode,
             session_id=session_id,
+            result_obj=obj,
         )
         if _post_hook_dec and _post_hook_dec.get("decision") in ("deny", "ask"):
             obj, is_ok = _apply_post(obj, _post_hook_dec)

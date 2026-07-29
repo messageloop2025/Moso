@@ -88,8 +88,6 @@ def test_export_tgz_pack_structure(tmp_path: Path):
                 "group_name": "g1",
                 "slash_name": "alpha",
                 "hooks_enabled": 0,
-                "pre_tool_use_matcher": "",
-                "pre_tool_use_decision": "ask",
                 "allowed_tools": "fs_list",
             },
             {
@@ -105,8 +103,6 @@ def test_export_tgz_pack_structure(tmp_path: Path):
                 "group_name": "",
                 "slash_name": "beta",
                 "hooks_enabled": 1,
-                "pre_tool_use_matcher": "shell_*",
-                "pre_tool_use_decision": "deny",
                 "allowed_tools": "",
             },
         ]
@@ -157,8 +153,6 @@ def test_import_tgz_skip_existing_and_create(tmp_path: Path):
                     "chat_scope_integration": False,
                     "slash_name": "new",
                     "hooks_enabled": False,
-                    "pre_tool_use_matcher": "",
-                    "pre_tool_use_decision": "ask",
                     "allowed_tools": "",
                 }
             },

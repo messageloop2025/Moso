@@ -1,4 +1,4 @@
-"""Event Hook Engine 三源合一决策测试。"""
+"""Event Hook Engine 双源合一决策测试。"""
 from __future__ import annotations
 
 import json
@@ -23,8 +23,6 @@ def _hooks_json_skill(temp_dir: Path, event_name: str, rule: dict | list[dict]) 
         "name": "test-skill",
         "hooks_enabled": True,
         "skill_dir": str(skill_dir),
-        "pre_tool_use_matcher": "",
-        "pre_tool_use_decision": "ask",
     }
 
 
@@ -126,8 +124,7 @@ class TestHooksJsonDecision:
                     {"matcher": "list_hosts", "decision": "deny", "reason": "blocked"},
                 ]
             }), encoding="utf-8")
-            skill = {"name": "multi", "hooks_enabled": True, "skill_dir": str(skill_dir),
-                     "pre_tool_use_matcher": "", "pre_tool_use_decision": "ask"}
+            skill = {"name": "multi", "hooks_enabled": True, "skill_dir": str(skill_dir)}
 
             # 第一条匹配（ssh_execute）
             r1 = await resolve_hook_decision(
@@ -183,20 +180,20 @@ class TestHooksJsonDecision:
 
 
 # ──────────────────────────────────────────
-# 3. DB matcher（仅 preToolUse 时生效）
+# 3. 无 hooks.json 时默认放行（DB matcher 已删除）
 # ──────────────────────────────────────────
 
 
-class TestDBMatcherDecision:
+class TestNoHooksJsonFallback:
+    """DB matcher 已删除：无 hooks.json 时默认放行"""
+
     @pytest.mark.asyncio
-    async def test_db_matcher_deny(self):
-        """skill 行上的 pre_tool_use_matcher + pre_tool_use_decision=deny"""
+    async def test_no_hooks_json_allow(self):
+        """无 hooks.json → 返回 allow（默认放行）"""
         skill = {
             "name": "guard",
             "hooks_enabled": True,
             "skill_dir": "",
-            "pre_tool_use_matcher": "ssh_*",
-            "pre_tool_use_decision": "deny",
         }
         result = await resolve_hook_decision(
             event="preToolUse",
@@ -207,18 +204,15 @@ class TestDBMatcherDecision:
             chat_mode="normal",
         )
         assert result is not None
-        assert result["decision"] == "deny"
-        assert result.get("source") == "db_matcher"
+        assert result["decision"] == "allow"
 
     @pytest.mark.asyncio
-    async def test_db_matcher_ask_default(self):
-        """DB matcher 默认 decision=ask"""
+    async def test_no_hooks_json_allow_list_hosts(self):
+        """list_hosts 无 hooks.json → 返回 allow"""
         skill = {
             "name": "guard",
             "hooks_enabled": True,
             "skill_dir": "",
-            "pre_tool_use_matcher": "list_hosts",
-            "pre_tool_use_decision": "ask",
         }
         result = await resolve_hook_decision(
             event="preToolUse",
@@ -229,19 +223,15 @@ class TestDBMatcherDecision:
             chat_mode="normal",
         )
         assert result is not None
-        assert result["decision"] == "ask"
-        # source 可能是 db_matcher 或 aggregate（取决于引擎聚合逻辑）
-        assert result.get("source") in ("db_matcher", "aggregate")
+        assert result["decision"] == "allow"
 
     @pytest.mark.asyncio
-    async def test_db_matcher_not_for_other_events(self):
-        """DB matcher 仅对 preToolUse 生效，不对 sessionStart 生效"""
+    async def test_no_hooks_json_session_event(self):
+        """sessionStart 事件无 hooks.json → 返回 allow"""
         skill = {
             "name": "s",
             "hooks_enabled": True,
             "skill_dir": "",
-            "pre_tool_use_matcher": "*",
-            "pre_tool_use_decision": "deny",
         }
         result = await resolve_hook_decision(
             event="sessionStart",
@@ -251,19 +241,16 @@ class TestDBMatcherDecision:
             user_id=1,
             chat_mode="normal",
         )
-        # sessionStart 不走 DB matcher → 返回 allow（默认放行）
         assert result is not None
         assert result["decision"] == "allow"
 
     @pytest.mark.asyncio
-    async def test_db_matcher_empty_still_none(self):
-        """matcher 为空时不触发"""
+    async def test_no_hooks_json_empty_skill_dir(self):
+        """空 skill_dir → 默认放行"""
         skill = {
             "name": "empty",
             "hooks_enabled": True,
             "skill_dir": "",
-            "pre_tool_use_matcher": "",
-            "pre_tool_use_decision": "deny",
         }
         result = await resolve_hook_decision(
             event="preToolUse",
@@ -313,16 +300,13 @@ class TestEdgeCases:
         assert result["decision"] == "allow"
 
     @pytest.mark.asyncio
-    async def test_deny_priority_over_ask(self):
-        """当 hooks.json deny + DB matcher ask 时，deny 应优先（hooks.json 先被评估）"""
+    async def test_hooks_json_deny(self):
+        """hooks.json deny 应正常生效"""
         with tempfile.TemporaryDirectory() as td:
             p = Path(td)
             skill = _hooks_json_skill(p, "preToolUse", {
                 "matcher": "ssh_*", "decision": "deny", "reason": "blocked"
             })
-            # 同时设置 DB matcher ask
-            skill["pre_tool_use_matcher"] = "ssh_*"
-            skill["pre_tool_use_decision"] = "ask"
 
             result = await resolve_hook_decision(
                 event="preToolUse",
@@ -332,6 +316,5 @@ class TestEdgeCases:
                 user_id=1,
                 chat_mode="normal",
             )
-            # hooks.json 先被评估，deny 应优先
             assert result is not None
             assert result["decision"] == "deny"

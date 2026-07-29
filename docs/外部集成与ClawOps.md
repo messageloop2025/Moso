@@ -93,7 +93,7 @@ MCP 本地：`EDGEOPS_API_BASE_URL=http://127.0.0.1:8010`
 
 ## 5. 毛竹 MCP（内置）
 
-- **服务注册名**：`edgeops`（FastMCP / `mcpServers.edgeops`）
+- **服务注册名**：`edgeops`（MCPServer / `mcpServers.edgeops`）
 - **HTTP 端点**：`http://127.0.0.1:8010/mcp/`（默认随主 Web 同端口；独立 `--http` 可选 `:8011/mcp`）
 - **默认启用**：主进程启动即挂载 `/mcp`；设 `EDGEOPS_MCP_ENABLED=false` 可关闭
 - **工具数量**：**58** 个 `edgeops_*`（含 claw-ops 同名 22 个 + MCP 扩展含 scp_push/pull、批量创建/状态、http 等）

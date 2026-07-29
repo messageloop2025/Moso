@@ -24,7 +24,7 @@ from services.chat_mode_runtime import (
     parse_strict_choice,
     slash_skill_token,
 )
-from services.user_skills_hooks import resolve_pre_tool_use_decision, tool_matches
+from services.chat_mode_runtime import tool_matches
 
 
 def test_normalize_chat_mode():
@@ -189,37 +189,6 @@ def test_qa_system_section_and_redact():
 def test_hook_matcher_and_deny():
     assert tool_matches("ssh_*,send_*", "ssh_execute")
     assert not tool_matches("scp_*", "ssh_execute")
-    d = resolve_pre_tool_use_decision(
-        hooks_enabled=True,
-        matcher="ssh_*",
-        hooks_json={"preToolUse": {"matcher": "ssh_*", "decision": "deny", "reason": "no"}},
-        tool_name="ssh_execute",
-    )
-    assert d["decision"] == "deny"
-    d2 = resolve_pre_tool_use_decision(
-        hooks_enabled=True,
-        matcher="ssh_*",
-        hooks_json={},
-        tool_name="ssh_execute",
-    )
-    assert d2["decision"] == "ask"
-    d3 = resolve_pre_tool_use_decision(
-        hooks_enabled=True,
-        matcher="ssh_*",
-        hooks_json={},
-        tool_name="ssh_execute",
-        db_matcher_decision="deny",
-    )
-    assert d3["decision"] == "deny"
-    assert d3["source"] == "db_matcher"
-    d4 = resolve_pre_tool_use_decision(
-        hooks_enabled=True,
-        matcher="ssh_*",
-        hooks_json={},
-        tool_name="ssh_execute",
-        db_matcher_decision="allow",
-    )
-    assert d4["decision"] == "allow"
 
 
 def test_parse_slash_invocation_and_placeholders():

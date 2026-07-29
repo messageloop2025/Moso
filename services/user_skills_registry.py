@@ -107,11 +107,6 @@ def skill_md_path(user: dict, name: str) -> Path:
     return get_user_skills_root(user) / slug / "SKILL.md"
 
 
-def normalize_pre_tool_use_decision(raw: str | None, default: str = "ask") -> str:
-    d = str(raw or default).strip().lower()
-    if d not in ("allow", "deny", "ask"):
-        return default
-    return d
 
 
 def iter_skill_command_files(user: dict, skill_name: str) -> list[dict[str, Any]]:
@@ -627,10 +622,6 @@ def public_skill_row(row: dict, *, fs_exists: bool | None = None, group_name: st
         "slash_name": slash,
         "slash_command": f"/{slash}" if slash else "",
         "hooks_enabled": bool(row.get("hooks_enabled", 0)),
-        "pre_tool_use_matcher": row.get("pre_tool_use_matcher") or "",
-        "pre_tool_use_decision": normalize_pre_tool_use_decision(
-            row.get("pre_tool_use_decision"), "ask"
-        ),
         "allowed_tools": row.get("allowed_tools") or "",
         "group_id": int(gid) if gid is not None else None,
         "group_name": (group_name or "").strip(),
@@ -979,8 +970,8 @@ async def enrich_skill_list_item(_db, user_id: int, user: dict, row: dict, *, gr
             pub["slash_only"] = bool(pub["disable_model_invocation"]) and not pub["always_apply"]
             hooks_path = get_user_skills_root(user) / slug / "hooks.json"
             pub["has_hooks_json"] = hooks_path.is_file()
-            if pub.get("hooks_enabled") and not pub["has_hooks_json"] and not (pub.get("pre_tool_use_matcher") or "").strip():
-                pub["hooks_warning"] = "已启用 Hook 但缺少 hooks.json 且未配置 preToolUse matcher"
+            if pub.get("hooks_enabled") and not pub["has_hooks_json"]:
+                pub["hooks_warning"] = "已启用 Hook 但缺少 hooks.json"
         except Exception:
             pass
     hints = collect_skill_name_warnings(slug)
@@ -1197,8 +1188,6 @@ async def create_user_skill(
     group_id: int | None = None,
     slash_name: str = "",
     hooks_enabled: bool = False,
-    pre_tool_use_matcher: str = "",
-    pre_tool_use_decision: str = "ask",
     allowed_tools: str = "",
     hooks_json: str | None = None,
 ) -> dict:
@@ -1235,13 +1224,12 @@ async def create_user_skill(
         slash = normalize_skill_name(slash)
     except ValueError:
         slash = slug
-    decision = normalize_pre_tool_use_decision(pre_tool_use_decision, "ask")
     cur = await db.execute(
         """INSERT INTO user_skills
            (user_id, name, display_name, description, skill_path, enabled, chat_enabled,
             chat_scope_web, chat_scope_host, chat_scope_integration, file_mtime, group_id,
-            slash_name, hooks_enabled, pre_tool_use_matcher, pre_tool_use_decision, allowed_tools)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            slash_name, hooks_enabled, allowed_tools)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             user_id,
             slug,
@@ -1257,8 +1245,6 @@ async def create_user_skill(
             group_id,
             slash,
             1 if hooks_enabled else 0,
-            (pre_tool_use_matcher or "").strip()[:500],
-            decision,
             (allowed_tools or "").strip()[:2000],
         ),
     )
@@ -1286,8 +1272,6 @@ async def update_user_skill(
     group_id: int | None | str = ...,
     slash_name: str | None = None,
     hooks_enabled: bool | None = None,
-    pre_tool_use_matcher: str | None = None,
-    pre_tool_use_decision: str | None = None,
     allowed_tools: str | None = None,
     hooks_json: str | None = ...,
 ) -> dict:
@@ -1318,9 +1302,6 @@ async def update_user_skill(
             slash_val = normalize_skill_name(s)
         except ValueError:
             slash_val = slug
-    decision_val = None
-    if pre_tool_use_decision is not None:
-        decision_val = normalize_pre_tool_use_decision(pre_tool_use_decision, "ask")
     await db.execute(
         """UPDATE user_skills SET
            display_name=COALESCE(?, display_name),
@@ -1330,10 +1311,8 @@ async def update_user_skill(
            chat_scope_web=COALESCE(?, chat_scope_web),
            chat_scope_host=COALESCE(?, chat_scope_host),
            chat_scope_integration=COALESCE(?, chat_scope_integration),
-           slash_name=COALESCE(?, slash_name),
+            slash_name=COALESCE(?, slash_name),
            hooks_enabled=COALESCE(?, hooks_enabled),
-           pre_tool_use_matcher=COALESCE(?, pre_tool_use_matcher),
-           pre_tool_use_decision=COALESCE(?, pre_tool_use_decision),
            allowed_tools=COALESCE(?, allowed_tools),
            group_id=CASE WHEN ? THEN group_id ELSE ? END,
            file_mtime=COALESCE(?, file_mtime),
@@ -1349,8 +1328,6 @@ async def update_user_skill(
             None if chat_scope_integration is None else (1 if chat_scope_integration else 0),
             slash_val,
             None if hooks_enabled is None else (1 if hooks_enabled else 0),
-            None if pre_tool_use_matcher is None else (pre_tool_use_matcher or "").strip()[:500],
-            decision_val,
             None if allowed_tools is None else (allowed_tools or "").strip()[:2000],
             group_id is ...,
             gid_sql,

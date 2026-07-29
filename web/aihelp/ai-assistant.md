@@ -86,7 +86,7 @@
 |------|----------|-------------|
 | 斜杠 Command | 聊天输入 `/` 选命令，或 `/name 参数` | `save_user_skill(slash_name=...)`；正文写 `{{arg}}`；子命令 `write_user_skill_file(path=commands/别名.md)` |
 | 填参建议 | 选命令后浮层出现可点选参数 chips | frontmatter `slash-args: [...]`，或正文 `## 斜杠参数` 列表 / `/name xxx` 示例 |
-| Hook 确认/拒绝 | 配置后，AI 调匹配工具前弹确认或直接拒绝 | 两种方式：<br>**方式 1**：`save_user_skill(hooks_enabled=true, pre_tool_use_matcher=..., pre_tool_use_decision=ask/deny/allow)`（最简单）<br>**方式 2**：写 `hooks.json` 文件（更灵活，支持 6 种事件，decision 支持 `allow`/`deny`/`ask`/`eval`）<br>也可在 Events 管理页配置 Event Rules（支持 20 种事件） |
+| Hook 确认/拒绝 | 配置后，AI 调匹配工具前弹确认或直接拒绝 | **方式 1**：写 `hooks.json` 文件（推荐，支持 6 种事件，decision 支持 `allow`/`deny`/`ask`/`eval`）<br>**方式 2**：在 Events 管理页配置 Event Rules（支持 20 种事件） |
 | Hook 条件判断（eval） | 动态检查环境/参数后再决定 allow/deny/ask | Skill 目录下建 `hooks_checks/` 子目录，写 Python 脚本（如 `check_admin.py`），在 `hooks.json` 或 Event Rules 中将 `decision` 设为 `eval` 并指定 `eval_script`。脚本 stdin 接收 JSON 上下文（event/tool_name/tool_args/chat_mode/user_id/session_id），stdout 输出 `{"decision":"allow","reason":"..."}` |
 | 工具白名单 | 斜杠唤起该 Skill 的当轮才限制可用工具 | `allowed_tools="ssh_execute,list_hosts"` |
 

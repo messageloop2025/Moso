@@ -116,8 +116,9 @@ async def resolve_hook_decision(
     hook_skills: list[dict[str, Any]] | None = None,
     user_id: int | None = None,
     session_id: int | None = None,
+    result_obj: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """综合决策：DB event_rules + Skill hooks.json + DB matcher。
+    """综合决策：DB event_rules + Skill hooks.json。
 
     聚合策略：deny > ask > allow（fail-open）。
     返回 {"decision", "reason", "source", "event"}
@@ -153,6 +154,7 @@ async def resolve_hook_decision(
                 eval_result = await _do_eval_for_event_rule(
                     rule=rule, ev=ev, tool_name=tool_name,
                     args=args, chat_mode=chat_mode, user_id=user_id, session_id=session_id,
+                    result_obj=result_obj,
                 )
                 eval_dec = str(eval_result.get("decision") or "allow").strip().lower()
                 if eval_dec == "deny":
@@ -181,7 +183,6 @@ async def resolve_hook_decision(
                     block = hj.get(_legacy)
             if not block:
                 continue
-
             # 列表规则
             if isinstance(block, list):
                 for rule in block:
@@ -205,6 +206,7 @@ async def resolve_hook_decision(
                             skill_dir=Path(str(skill_dir_raw)), rule=rule,
                             ev=ev, tool_name=tool_name,
                             args=args, chat_mode=chat_mode, user_id=user_id, session_id=session_id,
+                            result_obj=result_obj,
                         )
                         eval_dec = str(eval_result.get("decision") or "allow").strip().lower()
                         if eval_dec == "deny":
@@ -234,6 +236,7 @@ async def resolve_hook_decision(
                         skill_dir=Path(str(skill_dir_raw)), rule=block,
                         ev=ev, tool_name=tool_name,
                         args=args, chat_mode=chat_mode, user_id=user_id, session_id=session_id,
+                        result_obj=result_obj,
                     )
                     eval_dec = str(eval_result.get("decision") or "allow").strip().lower()
                     if eval_dec == "deny":
@@ -243,25 +246,6 @@ async def resolve_hook_decision(
         except Exception as e:
             logger.debug("Skill hook resolve 异常: %s", e)
             continue
-
-    # === 3. DB matcher（仅 preToolUse / agent:tool:pre 时生效） ===
-    if event in ("preToolUse", AgentEvent.TOOL_PRE):
-        for sk in (hook_skills or []):
-            matcher = sk.get("pre_tool_use_matcher") or sk.get("preToolUseMatcher") or ""
-            if not matcher:
-                continue
-            if not _tool_matches(matcher, tool_name):
-                continue
-            dec = str(sk.get("pre_tool_use_decision") or sk.get("preToolUseDecision") or "ask").strip().lower()
-            if dec == "deny":
-                return {
-                    "decision": "deny",
-                    "reason": f"preToolUse matcher deny (Skill: {sk.get('name', '')})",
-                    "source": "db_matcher",
-                    "event": ev,
-                }
-            if dec == "ask":
-                ask_reason = ask_reason or f"preToolUse matcher: {sk.get('name', '')}"
 
     if ask_reason:
         return {
@@ -290,6 +274,7 @@ async def _do_eval_for_event_rule(
     chat_mode: str,
     user_id: int | None,
     session_id: int | None = None,
+    result_obj: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """对 DB event_rules 命中规则执行 eval 脚本。"""
     action_config_raw = rule.get("action_config") or "{}"
@@ -325,6 +310,7 @@ async def _do_eval_for_event_rule(
         "event": ev,
         "tool_name": tool_name or "",
         "tool_args": args or {},
+        "tool_result": result_obj or {},
         "chat_mode": chat_mode,
         "user_id": user_id,
         "session_id": session_id,
@@ -351,6 +337,7 @@ async def _do_eval_for_hooks_json(
     chat_mode: str,
     user_id: int | None,
     session_id: int | None = None,
+    result_obj: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """对 hooks.json 命中规则执行 eval 脚本。"""
     script_name = str(rule.get("eval_script") or "").strip()
@@ -377,6 +364,7 @@ async def _do_eval_for_hooks_json(
         "event": ev,
         "tool_name": tool_name or "",
         "tool_args": args or {},
+        "tool_result": result_obj or {},
         "chat_mode": chat_mode,
         "user_id": user_id,
         "session_id": session_id,
@@ -392,7 +380,7 @@ async def _do_eval_for_hooks_json(
     return result
 
 
-async def apply_post_tool_hook_decision(
+def apply_post_tool_hook_decision(
     result_obj: dict[str, Any] | None,
     hook_dec: dict[str, Any] | None,
     *,

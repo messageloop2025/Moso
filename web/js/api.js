@@ -585,14 +585,6 @@ var API = {
         });
     },
 
-    // 事件规则
-    listEventRules: function() { return this.get('/user-skills/event-rules'); },
-    manageEventRule: function(data) { return this.post('/user-skills/event-rules', data); },
-    deleteEventRule: function(id) { return this.delete('/user-skills/event-rules/' + id); },
-    enableEventRule: function(id, enabled) { return this.put('/user-skills/event-rules/' + id + '/toggle', { enabled: !!enabled }); },
-    exportEventRules: function() { return this.get('/user-skills/event-rules/export'); },
-    importEventRules: function(data, overwrite) { return this.post('/user-skills/event-rules/import', { rules: data, overwrite: !!overwrite }); },
-
     // 中间件配置
     listMiddlewareConfig: function() { return this.get('/user-skills/middleware-config'); },
     configureMiddleware: function(data) { return this.post('/user-skills/middleware-config', data); },

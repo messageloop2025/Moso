@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import config
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import Context
+    from mcp.server.mcpserver import Context
     from starlette.requests import Request
 
 

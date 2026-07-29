@@ -186,8 +186,6 @@ def _skill_meta_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "group_name": row.get("group_name") or "",
         "slash_name": row.get("slash_name") or "",
         "hooks_enabled": bool(row.get("hooks_enabled", 0)),
-        "pre_tool_use_matcher": row.get("pre_tool_use_matcher") or "",
-        "pre_tool_use_decision": row.get("pre_tool_use_decision") or "ask",
         "allowed_tools": row.get("allowed_tools") or "",
     }
 
@@ -406,8 +404,6 @@ async def import_user_skills_tgz(
                     "chat_scope_integration": bool(entry.get("chat_scope_integration", False)),
                     "slash_name": str(entry.get("slash_name") or ""),
                     "hooks_enabled": bool(entry.get("hooks_enabled", False)),
-                    "pre_tool_use_matcher": str(entry.get("pre_tool_use_matcher") or ""),
-                    "pre_tool_use_decision": str(entry.get("pre_tool_use_decision") or "ask"),
                     "allowed_tools": str(entry.get("allowed_tools") or ""),
                 }
                 gname = str(entry.get("group_name") or "").strip()

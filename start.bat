@@ -9,7 +9,7 @@ if exist ".venv\Scripts\activate.bat" (
     call "venv\Scripts\activate.bat"
 )
 
-python -c "import mcp" 2>nul
+python -c "from mcp.server.mcpserver import MCPServer" 2>nul
 if errorlevel 1 (
     echo Installing dependencies from requirements.txt ...
     python -m pip install -r requirements.txt

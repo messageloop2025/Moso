@@ -58,8 +58,6 @@ class SkillCreateBody(BaseModel):
     group_id: int | None = None
     slash_name: str = ""
     hooks_enabled: bool = False
-    pre_tool_use_matcher: str = ""
-    pre_tool_use_decision: str = "ask"
     allowed_tools: str = ""
     hooks_json: str | None = None
 
@@ -76,8 +74,6 @@ class SkillUpdateBody(BaseModel):
     group_id: int | None = None
     slash_name: str | None = None
     hooks_enabled: bool | None = None
-    pre_tool_use_matcher: str | None = None
-    pre_tool_use_decision: str | None = None
     allowed_tools: str | None = None
     hooks_json: str | None = None
 
@@ -537,8 +533,6 @@ async def create_my_skill(body: SkillCreateBody, user=Depends(get_current_user))
             group_id=body.group_id,
             slash_name=body.slash_name,
             hooks_enabled=body.hooks_enabled,
-            pre_tool_use_matcher=body.pre_tool_use_matcher,
-            pre_tool_use_decision=body.pre_tool_use_decision,
             allowed_tools=body.allowed_tools,
             hooks_json=body.hooks_json,
         )
@@ -648,7 +642,7 @@ async def create_or_update_event_rule(
         raise HTTPException(status_code=400, detail="event_name 不能为空")
     matcher = str(body.get("matcher") or "*").strip()
     decision = str(body.get("decision") or "allow").strip().lower()
-    if decision not in ("allow", "deny", "ask"):
+    if decision not in ("allow", "deny", "ask", "eval"):
         decision = "allow"
     reason = str(body.get("reason") or "")[:500]
     priority = int(body.get("priority", 0))
@@ -748,7 +742,7 @@ async def import_event_rules(body: dict, user=Depends(get_current_user)):
             continue
         matcher = str(rule.get("matcher") or "*").strip()
         decision = str(rule.get("decision") or "allow").strip().lower()
-        if decision not in ("allow", "deny", "ask"):
+        if decision not in ("allow", "deny", "ask", "eval"):
             decision = "allow"
         existing = await db.execute_fetchall(
             "SELECT id FROM event_rules WHERE user_id=? AND event_name=? AND matcher=?", (uid, ev, matcher)
@@ -844,8 +838,6 @@ async def update_my_skill(skill_id: int, body: SkillUpdateBody, user=Depends(get
             group_id=fields["group_id"] if "group_id" in fields else ...,
             slash_name=fields.get("slash_name"),
             hooks_enabled=fields.get("hooks_enabled"),
-            pre_tool_use_matcher=fields.get("pre_tool_use_matcher"),
-            pre_tool_use_decision=fields.get("pre_tool_use_decision"),
             allowed_tools=fields.get("allowed_tools"),
             hooks_json=fields["hooks_json"] if "hooks_json" in fields else ...,
         )

@@ -5390,7 +5390,7 @@ TOOLS = [
                 "路径：web/fs/<用户>/skills/<name>/SKILL.md（不是 chats/）。"
                 "用户说「创建/编写 Skill」「加斜杠命令」「加 Hook 确认/拦截/禁止」时必须调用本工具落地。\n"
                 "**Hook 须知**：仅在 SKILL.md 写描述无法使 Hook 生效！"
-                "必须同时写入 hooks.json（用 hooks_json 参数或 write_user_skill_file）或设置 DB matcher（hooks_enabled+pre_tool_use_matcher+pre_tool_use_decision）。"
+                "必须写入 hooks.json（用 hooks_json 参数或 write_user_skill_file）+ 设置 hooks_enabled=true。"
                 "hooks.json 事件名用旧格式：preToolUse / postToolUse / postToolUseFailure / sessionStart / sessionEnd / beforeMCPExecution。\n"
                 "frontmatter：name、description（第三人称 WHAT+WHEN）；默认 disable-model-invocation: true。"
                 "可同时配置斜杠名、Hook（matcher/decision 或 hooks_json）、allowed_tools。"
@@ -5433,16 +5433,7 @@ TOOLS = [
                     },
                     "hooks_enabled": {
                         "type": "boolean",
-                        "description": "是否启用 Hook；写了 hooks_json 或 matcher 时建议 true",
-                    },
-                    "pre_tool_use_matcher": {
-                        "type": "string",
-                        "description": "preToolUse 工具 glob，逗号分隔，如 ssh_execute,send_to_terminal,*channel*",
-                    },
-                    "pre_tool_use_decision": {
-                        "type": "string",
-                        "description": "matcher 命中且 hooks.json 未覆盖时的决策：ask（确认）/ deny（拒绝）/ allow（放行），默认 ask",
-                        "enum": ["ask", "deny", "allow"],
+                        "description": "是否启用 Hook；写了 hooks_json 时建议 true",
                     },
                     "allowed_tools": {
                         "type": "string",
@@ -5467,28 +5458,39 @@ TOOLS = [
                             "  allow — 放行（默认）\n"
                             "  deny — 拒绝，返回 tool_result {\"success\":false,\"error\":\"...\"}\n"
                             "  ask — 弹出确认框，用户确认后放行，拒绝则跳过工具\n"
-                            "  eval — 运行条件判断脚本（需同时指定 eval_script）\n\n"
+                            "  eval — 运行 Python 条件判断脚本（必须为 Python，需同时指定 eval_script，仅支持 .py）\n\n"
                             "eval 脚本说明（decision=eval 时）：\n"
-                            "  1) 在 Skill 目录下建 hooks_checks/ 子目录\n"
+                            "  1) 在 Skill 目录下建 hooks_checks/ Python 脚本目录\n"
                             "  2) 写 Python 脚本（如 check_before_ssh.py），stdin 接收 JSON 上下文，stdout 输出 JSON 决策\n"
                             "  3) 规则中添加 eval_script、eval_timeout_ms、eval_fail_open 字段\n"
                             "  4) 脚本返回格式：{\"decision\":\"allow|deny|ask\",\"reason\":\"说明\"}\n"
-                            "  5) 上下文字段：event、tool_name、tool_args、chat_mode、user_id、session_id\n\n"
+                            "  5) 上下文字段：event、tool_name、tool_args（工具参数，可据此按 host_id/gateway_id 等条件过滤）、tool_result（工具返回值，仅 postToolUse/postToolUseFailure 事件有值，pre 级为空对象）、chat_mode、user_id、session_id\n\n"
                             "示例 1（ask 确认）：\n"
                             "{\"preToolUse\":{\"matcher\":\"ssh_*\",\"decision\":\"ask\",\"reason\":\"执行 SSH 命令前确认\"}}\n\n"
                             "示例 2（多条规则列表）：\n"
                             "{\"preToolUse\":[{\"matcher\":\"ssh_*,send_*\",\"decision\":\"ask\",\"reason\":\"高危工具确认\"},{\"matcher\":\"search_hosts\",\"decision\":\"deny\",\"reason\":\"禁止搜索主机\"}]}\n\n"
-                            "示例 3（eval 条件判断 — 仅允许特定用户）：\n"
-                            "{\"preToolUse\":{\"matcher\":\"ssh_execute\",\"decision\":\"eval\",\"reason\":\"只允许 admin 执行 SSH\",\"eval_script\":\"check_admin.py\"}}\n"
-                            "脚本 check_admin.py 示例：\n"
+                            "示例 3（eval — 参数过滤：只允许特定 host_id）：\n"
+                            "{\"preToolUse\":{\"matcher\":\"ssh_execute\",\"decision\":\"eval\",\"reason\":\"禁止对生产主机执行 SSH\",\"eval_script\":\"check_prod_host.py\"}}\n"
+                            "脚本 check_prod_host.py 示例（Python，写入 hooks_checks/）：\n"
                             "import json, sys\n"
                             "ctx = json.load(sys.stdin)\n"
-                            "allowed_users = [\"admin\", \"root\"]\n"
-                            "if ctx.get(\"user_id\") in allowed_users:\n"
-                            "    print(json.dumps({\"decision\":\"allow\",\"reason\":f\"允许 {ctx[\\\"user_id\\\"]}\"}))\n"
+                            "# 从 tool_args 中提取参数值进行判断\n"
+                            "host_id = str(ctx.get(\"tool_args\", {}).get(\"host_id\") or \"\")\n"
+                            "if host_id in [\"prod-01\", \"prod-02\"]:\n"
+                            "    print(json.dumps({\"decision\":\"deny\",\"reason\":f\"禁止连接到生产主机 {host_id}\"}))\n"
                             "else:\n"
-                            "    print(json.dumps({\"decision\":\"deny\",\"reason\":f\"非授权用户 {ctx.get(\\\"user_id\\\")}\"}))\n\n"
-                            "重要：写入 hooks_json 后必须同时设置 hooks_enabled=true 或 pre_tool_use_matcher 非空，否则 Hook 不会生效。"
+                            "    print(json.dumps({\"decision\":\"allow\",\"reason\":f\"允许连接到 {host_id}\"}))\n\n"
+                            "示例 4（eval — 返回值检查：postToolUse 验证工具执行结果）：\n"
+                            "{\"postToolUse\":{\"matcher\":\"ssh_execute\",\"decision\":\"eval\",\"reason\":\"检查 SSH 命令执行结果\",\"eval_script\":\"check_ssh_result.py\"}}\n"
+                            "脚本 check_ssh_result.py 示例（Python，写入 hooks_checks/）：\n"
+                            "import json, sys\n"
+                            "ctx = json.load(sys.stdin)\n"
+                            "result = ctx.get(\"tool_result\", {})\n"
+                            "if not result.get(\"success\"):\n"
+                            "    print(json.dumps({\"decision\":\"deny\",\"reason\":f\"命令执行失败: {result.get('error', '')}\"}))\n"
+                            "else:\n"
+                            "    print(json.dumps({\"decision\":\"allow\",\"reason\":\"命令执行成功\"}))\n\n"
+                            "重要：写入 hooks_json 后必须同时设置 hooks_enabled=true，否则 Hook 不会生效。"
                         ),
                     },
                 },
@@ -5574,7 +5576,7 @@ TOOLS = [
                 "写入或追加 Skill 目录 skills/<name>/ 下的附属文件。"
                 "常用：reference.md、examples.md、scripts/*.py；"
                 "**Hook**：path=`hooks.json`（须合法 JSON；建议同时 save_user_skill hooks_enabled=true）；"
-                "path=`hooks_checks/<script>.py`（eval 条件判断脚本，仅在 decision=eval 时需要）。"
+                "path=`hooks_checks/<script>.py`（eval Python 条件判断脚本，仅 decision=eval 时需写入，必须用 Python）。"
                 "hooks.json 格式参考 save_user_skill 工具的 hooks_json 参数说明；事件名必须用旧格式（preToolUse/postToolUse/...）。"
                 "**斜杠子命令**：path=`commands/<alias>.md`（用户可用 /alias 唤起，正文支持 {{arg}}；"
                 "有固定参数时同样写 slash-args 或 ## 斜杠参数，供填参浮层提示）。"
@@ -5803,7 +5805,7 @@ TOOLS = [
             "name": "manage_event_rule",
             "description": (
                 "新增/更新/删除当前用户的 Event 规则（upsert 模式）。Event 规则是对事件总线（18+ 种事件）的配置，"
-                "每条规则决定特定事件发生时是 allow/deny/ask。支持 webhook 回调。"
+                "每条规则决定特定事件发生时是 allow/deny/ask/eval（eval=运行 Python 脚本动态判断）。支持 webhook 回调。"
                 "传 id 则更新已有规则；不传 id 则按 (event_name, matcher) 去重创建。delete=true 则删除。"
             ),
             "parameters": {
@@ -5834,10 +5836,13 @@ TOOLS = [
                         "description": (
                             "JSON 对象。常用字段：\n"
                             "  webhook_url — 命中时回调 URL\n"
-                            "  eval_script — eval 决策时执行的 .py 脚本文件名（如 check_before_ssh.py），"
-                            "放入 skill 的 hooks_checks/ 目录\n"
+                            "  eval_script — eval 决策时执行的 Python .py 脚本文件名（如 check_before_ssh.py），"
+                            "放入 skill 的 hooks_checks/ Python 脚本目录\n"
                             "  eval_timeout_ms — eval 脚本超时时间（毫秒），默认 5000\n"
-                            "  eval_fail_open — eval 异常/超时时是否放行（true=放行 false=拒绝），默认 true"
+                            "  eval_fail_open — eval 异常/超时时是否放行（true=放行 false=拒绝），默认 true\n\n"
+                            "eval 脚本 stdin 接收 JSON 上下文：event、tool_name、tool_args（工具调用参数，可按 host_id 等字段过滤）、"
+                            "tool_result（工具返回值，仅 postToolUse/postToolUseFailure 事件有值）、chat_mode、user_id、session_id。"
+                            "stdout 输出 {\"decision\":\"allow|deny|ask\",\"reason\":\"...\"}"
                         ),
                     },
                     "enabled": {"type": "boolean", "description": "是否启用，默认 true"},
@@ -17713,13 +17718,10 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     hooks_json_arg = json.dumps(hooks_json_arg, ensure_ascii=False, indent=2)
                 elif hooks_json_arg is not None:
                     hooks_json_arg = str(hooks_json_arg)
-                matcher_arg = arguments.get("pre_tool_use_matcher")
-                decision_arg = arguments.get("pre_tool_use_decision")
                 hooks_enabled_arg = arguments.get("hooks_enabled")
-                # 写了 hooks_json / matcher 且未显式关 Hook 时默认开启
+                # 写了 hooks_json 且未显式关 Hook 时默认开启
                 if hooks_enabled_arg is None and (
-                    (isinstance(hooks_json_arg, str) and hooks_json_arg.strip())
-                    or (isinstance(matcher_arg, str) and matcher_arg.strip())
+                    isinstance(hooks_json_arg, str) and hooks_json_arg.strip()
                 ):
                     hooks_enabled_arg = True
                 try:
@@ -17747,10 +17749,6 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                             upd_kw["slash_name"] = arguments.get("slash_name")
                         if hooks_enabled_arg is not None:
                             upd_kw["hooks_enabled"] = bool(hooks_enabled_arg)
-                        if "pre_tool_use_matcher" in arguments:
-                            upd_kw["pre_tool_use_matcher"] = matcher_arg
-                        if "pre_tool_use_decision" in arguments:
-                            upd_kw["pre_tool_use_decision"] = decision_arg
                         if "allowed_tools" in arguments:
                             upd_kw["allowed_tools"] = arguments.get("allowed_tools")
                         if "hooks_json" in arguments:
@@ -17781,8 +17779,6 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                             group_id=group_kw.get("group_id"),
                             slash_name=(arguments.get("slash_name") or ""),
                             hooks_enabled=bool(hooks_enabled_arg) if hooks_enabled_arg is not None else False,
-                            pre_tool_use_matcher=(matcher_arg or "") if matcher_arg is not None else "",
-                            pre_tool_use_decision=(decision_arg or "ask") if decision_arg is not None else "ask",
                             allowed_tools=(arguments.get("allowed_tools") or "")
                             if "allowed_tools" in arguments
                             else "",

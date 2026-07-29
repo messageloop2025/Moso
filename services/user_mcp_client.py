@@ -12,7 +12,7 @@ from typing import Any, AsyncIterator
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 from database import get_db
 from services.user_mcp_registry import (
@@ -173,13 +173,18 @@ async def open_mcp_session(
                 await session.initialize()
                 yield session
     elif transport == "streamable_http":
+        import httpx2
+
         headers = {k: v for k, v in (cfg.get("headers") or {}).items() if v}
-        async with streamablehttp_client(
-            cfg["url"], headers=headers or None, timeout=timeout, sse_read_timeout=120
+        http_client = httpx2.AsyncClient(
+            headers=headers or None,
+            timeout=httpx2.Timeout(timeout, read=120.0),
+        )
+        async with streamable_http_client(
+            cfg["url"], http_client=http_client,
         ) as (
             read,
             write,
-            _get_session_id,
         ):
             async with ClientSession(read, write) as session:
                 await session.initialize()

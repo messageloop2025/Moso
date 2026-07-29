@@ -6,8 +6,7 @@ import asyncio
 import json
 from typing import Any, Callable, Awaitable
 
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.transport_security import TransportSecuritySettings
+from mcp.server.mcpserver import MCPServer, Context
 
 from services.edgeops_mcp.client import create_client
 from services.edgeops_mcp.context import (
@@ -22,7 +21,7 @@ from services.output_wait import (
 )
 from services.terminal_poll import attach_ssh_channel_wait_fields, clamp_ssh_channel_wait_seconds
 
-mcp = FastMCP(
+mcp = MCPServer(
     "edgeops",
     instructions=(
         "毛竹（Moso）MCP：edgeops_* 运维工具（含 MCP 专用编排 ops_orchestrate_*）。"
@@ -35,9 +34,6 @@ mcp = FastMCP(
         "亦可 until_contains（字面子串，超时内轮询至命中或超时，默认超时 30s）。"
         "SSH 通道内嵌套登录：先 edgeops_list_service_credentials，再 edgeops_send_service_password（勿 ssh_channel_send 发明文）。"
     ),
-    # 挂载到主 Web 的 /mcp 时，子应用内路由为 `/`；独立 --http 进程由 mount 层再包一层 /mcp。
-    streamable_http_path="/",
-    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
 
 
