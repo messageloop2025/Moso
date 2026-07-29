@@ -63,6 +63,7 @@ async def agent_tool_pre(
             hook_skills=hook_skills,   # 关键：传入 Skill hooks 信息
             user_id=uid,
             chat_mode=chat_mode,
+            session_id=session_id,
         )
         decision = hook_result.get("decision", "allow") if hook_result else "allow"
         if decision == "deny":
@@ -176,6 +177,7 @@ async def agent_tool_post_hook(
             hook_skills=hook_skills,
             user_id=uid,
             chat_mode=chat_mode,
+            session_id=session_id,
         )
         if _post_hook_dec and _post_hook_dec.get("decision") in ("deny", "ask"):
             obj, is_ok = _apply_post(obj, _post_hook_dec)

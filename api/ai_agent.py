@@ -100,13 +100,24 @@ _EVENT_MIDDLEWARE_SYSTEM_HINT = (
     "- **查看可用 Hook 点**（list_available_events）：列出所有事件及分组，`active=true` 表示该事件当前有实际触发（规则生效）；"
     "`active=false` 表示 Phase 2 规划中（规则暂不触发）。新建规则务必只选 active=true 的事件。\n"
     "- **Event 规则**（manage_event_rule / list_event_rules / enable_event_rule / export_event_config / import_event_config）："
-    "按事件名+matcher 配置 allow/deny/ask 规则。**必须先调用 list_available_events** 确认事件名和 active 状态。"
-    "每条规则可附加 action_config（如 webhook_url 实现事件回调通知）。\n"
+    "按事件名+matcher 配置 allow/deny/ask/eval 规则。**必须先调用 list_available_events** 确认事件名和 active 状态。"
+    "每条规则可附加 action_config（如 webhook_url 实现事件回调通知；eval 模式则配 eval_script 等字段）。\n"
     "- **当前生效的 hook 类型**（全部 active=true）：agent:tool:pre（工具执行前）、agent:tool:post/error（工具执行后）、"
     "mcp:pre（MCP 工具执行前）、agent:step:start/end（每步开始/结束）、agent:turn:start/end（每轮对话开始/结束）、"
     "agent:llm:pre/post/chunk（LLM 调用前/后/流式）、agent:token（Token 用量）、"
     "agent:start/complete/error（生命周期）、session:create/delete（会话创建/删除）。"
-    "工具执行前后的 hook 同时支持 DB event_rules 表 + Skill hooks.json + DB matcher 三种规则来源。\n\n"
+    "工具执行前后的 hook 同时支持 DB event_rules 表 + Skill hooks.json + DB matcher 三种规则来源。\n"
+    "  所有来源的 decision 均支持 eval 选项：运行 Python 条件判断脚本，根据环境/参数动态决定 allow/deny/ask。\n"
+    "  eval 脚本规范：放入 skill 的 hooks_checks/ 子目录（如 hooks_checks/check_before_ssh.py），"
+    "stdin 接收上下文 JSON（字段：event、tool_name、tool_args、chat_mode、user_id、session_id），"
+    "stdout 输出决策 JSON {\"decision\":\"allow|deny|ask\",\"reason\":\"...\"}。"
+    "超时默认 5s，异常/超时时默认 fail_open=true（放行），可配 false（拒绝）。\n"
+    "  eval 脚本代码模板 — 写 hooks_checks/check_admin.py，内容：\n"
+    "    import json, sys\n    ctx=json.load(sys.stdin)\n"
+    "    if ctx.get(\"user_id\") in [\"admin\",\"root\"]:\n"
+    "        print(json.dumps({\"decision\":\"allow\",\"reason\":f\"允许 {ctx['user_id']}\"}))\n"
+    "    else:\n"
+    "        print(json.dumps({\"decision\":\"deny\",\"reason\":f\"非授权 {ctx.get('user_id')}\"}))\n\n"
     "**Skill Hook 配置指南（重要）**："
     "Skill 的 Hook 必须通过 hooks.json 文件或 DB matcher 字段才能生效，仅在 SKILL.md 描述中写 hook 意图是无效的。\n"
     "**前置条件**：无论哪种方式，都必须设置 hooks_enabled=true（save_user_skill 传 hooks_enabled: true）；\n"
@@ -114,8 +125,9 @@ _EVENT_MIDDLEWARE_SYSTEM_HINT = (
     "两种配置方式（可同时使用）：\n"
     "  方式 1（推荐/通用）: 写 hooks.json 文件 → write_user_skill_file path=hooks.json，或 save_user_skill 传 hooks_json 字符串。\n"
     "    支持 6 种事件：preToolUse / postToolUse / postToolUseFailure / sessionStart / sessionEnd / beforeMCPExecution\n"
-    "    格式：{\"<事件名>\": {\"matcher\": \"<glob>\", \"decision\": \"<allow|deny|ask>\", \"reason\": \"<说明>\"}}\n"
-    "    decision: allow(放行) / deny(拒绝) / ask(弹出确认框，用户点击同意后放行)\n"
+    "    格式：{\"<事件名>\": {\"matcher\": \"<glob>\", \"decision\": \"<allow|deny|ask|eval>\", \"reason\": \"<说明>\", "
+    "\"eval_script\": \"<.py 文件名>\"}}\n"
+    "    decision: allow(放行) / deny(拒绝) / ask(弹出确认框) / eval(运行条件脚本动态判断)\n"
     "  方式 2（仅 preToolUse）: 设置 DB 字段 → save_user_skill 传 hooks_enabled=true + pre_tool_use_matcher=<glob> + pre_tool_use_decision=<ask|deny|allow>\n"
     "    无需 hooks.json 文件，简单场景适用。\n"
     "  请注意：hooks.json 中的事件名**必须用旧格式**（preToolUse 而非 agent:tool:pre）；DB event_rules 表则用新格式。\n"
@@ -4247,8 +4259,7 @@ async def create_session(
         _hook_skills = []
         for _r in _sk_rows:
             _hooks_enabled = _r.get("hooks_enabled")
-            _matcher = (_r.get("pre_tool_use_matcher") or "").strip()
-            if not (_hooks_enabled or _matcher):
+            if not _hooks_enabled:
                 continue
             _p = skill_md_path(user, _r["name"])
             _hook_skills.append(
@@ -4262,6 +4273,7 @@ async def create_session(
             hook_skills=_hook_skills,
             user_id=int(user["id"]),
             chat_mode=mode_val,
+            session_id=session_id,
         )
     except Exception:
         pass
@@ -5100,7 +5112,7 @@ async def delete_session(session_id: int, user=Depends(get_current_user)):
             )
             _hook_skills = []
             for _r in _sk_rows:
-                if not (_r.get("hooks_enabled") or (_r.get("pre_tool_use_matcher") or "").strip()):
+                if not _r.get("hooks_enabled"):
                     continue
                 _p = skill_md_path(user, _r["name"])
                 _hook_skills.append({**_r, "skill_dir": str(_p.parent) if _p else ""})
@@ -5109,6 +5121,7 @@ async def delete_session(session_id: int, user=Depends(get_current_user)):
                 hook_skills=_hook_skills,
                 user_id=int(user["id"]),
                 chat_mode=str(sr.get("chat_mode") or "normal"),
+                session_id=session_id,
             )
     except Exception:
         pass
@@ -6812,8 +6825,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
             for _hr in _hook_rows or []:
                 _nm = _hr.get("name") or ""
                 _hooks_enabled = _hr.get("hooks_enabled")
-                _matcher = (_hr.get("pre_tool_use_matcher") or "").strip()
-                if not (_hooks_enabled or _matcher):
+                if not _hooks_enabled:
                     continue
                 hook_skills_for_gate.append(
                     {
@@ -8100,6 +8112,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                             hook_skills=hook_skills_for_gate,
                                             user_id=int(user["id"]),
                                             chat_mode=session_chat_mode,
+                                            session_id=session_id,
                                         )
                                         if _mcp_new and _mcp_new.get("decision") == "deny":
                                             tool_result = json.dumps(

@@ -5453,7 +5453,9 @@ TOOLS = [
                         "description": (
                             "hooks.json 完整 JSON 字符串。Skill 目录下的 hooks.json 文件是 Hook 规则生效的必要条件。\n"
                             "格式：以事件名为 key 的对象，value 是规则对象或规则对象数组。\n"
-                            "规则对象字段：matcher（fnmatch glob，默认 *）、decision（allow|deny|ask）、reason（说明）。\n\n"
+                            "规则对象字段：matcher（fnmatch glob，默认 *）、decision（allow|deny|ask|eval）、reason（说明）、"
+                            "eval_script（decision=eval 时必填，.py 文件名）、eval_timeout_ms（超时毫秒，默认 5000）、"
+                            "eval_fail_open（异常时是否放行，默认 true）。\n\n"
                             "**支持的事件名（必须用旧格式名）**：\n"
                             "  preToolUse — 工具执行前（最常用）\n"
                             "  postToolUse — 工具执行成功后\n"
@@ -5464,11 +5466,28 @@ TOOLS = [
                             "decision 合法值：\n"
                             "  allow — 放行（默认）\n"
                             "  deny — 拒绝，返回 tool_result {\"success\":false,\"error\":\"...\"}\n"
-                            "  ask — 弹出确认框，用户确认后放行，拒绝则跳过工具\n\n"
-                            "示例 1（单条规则）：\n"
+                            "  ask — 弹出确认框，用户确认后放行，拒绝则跳过工具\n"
+                            "  eval — 运行条件判断脚本（需同时指定 eval_script）\n\n"
+                            "eval 脚本说明（decision=eval 时）：\n"
+                            "  1) 在 Skill 目录下建 hooks_checks/ 子目录\n"
+                            "  2) 写 Python 脚本（如 check_before_ssh.py），stdin 接收 JSON 上下文，stdout 输出 JSON 决策\n"
+                            "  3) 规则中添加 eval_script、eval_timeout_ms、eval_fail_open 字段\n"
+                            "  4) 脚本返回格式：{\"decision\":\"allow|deny|ask\",\"reason\":\"说明\"}\n"
+                            "  5) 上下文字段：event、tool_name、tool_args、chat_mode、user_id、session_id\n\n"
+                            "示例 1（ask 确认）：\n"
                             "{\"preToolUse\":{\"matcher\":\"ssh_*\",\"decision\":\"ask\",\"reason\":\"执行 SSH 命令前确认\"}}\n\n"
                             "示例 2（多条规则列表）：\n"
                             "{\"preToolUse\":[{\"matcher\":\"ssh_*,send_*\",\"decision\":\"ask\",\"reason\":\"高危工具确认\"},{\"matcher\":\"search_hosts\",\"decision\":\"deny\",\"reason\":\"禁止搜索主机\"}]}\n\n"
+                            "示例 3（eval 条件判断 — 仅允许特定用户）：\n"
+                            "{\"preToolUse\":{\"matcher\":\"ssh_execute\",\"decision\":\"eval\",\"reason\":\"只允许 admin 执行 SSH\",\"eval_script\":\"check_admin.py\"}}\n"
+                            "脚本 check_admin.py 示例：\n"
+                            "import json, sys\n"
+                            "ctx = json.load(sys.stdin)\n"
+                            "allowed_users = [\"admin\", \"root\"]\n"
+                            "if ctx.get(\"user_id\") in allowed_users:\n"
+                            "    print(json.dumps({\"decision\":\"allow\",\"reason\":f\"允许 {ctx[\\\"user_id\\\"]}\"}))\n"
+                            "else:\n"
+                            "    print(json.dumps({\"decision\":\"deny\",\"reason\":f\"非授权用户 {ctx.get(\\\"user_id\\\")}\"}))\n\n"
                             "重要：写入 hooks_json 后必须同时设置 hooks_enabled=true 或 pre_tool_use_matcher 非空，否则 Hook 不会生效。"
                         ),
                     },
@@ -5554,7 +5573,8 @@ TOOLS = [
             "description": (
                 "写入或追加 Skill 目录 skills/<name>/ 下的附属文件。"
                 "常用：reference.md、examples.md、scripts/*.py；"
-                "**Hook**：path=`hooks.json`（须合法 JSON；建议同时 save_user_skill hooks_enabled=true）。"
+                "**Hook**：path=`hooks.json`（须合法 JSON；建议同时 save_user_skill hooks_enabled=true）；"
+                "path=`hooks_checks/<script>.py`（eval 条件判断脚本，仅在 decision=eval 时需要）。"
                 "hooks.json 格式参考 save_user_skill 工具的 hooks_json 参数说明；事件名必须用旧格式（preToolUse/postToolUse/...）。"
                 "**斜杠子命令**：path=`commands/<alias>.md`（用户可用 /alias 唤起，正文支持 {{arg}}；"
                 "有固定参数时同样写 slash-args 或 ## 斜杠参数，供填参浮层提示）。"
@@ -5566,7 +5586,7 @@ TOOLS = [
                     "name": {"type": "string", "description": "Skill 标识名"},
                     "path": {
                         "type": "string",
-                        "description": "相对路径，如 reference.md、hooks.json、commands/check-disk.md",
+                        "description": "相对路径，如 reference.md、hooks.json、hooks_checks/check_admin.py、commands/check-disk.md",
                     },
                     "content": {"type": "string", "description": "文件内容（UTF-8 文本）"},
                     "append": {"type": "boolean", "description": "true 时在已有内容后追加，默认 false（覆盖）"},
@@ -5806,10 +5826,20 @@ TOOLS = [
                         "description": "事件名。先调用 list_available_events 查看完整分组和描述",
                     },
                     "matcher": {"type": "string", "description": "fnmatch glob 匹配器（逗号分隔），如 ssh_execute,*channel*。默认 *"},
-                    "decision": {"type": "string", "enum": ["allow", "deny", "ask"], "description": "allow=放行 deny=拒绝 ask=确认"},
-                    "reason": {"type": "string", "description": "决策说明（deny/ask 时建议填写）"},
+                    "decision": {"type": "string", "enum": ["allow", "deny", "ask", "eval"], "description": "allow=放行 deny=拒绝 ask=确认 eval=运行 Python 脚本动态判断"},
+                    "reason": {"type": "string", "description": "决策说明（deny/ask/eval 时建议填写）"},
                     "priority": {"type": "integer", "description": "优先级（数字越大越先评估），默认 0"},
-                    "action_config": {"type": "object", "description": "JSON 对象，如 {\"webhook_url\":\"...\"} 表示命中时回调"},
+                    "action_config": {
+                        "type": "object",
+                        "description": (
+                            "JSON 对象。常用字段：\n"
+                            "  webhook_url — 命中时回调 URL\n"
+                            "  eval_script — eval 决策时执行的 .py 脚本文件名（如 check_before_ssh.py），"
+                            "放入 skill 的 hooks_checks/ 目录\n"
+                            "  eval_timeout_ms — eval 脚本超时时间（毫秒），默认 5000\n"
+                            "  eval_fail_open — eval 异常/超时时是否放行（true=放行 false=拒绝），默认 true"
+                        ),
+                    },
                     "enabled": {"type": "boolean", "description": "是否启用，默认 true"},
                     "delete": {"type": "boolean", "description": "设为 true 则删除指定 id 的规则"},
                 },
@@ -18015,7 +18045,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                 return json.dumps({"success": False, "error": "event_name 不能为空"}, ensure_ascii=False)
             matcher = str(arguments.get("matcher") or "*").strip()
             decision = str(arguments.get("decision") or "allow").strip().lower()
-            if decision not in ("allow", "deny", "ask"):
+            if decision not in ("allow", "deny", "ask", "eval"):
                 decision = "allow"
             reason = str(arguments.get("reason") or "")[:500]
             priority = int(arguments.get("priority", 0))
@@ -18135,7 +18165,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     continue
                 matcher = str(rule.get("matcher") or "*").strip()
                 decision = str(rule.get("decision") or "allow").strip().lower()
-                if decision not in ("allow", "deny", "ask"):
+                if decision not in ("allow", "deny", "ask", "eval"):
                     decision = "allow"
                 existing = await db.execute_fetchall(
                     "SELECT id FROM event_rules WHERE user_id=? AND event_name=? AND matcher=?",
@@ -18210,6 +18240,7 @@ async def execute_tool(name: str, arguments: dict, user: dict, scope: str | None
                     "group": group,
                     "description": _desc_map.get(ev, ""),
                     "active": ev in _active_events,
+                    "supported_decisions": ["allow", "deny", "ask", "eval"],
                 })
             return json.dumps({
                 "success": True,

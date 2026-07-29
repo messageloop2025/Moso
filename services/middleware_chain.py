@@ -118,11 +118,21 @@ async def _load_user_middleware(session_id: int, user_id: int | None, chain: Mid
         from database import get_db
         db = await get_db()
         rows = await db.execute_fetchall(
-            "SELECT * FROM user_middleware_config WHERE user_id = ? AND enabled = 1 ORDER BY middleware_name",
+            "SELECT * FROM user_middleware_config WHERE user_id = ? AND enabled = 1",
             (user_id,),
         )
         if not rows:
             return
+        # 逻辑优先级排序（auth_check→rate_limit→gates→audit_log）
+        _MW_PRIORITY = {
+            "auth_check": 1,
+            "rate_limit": 2,
+            "qa_gate": 3,
+            "strict_gate": 3,
+            "audit_log": 9,
+        }
+        rows = sorted(rows, key=lambda r: _MW_PRIORITY.get(
+            str(r.get("middleware_name") or "").strip(), 5))
         from services.middleware_builtin import BUILTIN_MIDDLEWARE_MAP
         for row in rows:
             mw_name = str(row.get("middleware_name") or "").strip()

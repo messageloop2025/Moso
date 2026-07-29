@@ -14,6 +14,7 @@ from services.event_types import (
     SessionEvent,
     normalize_event_name,
 )
+from services.hook_eval_runner import resolve_eval_script_path, run_hook_eval
 
 logger = logging.getLogger("edgeops.event_hook_engine")
 
@@ -60,6 +61,39 @@ async def load_event_rules_from_db(
     return rows
 
 
+async def _resolve_skill_dir_for_event_rule(rule: dict[str, Any]) -> str:
+    """根据 event_rules 行的 skill_id 或 action_config 解析 skill 目录路径。
+
+    skill_id 优先；若只有 action_config.eval_script 则尝试从 user_id 查默认路径。
+    """
+    skill_id = rule.get("skill_id")
+    if skill_id:
+        try:
+            db = await get_db()
+            rows = await db.execute_fetchall(
+                "SELECT name FROM user_skills WHERE id=?",
+                (skill_id,),
+            )
+            if rows:
+                uid = rule.get("user_id")
+                if uid:
+                    from services.user_skills_registry import get_user_skills_root
+                    root = get_user_skills_root({"id": uid})
+                    return str(root / rows[0]["name"])
+        except Exception:
+            pass
+    # 退回到 action_config 的绝对路径
+    action_config_raw = rule.get("action_config") or ""
+    if isinstance(action_config_raw, dict):
+        return str(action_config_raw.get("eval_script_dir") or "")
+    try:
+        cfg = json.loads(str(action_config_raw))
+        return str(cfg.get("eval_script_dir") or "")
+    except Exception:
+        pass
+    return ""
+
+
 def load_hooks_json_skill(skill_dir: Path) -> dict[str, Any]:
     """加载 Skill 目录下的 hooks.json。"""
     p = skill_dir / "hooks.json"
@@ -81,6 +115,7 @@ async def resolve_hook_decision(
     chat_mode: str = "normal",
     hook_skills: list[dict[str, Any]] | None = None,
     user_id: int | None = None,
+    session_id: int | None = None,
 ) -> dict[str, Any]:
     """综合决策：DB event_rules + Skill hooks.json + DB matcher。
 
@@ -113,6 +148,17 @@ async def resolve_hook_decision(
                 }
             if decision == "ask":
                 ask_reason = ask_reason or str(rule.get("reason") or "event_rule_ask")
+            if decision == "eval":
+                # 动态条件判断：执行 Python 脚本
+                eval_result = await _do_eval_for_event_rule(
+                    rule=rule, ev=ev, tool_name=tool_name,
+                    args=args, chat_mode=chat_mode, user_id=user_id, session_id=session_id,
+                )
+                eval_dec = str(eval_result.get("decision") or "allow").strip().lower()
+                if eval_dec == "deny":
+                    return eval_result
+                if eval_dec == "ask":
+                    ask_reason = ask_reason or eval_result.get("reason", "eval ask")
     except Exception:
         pass
 
@@ -154,6 +200,17 @@ async def resolve_hook_decision(
                         }
                     if dec == "ask":
                         ask_reason = ask_reason or str(rule.get("reason") or rule.get("message") or "")
+                    if dec == "eval":
+                        eval_result = await _do_eval_for_hooks_json(
+                            skill_dir=Path(str(skill_dir_raw)), rule=rule,
+                            ev=ev, tool_name=tool_name,
+                            args=args, chat_mode=chat_mode, user_id=user_id, session_id=session_id,
+                        )
+                        eval_dec = str(eval_result.get("decision") or "allow").strip().lower()
+                        if eval_dec == "deny":
+                            return eval_result
+                        if eval_dec == "ask":
+                            ask_reason = ask_reason or eval_result.get("reason", "eval ask")
                     break
                 continue
 
@@ -172,6 +229,17 @@ async def resolve_hook_decision(
                     }
                 if dec == "ask":
                     ask_reason = ask_reason or str(block.get("reason") or block.get("message") or "")
+                if dec == "eval":
+                    eval_result = await _do_eval_for_hooks_json(
+                        skill_dir=Path(str(skill_dir_raw)), rule=block,
+                        ev=ev, tool_name=tool_name,
+                        args=args, chat_mode=chat_mode, user_id=user_id, session_id=session_id,
+                    )
+                    eval_dec = str(eval_result.get("decision") or "allow").strip().lower()
+                    if eval_dec == "deny":
+                        return eval_result
+                    if eval_dec == "ask":
+                        ask_reason = ask_reason or eval_result.get("reason", "eval ask")
         except Exception as e:
             logger.debug("Skill hook resolve 异常: %s", e)
             continue
@@ -209,6 +277,119 @@ async def resolve_hook_decision(
         "source": "default",
         "event": ev,
     }
+
+
+# ── eval 辅助函数 ──
+
+async def _do_eval_for_event_rule(
+    *,
+    rule: dict[str, Any],
+    ev: str,
+    tool_name: str,
+    args: dict[str, Any] | None,
+    chat_mode: str,
+    user_id: int | None,
+    session_id: int | None = None,
+) -> dict[str, Any]:
+    """对 DB event_rules 命中规则执行 eval 脚本。"""
+    action_config_raw = rule.get("action_config") or "{}"
+    if isinstance(action_config_raw, dict):
+        cfg = action_config_raw
+    else:
+        try:
+            cfg = json.loads(str(action_config_raw))
+        except Exception:
+            cfg = {}
+    script_name = str(cfg.get("eval_script") or "").strip()
+    if not script_name:
+        return {
+            "decision": "allow",
+            "reason": "eval 规则缺少 eval_script",
+            "source": "eval_fallback",
+        }
+    skill_dir = await _resolve_skill_dir_for_event_rule(rule)
+    if not skill_dir:
+        return {
+            "decision": "allow",
+            "reason": "eval 规则无法定位 skill 目录",
+            "source": "eval_fallback",
+        }
+    script_path = resolve_eval_script_path(skill_dir, script_name)
+    if script_path is None:
+        return {
+            "decision": "allow",
+            "reason": f"eval 脚本未找到: {script_name}",
+            "source": "eval_fallback",
+        }
+    ctx = {
+        "event": ev,
+        "tool_name": tool_name or "",
+        "tool_args": args or {},
+        "chat_mode": chat_mode,
+        "user_id": user_id,
+        "session_id": session_id,
+    }
+    result = await run_hook_eval(
+        script_path=script_path,
+        context=ctx,
+        timeout_ms=int(cfg.get("eval_timeout_ms", 5000)),
+        fail_open=bool(cfg.get("eval_fail_open", True)),
+    )
+    # 确保 source 正确
+    if result.get("source") == "eval":
+        result["source"] = "event_rules_eval"
+    return result
+
+
+async def _do_eval_for_hooks_json(
+    *,
+    skill_dir: Path,
+    rule: dict[str, Any],
+    ev: str,
+    tool_name: str,
+    args: dict[str, Any] | None,
+    chat_mode: str,
+    user_id: int | None,
+    session_id: int | None = None,
+) -> dict[str, Any]:
+    """对 hooks.json 命中规则执行 eval 脚本。"""
+    script_name = str(rule.get("eval_script") or "").strip()
+    if not script_name:
+        return {
+            "decision": "allow",
+            "reason": "hooks.json eval 缺少 eval_script",
+            "source": "eval_fallback",
+        }
+    script_path = resolve_eval_script_path(str(skill_dir), script_name)
+    if script_path is None:
+        return {
+            "decision": "allow",
+            "reason": f"eval 脚本未找到: {script_name}",
+            "source": "eval_fallback",
+        }
+    timeout_ms = 5_000
+    fail_open = True
+    if isinstance(rule.get("eval_timeout_ms"), (int, float)):
+        timeout_ms = int(rule["eval_timeout_ms"])
+    if "eval_fail_open" in rule:
+        fail_open = bool(rule["eval_fail_open"])
+    ctx = {
+        "event": ev,
+        "tool_name": tool_name or "",
+        "tool_args": args or {},
+        "chat_mode": chat_mode,
+        "user_id": user_id,
+        "session_id": session_id,
+    }
+    result = await run_hook_eval(
+        script_path=script_path,
+        context=ctx,
+        timeout_ms=timeout_ms,
+        fail_open=fail_open,
+    )
+    if result.get("source") == "eval":
+        result["source"] = "hooks.json_eval"
+    return result
 
 
 async def apply_post_tool_hook_decision(
@@ -353,3 +534,54 @@ event_bus.on(AgentEvent.LLM_PRE, _on_llm_pre)
 event_bus.on(AgentEvent.LLM_POST, _on_llm_post)
 event_bus.on(AgentEvent.LLM_CHUNK, _on_llm_chunk)
 event_bus.on(AgentEvent.TOKEN, _on_token)
+
+
+# —— 未覆盖的 6 个事件：cancel/pause/resume/session/mcp（补齐监听器）——
+
+def _on_agent_cancelled(event: str, **payload: Any) -> None:
+    """记录 Agent 被取消。"""
+    trace_ctx = payload.get("trace_ctx")
+    reason = payload.get("reason", "")
+    logger.info("Agent cancelled [%s] reason=%s", getattr(trace_ctx, "session_id", "?"), reason)
+
+
+def _on_agent_paused(event: str, **payload: Any) -> None:
+    """记录 Agent 暂停。"""
+    trace_ctx = payload.get("trace_ctx")
+    logger.info("Agent paused [%s]", getattr(trace_ctx, "session_id", "?"))
+
+
+def _on_agent_resumed(event: str, **payload: Any) -> None:
+    """记录 Agent 恢复。"""
+    trace_ctx = payload.get("trace_ctx")
+    logger.info("Agent resumed [%s]", getattr(trace_ctx, "session_id", "?"))
+
+
+def _on_session_create(event: str, **payload: Any) -> None:
+    """记录会话创建。"""
+    trace_ctx = payload.get("trace_ctx")
+    user_id = payload.get("user_id", "?")
+    logger.info("Session create [%s] user=%s", getattr(trace_ctx, "session_id", "?"), user_id)
+
+
+def _on_session_delete(event: str, **payload: Any) -> None:
+    """记录会话删除。"""
+    trace_ctx = payload.get("trace_ctx")
+    user_id = payload.get("user_id", "?")
+    logger.info("Session delete [%s] user=%s", getattr(trace_ctx, "session_id", "?"), user_id)
+
+
+def _on_mcp_pre(event: str, **payload: Any) -> None:
+    """记录 MCP 工具执行前。"""
+    trace_ctx = payload.get("trace_ctx")
+    tool = payload.get("tool", "?")
+    host = payload.get("host", "?")
+    logger.debug("MCP pre [%s] tool=%s host=%s", getattr(trace_ctx, "session_id", "?"), tool, host)
+
+
+event_bus.on(AgentEvent.CANCEL, _on_agent_cancelled)
+event_bus.on(AgentEvent.PAUSE, _on_agent_paused)
+event_bus.on(AgentEvent.RESUME, _on_agent_resumed)
+event_bus.on(SessionEvent.CREATE, _on_session_create)
+event_bus.on(SessionEvent.DELETE, _on_session_delete)
+event_bus.on(MCPEvent.PRE, _on_mcp_pre)

@@ -86,7 +86,8 @@
 |------|----------|-------------|
 | 斜杠 Command | 聊天输入 `/` 选命令，或 `/name 参数` | `save_user_skill(slash_name=...)`；正文写 `{{arg}}`；子命令 `write_user_skill_file(path=commands/别名.md)` |
 | 填参建议 | 选命令后浮层出现可点选参数 chips | frontmatter `slash-args: [...]`，或正文 `## 斜杠参数` 列表 / `/name xxx` 示例 |
-| Hook 确认/拒绝 | 配置后，AI 调匹配工具前弹确认或直接拒绝 | 两种方式：<br>**方式 1**：`save_user_skill(hooks_enabled=true, pre_tool_use_matcher=..., pre_tool_use_decision=ask/deny/allow)`（最简单）<br>**方式 2**：写 `hooks.json` 文件（更灵活，支持 6 种事件：`preToolUse`/`postToolUse`/`postToolUseFailure`/`sessionStart`/`sessionEnd`/`beforeMCPExecution`）<br>也可在 Events 管理页配置 Event Rules（支持 20 种事件） |
+| Hook 确认/拒绝 | 配置后，AI 调匹配工具前弹确认或直接拒绝 | 两种方式：<br>**方式 1**：`save_user_skill(hooks_enabled=true, pre_tool_use_matcher=..., pre_tool_use_decision=ask/deny/allow)`（最简单）<br>**方式 2**：写 `hooks.json` 文件（更灵活，支持 6 种事件，decision 支持 `allow`/`deny`/`ask`/`eval`）<br>也可在 Events 管理页配置 Event Rules（支持 20 种事件） |
+| Hook 条件判断（eval） | 动态检查环境/参数后再决定 allow/deny/ask | Skill 目录下建 `hooks_checks/` 子目录，写 Python 脚本（如 `check_admin.py`），在 `hooks.json` 或 Event Rules 中将 `decision` 设为 `eval` 并指定 `eval_script`。脚本 stdin 接收 JSON 上下文（event/tool_name/tool_args/chat_mode/user_id/session_id），stdout 输出 `{"decision":"allow","reason":"..."}` |
 | 工具白名单 | 斜杠唤起该 Skill 的当轮才限制可用工具 | `allowed_tools="ssh_execute,list_hosts"` |
 
 #### 斜杠参数建议约定（写 Skill 时遵守）
@@ -116,13 +117,15 @@ slash-args:
 - 「做一个 `/aliyun-ops`，子命令 balance / ecs list，要能在填参时提示。」
 - 「做一个 safe-ssh Skill：执行 ssh_execute 前必须让我确认。」
 - 「给现有 Skill 加 hooks.json：禁止 scp，SSH 要确认。」
+- 「做一个仅在 admin 用户执行 SSH 时才放行的 Skill，用 eval 脚本判断用户身份。」
 
 ## Events 事件管理页
 
 页面路径：导航栏 → **Events**。在此可以查看和配置 Event Rules（事件规则），支持 20 种 Agent 生命周期事件（如 `agent:tool:pre` 工具执行前、`session:create` 会话创建时等）。
 
-- **新增规则**：选择事件名 → 填写工具 matcher（如 `ssh_*,send_to_terminal`）→ 选择 decision（`allow` 放行 / `deny` 拒绝 / `ask` 确认）→ 填写原因说明。
+- **新增规则**：选择事件名 → 填写工具 matcher（如 `ssh_*,send_to_terminal`）→ 选择 decision（`allow` 放行 / `deny` 拒绝 / `ask` 确认 / `eval` 条件判断）→ 填写原因说明。
 - **ask 确认**：规则设为 `ask` 时，AI 调用匹配的工具前会弹出独立确认模态（类似严格模式弹窗，但由 Event Hook 引擎驱动），用户点击允许后工具继续执行。普通/问答/严格模式均生效。
+- **eval 条件判断**：规则设为 `eval` 时，系统执行 Skill `hooks_checks/` 目录下的 Python 脚本动态判断。脚本接收 stdin JSON 上下文（event/tool_name/tool_args/chat_mode/user_id/session_id），stdout 输出 `{"decision":"allow|deny|ask","reason":"..."}`。超时默认 5 秒，异常时默认放行（fail_open=true）。
 - **导入导出**：支持 JSON 格式导入导出规则。
 - **活跃事件**：`list_available_events` 工具返回的事件列表中，仅 `active=true` 的事件才会实际触发规则评估。
 
