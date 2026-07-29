@@ -7657,6 +7657,7 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                 _chat_mode_gate_skip_exec = False
                                 _strict_user_decision: str | None = None
                                 # —— EventBus + Hook Engine 工具执行前 ——
+                                _hook_pre: dict[str, Any] | None = None
                                 if not _chat_mode_gate_skip_exec and not skip_stale_ask_ui and fn_name != "ask_user_choice":
                                     try:
                                         from services.agent_integration import agent_tool_pre
@@ -7747,7 +7748,8 @@ async def _chat_impl(req: ChatRequest, user: dict, *, http_request: Request | No
                                                                     "during_wait": "hook_ask",
                                                                 }
                                                             })
-                                                            # 不设置 _chat_mode_gate_skip_exec，允许工具继续执行
+                                                            # Hook 已由用户确认放行，重置决策避免 downstream 重复询问
+                                                            _hook_pre = {"decision": "allow", "reason": "用户确认通过", "source": "hook_ask_resolved"}
                                                             break
                                                         elif _hook_choice == "deny":
                                                             tool_result = json.dumps({
